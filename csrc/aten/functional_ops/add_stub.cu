@@ -7,7 +7,6 @@
 #include <c10/core/Scalar.h>
 
 #include "../native/cuda/Loops.cuh"
-#include "../native/ufunc/add.h"
 
 namespace at::native::flagos {
 
@@ -23,7 +22,7 @@ struct CUDAFunctorOnSelf_add {
   opmath_t alpha_;
   CUDAFunctorOnSelf_add(opmath_t other, opmath_t alpha) : other_(other), alpha_(alpha) {}
   __device__ scalar_t operator()(scalar_t self) const {
-    return ufunc::add(static_cast<opmath_t>(self), other_, alpha_);
+    return static_cast<opmath_t>(self) + alpha_ * other_;
   }
 };
 
@@ -34,7 +33,7 @@ struct CUDAFunctorOnOther_add {
   opmath_t alpha_;
   CUDAFunctorOnOther_add(opmath_t self, opmath_t alpha) : self_(self), alpha_(alpha) {}
   __device__ scalar_t operator()(scalar_t other) const {
-    return ufunc::add(self_, static_cast<opmath_t>(other), alpha_);
+    return self_ + alpha_ * static_cast<opmath_t>(other);
   }
 };
 
@@ -44,7 +43,7 @@ struct CUDAFunctor_add {
   opmath_t alpha_;
   CUDAFunctor_add(opmath_t alpha) : alpha_(alpha) {}
   __device__ scalar_t operator()(scalar_t self, scalar_t other) const {
-    return ufunc::add(static_cast<opmath_t>(self), static_cast<opmath_t>(other), alpha_);
+    return static_cast<opmath_t>(self) + alpha_ * static_cast<opmath_t>(other);
   }
 };
 
