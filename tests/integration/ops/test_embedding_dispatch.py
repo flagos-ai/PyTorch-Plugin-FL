@@ -152,7 +152,7 @@ class TestEmbeddingDispatchLog:
     def test_dispatch_log_flaggems_default(self):
         """Default routes embedding to flaggems."""
         result = _run_embedding_subprocess(
-            {"FLAGOS_LOG_DISPATCH": "1"}
+            {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_embedding": "flaggems"}
         )
         assert (
             "[flagos dispatch] embedding -> flaggems"

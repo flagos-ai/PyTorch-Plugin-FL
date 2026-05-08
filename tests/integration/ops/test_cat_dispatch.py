@@ -131,7 +131,9 @@ class TestCatDispatchLog:
 
     def test_dispatch_log_flaggems_default(self):
         """Default config routes cat to flaggems."""
-        result = _run_cat_subprocess({"FLAGOS_LOG_DISPATCH": "1"})
+        result = _run_cat_subprocess(
+            {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_cat": "flaggems"}
+        )
         assert "[flagos dispatch] cat -> flaggems" in result.stderr, (
             f"Expected flaggems dispatch log, got:\n{result.stderr}"
         )

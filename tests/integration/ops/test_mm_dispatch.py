@@ -122,7 +122,9 @@ class TestMmDispatchLog:
 
     def test_dispatch_log_flaggems_default(self):
         """Default config routes mm to flaggems."""
-        result = _run_mm_subprocess({"FLAGOS_LOG_DISPATCH": "1"})
+        result = _run_mm_subprocess(
+            {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_mm": "flaggems"}
+        )
         assert "[flagos dispatch] mm -> flaggems" in result.stderr, (
             f"Expected flaggems dispatch log, got:\n{result.stderr}"
         )
@@ -139,7 +141,8 @@ class TestMmDispatchLog:
     def test_dispatch_log_mm_out_flaggems_default(self):
         """Default config routes mm.out to flaggems."""
         result = _run_mm_subprocess(
-            {"FLAGOS_LOG_DISPATCH": "1"}, use_out=True
+            {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_mm__out": "flaggems"},
+            use_out=True,
         )
         assert "[flagos dispatch] mm.out -> flaggems" in result.stderr, (
             f"Expected flaggems dispatch log, got:\n{result.stderr}"
