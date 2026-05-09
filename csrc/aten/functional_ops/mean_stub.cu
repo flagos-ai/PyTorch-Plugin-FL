@@ -16,7 +16,7 @@ FLAGOS_DEFINE_DISPATCH(MeanDimFn, mean_dim_stub, "mean.dim")
 namespace {
 
 template <typename scalar_t, typename acc_t=scalar_t, typename out_t=scalar_t>
-void mean_kernel_impl(at::TensorIterator& iter) {
+void MeanKernelImpl(at::TensorIterator& iter) {
   using factor_t = typename c10::scalar_value_type<acc_t>::type;
   factor_t factor = static_cast<factor_t>(iter.num_output_elements()) / iter.numel();
   constexpr bool is_16_bits = sizeof(scalar_t) == 2;
@@ -29,7 +29,7 @@ void mean_kernel_impl(at::TensorIterator& iter) {
   }
 }
 
-at::Tensor mean_dim_kernel_cuda(
+at::Tensor MeanDimKernelCuda(
     const at::Tensor& self, at::OptionalIntArrayRef opt_dims,
     bool keepdim, std::optional<at::ScalarType> dtype) {
 
@@ -48,16 +48,16 @@ at::Tensor mean_dim_kernel_cuda(
   }
 
   if (iter.dtype() == at::kHalf) {
-    mean_kernel_impl<at::Half, float>(iter);
+    MeanKernelImpl<at::Half, float>(iter);
   } else if (iter.dtype(1) == at::kHalf && iter.dtype() == at::kFloat) {
-    mean_kernel_impl<at::Half, float, float>(iter);
+    MeanKernelImpl<at::Half, float, float>(iter);
   } else if (iter.dtype() == at::kBFloat16) {
-    mean_kernel_impl<at::BFloat16, float>(iter);
+    MeanKernelImpl<at::BFloat16, float>(iter);
   } else if (iter.dtype(1) == at::kBFloat16 && iter.dtype() == at::kFloat) {
-    mean_kernel_impl<at::BFloat16, float, float>(iter);
+    MeanKernelImpl<at::BFloat16, float, float>(iter);
   } else {
     AT_DISPATCH_ALL_TYPES_AND_COMPLEX(iter.dtype(), "mean_cuda", [&]() {
-      mean_kernel_impl<scalar_t>(iter);
+      MeanKernelImpl<scalar_t>(iter);
     });
   }
 
@@ -66,6 +66,6 @@ at::Tensor mean_dim_kernel_cuda(
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(MeanDimFn, mean_dim_stub, FlagosDevice::kCuda, mean_dim_kernel_cuda)
+FLAGOS_REGISTER_DISPATCH(MeanDimFn, mean_dim_stub, FlagosDevice::kCuda, MeanDimKernelCuda)
 
 } // namespace at::native::flagos

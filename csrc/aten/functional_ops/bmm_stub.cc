@@ -12,7 +12,7 @@ FLAGOS_DEFINE_DISPATCH(BmmFn, bmm_stub, "bmm")
 
 namespace {
 
-void bmm_kernel_flaggems(
+void BmmKernelFlaggems(
     const at::Tensor& self,
     const at::Tensor& mat2,
     at::Tensor& out) {
@@ -20,7 +20,7 @@ void bmm_kernel_flaggems(
   out.copy_(result);
 }
 
-void bmm_kernel_cuda(
+void BmmKernelCuda(
     const at::Tensor& self,
     const at::Tensor& mat2,
     at::Tensor& out) {
@@ -40,7 +40,7 @@ void bmm_kernel_cuda(
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(BmmFn, bmm_stub, FlagosDevice::kFlagOs, bmm_kernel_flaggems)
-FLAGOS_REGISTER_DISPATCH(BmmFn, bmm_stub, FlagosDevice::kCuda,   bmm_kernel_cuda)
+FLAGOS_REGISTER_DISPATCH(BmmFn, bmm_stub, FlagosDevice::kFlagOs, BmmKernelFlaggems)
+FLAGOS_REGISTER_DISPATCH(BmmFn, bmm_stub, FlagosDevice::kCuda,   BmmKernelCuda)
 
 } // namespace at::native::flagos

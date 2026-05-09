@@ -12,14 +12,14 @@ FLAGOS_DEFINE_DISPATCH(MmFn, mm_stub, "mm")
 
 namespace {
 
-void mm_kernel_flaggems(
+void MmKernelFlaggems(
     const at::Tensor& self,
     const at::Tensor& mat2,
     at::Tensor& out) {
   flag_gems::mm_out_tensor(self, mat2, out);
 }
 
-void mm_kernel_cuda(
+void MmKernelCuda(
     const at::Tensor& self,
     const at::Tensor& mat2,
     at::Tensor& out) {
@@ -39,7 +39,7 @@ void mm_kernel_cuda(
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(MmFn, mm_stub, FlagosDevice::kFlagOs, mm_kernel_flaggems)
-FLAGOS_REGISTER_DISPATCH(MmFn, mm_stub, FlagosDevice::kCuda,   mm_kernel_cuda)
+FLAGOS_REGISTER_DISPATCH(MmFn, mm_stub, FlagosDevice::kFlagOs, MmKernelFlaggems)
+FLAGOS_REGISTER_DISPATCH(MmFn, mm_stub, FlagosDevice::kCuda,   MmKernelCuda)
 
 } // namespace at::native::flagos

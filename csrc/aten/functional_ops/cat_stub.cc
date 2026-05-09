@@ -13,13 +13,13 @@ FLAGOS_DEFINE_DISPATCH(CatFn, cat_stub, "cat")
 
 namespace {
 
-at::Tensor cat_kernel_flaggems(const at::ITensorListRef& tensors, int64_t dim) {
+at::Tensor CatKernelFlaggems(const at::ITensorListRef& tensors, int64_t dim) {
   auto materialized = tensors.materialize();
   std::vector<at::Tensor> tensor_vec(materialized.begin(), materialized.end());
   return flag_gems::cat(tensor_vec, dim);
 }
 
-at::Tensor cat_kernel_cuda(const at::ITensorListRef& tensors, int64_t dim) {
+at::Tensor CatKernelCuda(const at::ITensorListRef& tensors, int64_t dim) {
   // Call the CUDA structured kernel directly, bypassing at::cuda::cat()
   // which triggers CUDAGuardImpl device-type check.
   // flagos and CUDA share the same GPU memory so this is safe.
@@ -49,7 +49,7 @@ at::Tensor cat_kernel_cuda(const at::ITensorListRef& tensors, int64_t dim) {
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(CatFn, cat_stub, FlagosDevice::kFlagOs, cat_kernel_flaggems)
-FLAGOS_REGISTER_DISPATCH(CatFn, cat_stub, FlagosDevice::kCuda,   cat_kernel_cuda)
+FLAGOS_REGISTER_DISPATCH(CatFn, cat_stub, FlagosDevice::kFlagOs, CatKernelFlaggems)
+FLAGOS_REGISTER_DISPATCH(CatFn, cat_stub, FlagosDevice::kCuda,   CatKernelCuda)
 
 } // namespace at::native::flagos

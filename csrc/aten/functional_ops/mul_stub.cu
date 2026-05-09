@@ -27,7 +27,7 @@ struct MulFunctor<bool> {
   }
 };
 
-at::Tensor mul_kernel_cuda(
+at::Tensor MulKernelCuda(
     const at::Tensor& self, const at::Tensor& other) {
   at::Tensor output;
   auto iter = at::TensorIteratorConfig()
@@ -55,6 +55,6 @@ at::Tensor mul_kernel_cuda(
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(MulTensorFn, mul_tensor_stub, FlagosDevice::kCuda, mul_kernel_cuda)
+FLAGOS_REGISTER_DISPATCH(MulTensorFn, mul_tensor_stub, FlagosDevice::kCuda, MulKernelCuda)
 
 } // namespace at::native::flagos

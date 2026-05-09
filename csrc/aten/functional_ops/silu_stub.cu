@@ -14,7 +14,7 @@ FLAGOS_DEFINE_DISPATCH(SiluFn, silu_stub, "silu")
 
 namespace {
 
-at::Tensor silu_kernel_cuda(const at::Tensor& self) {
+at::Tensor SiluKernelCuda(const at::Tensor& self) {
   at::Tensor output;
   auto iter = at::TensorIteratorConfig()
     .add_output(output)
@@ -38,6 +38,6 @@ at::Tensor silu_kernel_cuda(const at::Tensor& self) {
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(SiluFn, silu_stub, FlagosDevice::kCuda, silu_kernel_cuda)
+FLAGOS_REGISTER_DISPATCH(SiluFn, silu_stub, FlagosDevice::kCuda, SiluKernelCuda)
 
 } // namespace at::native::flagos

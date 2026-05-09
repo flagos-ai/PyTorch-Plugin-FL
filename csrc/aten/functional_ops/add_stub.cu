@@ -47,7 +47,7 @@ struct AddCudaFunctor {
   }
 };
 
-at::Tensor add_kernel_cuda(
+at::Tensor AddKernelCuda(
     const at::Tensor& self, const at::Tensor& other, const at::Scalar& alpha) {
   at::Tensor output;
   auto iter = at::TensorIteratorConfig()
@@ -87,6 +87,6 @@ at::Tensor add_kernel_cuda(
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(AddTensorFn, add_tensor_stub, FlagosDevice::kCuda, add_kernel_cuda)
+FLAGOS_REGISTER_DISPATCH(AddTensorFn, add_tensor_stub, FlagosDevice::kCuda, AddKernelCuda)
 
 } // namespace at::native::flagos

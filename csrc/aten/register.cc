@@ -19,6 +19,11 @@
 #include "functional_ops/silu_stub.h"
 #include "functional_ops/rsqrt_stub.h"
 #include "functional_ops/mean_stub.h"
+#include "functional_ops/cos_stub.h"
+#include "functional_ops/sin_stub.h"
+#include "functional_ops/neg_stub.h"
+#include "functional_ops/pow_stub.h"
+#include "functional_ops/all_stub.h"
 
 #include <ATen/native/CPUFallback.h>
 
@@ -213,6 +218,26 @@ at::Tensor WrapperMeanDim(
   return at::native::flagos::mean_dim_stub(self, dim, keepdim, dtype);
 }
 
+at::Tensor WrapperCos(const at::Tensor& self) {
+  return at::native::flagos::cos_stub(self);
+}
+
+at::Tensor WrapperSin(const at::Tensor& self) {
+  return at::native::flagos::sin_stub(self);
+}
+
+at::Tensor WrapperNeg(const at::Tensor& self) {
+  return at::native::flagos::neg_stub(self);
+}
+
+at::Tensor WrapperPowTensorScalar(const at::Tensor& self, const at::Scalar& exp) {
+  return at::native::flagos::pow_tensor_scalar_stub(self, exp);
+}
+
+at::Tensor WrapperAll(const at::Tensor& self) {
+  return at::native::flagos::all_stub(self);
+}
+
 } // namespace
 
 // Register basic operators for PrivateUse1 dispatch key
@@ -246,6 +271,11 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("silu", WrapperSilu);
   m.impl("rsqrt", WrapperRsqrt);
   m.impl("mean.dim", WrapperMeanDim);
+  m.impl("cos", WrapperCos);
+  m.impl("sin", WrapperSin);
+  m.impl("neg", WrapperNeg);
+  m.impl("pow.Tensor_Scalar", WrapperPowTensorScalar);
+  m.impl("all", WrapperAll);
 }
 
 // Register fallback for all unimplemented operators

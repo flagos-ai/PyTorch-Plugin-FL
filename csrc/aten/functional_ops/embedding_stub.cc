@@ -11,14 +11,14 @@ FLAGOS_DEFINE_DISPATCH(EmbeddingFn, embedding_stub, "embedding")
 
 namespace {
 
-at::Tensor embedding_kernel_flaggems(
+at::Tensor EmbeddingKernelFlaggems(
     const at::Tensor& weight, const at::Tensor& indices,
     int64_t padding_idx, bool scale_grad_by_freq, bool sparse) {
   return flag_gems::embedding(weight, indices, padding_idx,
                               scale_grad_by_freq, sparse);
 }
 
-at::Tensor embedding_kernel_cuda(
+at::Tensor EmbeddingKernelCuda(
     const at::Tensor& weight, const at::Tensor& indices,
     int64_t padding_idx, bool scale_grad_by_freq, bool sparse) {
   // Fall through to composite decomposition (index_select based)
@@ -28,7 +28,7 @@ at::Tensor embedding_kernel_cuda(
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(EmbeddingFn, embedding_stub, FlagosDevice::kFlagOs, embedding_kernel_flaggems)
-FLAGOS_REGISTER_DISPATCH(EmbeddingFn, embedding_stub, FlagosDevice::kCuda,   embedding_kernel_cuda)
+FLAGOS_REGISTER_DISPATCH(EmbeddingFn, embedding_stub, FlagosDevice::kFlagOs, EmbeddingKernelFlaggems)
+FLAGOS_REGISTER_DISPATCH(EmbeddingFn, embedding_stub, FlagosDevice::kCuda,   EmbeddingKernelCuda)
 
 } // namespace at::native::flagos

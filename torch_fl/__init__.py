@@ -118,6 +118,11 @@ _EXCLUDED_OPS = {
     "silu",
     "rsqrt",
     "mean.dim",
+    "cos",
+    "sin",
+    "neg",
+    "pow.Tensor_Scalar",
+    "all",
 }
 
 
