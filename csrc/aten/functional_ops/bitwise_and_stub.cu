@@ -3,6 +3,7 @@
 #include "bitwise_and_stub.h"
 
 #include <ATen/Dispatch.h>
+#include <ATen/ExpandUtils.h>
 #include <ATen/native/TensorIterator.h>
 
 #include "../native/cuda/Loops.cuh"
@@ -18,7 +19,8 @@ at::Tensor BitwiseAndKernelCuda(const at::Tensor& self, const at::Tensor& other)
   auto self_cast = self.to(result_type);
   auto other_cast = other.to(result_type);
 
-  at::Tensor output = at::empty_like(self_cast);
+  auto result_shape = at::infer_size(self_cast.sizes(), other_cast.sizes());
+  at::Tensor output = at::empty(result_shape, self_cast.options());
   auto iter = at::TensorIteratorConfig()
     .add_output(output)
     .add_input(self_cast)
