@@ -24,6 +24,13 @@
 #include "functional_ops/neg_stub.h"
 #include "functional_ops/pow_stub.h"
 #include "functional_ops/all_stub.h"
+#include "functional_ops/softmax_stub.h"
+#include "functional_ops/bitwise_and_stub.h"
+#include "functional_ops/le_stub.h"
+#include "functional_ops/where_stub.h"
+#include "functional_ops/index_stub.h"
+#include "functional_ops/new_ones_stub.h"
+#include "functional_ops/scalar_tensor_stub.h"
 
 #include <ATen/native/CPUFallback.h>
 
@@ -238,6 +245,46 @@ at::Tensor WrapperAll(const at::Tensor& self) {
   return at::native::flagos::all_stub(self);
 }
 
+at::Tensor WrapperSoftmax(const at::Tensor& self, int64_t dim, bool half_to_float) {
+  return at::native::flagos::softmax_stub(self, dim, half_to_float);
+}
+
+at::Tensor WrapperBitwiseAndTensor(const at::Tensor& self, const at::Tensor& other) {
+  return at::native::flagos::bitwise_and_tensor_stub(self, other);
+}
+
+at::Tensor WrapperLeTensor(const at::Tensor& self, const at::Tensor& other) {
+  return at::native::flagos::le_tensor_stub(self, other);
+}
+
+at::Tensor WrapperWhereSelf(
+    const at::Tensor& condition, const at::Tensor& self, const at::Tensor& other) {
+  return at::native::flagos::where_self_stub(condition, self, other);
+}
+
+at::Tensor WrapperIndexTensor(
+    const at::Tensor& self, const c10::List<::std::optional<at::Tensor>>& indices) {
+  return at::native::flagos::index_tensor_stub(self, indices);
+}
+
+at::Tensor WrapperNewOnes(
+    const at::Tensor& self, at::IntArrayRef size,
+    std::optional<at::ScalarType> dtype,
+    std::optional<at::Layout> layout,
+    std::optional<at::Device> device,
+    std::optional<bool> pin_memory) {
+  return at::native::flagos::new_ones_stub(self, size, dtype, layout, device, pin_memory);
+}
+
+at::Tensor WrapperScalarTensor(
+    const at::Scalar& s,
+    std::optional<at::ScalarType> dtype,
+    std::optional<at::Layout> layout,
+    std::optional<at::Device> device,
+    std::optional<bool> pin_memory) {
+  return at::native::flagos::scalar_tensor_stub(s, dtype, layout, device, pin_memory);
+}
+
 } // namespace
 
 // Register basic operators for PrivateUse1 dispatch key
@@ -276,6 +323,13 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("neg", WrapperNeg);
   m.impl("pow.Tensor_Scalar", WrapperPowTensorScalar);
   m.impl("all", WrapperAll);
+  m.impl("_softmax", WrapperSoftmax);
+  m.impl("bitwise_and.Tensor", WrapperBitwiseAndTensor);
+  m.impl("le.Tensor", WrapperLeTensor);
+  m.impl("where.self", WrapperWhereSelf);
+  m.impl("index.Tensor", WrapperIndexTensor);
+  m.impl("new_ones", WrapperNewOnes);
+  m.impl("scalar_tensor", WrapperScalarTensor);
 }
 
 // Register fallback for all unimplemented operators
