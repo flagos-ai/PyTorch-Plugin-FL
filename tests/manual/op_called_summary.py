@@ -19,6 +19,10 @@ model = AutoModelForCausalLM.from_pretrained(MODEL_PATH).to("cuda")
 tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
 inputs = tokenizer("hello world", return_tensors="pt").to("cuda")
 
+# default output: 'sdpa'
+print("Attention implementation:", model.model.layers[0].self_attn.config._attn_implementation)
+model.model.layers[0].self_attn.config._attn_implementation = "eager"
+
 # Create separate collectors for inference and training
 inference_collector = AtenOpCollector()
 training_collector = AtenOpCollector()

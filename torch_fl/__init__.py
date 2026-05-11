@@ -123,6 +123,13 @@ _EXCLUDED_OPS = {
     "neg",
     "pow.Tensor_Scalar",
     "all",
+    "_softmax",
+    "bitwise_and.Tensor",
+    "le.Tensor",
+    "where.self",
+    "index.Tensor",
+    "new_ones",
+    "scalar_tensor",
 }
 
 
