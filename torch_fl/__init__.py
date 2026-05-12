@@ -64,6 +64,13 @@ def _patch_cuda_device_context():
 # Patch torch.cuda.device before FlagGems is used
 _patch_cuda_device_context()
 
+# Ensure CUDA runtime is initialized so that CUDACachingAllocator is ready.
+# When FLAGOS_DISABLE_FLAGGEMS_PY=1, flag_gems is never imported and CUDA
+# would remain uninitialized, causing "Allocator not initialized for device"
+# errors when C++ stubs route ops to the cuda backend (cuBLAS, etc.).
+if torch.cuda.is_available():
+    torch.cuda.init()
+
 
 # Ops that use torch_device_fn.device(device) with explicit device parameter
 # These don't work with flagos device and should use cpu_fallback instead
@@ -130,6 +137,10 @@ _EXCLUDED_OPS = {
     "index.Tensor",
     "new_ones",
     "scalar_tensor",
+    "ones_like",
+    "zeros",
+    "silu_backward",
+    "sum.dim_IntList",
 }
 
 

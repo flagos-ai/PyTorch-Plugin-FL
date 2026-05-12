@@ -31,6 +31,10 @@
 #include "functional_ops/index_stub.h"
 #include "functional_ops/new_ones_stub.h"
 #include "functional_ops/scalar_tensor_stub.h"
+#include "functional_ops/ones_like_stub.h"
+#include "functional_ops/zeros_stub.h"
+#include "functional_ops/silu_backward_stub.h"
+#include "functional_ops/sum_stub.h"
 
 #include <ATen/native/CPUFallback.h>
 
@@ -285,6 +289,35 @@ at::Tensor WrapperScalarTensor(
   return at::native::flagos::scalar_tensor_stub(s, dtype, layout, device, pin_memory);
 }
 
+at::Tensor WrapperOnesLike(
+    const at::Tensor& self,
+    std::optional<at::ScalarType> dtype,
+    std::optional<at::Layout> layout,
+    std::optional<at::Device> device,
+    std::optional<bool> pin_memory,
+    std::optional<at::MemoryFormat> memory_format) {
+  return at::native::flagos::ones_like_stub(self, dtype, layout, device, pin_memory, memory_format);
+}
+
+at::Tensor WrapperZeros(
+    at::IntArrayRef size,
+    std::optional<at::ScalarType> dtype,
+    std::optional<at::Layout> layout,
+    std::optional<at::Device> device,
+    std::optional<bool> pin_memory) {
+  return at::native::flagos::zeros_stub(size, dtype, layout, device, pin_memory);
+}
+
+at::Tensor WrapperSiluBackward(const at::Tensor& grad_output, const at::Tensor& self) {
+  return at::native::flagos::silu_backward_stub(grad_output, self);
+}
+
+at::Tensor WrapperSumDimIntList(
+    const at::Tensor& self, at::OptionalIntArrayRef dim,
+    bool keepdim, std::optional<at::ScalarType> dtype) {
+  return at::native::flagos::sum_dim_stub(self, dim, keepdim, dtype);
+}
+
 } // namespace
 
 // Register basic operators for PrivateUse1 dispatch key
@@ -330,6 +363,10 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("index.Tensor", WrapperIndexTensor);
   m.impl("new_ones", WrapperNewOnes);
   m.impl("scalar_tensor", WrapperScalarTensor);
+  m.impl("ones_like", WrapperOnesLike);
+  m.impl("zeros", WrapperZeros);
+  m.impl("silu_backward", WrapperSiluBackward);
+  m.impl("sum.dim_IntList", WrapperSumDimIntList);
 }
 
 // Register fallback for all unimplemented operators
