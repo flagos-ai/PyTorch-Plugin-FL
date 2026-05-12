@@ -67,10 +67,36 @@ at::Tensor _to_copy(
     bool non_blocking,
     std::optional<c10::MemoryFormat> memory_format_opt) {
 
+  TORCH_CHECK(
+      !layout_opt.has_value() || self.layout() == layout_opt.value(),
+      "to(options) doesn't support converting to a different layout, "
+      "but got self.layout being ",
+      self.layout(),
+      " and options.layout set as ",
+      layout_opt.value());
+  TORCH_CHECK(
+      self.layout() == c10::kStrided,
+      "flagos _to_copy only supports strided tensors, but got ",
+      self.layout());
+  TORCH_CHECK(
+      !self.is_quantized(),
+      "flagos _to_copy does not support quantized tensors yet");
+  TORCH_CHECK(
+      !pin_memory_opt.value_or(false),
+      "flagos _to_copy does not support pin_memory=True yet");
   auto device = device_opt.value_or(self.device());
   auto dtype = dtype_opt.value_or(self.scalar_type());
   auto memory_format = memory_format_opt.value_or(c10::MemoryFormat::Preserve);
 
+  if ((device.is_privateuseone() || device.is_cuda()) && device.index() < 0) {
+    const auto self_device = self.device();
+    const auto device_index = self_device.type() == device.type() &&
+            self_device.index() >= 0
+        ? self_device.index()
+        : 0;
+    device = c10::Device(device.type(), device_index);
+  }
+  
   if (device == self.device() && dtype == self.scalar_type()) {
     if (memory_format == c10::MemoryFormat::Preserve) {
       return self.clone();
