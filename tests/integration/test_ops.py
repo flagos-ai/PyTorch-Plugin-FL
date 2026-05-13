@@ -211,6 +211,7 @@ class TestCopyTransfer:
         assert dev_t.shape == cpu_t.shape
         assert dev_t.cpu().shape == cpu_t.shape
 
+
 # ---------------------------------------------------------------------------
 # 7. Indexing and slicing
 # ---------------------------------------------------------------------------

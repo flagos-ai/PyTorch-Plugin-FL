@@ -100,18 +100,17 @@ class TestBmmDispatch:
         b = b_cuda.to(DEVICE)
         out = torch.bmm(a, b)
         torch.testing.assert_close(
-            out.cpu(), ref.cpu(), rtol=1e-3, atol=1e-3,
+            out.cpu(),
+            ref.cpu(),
+            rtol=1e-3,
+            atol=1e-3,
             msg="bmm result on flagos differs from CUDA reference",
         )
 
     def test_bmm_half(self):
         torch.manual_seed(3)
-        a = torch.randn(
-            4, 64, 128, device=DEVICE, dtype=torch.float16
-        )
-        b = torch.randn(
-            4, 128, 32, device=DEVICE, dtype=torch.float16
-        )
+        a = torch.randn(4, 64, 128, device=DEVICE, dtype=torch.float16)
+        b = torch.randn(4, 128, 32, device=DEVICE, dtype=torch.float16)
         out = torch.bmm(a, b)
         assert out.dtype == torch.float16
         assert out.shape == (4, 64, 32)

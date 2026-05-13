@@ -23,7 +23,9 @@ import torch_fl  # noqa: F401
 DEVICE = "flagos:0"
 
 
-def _run_subprocess_forward(extra_env: dict, check: bool = True) -> subprocess.CompletedProcess:
+def _run_subprocess_forward(
+    extra_env: dict, check: bool = True
+) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env.update(extra_env)
     code = (
@@ -40,7 +42,9 @@ def _run_subprocess_forward(extra_env: dict, check: bool = True) -> subprocess.C
     )
 
 
-def _run_subprocess_backward(extra_env: dict, check: bool = True) -> subprocess.CompletedProcess:
+def _run_subprocess_backward(
+    extra_env: dict, check: bool = True
+) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env.update(extra_env)
     code = (
@@ -133,7 +137,9 @@ class TestNllLossBackwardCorrectness:
         loss_fl = F.nll_loss(log_inp_fl, target_fl)
         loss_fl.backward()
 
-        torch.testing.assert_close(inp_fl.grad.cpu(), inp_cpu.grad, rtol=1e-4, atol=1e-4)
+        torch.testing.assert_close(
+            inp_fl.grad.cpu(), inp_cpu.grad, rtol=1e-4, atol=1e-4
+        )
 
 
 class TestNllLossDispatch:

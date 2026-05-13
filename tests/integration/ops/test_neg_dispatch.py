@@ -22,13 +22,13 @@ import torch_fl  # noqa: F401
 DEVICE = "flagos:0"
 
 
-def _run_neg_subprocess(extra_env: dict, check: bool = True) -> subprocess.CompletedProcess:
+def _run_neg_subprocess(
+    extra_env: dict, check: bool = True
+) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env.update(extra_env)
     code = (
-        "import torch_fl, torch; "
-        "a = torch.randn(4,4,device='flagos:0'); "
-        "torch.neg(a)"
+        "import torch_fl, torch; a = torch.randn(4,4,device='flagos:0'); torch.neg(a)"
     )
     return subprocess.run(
         [sys.executable, "-c", code],
@@ -66,7 +66,9 @@ class TestNegCorrectness:
         out = torch.neg(a)
         torch.testing.assert_close(out.cpu(), ref.cpu(), rtol=0, atol=0)
 
-    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32, torch.int32])
+    @pytest.mark.parametrize(
+        "dtype", [torch.float16, torch.bfloat16, torch.float32, torch.int32]
+    )
     def test_neg_dtypes(self, dtype):
         torch.manual_seed(3)
         if dtype.is_floating_point:

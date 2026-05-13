@@ -22,7 +22,9 @@ import torch_fl  # noqa: F401
 DEVICE = "flagos:0"
 
 
-def _run_all_subprocess(extra_env: dict, check: bool = True) -> subprocess.CompletedProcess:
+def _run_all_subprocess(
+    extra_env: dict, check: bool = True
+) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env.update(extra_env)
     code = (

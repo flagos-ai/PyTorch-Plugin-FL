@@ -33,7 +33,9 @@ def cuda_ref():
     return a, b, torch.mm(a, b)
 
 
-def _run_mm_subprocess(extra_env: dict, use_out: bool = False, check: bool = True) -> subprocess.CompletedProcess:
+def _run_mm_subprocess(
+    extra_env: dict, use_out: bool = False, check: bool = True
+) -> subprocess.CompletedProcess:
     """Run a minimal mm call in a subprocess and return the result."""
     env = os.environ.copy()
     env.update(extra_env)
@@ -68,9 +70,7 @@ def _run_mm_subprocess(extra_env: dict, use_out: bool = False, check: bool = Tru
 class TestMmDispatch:
     """torch.mm correctness and cross-device consistency."""
 
-    @pytest.mark.parametrize(
-        "M,K,N", [(128, 256, 64), (1, 1, 1), (512, 512, 512)]
-    )
+    @pytest.mark.parametrize("M,K,N", [(128, 256, 64), (1, 1, 1), (512, 512, 512)])
     def test_mm_shape(self, M, K, N):
         torch.manual_seed(0)
         a = torch.randn(M, K, device=DEVICE, dtype=torch.float32)
@@ -97,7 +97,10 @@ class TestMmDispatch:
         b = b_cuda.to(DEVICE)
         out = torch.mm(a, b)
         torch.testing.assert_close(
-            out.cpu(), ref.cpu(), rtol=1e-3, atol=1e-3,
+            out.cpu(),
+            ref.cpu(),
+            rtol=1e-3,
+            atol=1e-3,
             msg="mm result on flagos differs from CUDA reference",
         )
 

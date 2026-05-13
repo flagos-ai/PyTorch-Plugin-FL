@@ -33,7 +33,9 @@ def cuda_ref():
     return a, b, torch.cat([a, b], dim=0)
 
 
-def _run_cat_subprocess(extra_env: dict, check: bool = True) -> subprocess.CompletedProcess:
+def _run_cat_subprocess(
+    extra_env: dict, check: bool = True
+) -> subprocess.CompletedProcess:
     """Run a minimal cat call in a subprocess and return the result."""
     env = os.environ.copy()
     env.update(extra_env)
@@ -84,8 +86,7 @@ class TestCatDispatch:
     def test_cat_multiple_tensors(self):
         torch.manual_seed(3)
         tensors = [
-            torch.randn(4, 8, device=DEVICE, dtype=torch.float32)
-            for _ in range(5)
+            torch.randn(4, 8, device=DEVICE, dtype=torch.float32) for _ in range(5)
         ]
         out = torch.cat(tensors, dim=0)
         assert out.shape == (20, 8)
@@ -106,7 +107,10 @@ class TestCatDispatch:
         b = b_cuda.to(DEVICE)
         out = torch.cat([a, b], dim=0)
         torch.testing.assert_close(
-            out.cpu(), ref.cpu(), rtol=1e-5, atol=1e-5,
+            out.cpu(),
+            ref.cpu(),
+            rtol=1e-5,
+            atol=1e-5,
             msg="cat result on flagos differs from CUDA reference",
         )
 

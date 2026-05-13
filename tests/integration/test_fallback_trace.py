@@ -58,9 +58,9 @@ class FallbackTracer(torch.utils._python_dispatch.TorchDispatchMode):
 
     def report(self):
         lines = []
-        lines.append(f"\n{'='*70}")
+        lines.append(f"\n{'=' * 70}")
         lines.append("CPU FALLBACK TRACE REPORT")
-        lines.append(f"{'='*70}")
+        lines.append(f"{'=' * 70}")
 
         total_native = sum(self.native_ops.values())
         total_fallback = sum(self.fallback_ops.values())
@@ -68,31 +68,27 @@ class FallbackTracer(torch.utils._python_dispatch.TorchDispatchMode):
 
         lines.append(f"Total op calls on flagos tensors: {total}")
         lines.append(
-            f"  Native (GPU):      {total_native} ({100*total_native/max(total,1):.1f}%)"
+            f"  Native (GPU):      {total_native} ({100 * total_native / max(total, 1):.1f}%)"
         )
         lines.append(
-            f"  CPU fallback:      {total_fallback} ({100*total_fallback/max(total,1):.1f}%)"
+            f"  CPU fallback:      {total_fallback} ({100 * total_fallback / max(total, 1):.1f}%)"
         )
 
         if self.fallback_ops:
-            lines.append(f"\n{'─'*70}")
+            lines.append(f"\n{'─' * 70}")
             lines.append("FALLBACK OPS (sorted by call count):")
-            lines.append(f"{'─'*70}")
-            for op, count in sorted(
-                self.fallback_ops.items(), key=lambda x: -x[1]
-            ):
+            lines.append(f"{'─' * 70}")
+            for op, count in sorted(self.fallback_ops.items(), key=lambda x: -x[1]):
                 lines.append(f"  {count:>6d}x  {op}")
 
         if self.native_ops:
-            lines.append(f"\n{'─'*70}")
+            lines.append(f"\n{'─' * 70}")
             lines.append("NATIVE OPS (sorted by call count):")
-            lines.append(f"{'─'*70}")
-            for op, count in sorted(
-                self.native_ops.items(), key=lambda x: -x[1]
-            ):
+            lines.append(f"{'─' * 70}")
+            for op, count in sorted(self.native_ops.items(), key=lambda x: -x[1]):
                 lines.append(f"  {count:>6d}x  {op}")
 
-        lines.append(f"{'='*70}\n")
+        lines.append(f"{'=' * 70}\n")
         return "\n".join(lines)
 
 
@@ -111,7 +107,12 @@ def model_ctx(request):
     model.eval()
 
     text = tokenizer.apply_chat_template(
-        [{"role": "user", "content": "Give me a short introduction to large language model."}],
+        [
+            {
+                "role": "user",
+                "content": "Give me a short introduction to large language model.",
+            }
+        ],
         tokenize=False,
         add_generation_prompt=True,
         enable_thinking=False,
@@ -146,7 +147,9 @@ def test_trace_fallback_ops(model_ctx):
         elapsed = time.time() - t0
 
     new_tokens = output.shape[1] - inputs["input_ids"].shape[1]
-    print(f"\nInference: {elapsed:.2f}s, {new_tokens} tokens, {new_tokens/elapsed:.2f} tok/s")
+    print(
+        f"\nInference: {elapsed:.2f}s, {new_tokens} tokens, {new_tokens / elapsed:.2f} tok/s"
+    )
     print(tracer.report())
 
     assert new_tokens > 0

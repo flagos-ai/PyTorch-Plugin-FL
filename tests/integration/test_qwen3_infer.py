@@ -45,8 +45,7 @@ def ctx(request):
         [
             {
                 "role": "user",
-                "content": "Give me a short introduction to "
-                "large language model.",
+                "content": "Give me a short introduction to large language model.",
             }
         ],
         tokenize=False,
@@ -73,9 +72,7 @@ def run_inference(ctx):
     sync()
     t0 = time.time()
     with torch.no_grad():
-        output = model.generate(
-            **inputs, max_new_tokens=ctx["max_new_tokens"]
-        )
+        output = model.generate(**inputs, max_new_tokens=ctx["max_new_tokens"])
     sync()
     elapsed = time.time() - t0
     new_tokens = output.shape[1] - inputs.input_ids.shape[1]
@@ -117,7 +114,7 @@ class TestQwen3Inference:
             f"{new_tokens / elapsed:.2f} tok/s"
         )
         decoded = ctx["tokenizer"].decode(
-            output[0][ctx["inputs"].input_ids.shape[1]:],
+            output[0][ctx["inputs"].input_ids.shape[1] :],
             skip_special_tokens=True,
         )
         print(f"\nGenerated output:\n{decoded}")

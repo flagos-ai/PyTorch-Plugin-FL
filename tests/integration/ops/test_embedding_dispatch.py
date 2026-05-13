@@ -29,14 +29,14 @@ def cuda_ref():
     if not torch.cuda.is_available():
         return None
     torch.manual_seed(42)
-    weight = torch.randn(
-        1000, 128, device="cuda:0", dtype=torch.float32
-    )
+    weight = torch.randn(1000, 128, device="cuda:0", dtype=torch.float32)
     indices = torch.randint(0, 1000, (8, 16), device="cuda:0")
     return weight, indices, F.embedding(indices, weight)
 
 
-def _run_embedding_subprocess(extra_env: dict, check: bool = True) -> subprocess.CompletedProcess:
+def _run_embedding_subprocess(
+    extra_env: dict, check: bool = True
+) -> subprocess.CompletedProcess:
     """Run a minimal embedding call in a subprocess and return the result."""
     env = os.environ.copy()
     env.update(extra_env)
@@ -64,9 +64,7 @@ class TestEmbeddingDispatch:
 
     def test_embedding_basic(self):
         torch.manual_seed(0)
-        weight = torch.randn(
-            100, 64, device=DEVICE, dtype=torch.float32
-        )
+        weight = torch.randn(100, 64, device=DEVICE, dtype=torch.float32)
         indices = torch.tensor([0, 5, 10, 99], device=DEVICE)
         out = F.embedding(indices, weight)
         assert out.shape == (4, 64)
@@ -74,29 +72,23 @@ class TestEmbeddingDispatch:
 
     def test_embedding_2d_indices(self):
         torch.manual_seed(1)
-        weight = torch.randn(
-            500, 128, device=DEVICE, dtype=torch.float32
-        )
-        indices = torch.randint(
-            0, 500, (8, 16), device=DEVICE
-        )
+        weight = torch.randn(500, 128, device=DEVICE, dtype=torch.float32)
+        indices = torch.randint(0, 500, (8, 16), device=DEVICE)
         out = F.embedding(indices, weight)
         assert out.shape == (8, 16, 128)
 
     def test_embedding_correctness(self):
         """Verify embedding == index-select on weight."""
         torch.manual_seed(2)
-        weight = torch.randn(
-            50, 32, device=DEVICE, dtype=torch.float32
-        )
-        indices = torch.tensor(
-            [0, 3, 7, 49], device=DEVICE
-        )
+        weight = torch.randn(50, 32, device=DEVICE, dtype=torch.float32)
+        indices = torch.tensor([0, 3, 7, 49], device=DEVICE)
         out = F.embedding(indices, weight)
         expected = weight.index_select(0, indices)
         torch.testing.assert_close(
-            out.cpu(), expected.cpu(),
-            rtol=1e-5, atol=1e-5,
+            out.cpu(),
+            expected.cpu(),
+            rtol=1e-5,
+            atol=1e-5,
         )
 
     def test_embedding_matches_cuda_ref(self, cuda_ref):
@@ -108,16 +100,16 @@ class TestEmbeddingDispatch:
         idx = idx_cuda.to(DEVICE)
         out = F.embedding(idx, w)
         torch.testing.assert_close(
-            out.cpu(), ref.cpu(),
-            rtol=1e-5, atol=1e-5,
+            out.cpu(),
+            ref.cpu(),
+            rtol=1e-5,
+            atol=1e-5,
             msg="embedding on flagos differs from CUDA",
         )
 
     def test_embedding_half(self):
         torch.manual_seed(3)
-        weight = torch.randn(
-            100, 64, device=DEVICE, dtype=torch.float16
-        )
+        weight = torch.randn(100, 64, device=DEVICE, dtype=torch.float16)
         indices = torch.tensor([0, 10, 50], device=DEVICE)
         out = F.embedding(indices, weight)
         assert out.dtype == torch.float16
@@ -125,12 +117,8 @@ class TestEmbeddingDispatch:
 
     def test_embedding_large_vocab(self):
         torch.manual_seed(4)
-        weight = torch.randn(
-            10000, 256, device=DEVICE, dtype=torch.float32
-        )
-        indices = torch.randint(
-            0, 10000, (64,), device=DEVICE
-        )
+        weight = torch.randn(10000, 256, device=DEVICE, dtype=torch.float32)
+        indices = torch.randint(0, 10000, (64,), device=DEVICE)
         out = F.embedding(indices, weight)
         assert out.shape == (64, 256)
 
@@ -138,9 +126,7 @@ class TestEmbeddingDispatch:
         """Test via nn.Embedding module."""
         torch.manual_seed(5)
         emb = torch.nn.Embedding(100, 64).to(DEVICE)
-        indices = torch.tensor(
-            [0, 1, 2], device=DEVICE
-        )
+        indices = torch.tensor([0, 1, 2], device=DEVICE)
         out = emb(indices)
         assert out.shape == (3, 64)
         assert out.device.type == "flagos"
@@ -154,18 +140,18 @@ class TestEmbeddingDispatchLog:
         result = _run_embedding_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_embedding": "flaggems"}
         )
-        assert (
-            "[flagos dispatch] embedding -> flaggems"
-            in result.stderr
-        ), f"Expected flaggems log, got:\n{result.stderr}"
+        assert "[flagos dispatch] embedding -> flaggems" in result.stderr, (
+            f"Expected flaggems log, got:\n{result.stderr}"
+        )
 
     def test_dispatch_log_cuda_override(self):
         """FLAGOS_OP_embedding=cuda overrides to cuda."""
-        result = _run_embedding_subprocess({
-            "FLAGOS_LOG_DISPATCH": "1",
-            "FLAGOS_OP_embedding": "cuda",
-        })
-        assert (
-            "[flagos dispatch] embedding -> cuda"
-            in result.stderr
-        ), f"Expected cuda log, got:\n{result.stderr}"
+        result = _run_embedding_subprocess(
+            {
+                "FLAGOS_LOG_DISPATCH": "1",
+                "FLAGOS_OP_embedding": "cuda",
+            }
+        )
+        assert "[flagos dispatch] embedding -> cuda" in result.stderr, (
+            f"Expected cuda log, got:\n{result.stderr}"
+        )

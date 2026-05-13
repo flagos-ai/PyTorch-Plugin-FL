@@ -40,12 +40,15 @@ def _run_subprocess(extra_env: dict, check: bool = True) -> subprocess.Completed
 class TestSumDimCorrectness:
     """torch.sum(dim=...) correctness on flagos device."""
 
-    @pytest.mark.parametrize("shape,dim", [
-        ((128, 256), 0),
-        ((128, 256), 1),
-        ((64, 64, 64), 2),
-        ((64, 64, 64), -1),
-    ])
+    @pytest.mark.parametrize(
+        "shape,dim",
+        [
+            ((128, 256), 0),
+            ((128, 256), 1),
+            ((64, 64, 64), 2),
+            ((64, 64, 64), -1),
+        ],
+    )
     def test_sum_dim_shape(self, shape, dim):
         torch.manual_seed(0)
         a = torch.randn(*shape, device=DEVICE)

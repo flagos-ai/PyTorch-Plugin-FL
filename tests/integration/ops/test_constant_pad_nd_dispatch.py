@@ -44,7 +44,7 @@ class TestConstantPadNdCorrectness:
     def test_pad_1d(self):
         torch.manual_seed(0)
         a = torch.randn(4, 8, device=DEVICE)
-        out = F.pad(a, (2, 3), mode='constant', value=0.0)
+        out = F.pad(a, (2, 3), mode="constant", value=0.0)
         assert out.shape == (4, 13)
         assert out.device.type == "flagos"
         # padded regions should be zero
@@ -54,7 +54,7 @@ class TestConstantPadNdCorrectness:
     def test_pad_2d(self):
         torch.manual_seed(1)
         a = torch.randn(2, 3, 4, device=DEVICE)
-        out = F.pad(a, (1, 1, 2, 2), mode='constant', value=-1.0)
+        out = F.pad(a, (1, 1, 2, 2), mode="constant", value=-1.0)
         assert out.shape == (2, 7, 6)
         # corners should be fill value
         assert out.cpu()[0, 0, 0].item() == -1.0
@@ -62,16 +62,16 @@ class TestConstantPadNdCorrectness:
     def test_pad_matches_cpu(self):
         torch.manual_seed(2)
         a_cpu = torch.randn(3, 5, 7)
-        ref = F.pad(a_cpu, (1, 2, 0, 1), mode='constant', value=0.5)
+        ref = F.pad(a_cpu, (1, 2, 0, 1), mode="constant", value=0.5)
 
         a_fl = a_cpu.to(DEVICE)
-        out = F.pad(a_fl, (1, 2, 0, 1), mode='constant', value=0.5)
+        out = F.pad(a_fl, (1, 2, 0, 1), mode="constant", value=0.5)
         torch.testing.assert_close(out.cpu(), ref, rtol=1e-5, atol=1e-5)
 
     @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
     def test_pad_dtype(self, dtype):
         a = torch.randn(4, 4, device=DEVICE, dtype=dtype)
-        out = F.pad(a, (1, 1), mode='constant', value=0.0)
+        out = F.pad(a, (1, 1), mode="constant", value=0.0)
         assert out.dtype == dtype
         assert out.shape == (4, 6)
 

@@ -22,7 +22,9 @@ import torch_fl  # noqa: F401
 DEVICE = "flagos:0"
 
 
-def _run_mean_subprocess(extra_env: dict, check: bool = True) -> subprocess.CompletedProcess:
+def _run_mean_subprocess(
+    extra_env: dict, check: bool = True
+) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env.update(extra_env)
     code = (
@@ -41,11 +43,14 @@ def _run_mean_subprocess(extra_env: dict, check: bool = True) -> subprocess.Comp
 class TestMeanDimCorrectness:
     """torch.mean(dim=...) correctness on flagos device."""
 
-    @pytest.mark.parametrize("shape,dim", [
-        ((128, 256), -1),
-        ((64, 64, 64), 1),
-        ((32, 16), 0),
-    ])
+    @pytest.mark.parametrize(
+        "shape,dim",
+        [
+            ((128, 256), -1),
+            ((64, 64, 64), 1),
+            ((32, 16), 0),
+        ],
+    )
     def test_mean_shape(self, shape, dim):
         torch.manual_seed(0)
         a = torch.randn(*shape, device=DEVICE)

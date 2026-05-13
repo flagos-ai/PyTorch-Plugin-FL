@@ -22,13 +22,13 @@ import torch_fl  # noqa: F401
 DEVICE = "flagos:0"
 
 
-def _run_sin_subprocess(extra_env: dict, check: bool = True) -> subprocess.CompletedProcess:
+def _run_sin_subprocess(
+    extra_env: dict, check: bool = True
+) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env.update(extra_env)
     code = (
-        "import torch_fl, torch; "
-        "a = torch.randn(4,4,device='flagos:0'); "
-        "torch.sin(a)"
+        "import torch_fl, torch; a = torch.randn(4,4,device='flagos:0'); torch.sin(a)"
     )
     return subprocess.run(
         [sys.executable, "-c", code],
