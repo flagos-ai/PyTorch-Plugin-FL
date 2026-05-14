@@ -1,6 +1,6 @@
 // Copyright (c) 2026, BAAI. All rights reserved.
 
-#include "where_stub.h"
+#include "where.h"
 
 #include <ATen/Dispatch.h>
 #include <ATen/ExpandUtils.h>

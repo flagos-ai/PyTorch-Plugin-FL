@@ -1,6 +1,6 @@
 // Copyright (c) 2026, BAAI. All rights reserved.
 
-#include "softmax_stub.h"
+#include "softmax.h"
 
 #include <ATen/ops/_softmax_meta.h>
 #include <ATen/ops/_softmax_native.h>

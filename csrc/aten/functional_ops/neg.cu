@@ -1,6 +1,6 @@
 // Copyright (c) 2026, BAAI. All rights reserved.
 
-#include "rsqrt_stub.h"
+#include "neg.h"
 
 #include <ATen/Dispatch.h>
 #include <ATen/native/TensorIterator.h>
@@ -9,23 +9,23 @@
 
 namespace at::native::flagos {
 
-FLAGOS_DEFINE_DISPATCH(RsqrtFn, rsqrt_stub, "rsqrt")
+FLAGOS_DEFINE_DISPATCH(NegFn, neg_stub, "neg")
 
 namespace {
 
-at::Tensor RsqrtKernelCuda(const at::Tensor& self) {
+at::Tensor NegKernelCuda(const at::Tensor& self) {
   at::Tensor output;
   auto iter = at::TensorIteratorConfig()
     .add_output(output)
     .add_input(self)
     .build();
 
-  AT_DISPATCH_FLOATING_TYPES_AND2(
-    at::ScalarType::BFloat16, at::ScalarType::Half,
-    iter.common_dtype(), "rsqrt_cuda",
+  AT_DISPATCH_ALL_TYPES_AND_COMPLEX_AND3(
+    at::ScalarType::Half, at::ScalarType::BFloat16, at::ScalarType::Bool,
+    iter.common_dtype(), "neg_cuda",
     [&]() {
       at::native::gpu_kernel(iter, [] GPU_LAMBDA(scalar_t a) -> scalar_t {
-        return ::rsqrt(a);
+        return -a;
       });
     }
   );
@@ -35,6 +35,6 @@ at::Tensor RsqrtKernelCuda(const at::Tensor& self) {
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(RsqrtFn, rsqrt_stub, FlagosDevice::kCuda, RsqrtKernelCuda)
+FLAGOS_REGISTER_DISPATCH(NegFn, neg_stub, FlagosDevice::kCuda, NegKernelCuda)
 
 } // namespace at::native::flagos

@@ -1,6 +1,6 @@
 // Copyright (c) 2026, BAAI. All rights reserved.
 
-#include "nll_loss_stub.h"
+#include "nll_loss.h"
 
 #include <ATen/ops/nll_loss_forward_native.h>
 #include <ATen/ops/nll_loss_backward_native.h>

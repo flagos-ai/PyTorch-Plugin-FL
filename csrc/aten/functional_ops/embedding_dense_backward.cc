@@ -1,6 +1,6 @@
 // Copyright (c) 2026, BAAI. All rights reserved.
 
-#include "embedding_dense_backward_stub.h"
+#include "embedding_dense_backward.h"
 
 #include <ATen/ops/embedding_dense_backward_native.h>
 #include "../device_boxing.h"

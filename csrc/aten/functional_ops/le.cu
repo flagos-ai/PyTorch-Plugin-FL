@@ -1,6 +1,6 @@
 // Copyright (c) 2026, BAAI. All rights reserved.
 
-#include "le_stub.h"
+#include "le.h"
 
 #include <ATen/Dispatch.h>
 #include <ATen/native/TensorIterator.h>

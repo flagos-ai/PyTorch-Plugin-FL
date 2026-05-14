@@ -1,6 +1,6 @@
 // Copyright (c) 2026, BAAI. All rights reserved.
 
-#include "ones_like_stub.h"
+#include "ones_like.h"
 
 #include <ATen/ops/empty.h>
 

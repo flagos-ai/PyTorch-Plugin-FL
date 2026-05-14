@@ -1,6 +1,6 @@
 // Copyright (c) 2026, BAAI. All rights reserved.
 
-#include "div_scalar_stub.h"
+#include "div_scalar.h"
 
 #include <ATen/Dispatch.h>
 #include <ATen/native/TensorIterator.h>

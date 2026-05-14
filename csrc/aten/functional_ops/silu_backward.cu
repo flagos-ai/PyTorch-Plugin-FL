@@ -1,6 +1,6 @@
 // Copyright (c) 2026, BAAI. All rights reserved.
 
-#include "silu_backward_stub.h"
+#include "silu_backward.h"
 
 #include <ATen/Dispatch.h>
 #include <ATen/native/TensorIterator.h>

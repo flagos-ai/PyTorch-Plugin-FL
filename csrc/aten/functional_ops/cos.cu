@@ -1,6 +1,6 @@
 // Copyright (c) 2026, BAAI. All rights reserved.
 
-#include "cos_stub.h"
+#include "cos.h"
 
 #include <ATen/Dispatch.h>
 #include <ATen/native/TensorIterator.h>

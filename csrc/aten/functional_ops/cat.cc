@@ -1,6 +1,6 @@
 // Copyright (c) 2026, BAAI. All rights reserved.
 
-#include "cat_stub.h"
+#include "cat.h"
 
 #include <ATen/native/Resize.h>
 #include <ATen/ops/cat_meta.h>

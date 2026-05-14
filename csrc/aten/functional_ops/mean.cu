@@ -1,6 +1,6 @@
 // Copyright (c) 2026, BAAI. All rights reserved.
 
-#include "mean_stub.h"
+#include "mean.h"
 
 #include <ATen/Dispatch.h>
 #include <ATen/native/SharedReduceOps.h>

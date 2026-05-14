@@ -1,6 +1,6 @@
 // Copyright (c) 2026, BAAI. All rights reserved.
 
-#include "bitwise_and_stub.h"
+#include "bitwise_and.h"
 
 #include <ATen/Dispatch.h>
 #include <ATen/ExpandUtils.h>

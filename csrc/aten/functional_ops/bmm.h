@@ -2,12 +2,17 @@
 
 #pragma once
 
+#include <ATen/core/Tensor.h>
 #include <ATen/ops/bmm_meta.h>
 #include <ATen/ops/bmm_native.h>
+#include "../dispatch_stub.h"
 
 #include <string>
 
 namespace at::native::flagos {
+
+using BmmFn = void (*)(const at::Tensor&, const at::Tensor&, at::Tensor&);
+FLAGOS_DECLARE_DISPATCH(BmmFn, bmm_stub)
 
 struct StructuredBmmOutFlagos final : public at::meta::structured_bmm {
   explicit StructuredBmmOutFlagos(at::Tensor& out) : out_(out) {}

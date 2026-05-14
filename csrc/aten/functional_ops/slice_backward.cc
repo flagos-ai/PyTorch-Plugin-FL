@@ -1,6 +1,6 @@
 // Copyright (c) 2026, BAAI. All rights reserved.
 
-#include "slice_backward_stub.h"
+#include "slice_backward.h"
 
 #include <ATen/ops/slice_scatter.h>
 #include <ATen/ops/zeros.h>

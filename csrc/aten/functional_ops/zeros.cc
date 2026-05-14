@@ -1,33 +1,33 @@
 // Copyright (c) 2026, BAAI. All rights reserved.
 
-#include "scalar_tensor_stub.h"
+#include "zeros.h"
 
 #include <ATen/ops/empty.h>
 
 namespace at::native::flagos {
 
-FLAGOS_DEFINE_DISPATCH(ScalarTensorFn, scalar_tensor_stub, "scalar_tensor")
+FLAGOS_DEFINE_DISPATCH(ZerosFn, zeros_stub, "zeros")
 
 namespace {
 
-at::Tensor ScalarTensorKernelCuda(
-    const at::Scalar& s,
+at::Tensor ZerosKernelCuda(
+    at::IntArrayRef size,
     std::optional<at::ScalarType> dtype,
     std::optional<at::Layout> layout,
     std::optional<at::Device> device,
     std::optional<bool> pin_memory) {
   auto options = at::TensorOptions()
-    .dtype(dtype.value_or(at::ScalarType::Float))
+    .dtype(dtype.value_or(at::kFloat))
     .layout(layout.value_or(at::kStrided))
     .device(device.value_or(at::Device(at::kPrivateUse1, 0)))
     .pinned_memory(pin_memory.value_or(false));
-  auto result = at::empty({}, options);
-  result.fill_(s);
+  auto result = at::empty(size, options);
+  result.zero_();
   return result;
 }
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(ScalarTensorFn, scalar_tensor_stub, FlagosDevice::kCuda, ScalarTensorKernelCuda)
+FLAGOS_REGISTER_DISPATCH(ZerosFn, zeros_stub, FlagosDevice::kCuda, ZerosKernelCuda)
 
 } // namespace at::native::flagos

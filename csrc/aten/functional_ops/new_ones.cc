@@ -1,6 +1,6 @@
 // Copyright (c) 2026, BAAI. All rights reserved.
 
-#include "new_ones_stub.h"
+#include "new_ones.h"
 
 #include <ATen/ops/empty.h>
 

@@ -1,20 +1,19 @@
 // Copyright (c) 2026, BAAI. All rights reserved.
 
-#include "silu_stub.h"
+#include "sin.h"
 
 #include <ATen/Dispatch.h>
 #include <ATen/native/TensorIterator.h>
-#include <c10/cuda/CUDAMathCompat.h>
 
 #include "../native/cuda/Loops.cuh"
 
 namespace at::native::flagos {
 
-FLAGOS_DEFINE_DISPATCH(SiluFn, silu_stub, "silu")
+FLAGOS_DEFINE_DISPATCH(SinFn, sin_stub, "sin")
 
 namespace {
 
-at::Tensor SiluKernelCuda(const at::Tensor& self) {
+at::Tensor SinKernelCuda(const at::Tensor& self) {
   at::Tensor output;
   auto iter = at::TensorIteratorConfig()
     .add_output(output)
@@ -23,12 +22,10 @@ at::Tensor SiluKernelCuda(const at::Tensor& self) {
 
   AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND2(
     at::ScalarType::Half, at::ScalarType::BFloat16,
-    iter.dtype(), "silu_cuda",
+    iter.common_dtype(), "sin_cuda",
     [&]() {
-      at::native::gpu_kernel(iter, [] GPU_LAMBDA(scalar_t x) -> scalar_t {
-        using opmath_t = at::opmath_type<scalar_t>;
-        const opmath_t x_acc = static_cast<opmath_t>(x);
-        return x_acc / (opmath_t(1) + ::exp(-x_acc));
+      at::native::gpu_kernel(iter, [] GPU_LAMBDA(scalar_t a) -> scalar_t {
+        return ::sin(a);
       });
     }
   );
@@ -38,6 +35,6 @@ at::Tensor SiluKernelCuda(const at::Tensor& self) {
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(SiluFn, silu_stub, FlagosDevice::kCuda, SiluKernelCuda)
+FLAGOS_REGISTER_DISPATCH(SinFn, sin_stub, FlagosDevice::kCuda, SinKernelCuda)
 
 } // namespace at::native::flagos

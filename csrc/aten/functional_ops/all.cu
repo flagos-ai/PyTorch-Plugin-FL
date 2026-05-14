@@ -1,6 +1,6 @@
 // Copyright (c) 2026, BAAI. All rights reserved.
 
-#include "all_stub.h"
+#include "all.h"
 
 #include <ATen/Dispatch.h>
 #include <ATen/native/SharedReduceOps.h>

@@ -1,6 +1,6 @@
 // Copyright (c) 2026, BAAI. All rights reserved.
 
-#include "index_stub.h"
+#include "index.h"
 
 #include <ATen/ops/index.h>
 
