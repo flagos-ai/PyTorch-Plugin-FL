@@ -31,7 +31,9 @@ def ensure_cudart_shim():
         return  # Not a MACA environment
 
     pkg_dir = os.path.dirname(os.path.abspath(__file__))
-    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(pkg_dir)))  # project root
+    base_dir = os.path.dirname(
+        os.path.dirname(os.path.dirname(pkg_dir))
+    )  # project root
     csrc = os.path.join(base_dir, "csrc", "runtime", "accelerator", "maca", "csrc")
     build_dir = os.path.join(base_dir, "build")
 

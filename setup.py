@@ -213,7 +213,9 @@ def main():
         version="0.1.0",
         description="FlagGems operators as a custom PyTorch device (flagos)",
         author="FlagGems Team",
-        packages=find_packages(include=["torch_fl*", "accelerator*", "csrc.runtime.accelerator*"]),
+        packages=find_packages(
+            include=["torch_fl*", "accelerator*", "csrc.runtime.accelerator*"]
+        ),
         package_dir={"": "."},
         package_data=package_data,
         ext_modules=ext_modules,

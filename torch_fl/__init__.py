@@ -19,7 +19,10 @@ if sys.platform == "win32":
 # ABI-incompatible with MACA's cu-bridge (CUDA 11.6). This patches
 # torch.cuda.get_device_properties/get_device_name to use MACA's
 # native mcruntime API, allowing FlagGems initialization to succeed.
-from torch_fl.accelerator.maca._maca_compat import is_maca_available, patch_torch_cuda_for_maca  # noqa: E402
+from torch_fl.accelerator.maca._maca_compat import (
+    is_maca_available,
+    patch_torch_cuda_for_maca,
+)  # noqa: E402
 
 if is_maca_available():
     patch_torch_cuda_for_maca()
