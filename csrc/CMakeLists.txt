@@ -10,10 +10,10 @@ file(GLOB_RECURSE SOURCE_FILES
 
 # Exclude backend kernel directories based on options
 if(NOT CUDA_KERNEL)
-  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/cuda/.*")
+  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/vendors/cuda/.*")
 endif()
 if(NOT FLAGGEMS_KERNEL)
-  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/flaggems/.*")
+  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/flaggems/.*")
 endif()
 
 add_library(${LIBRARY_NAME} SHARED ${SOURCE_FILES})

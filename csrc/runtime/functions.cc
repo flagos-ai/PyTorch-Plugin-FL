@@ -4,7 +4,7 @@
 // Below is the original copyright:
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include <accelerator/include/flagos.h>
+#include <include/flagos.h>
 
 #include "exception.h"
 #include "functions.h"

@@ -13,7 +13,7 @@
 #include <c10/core/Device.h>
 
 #include <cuda_runtime.h>
-#include <accelerator/include/flagos.h>
+#include <include/flagos.h>
 
 #include "generator.h"
 #include "host_allocator.h"

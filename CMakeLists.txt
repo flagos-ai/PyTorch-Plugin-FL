@@ -107,6 +107,6 @@ endif()
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 include(${PROJECT_SOURCE_DIR}/cmake/TorchPythonTargets.cmake)
 
-add_subdirectory(${PROJECT_SOURCE_DIR}/accelerator)
+add_subdirectory(${PROJECT_SOURCE_DIR}/csrc/runtime/accelerator)
 add_subdirectory(${PROJECT_SOURCE_DIR}/csrc)
 add_subdirectory(${PROJECT_SOURCE_DIR}/torch_fl/csrc)

@@ -6,7 +6,7 @@
 
 #pragma once
 
-#include <accelerator/include/flagos.h>
+#include <include/flagos.h>
 
 #include <c10/util/Exception.h>
 

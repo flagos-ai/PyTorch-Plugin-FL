@@ -6,7 +6,7 @@
 
 #pragma once
 
-#include <accelerator/include/flagos.h>
+#include <include/flagos.h>
 #include <include/macros.h>
 #include <c10/core/Device.h>
 #include <cstdint>
