@@ -1,0 +1,47 @@
+name: Integration Tests (CUDA)
+
+on:
+  workflow_call:
+    inputs:
+      timeout-minutes:
+        description: "Timeout for the entire job in minutes"
+        required: false
+        type: number
+        default: 60
+  workflow_dispatch:
+    inputs:
+      timeout-minutes:
+        description: "Timeout for the entire job in minutes"
+        required: false
+        type: number
+        default: 60
+
+jobs:
+  integration-tests:
+    name: Integration Tests (CUDA)
+    runs-on: [self-hosted, nvidia, gpu-8]
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check GPU availability
+        run: nvidia-smi
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -e . --no-build-isolation
+          pip install pytest
+
+      - name: Run ops tests
+        run: pytest tests/integration/ops/ -v -s --tb=short
+
+      - name: Run general tests
+        run: pytest tests/integration/test_ops.py -v --device cuda --tb=short
+
+      - name: Run inference tests
+        run: pytest tests/integration/test_qwen3_infer.py -v -s --device cuda --tb=short
+
+      - name: Run training tests
+        run: pytest tests/integration/test_qwen3_train.py -v -s --device cuda --tb=short

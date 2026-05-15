@@ -1,0 +1,279 @@
+#include <ATen/Context.h>
+#include <ATen/core/TensorBase.h>
+#include <c10/core/Storage.h>
+#include <c10/core/TensorImpl.h>
+#include <c10/core/ScalarType.h>
+#include <torch/csrc/autograd/variable.h>
+#include <torch/csrc/autograd/function.h>
+#include <torch/csrc/autograd/generated/variable_factories.h>
+
+#include <memory>
+
+#include <torch/csrc/Exceptions.h>
+#include <torch/csrc/utils.h>
+#include <torch/csrc/utils/device_lazy_init.h>
+#include <torch/csrc/utils/object_ptr.h>
+#include <torch/csrc/utils/python_numbers.h>
+#include <torch/csrc/autograd/python_variable.h>
+
+#include <runtime/functions.h>
+#include <include/macros.h>
+
+namespace {
+
+// Forward declarations
+at::Tensor flagos_to_cuda_view_impl(const at::Tensor& self);
+at::Tensor cuda_to_flagos_view_impl(const at::Tensor& self, int device_index);
+
+
+// Zero-copy view conversion: flagos -> CUDA
+// This version keeps a reference to the original flagos tensor to prevent memory from being freed
+at::Tensor flagos_to_cuda_view_impl(const at::Tensor& self) {
+  TORCH_CHECK(self.is_privateuseone(), "Expected flagos tensor, got ", self.device());
+
+  int device_index = self.device().index();
+  if (device_index < 0) device_index = 0;
+
+  // Get storage info from the original tensor directly (no contiguous call to avoid recursion)
+  auto storage_impl = self.storage().unsafeGetStorageImpl();
+  auto data_ptr = storage_impl->data_ptr().get();
+  auto nbytes = storage_impl->nbytes();
+
+  // Keep a copy of the original tensor to prevent its storage from being freed
+  auto flagos_tensor_holder = std::make_shared<at::Tensor>(self);
+
+  // Create CUDA storage sharing the same data pointer
+  // The deleter captures the shared_ptr to keep the flagos tensor alive
+  auto storage = c10::Storage(
+      c10::Storage::use_byte_size_t(),
+      nbytes,
+      c10::DataPtr(
+          data_ptr,
+          new std::shared_ptr<at::Tensor>(flagos_tensor_holder),
+          [](void* ctx) {
+            // Release the reference to the flagos tensor
+            delete static_cast<std::shared_ptr<at::Tensor>*>(ctx);
+          },
+          c10::Device(c10::kCUDA, device_index)
+      ),
+      nullptr,
+      false
+  );
+
+  // Get the correct TypeMeta from the source tensor
+  auto dtype = self.scalar_type();
+  auto meta = c10::scalarTypeToTypeMeta(dtype);
+
+  // Use at::detail::make_tensor_base to create a tensor directly with storage
+  // This avoids the set_() call which has issues on flagos device
+  auto cuda_tensor = at::detail::make_tensor_base<c10::TensorImpl>(
+      std::move(storage),
+      c10::DispatchKeySet(c10::DispatchKey::CUDA),
+      meta
+  );
+
+  // Set the correct offset, sizes and strides
+  cuda_tensor.unsafeGetTensorImpl()->set_storage_offset(self.storage_offset());
+  cuda_tensor.unsafeGetTensorImpl()->set_sizes_and_strides(
+      self.sizes().vec(), self.strides().vec());
+
+  return cuda_tensor;
+}
+
+// Zero-copy view conversion: CUDA -> flagos
+// This version keeps a reference to the original CUDA tensor to prevent memory from being freed
+at::Tensor cuda_to_flagos_view_impl(const at::Tensor& self, int device_index) {
+  TORCH_CHECK(self.is_cuda(), "Expected CUDA tensor, got ", self.device());
+
+  if (device_index < 0) {
+    device_index = self.device().index();
+    if (device_index < 0) device_index = 0;
+  }
+
+  // Get storage info from the original tensor directly (no contiguous call)
+  auto storage_impl = self.storage().unsafeGetStorageImpl();
+  auto data_ptr = storage_impl->data_ptr().get();
+  auto nbytes = storage_impl->nbytes();
+
+  // Keep a copy of the original tensor to prevent its storage from being freed
+  // When the flagos tensor is destroyed, this shared_ptr will be decremented,
+  // and only when it reaches 0 will the CUDA memory be freed
+  auto cuda_tensor_holder = std::make_shared<at::Tensor>(self);
+
+  // Create flagos storage sharing the same data pointer
+  // The deleter captures the shared_ptr to keep the CUDA tensor alive
+  auto storage = c10::Storage(
+      c10::Storage::use_byte_size_t(),
+      nbytes,
+      c10::DataPtr(
+          data_ptr,
+          new std::shared_ptr<at::Tensor>(cuda_tensor_holder),
+          [](void* ctx) {
+            // Release the reference to the CUDA tensor
+            delete static_cast<std::shared_ptr<at::Tensor>*>(ctx);
+          },
+          c10::Device(c10::kPrivateUse1, device_index)
+      ),
+      nullptr,
+      false
+  );
+
+  // Get the correct TypeMeta from the source tensor
+  auto dtype = self.scalar_type();
+  auto meta = c10::scalarTypeToTypeMeta(dtype);
+
+  // Use at::detail::make_tensor_base to create a tensor directly with storage
+  // This avoids the set_() call which has issues on flagos device
+  auto flagos_tensor = at::detail::make_tensor_base<c10::TensorImpl>(
+      std::move(storage),
+      c10::DispatchKeySet(c10::DispatchKey::PrivateUse1),
+      meta
+  );
+
+  // Set the correct offset, sizes and strides
+  flagos_tensor.unsafeGetTensorImpl()->set_storage_offset(self.storage_offset());
+  flagos_tensor.unsafeGetTensorImpl()->set_sizes_and_strides(
+      self.sizes().vec(), self.strides().vec());
+
+  // Handle autograd: share the autograd metadata from the CUDA tensor
+  // Since the tensors share the same memory, gradients will flow correctly
+  auto* src_autograd_meta = torch::autograd::impl::get_autograd_meta(self);
+  if (src_autograd_meta && src_autograd_meta->grad_fn_) {
+    // Share the same grad_fn - gradients computed on CUDA will be accumulated
+    // on the CUDA tensor, which shares memory with the flagos tensor
+    auto new_meta = std::make_unique<torch::autograd::AutogradMeta>(
+        flagos_tensor.unsafeGetTensorImpl(),
+        true  // requires_grad
+    );
+    new_meta->grad_fn_ = src_autograd_meta->grad_fn_;
+    new_meta->output_nr_ = src_autograd_meta->output_nr_;
+
+    flagos_tensor.unsafeGetTensorImpl()->set_autograd_meta(std::move(new_meta));
+  } else if (self.requires_grad()) {
+    // Leaf tensor with requires_grad=True
+    auto new_meta = std::make_unique<torch::autograd::AutogradMeta>(
+        flagos_tensor.unsafeGetTensorImpl(),
+        true  // requires_grad
+    );
+    flagos_tensor.unsafeGetTensorImpl()->set_autograd_meta(std::move(new_meta));
+  }
+
+  return flagos_tensor;
+}
+
+} // anonymous namespace
+
+static PyObject* _initExtension(PyObject* self, PyObject* noargs) {
+  HANDLE_TH_ERRORS
+
+  at::globalContext().lazyInitDevice(c10::DeviceType::PrivateUse1);
+
+  Py_RETURN_NONE;
+  END_HANDLE_TH_ERRORS
+}
+
+static PyObject* _getDefaultGenerator(PyObject* self, PyObject* arg) {
+  HANDLE_TH_ERRORS
+  TORCH_CHECK(
+      THPUtils_checkLong(arg),
+      "_get_default_generator expects an int, but got ",
+      THPUtils_typename(arg));
+  auto idx = static_cast<int>(THPUtils_unpackLong(arg));
+
+  return THPGenerator_initDefaultGenerator(
+      at::globalContext().defaultGenerator(
+          c10::Device(c10::DeviceType::PrivateUse1, idx)));
+
+  END_HANDLE_TH_ERRORS
+}
+
+PyObject* _setDevice(PyObject* self, PyObject* arg) {
+  HANDLE_TH_ERRORS
+  TORCH_CHECK(THPUtils_checkLong(arg), "invalid argument to setDevice");
+  auto device = THPUtils_unpackLong(arg);
+
+  torch::utils::device_lazy_init(at::kPrivateUse1);
+  c10::flagos::SetCurrentDevice(static_cast<c10::DeviceIndex>(device));
+
+  Py_RETURN_NONE;
+  END_HANDLE_TH_ERRORS
+}
+
+PyObject* _exchangeDevice(PyObject* self, PyObject* arg) {
+  HANDLE_TH_ERRORS
+  TORCH_CHECK(THPUtils_checkLong(arg), "invalid argument to exchangeDevice");
+  auto device_index = THPUtils_unpackDeviceIndex(arg);
+  if (device_index < 0) {
+    return THPUtils_packInt32(-1);
+  }
+
+  torch::utils::device_lazy_init(at::kPrivateUse1);
+  auto current_device = c10::flagos::ExchangeDevice(device_index);
+
+  return THPUtils_packDeviceIndex(current_device);
+  END_HANDLE_TH_ERRORS
+}
+
+PyObject* _getDevice(PyObject* self, PyObject* noargs) {
+  HANDLE_TH_ERRORS
+  torch::utils::device_lazy_init(at::kPrivateUse1);
+  auto device = static_cast<int32_t>(c10::flagos::CurrentDevice());
+  return THPUtils_packInt32(device);
+  END_HANDLE_TH_ERRORS
+}
+
+PyObject* _getDeviceCount(PyObject* self, PyObject* noargs) {
+  HANDLE_TH_ERRORS
+  return THPUtils_packUInt64(c10::flagos::DeviceCount());
+  END_HANDLE_TH_ERRORS
+}
+
+PyObject* _synchronize(PyObject* self, PyObject* noargs) {
+  HANDLE_TH_ERRORS
+  DeviceSynchronize();
+  Py_RETURN_NONE;
+  END_HANDLE_TH_ERRORS
+}
+
+PyObject* _flagos_to_cuda_view(PyObject* self, PyObject* arg) {
+  HANDLE_TH_ERRORS
+  TORCH_CHECK(THPVariable_Check(arg), "Expected a tensor argument");
+  auto tensor = THPVariable_Unpack(arg);
+  auto result = flagos_to_cuda_view_impl(tensor);
+  return THPVariable_Wrap(result);
+  END_HANDLE_TH_ERRORS
+}
+
+PyObject* _cuda_to_flagos_view(PyObject* self, PyObject* args) {
+  HANDLE_TH_ERRORS
+  PyObject* tensor_obj;
+  int device_index = -1;
+  if (!PyArg_ParseTuple(args, "O|i", &tensor_obj, &device_index)) {
+    return nullptr;
+  }
+  TORCH_CHECK(THPVariable_Check(tensor_obj), "Expected a tensor argument");
+  auto tensor = THPVariable_Unpack(tensor_obj);
+  auto result = cuda_to_flagos_view_impl(tensor, device_index);
+  return THPVariable_Wrap(result);
+  END_HANDLE_TH_ERRORS
+}
+
+static PyMethodDef methods[] = {
+    {"_init", _initExtension, METH_NOARGS, nullptr},
+    {"_get_default_generator", _getDefaultGenerator, METH_O, nullptr},
+    {"_get_device", _getDevice, METH_NOARGS, nullptr},
+    {"_set_device", _setDevice, METH_O, nullptr},
+    {"_exchangeDevice", _exchangeDevice, METH_O, nullptr},
+    {"_get_device_count", _getDeviceCount, METH_NOARGS, nullptr},
+    {"_synchronize", _synchronize, METH_NOARGS, nullptr},
+    {"_flagos_to_cuda_view", _flagos_to_cuda_view, METH_O, nullptr},
+    {"_cuda_to_flagos_view", _cuda_to_flagos_view, METH_VARARGS, nullptr},
+    {nullptr, nullptr, 0, nullptr}};
+
+extern "C" FLAGOS_EXPORT PyObject* initFlagosModule(void) {
+  static struct PyModuleDef flagos_C_module = {
+      PyModuleDef_HEAD_INIT, "torch_fl._C", nullptr, -1, methods};
+  PyObject* mod = PyModule_Create(&flagos_C_module);
+
+  return mod;
+}

@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main, devops]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/PULL_REQUEST_TEMPLATE.md"
+  pull_request:
+    branches: [main, devops]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/PULL_REQUEST_TEMPLATE.md"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ============================================================
+  # Job 1: Lint (ruff check, ruff format)
+  # ============================================================
+  lint:
+    uses: ./.github/workflows/lint.yml
+
+  # ============================================================
+  # Job 2: Build & install check (CUDA)
+  # ============================================================
+  build-cuda:
+    needs: lint
+    uses: ./.github/workflows/build-wheel-cuda.yml
+
+  # ============================================================
+  # Job 3: Build & install check (MACA)
+  # ============================================================
+  build-maca:
+    needs: lint
+    uses: ./.github/workflows/build-wheel-maca.yml
+
+  # ============================================================
+  # Job 4: Integration tests (CUDA)
+  # ============================================================
+  integration-tests-cuda:
+    needs: build-cuda
+    uses: ./.github/workflows/integration-test-cuda.yml
+
+  # ============================================================
+  # Job 5: Integration tests (MACA)
+  # ============================================================
+  integration-tests-maca:
+    needs: build-maca
+    uses: ./.github/workflows/integration-test-maca.yml

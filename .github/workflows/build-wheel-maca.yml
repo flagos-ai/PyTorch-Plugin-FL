@@ -1,0 +1,55 @@
+name: Build Wheel (MACA)
+
+on:
+  workflow_call:
+    inputs:
+      upload-artifact:
+        description: "Whether to upload the built wheel as an artifact"
+        required: false
+        type: boolean
+        default: true
+  workflow_dispatch:
+    inputs:
+      upload-artifact:
+        description: "Whether to upload the built wheel as an artifact"
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  build:
+    name: Build Check (MACA)
+    runs-on: [self-hosted, maca, gpu-8]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: pip install build
+
+      - name: Build package
+        env:
+          ACCELERATOR: maca
+        run: |
+          export LD_LIBRARY_PATH=/opt/maca-3.3.0/tools/cu-bridge/lib:$LD_LIBRARY_PATH
+          ACCELERATOR=maca python -m build --wheel
+
+      - name: Verify wheel
+        run: |
+          pip install dist/*.whl
+          python -c "
+          from importlib.metadata import metadata, files
+          meta = metadata('torch_fl')
+          print(f\"Package: {meta['Name']} {meta['Version']}\")
+          pkg_files = [str(f) for f in files('torch_fl')]
+          assert any('torch_fl' in f for f in pkg_files), 'torch_fl module not found in wheel'
+          print(f'Installed files: {len(pkg_files)}')
+          print('Wheel verified successfully')
+          "
+
+      - name: Upload wheel
+        if: inputs.upload-artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-maca
+          path: dist/*.whl

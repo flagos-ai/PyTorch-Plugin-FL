@@ -1,0 +1,50 @@
+# Build directories
+build/
+dist/
+cmake-build*/
+torch_fl/lib/
+torch_fl/.nfs*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+.eggs/
+
+# Compiled shared libraries
+*.so
+*.dylib
+*.dll
+
+# Object files
+*.o
+*.obj
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Testing/Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Environment
+.env
+.venv/
+venv/
+ENV/
+
+# Misc
+*.log
+.DS_Store
+Thumbs.db
+
+# For Deubgging
+debug/
