@@ -9,7 +9,7 @@
 #include <ATen/ATen.h>
 #include <ATen/native/CPUFallback.h>
 
-#include <accelerator/include/flagos.h>
+#include <include/flagos.h>
 
 #include <string>
 

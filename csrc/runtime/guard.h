@@ -9,7 +9,7 @@
 #include <c10/core/DeviceType.h>
 #include <c10/core/impl/DeviceGuardImplInterface.h>
 
-#include <accelerator/include/flagos.h>
+#include <include/flagos.h>
 
 namespace c10::flagos {
 

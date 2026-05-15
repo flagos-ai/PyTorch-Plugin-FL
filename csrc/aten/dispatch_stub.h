@@ -37,7 +37,13 @@ namespace at::native::flagos {
 template <typename FnPtr>
 class FlagosDispatchStub {
  public:
-  explicit FlagosDispatchStub(const char* stub_name) : stub_name_(stub_name) {}
+  // constexpr constructor ensures constant initialization (placed in .bss/.data
+  // at load time), which is guaranteed to complete before any dynamic
+  // initialization (DispatchRegistrar constructors). This eliminates the
+  // static initialization order fiasco when DEFINE and REGISTER are in
+  // different translation units.
+  constexpr explicit FlagosDispatchStub(const char* stub_name)
+      : stub_name_(stub_name) {}
 
   void RegisterKernel(FlagosDevice device, FnPtr fn) {
     switch (device) {
@@ -90,7 +96,7 @@ class FlagosDispatchStub {
     fprintf(stderr, "[flagos dispatch] %s -> %s\n", op_name.c_str(), name);
   }
 
-  const char* stub_name_;
+  const char* stub_name_ = nullptr;
   FnPtr cuda_fn_   = nullptr;
   FnPtr flagos_fn_ = nullptr;
   FnPtr npu_fn_    = nullptr;
@@ -115,7 +121,7 @@ struct DispatchRegistrar {
   ::at::native::flagos::FlagosDispatchStub<fn_type> name(stub_name);
 
 #define FLAGOS_REGISTER_DISPATCH_UID2(fn_type, name, device, fn, uid) \
-  static ::at::native::flagos::detail::DispatchRegistrar<fn_type>    \
+  __attribute__((used)) static ::at::native::flagos::detail::DispatchRegistrar<fn_type>    \
       name##_registrar_##uid(name, device, fn);
 #define FLAGOS_REGISTER_DISPATCH_UID(fn_type, name, device, fn, uid) \
   FLAGOS_REGISTER_DISPATCH_UID2(fn_type, name, device, fn, uid)
