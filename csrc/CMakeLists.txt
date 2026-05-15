@@ -13,7 +13,7 @@ if(NOT CUDA_KERNEL)
   list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/vendors/cuda/.*")
 endif()
 if(NOT FLAGGEMS_KERNEL)
-  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/flaggems/.*")
+  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/flagos/.*")
 endif()
 
 add_library(${LIBRARY_NAME} SHARED ${SOURCE_FILES})
