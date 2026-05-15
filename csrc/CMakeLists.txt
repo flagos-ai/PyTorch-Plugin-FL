@@ -10,7 +10,7 @@ file(GLOB_RECURSE SOURCE_FILES
 
 # Exclude backend kernel directories based on options
 if(NOT CUDA_KERNEL)
-  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/vendors/cuda/.*")
+  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/cuda/.*")
 endif()
 if(NOT FLAGGEMS_KERNEL)
   list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/flagos/.*")
