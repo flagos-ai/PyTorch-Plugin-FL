@@ -9,6 +9,9 @@ file(GLOB_RECURSE SOURCE_FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/*.cu"
 )
 
+# Exclude runtime/accelerator (built separately as subdirectory)
+list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/runtime/accelerator/.*")
+
 # Exclude backend kernel directories based on options
 if(NOT CUDA_KERNEL)
   list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/vendors/cuda/.*")
