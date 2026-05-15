@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include <accelerator/include/flagos.h>
+#include <include/flagos.h>
 
 #include <dlfcn.h>
 #include <stdexcept>

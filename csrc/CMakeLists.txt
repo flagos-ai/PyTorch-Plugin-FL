@@ -2,6 +2,7 @@ set(LIBRARY_NAME torch_fl)
 
 option(CUDA_KERNEL "Build CUDA kernel implementations" ON)
 option(FLAGGEMS_KERNEL "Build FlagGems kernel implementations" ON)
+option(NPU_KERNEL "Build NPU kernel implementations" OFF)
 
 file(GLOB_RECURSE SOURCE_FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/*.cc"
@@ -10,10 +11,13 @@ file(GLOB_RECURSE SOURCE_FILES
 
 # Exclude backend kernel directories based on options
 if(NOT CUDA_KERNEL)
-  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/cuda/.*")
+  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/vendors/cuda/.*")
 endif()
 if(NOT FLAGGEMS_KERNEL)
-  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/flaggems/.*")
+  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/flaggems/.*")
+endif()
+if(NOT NPU_KERNEL)
+  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/vendors/npu/.*")
 endif()
 
 add_library(${LIBRARY_NAME} SHARED ${SOURCE_FILES})

@@ -47,6 +47,9 @@ if(ACCELERATOR STREQUAL "npu")
   endif()
   message(STATUS "Huawei CANN SDK path: ${ASCEND_HOME}")
 
+  set(NPU_KERNEL ON CACHE BOOL "Build NPU kernel implementations" FORCE)
+  set(CUDA_KERNEL OFF CACHE BOOL "Build CUDA kernel implementations" FORCE)
+
   add_library(cuda_runtime_compat INTERFACE IMPORTED)
   set_target_properties(cuda_runtime_compat PROPERTIES
     INTERFACE_INCLUDE_DIRECTORIES "${ASCEND_HOME}/include"
@@ -132,6 +135,6 @@ endif()
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 include(${PROJECT_SOURCE_DIR}/cmake/TorchPythonTargets.cmake)
 
-add_subdirectory(${PROJECT_SOURCE_DIR}/accelerator)
+add_subdirectory(${PROJECT_SOURCE_DIR}/csrc/runtime/accelerator)
 add_subdirectory(${PROJECT_SOURCE_DIR}/csrc)
 add_subdirectory(${PROJECT_SOURCE_DIR}/torch_fl/csrc)
