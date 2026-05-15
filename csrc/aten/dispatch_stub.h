@@ -88,7 +88,7 @@ class FlagosDispatchStub {
     const char* name;
     switch (backend) {
       case FlagosDevice::kCuda:   name = "cuda"; break;
-      case FlagosDevice::kFlagOs: name = "flaggems"; break;
+      case FlagosDevice::kFlagOs: name = "flagos"; break;
       case FlagosDevice::kNpu:    name = "npu"; break;
       case FlagosDevice::kMusa:   name = "musa"; break;
       default:                   name = "unknown"; break;
