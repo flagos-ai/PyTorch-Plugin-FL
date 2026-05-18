@@ -20,7 +20,7 @@ if(NOT FLAGGEMS_KERNEL)
   list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/flagos/.*")
 endif()
 if(NOT NPU_KERNEL)
-  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/vendors/npu/.*")
+  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/npu/.*")
 endif()
 
 add_library(${LIBRARY_NAME} SHARED ${SOURCE_FILES})
