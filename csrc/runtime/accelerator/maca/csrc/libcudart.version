@@ -1,3 +1,0 @@
-libcudart.so.12 {
-    global: *;
-};
