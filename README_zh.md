@@ -180,8 +180,8 @@ export FLAGOS_LOG_DISPATCH=1  # 打印每次算子 dispatch 的后端选择
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 
 # 基础算子测试
-pytest tests/integration/test_ops.py -v --device cuda
-pytest tests/integration/test_ops.py -v --device flagos
+pytest tests/integration/test_factory_ops.py -v --device cuda
+pytest tests/integration/test_factory_ops.py -v --device flagos
 
 # dispatch 路由测试
 pytest tests/integration/ops/ -v

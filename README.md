@@ -196,8 +196,8 @@ export FLAGOS_LOG_DISPATCH=1  # Print backend selection for each operator dispat
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 
 # Basic operator tests
-pytest tests/integration/test_ops.py -v --device cuda
-pytest tests/integration/test_ops.py -v --device flagos
+pytest tests/integration/test_factory_ops.py -v --device cuda
+pytest tests/integration/test_factory_ops.py -v --device flagos
 
 # Dispatch routing tests
 pytest tests/integration/ops/ -v
@@ -215,7 +215,7 @@ pytest tests/integration/test_qwen3_train.py -v -s --device flagos --steps 10
 
 # Ascend NPU operator tests
 FLAGOS_DISABLE_FLAGGEMS_PY=1 FLAGOS_BACKEND_CONFIG=torch_fl/backends_npu.conf \
-  pytest tests/integration/test_ops.py -v --device flagos
+  pytest tests/integration/test_factory_ops.py -v --device flagos
 ```
 
 ## Project Structure

@@ -38,7 +38,7 @@ jobs:
         run: pytest tests/integration/ops/ -v -s --tb=short
 
       - name: Run general tests
-        run: pytest tests/integration/test_ops.py -v --device cuda --tb=short
+        run: pytest tests/integration/test_factory_ops.py -v --device cuda --tb=short
 
       - name: Run inference tests
         run: pytest tests/integration/test_qwen3_infer.py -v -s --device cuda --tb=short

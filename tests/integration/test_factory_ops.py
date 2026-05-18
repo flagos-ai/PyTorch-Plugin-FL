@@ -4,7 +4,7 @@ Basic Operations and Tensor Tests
 All tests run on the flagos device.
 
 Usage:
-    pytest tests/integration/test_ops.py -v
+    pytest tests/integration/test_factory_ops.py -v
 """
 
 import pytest

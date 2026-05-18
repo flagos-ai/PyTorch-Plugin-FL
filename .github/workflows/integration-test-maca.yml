@@ -55,7 +55,7 @@ jobs:
       - name: Run general tests
         run: |
           export LD_LIBRARY_PATH=/opt/maca-3.3.0/tools/cu-bridge/lib:$LD_LIBRARY_PATH
-          pytest tests/integration/test_ops.py -v --device flagos --tb=short
+          pytest tests/integration/test_factory_ops.py -v --device flagos --tb=short
 
       - name: Run inference tests
         run: |
