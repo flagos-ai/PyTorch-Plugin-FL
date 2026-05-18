@@ -12,7 +12,7 @@ set(LIBRARY_NAME flagos)
 
 if(ACCELERATOR STREQUAL "npu")
   file(GLOB_RECURSE SOURCE_FILES
-      "${CMAKE_CURRENT_SOURCE_DIR}/npu/csrc/*.cc"
+      "${CMAKE_CURRENT_SOURCE_DIR}/npu/*.cc"
   )
 
   add_library(${LIBRARY_NAME} SHARED ${SOURCE_FILES})
@@ -29,7 +29,7 @@ if(ACCELERATOR STREQUAL "npu")
   target_link_libraries(${LIBRARY_NAME} PRIVATE ${ACL_LIB})
 elseif(ACCELERATOR STREQUAL "maca")
   file(GLOB_RECURSE SOURCE_FILES
-      "${CMAKE_CURRENT_SOURCE_DIR}/cuda/csrc/*.cc"
+      "${CMAKE_CURRENT_SOURCE_DIR}/cuda/*.cc"
   )
 
   add_library(${LIBRARY_NAME} SHARED ${SOURCE_FILES})
@@ -38,7 +38,7 @@ elseif(ACCELERATOR STREQUAL "maca")
   target_link_libraries(${LIBRARY_NAME} PRIVATE ${CUDA_RUNTIME_LIB})
 else()
   file(GLOB_RECURSE SOURCE_FILES
-      "${CMAKE_CURRENT_SOURCE_DIR}/cuda/csrc/*.cc"
+      "${CMAKE_CURRENT_SOURCE_DIR}/cuda/*.cc"
   )
 
   add_library(${LIBRARY_NAME} SHARED ${SOURCE_FILES})
