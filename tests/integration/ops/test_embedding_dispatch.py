@@ -135,13 +135,13 @@ class TestEmbeddingDispatch:
 class TestEmbeddingDispatchLog:
     """Verify C++ wrapper routes to correct backend."""
 
-    def test_dispatch_log_flaggems_default(self):
-        """Default routes embedding to flaggems."""
+    def test_dispatch_log_flagos_default(self):
+        """Default routes embedding to flagos."""
         result = _run_embedding_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_embedding": "flaggems"}
         )
-        assert "[flagos dispatch] embedding -> flaggems" in result.stderr, (
-            f"Expected flaggems log, got:\n{result.stderr}"
+        assert "[flagos dispatch] embedding -> flagos" in result.stderr, (
+            f"Expected flagos log, got:\n{result.stderr}"
         )
 
     def test_dispatch_log_cuda_override(self):

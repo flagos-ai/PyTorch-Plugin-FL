@@ -85,12 +85,12 @@ class TestSoftmaxCorrectness:
 class TestSoftmaxDispatch:
     """Verify C++ wrapper routes to the correct backend."""
 
-    def test_dispatch_log_flaggems(self):
+    def test_dispatch_log_flagos(self):
         result = _run_softmax_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP__softmax": "flaggems"}
         )
         assert result.returncode == 0, f"Failed:\n{result.stderr}"
-        assert "[flagos dispatch] _softmax -> flaggems" in result.stderr
+        assert "[flagos dispatch] _softmax -> flagos" in result.stderr
 
     def test_dispatch_log_cuda(self):
         result = _run_softmax_subprocess(

@@ -119,13 +119,13 @@ class TestBmmDispatch:
 class TestBmmDispatchLog:
     """Verify C++ wrapper routes to the correct backend."""
 
-    def test_dispatch_log_flaggems_default(self):
-        """Default config routes bmm to flaggems."""
+    def test_dispatch_log_flagos_default(self):
+        """Default config routes bmm to flagos."""
         result = _run_bmm_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_bmm": "flaggems"}
         )
-        assert "[flagos dispatch] bmm -> flaggems" in result.stderr, (
-            f"Expected flaggems dispatch log, got:\n{result.stderr}"
+        assert "[flagos dispatch] bmm -> flagos" in result.stderr, (
+            f"Expected flagos dispatch log, got:\n{result.stderr}"
         )
 
     def test_dispatch_log_cuda_override(self):
@@ -137,14 +137,14 @@ class TestBmmDispatchLog:
             f"Expected cuda dispatch log, got:\n{result.stderr}"
         )
 
-    def test_dispatch_log_bmm_out_flaggems_default(self):
-        """Default config routes bmm.out to flaggems."""
+    def test_dispatch_log_bmm_out_flagos_default(self):
+        """Default config routes bmm.out to flagos."""
         result = _run_bmm_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_bmm__out": "flaggems"},
             use_out=True,
         )
-        assert "[flagos dispatch] bmm.out -> flaggems" in result.stderr, (
-            f"Expected flaggems dispatch log, got:\n{result.stderr}"
+        assert "[flagos dispatch] bmm.out -> flagos" in result.stderr, (
+            f"Expected flagos dispatch log, got:\n{result.stderr}"
         )
 
     def test_dispatch_log_bmm_out_cuda_override(self):
