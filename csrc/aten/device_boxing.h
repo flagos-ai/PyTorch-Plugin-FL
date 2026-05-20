@@ -40,18 +40,22 @@ inline void UnboxToFlagos(const at::Tensor& t) {
   SetTensorDevice(t, c10::DeviceType::PrivateUse1);
 }
 
-// RAII guard: boxes tensors to CUDA, unboxes on destruction.
+// RAII guard: boxes flagos (PrivateUse1) tensors to CUDA, unboxes on destruction.
+// CPU/CUDA inputs are left unchanged (e.g. mul/add with a CPU scalar).
 class DeviceBoxingGuard {
  public:
   template <typename... Tensors>
   explicit DeviceBoxingGuard(const Tensors&... tensors)
       : tensors_{tensors...} {
     for (auto& t : tensors_) {
-      if (t.defined()) BoxToCuda(t);
+      if (t.defined() && t.is_privateuseone()) {
+        BoxToCuda(t);
+        boxed_.push_back(t);
+      }
     }
   }
   ~DeviceBoxingGuard() {
-    for (auto& t : tensors_) {
+    for (auto& t : boxed_) {
       if (t.defined()) UnboxToFlagos(t);
     }
   }
@@ -59,6 +63,7 @@ class DeviceBoxingGuard {
   DeviceBoxingGuard& operator=(const DeviceBoxingGuard&) = delete;
  private:
   std::vector<at::Tensor> tensors_;
+  std::vector<at::Tensor> boxed_;
 };
 
 } // namespace at::native::flagos

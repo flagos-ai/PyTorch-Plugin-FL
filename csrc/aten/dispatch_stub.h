@@ -51,6 +51,7 @@ class FlagosDispatchStub {
       case FlagosDevice::kFlagOs: flagos_fn_ = fn;  break;
       case FlagosDevice::kNpu:    npu_fn_ = fn;     break;
       case FlagosDevice::kMusa:   musa_fn_ = fn;    break;
+      case FlagosDevice::kMaca:   maca_fn_ = fn;    break;
     }
   }
 
@@ -75,6 +76,7 @@ class FlagosDispatchStub {
       case FlagosDevice::kFlagOs: return flagos_fn_;
       case FlagosDevice::kNpu:    return npu_fn_;
       case FlagosDevice::kMusa:   return musa_fn_;
+      case FlagosDevice::kMaca:   return maca_fn_;
     }
     return nullptr;
   }
@@ -91,6 +93,7 @@ class FlagosDispatchStub {
       case FlagosDevice::kFlagOs: name = "flagos"; break;
       case FlagosDevice::kNpu:    name = "npu"; break;
       case FlagosDevice::kMusa:   name = "musa"; break;
+      case FlagosDevice::kMaca:   name = "maca"; break;
       default:                   name = "unknown"; break;
     }
     fprintf(stderr, "[flagos dispatch] %s -> %s\n", op_name.c_str(), name);
@@ -101,6 +104,7 @@ class FlagosDispatchStub {
   FnPtr flagos_fn_ = nullptr;
   FnPtr npu_fn_    = nullptr;
   FnPtr musa_fn_   = nullptr;
+  FnPtr maca_fn_   = nullptr;
 };
 
 namespace detail {

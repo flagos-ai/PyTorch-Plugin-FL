@@ -1,8 +1,11 @@
+import os
 import sys
 
-from torch_fl.accelerator.maca._maca_cudart_shim import ensure_cudart_shim
+# Optional: PyTorch wheels may require libcudart.so.12 version tags on MACA.
+if os.environ.get("FLAGOS_MACA_CUDART_SHIM", "0") == "1":
+    from torch_fl.accelerator.maca._maca_cudart_shim import ensure_cudart_shim
 
-ensure_cudart_shim()
+    ensure_cudart_shim()
 
 import torch  # noqa: E402
 
@@ -14,18 +17,15 @@ if sys.platform == "win32":
     del _load_dll_libraries
 
 
-# Apply MACA compatibility patches before importing FlagGems.
-# On MetaX (Muxi) hardware, PyTorch's bundled CUDA 12.x runtime is
-# ABI-incompatible with MACA's cu-bridge (CUDA 11.6). This patches
-# torch.cuda.get_device_properties/get_device_name to use MACA's
-# native mcruntime API, allowing FlagGems initialization to succeed.
-from torch_fl.accelerator.maca._maca_compat import (  # noqa: E402
-    is_maca_available,
-    patch_torch_cuda_for_maca,
-)
+# Optional FlagGems-on-MACA compat (does not patch torch.cuda unless enabled).
+if os.environ.get("FLAGOS_MACA_COMPAT", "0") == "1":
+    from torch_fl.accelerator.maca._maca_compat import (  # noqa: E402
+        is_maca_available,
+        patch_torch_cuda_for_maca,
+    )
 
-if is_maca_available():
-    patch_torch_cuda_for_maca()
+    if is_maca_available():
+        patch_torch_cuda_for_maca()
 
 
 import torch_fl._C  # type: ignore[misc]  # noqa: E402, F401
@@ -67,11 +67,11 @@ def _patch_cuda_device_context():
 # Patch torch.cuda.device before FlagGems is used
 _patch_cuda_device_context()
 
-# Ensure CUDA runtime is initialized so that CUDACachingAllocator is ready.
-# When FLAGOS_DISABLE_FLAGGEMS_PY=1, flag_gems is never imported and CUDA
-# would remain uninitialized, causing "Allocator not initialized for device"
-# errors when C++ stubs route ops to the cuda backend (cuBLAS, etc.).
-if torch.cuda.is_available():
+# Initialize CUDA runtime only when FlagGems Python path needs it (CUDA backend ops).
+if (
+    os.environ.get("FLAGOS_DISABLE_FLAGGEMS_PY", "0") != "1"
+    and torch.cuda.is_available()
+):
     torch.cuda.init()
 
 
@@ -164,7 +164,6 @@ def _get_cudaMemcpy():
         return _cudaMemcpy
 
     import ctypes
-    import os
 
     # Try to load CUDA runtime library
     try:
@@ -196,8 +195,6 @@ def _register_flaggems_operators():
     leaving only the C++ stub dispatch path active.
     """
     global _flaggems_lib, _autograd_lib, _registered_ops
-
-    import os
 
     if os.environ.get("FLAGOS_DISABLE_FLAGGEMS_PY", "0") == "1":
         _registered_ops = []
@@ -260,28 +257,6 @@ def _register_composite_ops():
     """
     lib = torch.library.Library("aten", "IMPL")
 
-    # slice_backward: used by autograd for tensor slicing (x[..., :n])
-    # Implementation mirrors PyTorch's native slice_backward which calls slice_scatter
-    def slice_backward_impl(grad_output, input_sizes, dim, start, end, step):
-        # Convert SymInt to int for compatibility
-        input_sizes = [int(s) for s in input_sizes]
-        dim = int(dim)
-        start = int(start)
-        end = int(end)
-        step = int(step)
-        # Clamp end to input_sizes[dim] (PyTorch passes large values like sys.maxsize)
-        if end > input_sizes[dim]:
-            end = input_sizes[dim]
-        grad_input = torch.zeros(
-            input_sizes, dtype=grad_output.dtype, device=grad_output.device
-        )
-        return torch.slice_scatter(grad_input, grad_output, dim, start, end, step)
-
-    # lib.impl("slice_backward", slice_backward_impl, "PrivateUse1")
-
-    # log_softmax: decompose into softmax + log to avoid FlagGems Triton kernel
-    # that exceeds MACA's 4KB/thread private memory on large vocab dimensions.
-    # The softmax kernel already has proper tiling for large N.
     def log_softmax_impl(self, dim, half_to_float=False):
         dtype = torch.float32 if half_to_float else self.dtype
         out = torch.softmax(self.to(torch.float32), dim=dim)

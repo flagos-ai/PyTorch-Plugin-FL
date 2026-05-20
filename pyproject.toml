@@ -36,7 +36,12 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["torch_fl*", "accelerator*", "csrc*"]
+include = ["torch_fl*", "accelerator*", "csrc.runtime.accelerator*"]
+
+# Native libs (libtorch_fl.so) are built via setup.py cmdclass; editable install must
+# run build_ext — see EditableWheelWithCmake in setup.py.
+[tool.setuptools]
+py-modules = []
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

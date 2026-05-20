@@ -41,20 +41,29 @@ pip install -e . --no-build-isolation
 
 ### 从源码安装（MACA 平台）
 
+MACA 构建与 NPU 模式类似：**主工程仅 CXX**，设备算子由 `mxcc/cucc` 编译 `backends/maca/*.cu` 后以 object 链入 `libtorch_fl.so`；运行时走 `runtime/accelerator/maca`（cu-bridge），**不**使用 `cmake_maca`、不委托 `at::cuda`/`at::maca`。
+
 ```bash
-# 设置 MACA cu-bridge 库路径，取决于实际环境中的cu-bridge路径
-export LD_LIBRARY_PATH=/opt/maca/tools/cu-bridge/lib:$LD_LIBRARY_PATH
+export MACA_PATH=/opt/maca
+export PATH=/opt/maca/tools/cu-bridge/bin:/opt/maca/bin:/opt/maca/mxgpu_llvm/bin:$PATH
+export LD_LIBRARY_PATH=/opt/maca/lib:/opt/maca/tools/cu-bridge/lib:/opt/maca/mxgpu_llvm/lib:$LD_LIBRARY_PATH
+export FLAGOS_BACKEND_CONFIG=/path/to/torch_fl/backends_muxi.conf
+export FLAGOS_DISABLE_FLAGGEMS_PY=1   # 仅测 C++ maca 算子时建议开启
 
 ACCELERATOR=maca pip install -e . --no-build-isolation
 ```
+
+> 算子路由示例见 `torch_fl/backends_muxi.conf`（`add.Tensor` / `mul.Tensor` / `le.Tensor` / `all` → `maca`）。若 PyTorch wheel 加载报 `libcudart.so.12` 版本符号，可设 `FLAGOS_MACA_CUDART_SHIM=1`；若需 FlagGems 与 MACA 设备名兼容，可设 `FLAGOS_MACA_COMPAT=1`。
 
 ### 构建环境变量
 
 | 变量 | 说明 |
 |------|------|
 | `ACCELERATOR` | 硬件平台，`cuda`（默认）或 `maca` |
-| `CUDA_HOME` | CUDA toolkit 路径 |
-| `MACA_PATH` | MACA SDK 路径（默认 `/opt/maca`） |
+| `FLAGOS_BUILD_JOBS` | 原生库并行编译线程数（默认 CPU 核数）；日志过长可设 `1` |
+| `CUDA_HOME` | CUDA toolkit 路径（`ACCELERATOR=cuda` 时） |
+| `MACA_PATH` | MACA SDK 路径（默认 `/opt/maca`，maca 构建必需） |
+| `MACA_ARCH` / `MACA_MXCC` | 可选：GPU 架构或 mxcc/cucc 编译器路径 |
 | `FLAGGEMS_DIR` | FlagGems C++ 库路径（启用低开销 C++ dispatch） |
 
 ### 运行时环境变量
@@ -62,6 +71,8 @@ ACCELERATOR=maca pip install -e . --no-build-isolation
 | 变量 | 说明 |
 |------|------|
 | `FLAGOS_DISABLE_FLAGGEMS_PY` | 设为 `1` 关闭 FlagGems Python 层注册（C++ stub-only 模式） |
+| `FLAGOS_MACA_CUDART_SHIM` | 设为 `1` 在 import 前加载 libcudart 兼容 shim（少数 PyTorch wheel 需要） |
+| `FLAGOS_MACA_COMPAT` | 设为 `1` 为 FlagGems 修补 `torch.cuda` 设备属性查询 |
 | `FLAGGEMS_SOURCE_DIR` | FlagGems 源码目录（当 C++ native API 算子路由到 `flaggems` 后端时必须设置） |
 | `FLAGOS_BACKEND_CONFIG` | 覆盖 `backends.conf` 路径 |
 | `FLAGOS_LOG_DISPATCH` | 设为 `1` 打印每次算子 dispatch 的后端选择 |
