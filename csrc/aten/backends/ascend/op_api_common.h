@@ -117,6 +117,9 @@ inline void GetApiFunc(const char* api_name, const char* workspace_name,
     uint64_t workspace_size = 0;                                              \
     aclOpExecutor* executor = nullptr;                                        \
                                                                               \
+    TORCH_CHECK(getWorkspaceSizeFuncAddr && opApiFuncAddr,                     \
+        "Failed to load symbols for " #aclnn_api ": ", dlerror());            \
+                                                                              \
     typedef int (*GetWorkspaceSizeFunc)(...);                                  \
     auto getWorkspaceSize =                                                   \
         reinterpret_cast<GetWorkspaceSizeFunc>(getWorkspaceSizeFuncAddr);      \
