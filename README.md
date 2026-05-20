@@ -235,7 +235,7 @@ PyTorch-Plugin-FL/
 │   │   ├── register.cc       #   PrivateUse1 dispatch key registration
 │   │   ├── factory_ops/      #   Basic operators (empty, copy, contiguous, set, fallback)
 │   │   ├── functional_ops/   #   Compute operators (mm, bmm, cat, embedding, softmax, etc.)
-│   │   ├── backends/vendors/ascend/  # Ascend kernel implementations (ACL NN API)
+│   │   ├── backends/ascend/  # Ascend kernel implementations (ACL NN API)
 │   │   └── native/cuda/      #   Modified CUDA kernels (Loops.cuh with relaxed device checks)
 │   └── runtime/              # Device runtime
 │       ├── device_allocator  #   Device memory allocator
