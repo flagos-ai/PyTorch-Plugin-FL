@@ -22,8 +22,12 @@ Error_t StreamDestroy(Stream_t stream) {
 }
 
 Error_t StreamQuery(Stream_t stream) {
-  aclError err = aclrtSynchronizeStream((aclrtStream)stream);
-  return (err == ACL_SUCCESS) ? Success : ErrorNotReady;
+  aclrtStreamStatus status;
+  aclError err = aclrtStreamQuery((aclrtStream)stream, &status);
+  if (err != ACL_SUCCESS) {
+    return ErrorUnknown;
+  }
+  return (status == ACL_STREAM_STATUS_COMPLETE) ? Success : ErrorNotReady;
 }
 
 Error_t StreamSynchronize(Stream_t stream) {
@@ -62,8 +66,12 @@ Error_t EventSynchronize(Event_t event) {
 }
 
 Error_t EventQuery(Event_t event) {
-  aclError err = aclrtSynchronizeEvent((aclrtEvent)event);
-  return (err == ACL_SUCCESS) ? Success : ErrorNotReady;
+  aclrtEventRecordedStatus status;
+  aclError err = aclrtQueryEventStatus((aclrtEvent)event, &status);
+  if (err != ACL_SUCCESS) {
+    return ErrorUnknown;
+  }
+  return (status == ACL_EVENT_RECORDED_STATUS_COMPLETE) ? Success : ErrorNotReady;
 }
 
 Error_t EventElapsedTime(float* ms, Event_t start, Event_t end) {
