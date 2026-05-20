@@ -24,6 +24,19 @@ if(ACCELERATOR STREQUAL "ascend")
       PATHS $ENV{ASCEND_HOME}/lib64
             /usr/local/Ascend/ascend-toolkit/latest/lib64)
 
+  if(NOT CANN_INCLUDE_DIR OR CANN_INCLUDE_DIR STREQUAL "CANN_INCLUDE_DIR-NOTFOUND")
+    message(FATAL_ERROR
+        "Ascend runtime selected, but CANN headers were not found. "
+        "Set ASCEND_HOME to a valid Ascend installation or install the toolkit "
+        "under /usr/local/Ascend/ascend-toolkit/latest.")
+  endif()
+  if(NOT ACL_LIB OR ACL_LIB STREQUAL "ACL_LIB-NOTFOUND")
+    message(FATAL_ERROR
+        "Ascend runtime selected, but the ascendcl library was not found. "
+        "Set ASCEND_HOME to a valid Ascend installation or install the toolkit "
+        "under /usr/local/Ascend/ascend-toolkit/latest.")
+  endif()
+
   target_include_directories(${LIBRARY_NAME} PUBLIC
       ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR} ${CANN_INCLUDE_DIR})
   target_link_libraries(${LIBRARY_NAME} PRIVATE ${ACL_LIB})
