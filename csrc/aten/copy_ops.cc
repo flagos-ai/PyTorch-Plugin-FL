@@ -43,11 +43,35 @@ at::Tensor _copy_from(
       if (nbytes > 0) {
         Memcpy(cpu_src.data_ptr(), self_contig.data_ptr(), nbytes, MemcpyDeviceToHost);
       }
-      at::Tensor cpu_dst = at::empty(dst.sizes(), dst.options().device(at::kCPU));
+      size_t dst_storage_nbytes = dst.storage().nbytes();
+      at::Tensor cpu_dst_storage = at::empty(
+          {static_cast<int64_t>(dst_storage_nbytes)},
+          dst.options().device(at::kCPU).dtype(at::kByte));
+      int64_t dst_storage_offset_bytes =
+          dst.storage_offset() * static_cast<int64_t>(dst.element_size());
+      char* dst_storage_base =
+          static_cast<char*>(dst.data_ptr()) - dst_storage_offset_bytes;
+      if (dst_storage_nbytes > 0) {
+        Memcpy(
+            cpu_dst_storage.data_ptr(),
+            dst_storage_base,
+            dst_storage_nbytes,
+            MemcpyDeviceToHost);
+      }
+
+      at::Tensor cpu_dst = at::empty({0}, dst.options().device(at::kCPU));
+      cpu_dst.set_(
+          cpu_dst_storage.storage(),
+          dst.storage_offset(),
+          dst.sizes(),
+          dst.strides());
       at::native::copy_(cpu_dst, cpu_src, false);
-      size_t dst_nbytes = cpu_dst.numel() * cpu_dst.element_size();
-      if (dst_nbytes > 0) {
-        Memcpy(dst.data_ptr(), cpu_dst.data_ptr(), dst_nbytes, MemcpyHostToDevice);
+      if (dst_storage_nbytes > 0) {
+        Memcpy(
+            dst_storage_base,
+            cpu_dst_storage.data_ptr(),
+            dst_storage_nbytes,
+            MemcpyHostToDevice);
       }
     }
 #else
