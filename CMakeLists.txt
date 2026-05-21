@@ -17,6 +17,22 @@ elseif(ACCELERATOR STREQUAL "metax")
   set(FLAGGEMS_KERNEL OFF CACHE BOOL "Build FlagGems kernel implementations" FORCE)
   project(TORCH_FLAGOS CXX C)
 else()
+  # project(... CUDA) runs nvcc compiler-id before find_package(CUDAToolkit); conda
+  # layouts need CUDAToolkit_ROOT (headers under targets/x86_64-linux/include).
+  if(NOT CUDAToolkit_ROOT)
+    if(DEFINED ENV{CUDA_HOME} AND EXISTS "$ENV{CUDA_HOME}/include/cuda_runtime.h")
+      set(CUDAToolkit_ROOT "$ENV{CUDA_HOME}" CACHE PATH "CUDA toolkit root")
+    elseif(DEFINED ENV{CONDA_PREFIX} AND EXISTS "$ENV{CONDA_PREFIX}/targets/x86_64-linux/include/cuda_runtime.h")
+      set(CUDAToolkit_ROOT "$ENV{CONDA_PREFIX}/targets/x86_64-linux" CACHE PATH "CUDA toolkit root")
+    endif()
+  endif()
+  if(NOT CMAKE_CUDA_COMPILER)
+    if(DEFINED ENV{CONDA_PREFIX} AND EXISTS "$ENV{CONDA_PREFIX}/bin/nvcc")
+      set(CMAKE_CUDA_COMPILER "$ENV{CONDA_PREFIX}/bin/nvcc" CACHE FILEPATH "")
+    elseif(CUDAToolkit_ROOT AND EXISTS "${CUDAToolkit_ROOT}/bin/nvcc")
+      set(CMAKE_CUDA_COMPILER "${CUDAToolkit_ROOT}/bin/nvcc" CACHE FILEPATH "")
+    endif()
+  endif()
   project(TORCH_FLAGOS CUDA CXX C)
 endif()
 
@@ -142,11 +158,6 @@ if(FLAGGEMS_KERNEL)
   # FlagGemsConfig.cmake calls find_dependency(Torch MODULE), which needs FindTorch.cmake in MODULE_PATH
   list(APPEND CMAKE_MODULE_PATH "${FLAGGEMS_DIR}")
   find_package(FlagGems REQUIRED PATHS "${FLAGGEMS_DIR}" NO_DEFAULT_PATH)
-
-  # Embed liboperators.so dir into RPATH so it's found at runtime without LD_LIBRARY_PATH
-  # FLAGGEMS_DIR is .../flag_gems/lib/cmake/FlagGems; liboperators.so is at .../flag_gems/lib/
-  get_filename_component(_flaggems_libdir "${FLAGGEMS_DIR}/../.." ABSOLUTE)
-  list(APPEND CMAKE_INSTALL_RPATH "${_flaggems_libdir}")
 elseif(ACCELERATOR STREQUAL "metax")
   message(STATUS "MetaX build: native runtime + mxcc kernels (no FlagGems)")
 endif()

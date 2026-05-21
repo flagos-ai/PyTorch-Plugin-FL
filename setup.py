@@ -95,6 +95,132 @@ def get_pytorch_dir():
     return os.path.dirname(os.path.realpath(torch.__file__))
 
 
+def _cuda_toolkit_root() -> str | None:
+    """Locate CUDA toolkit root (directory containing include/cuda_runtime.h)."""
+    candidates: list[str] = []
+    for key in ("CUDA_HOME", "CUDA_PATH"):
+        val = os.environ.get(key)
+        if val:
+            candidates.append(val)
+
+    conda_prefix = os.environ.get("CONDA_PREFIX")
+    if conda_prefix:
+        candidates.extend(
+            [
+                os.path.join(conda_prefix, "targets", "x86_64-linux"),
+                conda_prefix,
+            ]
+        )
+    candidates.append("/usr/local/cuda")
+
+    seen: set[str] = set()
+    for root in candidates:
+        root = os.path.realpath(root)
+        if root in seen:
+            continue
+        seen.add(root)
+        if os.path.isfile(os.path.join(root, "include", "cuda_runtime.h")):
+            return root
+    return None
+
+
+def _find_nvcc(cuda_root: str) -> str | None:
+    conda_prefix = os.environ.get("CONDA_PREFIX", "")
+    for candidate in (
+        os.path.join(cuda_root, "bin", "nvcc"),
+        os.path.join(conda_prefix, "bin", "nvcc") if conda_prefix else None,
+        shutil.which("nvcc"),
+    ):
+        if candidate and os.path.isfile(candidate):
+            return os.path.realpath(candidate)
+    return None
+
+
+def _prepend_env_path(env: dict, key: str, *paths: str) -> None:
+    parts = [p for p in paths if p and os.path.isdir(p)]
+    existing = env.get(key, "")
+    if existing:
+        parts.append(existing)
+    if parts:
+        env[key] = os.pathsep.join(parts)
+
+
+def _pip_nvidia_include_dirs() -> list[str]:
+    """Headers from pip nvidia-* wheels when conda toolkit is minimal."""
+    import pathlib
+    import site
+
+    dirs: list[str] = []
+    for sp in site.getsitepackages():
+        nvidia = pathlib.Path(sp) / "nvidia"
+        if not nvidia.is_dir():
+            continue
+        for pkg in sorted(nvidia.iterdir()):
+            inc = pkg / "include"
+            if inc.is_dir():
+                dirs.append(str(inc))
+    return dirs
+
+
+def _setup_cuda_build_env(env: dict) -> str | None:
+    """Export CUDA paths for cmake/nvcc (incl. conda pip wheel layout)."""
+    cuda_root = _cuda_toolkit_root()
+    if not cuda_root:
+        return None
+
+    env.setdefault("CUDA_HOME", cuda_root)
+    env.setdefault("CUDA_PATH", cuda_root)
+    _prepend_env_path(env, "CPATH", os.path.join(cuda_root, "include"))
+    _prepend_env_path(env, "CPATH", *_pip_nvidia_include_dirs())
+    _prepend_env_path(env, "LIBRARY_PATH", os.path.join(cuda_root, "lib"))
+    _prepend_env_path(env, "LD_LIBRARY_PATH", os.path.join(cuda_root, "lib"))
+    _prepend_env_path(env, "CMAKE_PREFIX_PATH", cuda_root)
+    return cuda_root
+
+
+def _find_nvrtc_library() -> str | None:
+    try:
+        import importlib.util
+        import pathlib
+
+        spec = importlib.util.find_spec("nvidia.cuda_nvrtc")
+        if spec is None or not spec.origin:
+            return None
+        lib = pathlib.Path(spec.origin).resolve().parent / "lib" / "libnvrtc.so.12"
+        return str(lib) if lib.is_file() else None
+    except Exception:
+        return None
+
+
+def _append_cuda_cmake_args(cmake_args: list[str], cuda_root: str) -> None:
+    nvcc = _find_nvcc(cuda_root)
+    if nvcc:
+        cmake_args.append(f"-DCMAKE_CUDA_COMPILER={nvcc}")
+    cmake_args.append(f"-DCUDAToolkit_ROOT={cuda_root}")
+    cmake_args.append(f"-DCUDA_TOOLKIT_ROOT_DIR={cuda_root}")
+    nvrtc = _find_nvrtc_library()
+    if nvrtc:
+        cmake_args.append(f"-DCUDA_nvrtc_LIBRARY={nvrtc}")
+
+
+def _find_flaggems_dir() -> str | None:
+    env_dir = os.environ.get("FLAGGEMS_DIR")
+    if env_dir and os.path.isfile(os.path.join(env_dir, "FlagGemsConfig.cmake")):
+        return env_dir
+
+    import site
+
+    search_roots = list(site.getsitepackages())
+    user_site = site.getusersitepackages()
+    if user_site:
+        search_roots.append(user_site)
+    for sp in search_roots:
+        cand = os.path.join(sp, "flag_gems", "lib", "cmake", "FlagGems")
+        if os.path.isfile(os.path.join(cand, "FlagGemsConfig.cmake")):
+            return cand
+    return None
+
+
 def _metax_path_from_env() -> str:
     return (
         os.environ.get("METAX_PATH")
@@ -176,11 +302,6 @@ def build_deps():
             )
             cmake_args.append(f"-D{kernel_opt}={cmake_val}")
 
-    # FlagGems C++ library path (optional, enables low-overhead C++ dispatch)
-    flaggems_dir = os.environ.get("FLAGGEMS_DIR")
-    if flaggems_dir:
-        cmake_args.append(f"-DFlagGems_DIR={flaggems_dir}")
-
     build_env = os.environ.copy()
     build_jobs = _cmake_build_jobs()
     build_env["CMAKE_BUILD_PARALLEL_LEVEL"] = str(build_jobs)
@@ -191,11 +312,13 @@ def build_deps():
         cmake_args.append(f"-DMETAX_PATH={metax_path}")
         cmake_args.append("-G")
         cmake_args.append("Ninja")
-    else:
-        # Add CUDA toolkit path if available
-        cuda_home = os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH")
-        if cuda_home:
-            cmake_args.append(f"-DCMAKE_CUDA_COMPILER={cuda_home}/bin/nvcc")
+    elif ACCELERATOR == "cuda":
+        cuda_root = _setup_cuda_build_env(build_env)
+        if cuda_root:
+            _append_cuda_cmake_args(cmake_args, cuda_root)
+        flaggems_dir = _find_flaggems_dir()
+        if flaggems_dir:
+            cmake_args.append(f"-DFLAGGEMS_DIR={flaggems_dir}")
 
     subprocess.check_call([cmake, BASE_DIR] + cmake_args, cwd=build_dir, env=build_env)
 
