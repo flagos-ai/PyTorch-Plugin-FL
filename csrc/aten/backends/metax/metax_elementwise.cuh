@@ -7,23 +7,26 @@
 
 #include <cuda_runtime.h>
 
+#include <cstdint>
+
 #include <c10/util/Exception.h>
 
 namespace at::native::flagos::metax {
 
-inline cudaStream_t current_stream() {
+constexpr int kBlockSize = 256;
+
+inline cudaStream_t CurrentStream() {
   return nullptr;
 }
 
 template <typename Kernel, typename... Args>
-inline void launch_1d(int64_t n, Kernel kernel, Args... args) {
+inline void Launch1d(int64_t n, Kernel kernel, Args... args) {
   if (n == 0) {
     return;
   }
-  const int threads = 256;
   const int blocks = static_cast<int>(
-      (n + static_cast<int64_t>(threads) - 1) / threads);
-  kernel<<<blocks, threads, 0, current_stream()>>>(n, args...);
+      (n + static_cast<int64_t>(kBlockSize) - 1) / kBlockSize);
+  kernel<<<blocks, kBlockSize, 0, CurrentStream()>>>(n, args...);
   const cudaError_t err = cudaGetLastError();
   TORCH_CHECK(
       err == cudaSuccess,
@@ -31,4 +34,4 @@ inline void launch_1d(int64_t n, Kernel kernel, Args... args) {
       cudaGetErrorString(err));
 }
 
-} // namespace at::native::flagos::metax
+}  // namespace at::native::flagos::metax

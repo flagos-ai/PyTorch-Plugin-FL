@@ -9,4 +9,4 @@ namespace at::native::flagos {
 FLAGOS_REGISTER_DISPATCH(
     LeTensorFn, le_tensor_stub, FlagosDevice::kMetax, LeTensorKernel)
 
-} // namespace at::native::flagos
+}  // namespace at::native::flagos

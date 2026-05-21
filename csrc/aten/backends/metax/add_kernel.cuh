@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include <cstdint>
+
 #include <ATen/Dispatch.h>
 #include <ATen/OpMathType.h>
 #include <ATen/core/Tensor.h>
@@ -15,13 +17,14 @@ namespace at::native::flagos {
 namespace {
 
 template <typename scalar_t, typename opmath_t>
-__global__ void add_contig_kernel(
+__global__ void AddContigKernel(
     int64_t n,
     scalar_t* __restrict__ out,
     const scalar_t* __restrict__ self,
     const scalar_t* __restrict__ other,
     opmath_t alpha) {
-  const int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const int64_t idx =
+      static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (idx >= n) {
     return;
   }
@@ -31,13 +34,14 @@ __global__ void add_contig_kernel(
 }
 
 template <typename scalar_t, typename opmath_t>
-__global__ void add_self_scalar_kernel(
+__global__ void AddSelfScalarKernel(
     int64_t n,
     scalar_t* __restrict__ out,
     const scalar_t* __restrict__ self,
     opmath_t other_val,
     opmath_t alpha) {
-  const int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const int64_t idx =
+      static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (idx >= n) {
     return;
   }
@@ -46,13 +50,14 @@ __global__ void add_self_scalar_kernel(
 }
 
 template <typename scalar_t, typename opmath_t>
-__global__ void add_other_scalar_kernel(
+__global__ void AddOtherScalarKernel(
     int64_t n,
     scalar_t* __restrict__ out,
     opmath_t self_val,
     const scalar_t* __restrict__ other,
     opmath_t alpha) {
-  const int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const int64_t idx =
+      static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (idx >= n) {
     return;
   }
@@ -61,7 +66,7 @@ __global__ void add_other_scalar_kernel(
 }
 
 template <typename scalar_t, typename opmath_t>
-void launch_add_iter(at::TensorIteratorBase& iter, opmath_t alpha) {
+void LaunchAddIter(at::TensorIteratorBase& iter, opmath_t alpha) {
   TORCH_INTERNAL_ASSERT(iter.is_contiguous());
   const int64_t n = iter.numel();
   scalar_t* out = static_cast<scalar_t*>(iter.data_ptr(0));
@@ -70,15 +75,20 @@ void launch_add_iter(at::TensorIteratorBase& iter, opmath_t alpha) {
     const opmath_t other_val = iter.scalar_value<opmath_t>(1);
     iter.remove_operand(1);
     const scalar_t* self = static_cast<const scalar_t*>(iter.data_ptr(1));
-    metax::launch_1d(
-        n, add_self_scalar_kernel<scalar_t, opmath_t>, out, self, other_val, alpha);
+    metax::Launch1d(
+        n,
+        AddSelfScalarKernel<scalar_t, opmath_t>,
+        out,
+        self,
+        other_val,
+        alpha);
   } else if (iter.is_cpu_scalar(2)) {
     const opmath_t self_val = iter.scalar_value<opmath_t>(2);
     iter.remove_operand(2);
     const scalar_t* other = static_cast<const scalar_t*>(iter.data_ptr(2));
-    metax::launch_1d(
+    metax::Launch1d(
         n,
-        add_other_scalar_kernel<scalar_t, opmath_t>,
+        AddOtherScalarKernel<scalar_t, opmath_t>,
         out,
         self_val,
         other,
@@ -87,15 +97,17 @@ void launch_add_iter(at::TensorIteratorBase& iter, opmath_t alpha) {
     TORCH_INTERNAL_ASSERT(iter.ninputs() == 2);
     const scalar_t* self = static_cast<const scalar_t*>(iter.data_ptr(1));
     const scalar_t* other = static_cast<const scalar_t*>(iter.data_ptr(2));
-    metax::launch_1d(
-        n, add_contig_kernel<scalar_t, opmath_t>, out, self, other, alpha);
+    metax::Launch1d(
+        n, AddContigKernel<scalar_t, opmath_t>, out, self, other, alpha);
   }
 }
 
-} // namespace
+}  // namespace
 
 inline at::Tensor AddTensorKernel(
-    const at::Tensor& self, const at::Tensor& other, const at::Scalar& alpha) {
+    const at::Tensor& self,
+    const at::Tensor& other,
+    const at::Scalar& alpha) {
   at::Tensor output;
   auto iter = at::TensorIteratorConfig()
                   .add_output(output)
@@ -134,7 +146,7 @@ inline at::Tensor AddTensorKernel(
           "add_metax",
           [&]() {
             using opmath_t = at::opmath_type<scalar_t>;
-            launch_add_iter<scalar_t, opmath_t>(sub_iter, alpha.to<opmath_t>());
+            LaunchAddIter<scalar_t, opmath_t>(sub_iter, alpha.to<opmath_t>());
           });
     }
     return iter.output();
@@ -150,10 +162,10 @@ inline at::Tensor AddTensorKernel(
       "add_metax",
       [&]() {
         using opmath_t = at::opmath_type<scalar_t>;
-        launch_add_iter<scalar_t, opmath_t>(iter, alpha.to<opmath_t>());
+        LaunchAddIter<scalar_t, opmath_t>(iter, alpha.to<opmath_t>());
       });
 
   return iter.output();
 }
 
-} // namespace at::native::flagos
+}  // namespace at::native::flagos

@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <type_traits>
 
 #include <ATen/Dispatch.h>
@@ -17,12 +18,13 @@ namespace at::native::flagos {
 namespace {
 
 template <typename scalar_t>
-__global__ void mul_contig_kernel(
+__global__ void MulContigKernel(
     int64_t n,
     scalar_t* __restrict__ out,
     const scalar_t* __restrict__ self,
     const scalar_t* __restrict__ other) {
-  const int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const int64_t idx =
+      static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (idx >= n) {
     return;
   }
@@ -34,12 +36,13 @@ __global__ void mul_contig_kernel(
 }
 
 template <typename scalar_t, typename opmath_t>
-__global__ void mul_self_scalar_kernel(
+__global__ void MulSelfScalarKernel(
     int64_t n,
     scalar_t* __restrict__ out,
     const scalar_t* __restrict__ self,
     opmath_t other_val) {
-  const int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const int64_t idx =
+      static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (idx >= n) {
     return;
   }
@@ -52,12 +55,13 @@ __global__ void mul_self_scalar_kernel(
 }
 
 template <typename scalar_t, typename opmath_t>
-__global__ void mul_other_scalar_kernel(
+__global__ void MulOtherScalarKernel(
     int64_t n,
     scalar_t* __restrict__ out,
     opmath_t self_val,
     const scalar_t* __restrict__ other) {
-  const int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const int64_t idx =
+      static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (idx >= n) {
     return;
   }
@@ -70,7 +74,7 @@ __global__ void mul_other_scalar_kernel(
 }
 
 template <typename scalar_t, typename opmath_t>
-void launch_mul_iter(at::TensorIteratorBase& iter) {
+void LaunchMulIter(at::TensorIteratorBase& iter) {
   TORCH_INTERNAL_ASSERT(iter.is_contiguous());
   const int64_t n = iter.numel();
   scalar_t* out = static_cast<scalar_t*>(iter.data_ptr(0));
@@ -79,25 +83,27 @@ void launch_mul_iter(at::TensorIteratorBase& iter) {
     const opmath_t other_val = iter.scalar_value<opmath_t>(1);
     iter.remove_operand(1);
     const scalar_t* self = static_cast<const scalar_t*>(iter.data_ptr(1));
-    metax::launch_1d(
-        n, mul_self_scalar_kernel<scalar_t, opmath_t>, out, self, other_val);
+    metax::Launch1d(
+        n, MulSelfScalarKernel<scalar_t, opmath_t>, out, self, other_val);
   } else if (iter.is_cpu_scalar(2)) {
     const opmath_t self_val = iter.scalar_value<opmath_t>(2);
     iter.remove_operand(2);
     const scalar_t* other = static_cast<const scalar_t*>(iter.data_ptr(2));
-    metax::launch_1d(
-        n, mul_other_scalar_kernel<scalar_t, opmath_t>, out, self_val, other);
+    metax::Launch1d(
+        n, MulOtherScalarKernel<scalar_t, opmath_t>, out, self_val, other);
   } else {
     TORCH_INTERNAL_ASSERT(iter.ninputs() == 2);
     const scalar_t* self = static_cast<const scalar_t*>(iter.data_ptr(1));
     const scalar_t* other = static_cast<const scalar_t*>(iter.data_ptr(2));
-    metax::launch_1d(n, mul_contig_kernel<scalar_t>, out, self, other);
+    metax::Launch1d(n, MulContigKernel<scalar_t>, out, self, other);
   }
 }
 
-} // namespace
+}  // namespace
 
-inline at::Tensor MulTensorKernel(const at::Tensor& self, const at::Tensor& other) {
+inline at::Tensor MulTensorKernel(
+    const at::Tensor& self,
+    const at::Tensor& other) {
   at::Tensor output;
   auto iter = at::TensorIteratorConfig()
                   .add_output(output)
@@ -109,7 +115,6 @@ inline at::Tensor MulTensorKernel(const at::Tensor& self, const at::Tensor& othe
                   .enforce_safe_casting_to_output(true)
                   .build();
 
-  // allclose/isclose 会走 rtol * abs(tensor) 等广播 mul，iter 常为非 contiguous。
   if (!iter.is_contiguous() && iter.numel() > 0) {
     if (self.device() != other.device()) {
       if (self.device().is_cpu() && self.numel() == 1) {
@@ -121,7 +126,8 @@ inline at::Tensor MulTensorKernel(const at::Tensor& self, const at::Tensor& othe
     } else {
       const auto shape = iter.output().sizes();
       return MulTensorKernel(
-          self.expand(shape).contiguous(), other.expand(shape).contiguous());
+          self.expand(shape).contiguous(),
+          other.expand(shape).contiguous());
     }
   }
 
@@ -135,7 +141,7 @@ inline at::Tensor MulTensorKernel(const at::Tensor& self, const at::Tensor& othe
           "mul_metax",
           [&]() {
             using opmath_t = at::opmath_type<scalar_t>;
-            launch_mul_iter<scalar_t, opmath_t>(sub_iter);
+            LaunchMulIter<scalar_t, opmath_t>(sub_iter);
           });
     }
     return iter.output();
@@ -151,10 +157,10 @@ inline at::Tensor MulTensorKernel(const at::Tensor& self, const at::Tensor& othe
       "mul_metax",
       [&]() {
         using opmath_t = at::opmath_type<scalar_t>;
-        launch_mul_iter<scalar_t, opmath_t>(iter);
+        LaunchMulIter<scalar_t, opmath_t>(iter);
       });
 
   return iter.output();
 }
 
-} // namespace at::native::flagos
+}  // namespace at::native::flagos
