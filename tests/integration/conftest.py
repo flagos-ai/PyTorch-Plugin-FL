@@ -3,9 +3,6 @@ import pytest
 
 def pytest_addoption(parser):
     parser.addoption(
-        "--device", default="flagos", help="Device to run tests on (flagos, cuda)"
-    )
-    parser.addoption(
         "--model", default="/nfs/hcr/models/Qwen/Qwen3-0.6B", help="Path to Qwen3 model"
     )
     parser.addoption(

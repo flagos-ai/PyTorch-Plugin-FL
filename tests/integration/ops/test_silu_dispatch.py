@@ -80,6 +80,13 @@ class TestSiluDispatch:
         assert result.returncode == 0
         assert "[flagos dispatch] silu -> cuda" in result.stderr
 
+    def test_dispatch_log_ascend(self):
+        result = _run_silu_subprocess(
+            {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_silu": "ascend"}
+        )
+        assert result.returncode == 0
+        assert "[flagos dispatch] silu -> ascend" in result.stderr
+
     def test_flaggems_backend_raises_error(self):
         """Selecting flaggems backend must fail — not implemented."""
         result = _run_silu_subprocess(
@@ -88,3 +95,14 @@ class TestSiluDispatch:
         )
         assert result.returncode != 0
         assert "backend not registered" in result.stderr
+
+
+class TestSiluAscendDispatch:
+    """Verify Ascend backend correctness."""
+
+    def test_ascend_correctness(self):
+        """Verify silu on ascend backend matches CPU reference."""
+        result = _run_silu_subprocess(
+            {"FLAGOS_OP_silu": "ascend"}
+        )
+        assert result.returncode == 0

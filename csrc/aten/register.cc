@@ -11,21 +11,24 @@
 #include "contiguous_ops.h"
 #include "fallback.h"
 #include "mm.h"
+<<<<<<< HEAD
+#include "add.h"
+#include "silu.h"
+#include "neg.h"
+=======
 
 // Ascend development: only register implemented ops above.
 // Unregistered ops fall through to WrapperCpuFallback automatically.
 #ifndef USE_ASCEND
+>>>>>>> main
 #include "bmm.h"
 #include "cat.h"
 #include "embedding.h"
-#include "add.h"
 #include "mul.h"
-#include "silu.h"
 #include "rsqrt.h"
 #include "mean.h"
 #include "cos.h"
 #include "sin.h"
-#include "neg.h"
 #include "pow.h"
 #include "all.h"
 #include "softmax.h"
@@ -188,7 +191,23 @@ at::Tensor& WrapperMmOut(const at::Tensor& self, const at::Tensor& mat2, at::Ten
   return out;
 }
 
+<<<<<<< HEAD
+at::Tensor WrapperAddTensor(
+    const at::Tensor& self, const at::Tensor& other, const at::Scalar& alpha) {
+  return at::native::flagos::add_tensor_stub(self, other, alpha);
+}
+
+at::Tensor WrapperSilu(const at::Tensor& self) {
+  return at::native::flagos::silu_stub(self);
+}
+
+at::Tensor WrapperNeg(const at::Tensor& self) {
+  return at::native::flagos::neg_stub(self);
+}
+
+=======
 #ifndef USE_ASCEND
+>>>>>>> main
 at::Tensor WrapperBmm(const at::Tensor& self, const at::Tensor& mat2) {
   auto out = at::empty({self.size(0), self.size(1), mat2.size(2)}, self.options());
   at::native::flagos::StructuredBmmOut op(out);
@@ -215,18 +234,9 @@ at::Tensor WrapperEmbedding(
       weight, indices, padding_idx.expect_int(), scale_grad_by_freq, sparse);
 }
 
-at::Tensor WrapperAddTensor(
-    const at::Tensor& self, const at::Tensor& other, const at::Scalar& alpha) {
-  return at::native::flagos::add_tensor_stub(self, other, alpha);
-}
-
 at::Tensor WrapperMulTensor(
     const at::Tensor& self, const at::Tensor& other) {
   return at::native::flagos::mul_tensor_stub(self, other);
-}
-
-at::Tensor WrapperSilu(const at::Tensor& self) {
-  return at::native::flagos::silu_stub(self);
 }
 
 at::Tensor WrapperRsqrt(const at::Tensor& self) {
@@ -245,10 +255,6 @@ at::Tensor WrapperCos(const at::Tensor& self) {
 
 at::Tensor WrapperSin(const at::Tensor& self) {
   return at::native::flagos::sin_stub(self);
-}
-
-at::Tensor WrapperNeg(const at::Tensor& self) {
-  return at::native::flagos::neg_stub(self);
 }
 
 at::Tensor WrapperPowTensorScalar(const at::Tensor& self, const at::Scalar& exp) {
@@ -383,21 +389,26 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("clone", WrapperClone);
   m.impl("_to_copy", WrapperToCopy);
   m.impl("record_stream", WrapperRecordStream);
+#ifndef USE_ASCEND
+  // CUDA/FlagGems build: register all ops
   m.impl("mm", WrapperMm);
   m.impl("mm.out", WrapperMmOut);
+<<<<<<< HEAD
+  m.impl("add.Tensor", WrapperAddTensor);
+  m.impl("silu", WrapperSilu);
+  m.impl("neg", WrapperNeg);
+=======
 #ifndef USE_ASCEND
+>>>>>>> main
   m.impl("bmm", WrapperBmm);
   m.impl("bmm.out", WrapperBmmOut);
   m.impl("cat", WrapperCat);
   m.impl("embedding", WrapperEmbedding);
-  m.impl("add.Tensor", WrapperAddTensor);
   m.impl("mul.Tensor", WrapperMulTensor);
-  m.impl("silu", WrapperSilu);
   m.impl("rsqrt", WrapperRsqrt);
   m.impl("mean.dim", WrapperMeanDim);
   m.impl("cos", WrapperCos);
   m.impl("sin", WrapperSin);
-  m.impl("neg", WrapperNeg);
   m.impl("pow.Tensor_Scalar", WrapperPowTensorScalar);
   m.impl("all", WrapperAll);
   m.impl("_softmax", WrapperSoftmax);
@@ -416,7 +427,45 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("embedding_dense_backward", WrapperEmbeddingDenseBackward);
   m.impl("nll_loss_forward", WrapperNllLossForward);
   m.impl("nll_loss_backward", WrapperNllLossBackward);
+<<<<<<< HEAD
+#else
+  // Ascend build: register only ops with Ascend kernel implementations
+  m.impl("mm", WrapperMm);
+  m.impl("mm.out", WrapperMmOut);
+  m.impl("add.Tensor", WrapperAddTensor);
+  m.impl("silu", WrapperSilu);
+  m.impl("neg", WrapperNeg);
+  m.impl("bmm", WrapperBmm);
+  m.impl("bmm.out", WrapperBmmOut);
+  m.impl("cat", WrapperCat);
+  m.impl("embedding", WrapperEmbedding);
+  m.impl("mul.Tensor", WrapperMulTensor);
+  m.impl("rsqrt", WrapperRsqrt);
+  m.impl("mean.dim", WrapperMeanDim);
+  m.impl("cos", WrapperCos);
+  m.impl("sin", WrapperSin);
+  m.impl("pow.Tensor_Scalar", WrapperPowTensorScalar);
+  m.impl("all", WrapperAll);
+  m.impl("_softmax", WrapperSoftmax);
+  m.impl("bitwise_and.Tensor", WrapperBitwiseAndTensor);
+  m.impl("le.Tensor", WrapperLeTensor);
+  m.impl("where.self", WrapperWhereSelf);
+  m.impl("index.Tensor", WrapperIndexTensor);
+  m.impl("new_ones", WrapperNewOnes);
+  m.impl("scalar_tensor", WrapperScalarTensor);
+  m.impl("ones_like", WrapperOnesLike);
+  m.impl("zeros", WrapperZeros);
+  m.impl("silu_backward", WrapperSiluBackward);
+  m.impl("sum.dim_IntList", WrapperSumDimIntList);
+  m.impl("slice_backward", WrapperSliceBackward);
+  m.impl("constant_pad_nd", WrapperConstantPadNd);
+  m.impl("embedding_dense_backward", WrapperEmbeddingDenseBackward);
+  m.impl("nll_loss_forward", WrapperNllLossForward);
+  m.impl("nll_loss_backward", WrapperNllLossBackward);
+#endif
+=======
 #endif // USE_ASCEND
+>>>>>>> main
 }
 
 // Register fallback for all unimplemented operators
