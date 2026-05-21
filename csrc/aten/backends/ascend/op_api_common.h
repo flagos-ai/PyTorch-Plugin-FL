@@ -25,6 +25,7 @@ inline aclDataType ToAclDataType(at::ScalarType type) {
     case at::kShort:   return ACL_INT16;
     case at::kChar:    return ACL_INT8;
     case at::kByte:    return ACL_UINT8;
+    case at::kBool:    return ACL_BOOL;
     default:
       TORCH_CHECK(false, "Unsupported dtype for ACL: ", type);
   }
@@ -124,6 +125,38 @@ struct AclScalarWrapper {
   }
 
   const aclScalar* get() const { return acl_scalar; }
+};
+
+struct AclIntArrayWrapper {
+  aclIntArray* acl_array = nullptr;
+
+  AclIntArrayWrapper(at::IntArrayRef arr) {
+    acl_array = aclCreateIntArray(arr.data(), arr.size());
+  }
+
+  ~AclIntArrayWrapper() {
+    if (acl_array) {
+      aclDestroyIntArray(acl_array);
+    }
+  }
+
+  const aclIntArray* get() const { return acl_array; }
+};
+
+struct AclTensorListWrapper {
+  aclTensorList* acl_list = nullptr;
+
+  AclTensorListWrapper(const std::vector<const aclTensor*>& tensors) {
+    acl_list = aclCreateTensorList(tensors.data(), tensors.size());
+  }
+
+  ~AclTensorListWrapper() {
+    if (acl_list) {
+      aclDestroyTensorList(acl_list);
+    }
+  }
+
+  const aclTensorList* get() const { return acl_list; }
 };
 
 } // namespace at::native::flagos::ascend

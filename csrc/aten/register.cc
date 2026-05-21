@@ -14,10 +14,6 @@
 #include "add.h"
 #include "silu.h"
 #include "neg.h"
-
-// Ascend development: only register implemented ops above.
-// Unregistered ops fall through to WrapperCpuFallback automatically.
-#ifndef USE_ASCEND
 #include "bmm.h"
 #include "cat.h"
 #include "embedding.h"
@@ -43,7 +39,6 @@
 #include "constant_pad_nd.h"
 #include "embedding_dense_backward.h"
 #include "nll_loss.h"
-#endif // USE_ASCEND
 
 #include <ATen/native/CPUFallback.h>
 
@@ -201,7 +196,6 @@ at::Tensor WrapperNeg(const at::Tensor& self) {
   return at::native::flagos::neg_stub(self);
 }
 
-#ifndef USE_ASCEND
 at::Tensor WrapperBmm(const at::Tensor& self, const at::Tensor& mat2) {
   auto out = at::empty({self.size(0), self.size(1), mat2.size(2)}, self.options());
   at::native::flagos::StructuredBmmOut op(out);
@@ -359,7 +353,6 @@ at::Tensor WrapperNllLossBackward(
   return at::native::flagos::nll_loss_backward_stub(
       grad_output, self, target, weight, reduction, ignore_index, total_weight);
 }
-#endif // USE_ASCEND
 
 } // namespace
 
@@ -383,12 +376,13 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("clone", WrapperClone);
   m.impl("_to_copy", WrapperToCopy);
   m.impl("record_stream", WrapperRecordStream);
+#ifndef USE_ASCEND
+  // CUDA/FlagGems build: register all ops
   m.impl("mm", WrapperMm);
   m.impl("mm.out", WrapperMmOut);
   m.impl("add.Tensor", WrapperAddTensor);
   m.impl("silu", WrapperSilu);
   m.impl("neg", WrapperNeg);
-#ifndef USE_ASCEND
   m.impl("bmm", WrapperBmm);
   m.impl("bmm.out", WrapperBmmOut);
   m.impl("cat", WrapperCat);
@@ -416,7 +410,41 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("embedding_dense_backward", WrapperEmbeddingDenseBackward);
   m.impl("nll_loss_forward", WrapperNllLossForward);
   m.impl("nll_loss_backward", WrapperNllLossBackward);
-#endif // USE_ASCEND
+#else
+  // Ascend build: register only ops with Ascend kernel implementations
+  m.impl("mm", WrapperMm);
+  m.impl("mm.out", WrapperMmOut);
+  m.impl("add.Tensor", WrapperAddTensor);
+  m.impl("silu", WrapperSilu);
+  m.impl("neg", WrapperNeg);
+  m.impl("bmm", WrapperBmm);
+  m.impl("bmm.out", WrapperBmmOut);
+  m.impl("cat", WrapperCat);
+  m.impl("embedding", WrapperEmbedding);
+  m.impl("mul.Tensor", WrapperMulTensor);
+  m.impl("rsqrt", WrapperRsqrt);
+  m.impl("mean.dim", WrapperMeanDim);
+  m.impl("cos", WrapperCos);
+  m.impl("sin", WrapperSin);
+  m.impl("pow.Tensor_Scalar", WrapperPowTensorScalar);
+  m.impl("all", WrapperAll);
+  m.impl("_softmax", WrapperSoftmax);
+  m.impl("bitwise_and.Tensor", WrapperBitwiseAndTensor);
+  m.impl("le.Tensor", WrapperLeTensor);
+  m.impl("where.self", WrapperWhereSelf);
+  m.impl("index.Tensor", WrapperIndexTensor);
+  m.impl("new_ones", WrapperNewOnes);
+  m.impl("scalar_tensor", WrapperScalarTensor);
+  m.impl("ones_like", WrapperOnesLike);
+  m.impl("zeros", WrapperZeros);
+  m.impl("silu_backward", WrapperSiluBackward);
+  m.impl("sum.dim_IntList", WrapperSumDimIntList);
+  m.impl("slice_backward", WrapperSliceBackward);
+  m.impl("constant_pad_nd", WrapperConstantPadNd);
+  m.impl("embedding_dense_backward", WrapperEmbeddingDenseBackward);
+  m.impl("nll_loss_forward", WrapperNllLossForward);
+  m.impl("nll_loss_backward", WrapperNllLossBackward);
+#endif
 }
 
 // Register fallback for all unimplemented operators
