@@ -38,10 +38,10 @@ def _run_subprocess(extra_env: dict, check: bool = True) -> subprocess.Completed
     )
 
 
-@pytest.mark.anyplatform
 class TestConstantPadNdCorrectness:
     """constant_pad_nd correctness on flagos device."""
 
+    @pytest.mark.anyplatform
     def test_pad_1d(self):
         torch.manual_seed(0)
         a = torch.randn(4, 8, device=DEVICE)
@@ -52,6 +52,7 @@ class TestConstantPadNdCorrectness:
         assert torch.all(out.cpu()[:, :2] == 0.0)
         assert torch.all(out.cpu()[:, -3:] == 0.0)
 
+    @pytest.mark.anyplatform
     def test_pad_2d(self):
         torch.manual_seed(1)
         a = torch.randn(2, 3, 4, device=DEVICE)
@@ -60,6 +61,7 @@ class TestConstantPadNdCorrectness:
         # corners should be fill value
         assert out.cpu()[0, 0, 0].item() == -1.0
 
+    @pytest.mark.anyplatform
     def test_pad_matches_cpu(self):
         torch.manual_seed(2)
         a_cpu = torch.randn(3, 5, 7)
@@ -70,6 +72,7 @@ class TestConstantPadNdCorrectness:
         torch.testing.assert_close(out.cpu(), ref, rtol=1e-5, atol=1e-5)
 
     @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
+    @pytest.mark.anyplatform
     def test_pad_dtype(self, dtype):
         a = torch.randn(4, 4, device=DEVICE, dtype=dtype)
         out = F.pad(a, (1, 1), mode="constant", value=0.0)
@@ -77,10 +80,10 @@ class TestConstantPadNdCorrectness:
         assert out.shape == (4, 6)
 
 
-@pytest.mark.cuda
 class TestConstantPadNdDispatch:
     """Verify dispatch routing."""
 
+    @pytest.mark.cuda
     def test_dispatch_log_cuda(self):
         result = _run_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_constant_pad_nd": "cuda"}
@@ -88,6 +91,7 @@ class TestConstantPadNdDispatch:
         assert result.returncode == 0
         assert "[flagos dispatch] constant_pad_nd -> cuda" in result.stderr
 
+    @pytest.mark.cuda
     def test_flaggems_backend_raises_error(self):
         result = _run_subprocess(
             {"FLAGOS_OP_constant_pad_nd": "flaggems"},
@@ -97,10 +101,10 @@ class TestConstantPadNdDispatch:
         assert "backend not registered" in result.stderr
 
 
-@pytest.mark.ascend
 class TestConstantPadNdAscendDispatch:
     """Verify Ascend backend correctness."""
 
+    @pytest.mark.ascend
     def test_ascend_correctness(self):
         """Verify constant_pad_nd on ascend backend matches CPU reference."""
         result = _run_subprocess(

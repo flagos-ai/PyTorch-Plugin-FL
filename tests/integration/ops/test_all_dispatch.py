@@ -40,33 +40,37 @@ def _run_all_subprocess(
     )
 
 
-@pytest.mark.anyplatform
 class TestAllCorrectness:
     """torch.all correctness on flagos device."""
 
+    @pytest.mark.anyplatform
     def test_all_true(self):
         a = torch.ones(32, 32, device=DEVICE, dtype=torch.bool)
         out = torch.all(a)
         assert out.item() is True
         assert out.dtype == torch.bool
 
+    @pytest.mark.anyplatform
     def test_all_false(self):
         a = torch.zeros(32, 32, device=DEVICE, dtype=torch.bool)
         out = torch.all(a)
         assert out.item() is False
 
+    @pytest.mark.anyplatform
     def test_all_mixed(self):
         a = torch.ones(32, 32, device=DEVICE, dtype=torch.bool)
         a[0, 0] = False
         out = torch.all(a)
         assert out.item() is False
 
+    @pytest.mark.anyplatform
     def test_all_empty_tensor(self):
         """Empty tensor: all() is vacuously true."""
         a = torch.tensor([], device=DEVICE, dtype=torch.bool)
         out = torch.all(a)
         assert out.item() is True
 
+    @pytest.mark.anyplatform
     def test_all_numeric_types(self):
         """all() should work on numeric types (non-zero = True)."""
         torch.manual_seed(0)
@@ -75,6 +79,7 @@ class TestAllCorrectness:
         ref = torch.all(a.cpu())
         assert out.item() == ref.item()
 
+    @pytest.mark.cuda
     def test_all_matches_cuda(self):
         if not torch.cuda.is_available():
             pytest.skip("CUDA not available")
@@ -86,6 +91,7 @@ class TestAllCorrectness:
         assert out.item() == ref.item()
 
     @pytest.mark.parametrize("dtype", [torch.bool, torch.float32, torch.int32])
+    @pytest.mark.anyplatform
     def test_all_dtypes(self, dtype):
         if dtype == torch.bool:
             a = torch.ones(16, 16, device=DEVICE, dtype=dtype)
@@ -97,10 +103,10 @@ class TestAllCorrectness:
         assert out.dtype == torch.bool
 
 
-@pytest.mark.cuda
 class TestAllDispatch:
     """Verify dispatch routing and flaggems backend rejection."""
 
+    @pytest.mark.cuda
     def test_dispatch_log_cuda(self):
         result = _run_all_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_all": "cuda"}
@@ -108,6 +114,7 @@ class TestAllDispatch:
         assert result.returncode == 0
         assert "[flagos dispatch] all -> cuda" in result.stderr
 
+    @pytest.mark.cuda
     def test_flaggems_backend_raises_error(self):
         """Selecting flaggems backend must fail — not implemented."""
         result = _run_all_subprocess(
@@ -118,10 +125,10 @@ class TestAllDispatch:
         assert "backend not registered" in result.stderr
 
 
-@pytest.mark.ascend
 class TestAllAscendDispatch:
     """Verify Ascend backend correctness."""
 
+    @pytest.mark.ascend
     def test_ascend_correctness(self):
         """Verify all on ascend backend matches CPU reference."""
         result = _run_all_subprocess(

@@ -34,30 +34,32 @@ def _run_subprocess(extra_env: dict, check: bool = True) -> subprocess.Completed
     )
 
 
-@pytest.mark.anyplatform
 class TestScalarTensorCorrectness:
     """torch.scalar_tensor correctness on flagos device."""
 
+    @pytest.mark.anyplatform
     def test_float_value(self):
         out = torch.scalar_tensor(3.14, device=DEVICE)
         assert out.shape == ()
         assert out.device.type == "flagos"
         torch.testing.assert_close(out.cpu(), torch.tensor(3.14))
 
+    @pytest.mark.anyplatform
     def test_int_value(self):
         out = torch.scalar_tensor(42, device=DEVICE, dtype=torch.int64)
         assert out.dtype == torch.int64
         assert out.item() == 42
 
+    @pytest.mark.anyplatform
     def test_zero(self):
         out = torch.scalar_tensor(0.0, device=DEVICE)
         assert out.item() == 0.0
 
 
-@pytest.mark.cuda
 class TestScalarTensorDispatch:
     """Verify dispatch routing."""
 
+    @pytest.mark.cuda
     def test_dispatch_log_cuda(self):
         result = _run_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_scalar_tensor": "cuda"}
@@ -65,6 +67,7 @@ class TestScalarTensorDispatch:
         assert result.returncode == 0, f"Failed:\n{result.stderr}"
         assert "[flagos dispatch] scalar_tensor -> cuda" in result.stderr
 
+    @pytest.mark.cuda
     def test_flaggems_backend_raises_error(self):
         result = _run_subprocess(
             {"FLAGOS_OP_scalar_tensor": "flaggems"},
@@ -74,10 +77,10 @@ class TestScalarTensorDispatch:
         assert "backend not registered" in result.stderr
 
 
-@pytest.mark.ascend
 class TestScalarTensorAscendDispatch:
     """Verify Ascend backend correctness."""
 
+    @pytest.mark.ascend
     def test_ascend_correctness(self):
         """Verify scalar_tensor on ascend backend matches CPU reference."""
         result = _run_subprocess(

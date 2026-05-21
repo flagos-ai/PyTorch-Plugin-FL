@@ -38,10 +38,10 @@ def _run_subprocess(extra_env: dict, check: bool = True) -> subprocess.Completed
     )
 
 
-@pytest.mark.anyplatform
 class TestNewOnesCorrectness:
     """tensor.new_ones correctness on flagos device."""
 
+    @pytest.mark.anyplatform
     def test_basic(self):
         x = torch.randn(4, 4, device=DEVICE)
         out = x.new_ones(3, 3)
@@ -49,28 +49,31 @@ class TestNewOnesCorrectness:
         assert out.device.type == "flagos"
         torch.testing.assert_close(out.cpu(), torch.ones(3, 3))
 
+    @pytest.mark.anyplatform
     def test_preserves_dtype(self):
         x = torch.randn(4, 4, device=DEVICE, dtype=torch.float16)
         out = x.new_ones(2, 2)
         assert out.dtype == torch.float16
         torch.testing.assert_close(out.cpu().float(), torch.ones(2, 2))
 
+    @pytest.mark.anyplatform
     def test_override_dtype(self):
         x = torch.randn(4, 4, device=DEVICE)
         out = x.new_ones(2, 2, dtype=torch.int32)
         assert out.dtype == torch.int32
         torch.testing.assert_close(out.cpu(), torch.ones(2, 2, dtype=torch.int32))
 
+    @pytest.mark.anyplatform
     def test_all_ones(self):
         x = torch.randn(8, device=DEVICE)
         out = x.new_ones(100)
         assert (out.cpu() == 1).all()
 
 
-@pytest.mark.cuda
 class TestNewOnesDispatch:
     """Verify dispatch routing."""
 
+    @pytest.mark.cuda
     def test_dispatch_log_cuda(self):
         result = _run_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_new_ones": "cuda"}
@@ -78,6 +81,7 @@ class TestNewOnesDispatch:
         assert result.returncode == 0, f"Failed:\n{result.stderr}"
         assert "[flagos dispatch] new_ones -> cuda" in result.stderr
 
+    @pytest.mark.cuda
     def test_flaggems_backend_raises_error(self):
         result = _run_subprocess(
             {"FLAGOS_OP_new_ones": "flaggems"},
@@ -87,10 +91,10 @@ class TestNewOnesDispatch:
         assert "backend not registered" in result.stderr
 
 
-@pytest.mark.ascend
 class TestNewOnesAscendDispatch:
     """Verify Ascend backend correctness."""
 
+    @pytest.mark.ascend
     def test_ascend_correctness(self):
         """Verify new_ones on ascend backend matches CPU reference."""
         result = _run_subprocess(

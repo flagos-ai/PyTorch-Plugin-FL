@@ -39,10 +39,10 @@ def _run_subprocess(extra_env: dict, check: bool = True) -> subprocess.Completed
     )
 
 
-@pytest.mark.anyplatform
 class TestEmbeddingDenseBackwardCorrectness:
     """embedding_dense_backward correctness on flagos device."""
 
+    @pytest.mark.anyplatform
     def test_embedding_backward_basic(self):
         torch.manual_seed(0)
         emb = torch.nn.Embedding(50, 16).to(DEVICE)
@@ -56,6 +56,7 @@ class TestEmbeddingDenseBackwardCorrectness:
         assert emb.weight.grad.cpu()[5].sum().item() != 0.0
         assert emb.weight.grad.cpu()[1].sum().item() == 0.0
 
+    @pytest.mark.anyplatform
     def test_embedding_backward_matches_cpu(self):
         torch.manual_seed(1)
         emb_cpu = torch.nn.Embedding(100, 32)
@@ -75,6 +76,7 @@ class TestEmbeddingDenseBackwardCorrectness:
             emb_fl.weight.grad.cpu(), emb_cpu.weight.grad, rtol=1e-5, atol=1e-5
         )
 
+    @pytest.mark.anyplatform
     def test_embedding_backward_duplicate_indices(self):
         torch.manual_seed(2)
         emb = torch.nn.Embedding(20, 8).to(DEVICE)
@@ -86,10 +88,10 @@ class TestEmbeddingDenseBackwardCorrectness:
         torch.testing.assert_close(emb.weight.grad.cpu()[3], expected)
 
 
-@pytest.mark.cuda
 class TestEmbeddingDenseBackwardDispatch:
     """Verify dispatch routing."""
 
+    @pytest.mark.cuda
     def test_dispatch_log_cuda(self):
         result = _run_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_embedding_dense_backward": "cuda"}
@@ -97,6 +99,7 @@ class TestEmbeddingDenseBackwardDispatch:
         assert result.returncode == 0
         assert "[flagos dispatch] embedding_dense_backward -> cuda" in result.stderr
 
+    @pytest.mark.cuda
     def test_flaggems_backend_raises_error(self):
         result = _run_subprocess(
             {"FLAGOS_OP_embedding_dense_backward": "flaggems"},
@@ -106,10 +109,10 @@ class TestEmbeddingDenseBackwardDispatch:
         assert "backend not registered" in result.stderr
 
 
-@pytest.mark.ascend
 class TestEmbeddingDenseBackwardAscendDispatch:
     """Verify Ascend backend correctness."""
 
+    @pytest.mark.ascend
     def test_ascend_correctness(self):
         """Verify embedding_dense_backward on ascend backend matches CPU reference."""
         result = _run_subprocess(

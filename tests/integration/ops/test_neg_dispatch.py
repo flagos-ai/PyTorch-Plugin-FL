@@ -38,11 +38,11 @@ def _run_neg_subprocess(
     )
 
 
-@pytest.mark.anyplatform
 class TestNegCorrectness:
     """torch.neg correctness on flagos device."""
 
     @pytest.mark.parametrize("shape", [(128, 256), (1,), (64, 64, 64)])
+    @pytest.mark.anyplatform
     def test_neg_shape(self, shape):
         torch.manual_seed(0)
         a = torch.randn(*shape, device=DEVICE)
@@ -50,6 +50,7 @@ class TestNegCorrectness:
         assert out.shape == shape
         assert out.device.type == "flagos"
 
+    @pytest.mark.anyplatform
     def test_neg_values(self):
         torch.manual_seed(1)
         a = torch.randn(32, 32, device=DEVICE)
@@ -57,6 +58,7 @@ class TestNegCorrectness:
         ref = -a.cpu()
         torch.testing.assert_close(out.cpu(), ref, rtol=0, atol=0)
 
+    @pytest.mark.cuda
     def test_neg_matches_cuda(self):
         if not torch.cuda.is_available():
             pytest.skip("CUDA not available")
@@ -70,6 +72,7 @@ class TestNegCorrectness:
     @pytest.mark.parametrize(
         "dtype", [torch.float16, torch.bfloat16, torch.float32, torch.int32]
     )
+    @pytest.mark.anyplatform
     def test_neg_dtypes(self, dtype):
         torch.manual_seed(3)
         if dtype.is_floating_point:
@@ -80,10 +83,10 @@ class TestNegCorrectness:
         assert out.dtype == dtype
 
 
-@pytest.mark.cuda
 class TestNegDispatch:
     """Verify dispatch routing and flaggems backend rejection."""
 
+    @pytest.mark.cuda
     def test_dispatch_log_cuda(self):
         result = _run_neg_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_neg": "cuda"}
@@ -91,6 +94,7 @@ class TestNegDispatch:
         assert result.returncode == 0
         assert "[flagos dispatch] neg -> cuda" in result.stderr
 
+    @pytest.mark.ascend
     def test_dispatch_log_ascend(self):
         result = _run_neg_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_neg": "ascend"}
@@ -98,6 +102,7 @@ class TestNegDispatch:
         assert result.returncode == 0
         assert "[flagos dispatch] neg -> ascend" in result.stderr
 
+    @pytest.mark.cuda
     def test_flaggems_backend_raises_error(self):
         """Selecting flaggems backend must fail — not implemented."""
         result = _run_neg_subprocess(
@@ -108,10 +113,10 @@ class TestNegDispatch:
         assert "backend not registered" in result.stderr
 
 
-@pytest.mark.ascend
 class TestNegAscendDispatch:
     """Verify Ascend backend correctness."""
 
+    @pytest.mark.ascend
     def test_ascend_correctness(self):
         """Verify neg on ascend backend matches CPU reference."""
         result = _run_neg_subprocess(

@@ -38,10 +38,10 @@ def _run_subprocess(extra_env: dict, check: bool = True) -> subprocess.Completed
     )
 
 
-@pytest.mark.anyplatform
 class TestSiluBackwardCorrectness:
     """silu_backward correctness on flagos device."""
 
+    @pytest.mark.anyplatform
     def test_silu_backward_basic(self):
         torch.manual_seed(0)
         x = torch.randn(32, 32, device=DEVICE, requires_grad=True)
@@ -51,6 +51,7 @@ class TestSiluBackwardCorrectness:
         assert x.grad.shape == x.shape
         assert x.grad.device.type == "flagos"
 
+    @pytest.mark.cuda
     def test_silu_backward_matches_cuda(self):
         torch.manual_seed(1)
         # Compute reference on CPU (avoid mixing cuda/flagos autograd streams)
@@ -68,6 +69,7 @@ class TestSiluBackwardCorrectness:
         )
 
     @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
+    @pytest.mark.anyplatform
     def test_silu_backward_dtype(self, dtype):
         torch.manual_seed(2)
         x = torch.randn(16, 16, device=DEVICE, dtype=dtype, requires_grad=True)
@@ -77,6 +79,7 @@ class TestSiluBackwardCorrectness:
         assert x.grad.dtype == dtype
 
     @pytest.mark.parametrize("shape", [(128, 256), (1,), (8, 16, 32)])
+    @pytest.mark.anyplatform
     def test_silu_backward_shapes(self, shape):
         torch.manual_seed(3)
         x = torch.randn(*shape, device=DEVICE, requires_grad=True)
@@ -85,10 +88,10 @@ class TestSiluBackwardCorrectness:
         assert x.grad.shape == shape
 
 
-@pytest.mark.cuda
 class TestSiluBackwardDispatch:
     """Verify dispatch routing."""
 
+    @pytest.mark.cuda
     def test_dispatch_log_cuda(self):
         result = _run_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_silu_backward": "cuda"}
@@ -96,6 +99,7 @@ class TestSiluBackwardDispatch:
         assert result.returncode == 0
         assert "[flagos dispatch] silu_backward -> cuda" in result.stderr
 
+    @pytest.mark.cuda
     def test_flaggems_backend_raises_error(self):
         result = _run_subprocess(
             {"FLAGOS_OP_silu_backward": "flaggems"},
@@ -105,10 +109,10 @@ class TestSiluBackwardDispatch:
         assert "backend not registered" in result.stderr
 
 
-@pytest.mark.ascend
 class TestSiluBackwardAscendDispatch:
     """Verify Ascend backend correctness."""
 
+    @pytest.mark.ascend
     def test_ascend_correctness(self):
         """Verify silu_backward on ascend backend matches CPU reference."""
         result = _run_subprocess(

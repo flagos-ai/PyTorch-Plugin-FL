@@ -37,11 +37,11 @@ def _run_subprocess(extra_env: dict, check: bool = True) -> subprocess.Completed
     )
 
 
-@pytest.mark.anyplatform
 class TestOnesLikeCorrectness:
     """torch.ones_like correctness on flagos device."""
 
     @pytest.mark.parametrize("shape", [(128, 256), (1,), (64, 64, 64)])
+    @pytest.mark.anyplatform
     def test_ones_like_shape(self, shape):
         a = torch.randn(*shape, device=DEVICE)
         out = torch.ones_like(a)
@@ -50,12 +50,14 @@ class TestOnesLikeCorrectness:
         assert torch.all(out.cpu() == 1.0)
 
     @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
+    @pytest.mark.anyplatform
     def test_ones_like_dtype(self, dtype):
         a = torch.randn(8, 8, device=DEVICE, dtype=dtype)
         out = torch.ones_like(a)
         assert out.dtype == dtype
         assert torch.all(out.cpu() == 1.0)
 
+    @pytest.mark.anyplatform
     def test_ones_like_with_explicit_dtype(self):
         a = torch.randn(4, 4, device=DEVICE, dtype=torch.float32)
         out = torch.ones_like(a, dtype=torch.float16)
@@ -63,10 +65,10 @@ class TestOnesLikeCorrectness:
         assert torch.all(out.cpu() == 1.0)
 
 
-@pytest.mark.cuda
 class TestOnesLikeDispatch:
     """Verify dispatch routing."""
 
+    @pytest.mark.cuda
     def test_dispatch_log_cuda(self):
         result = _run_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_ones_like": "cuda"}
@@ -74,6 +76,7 @@ class TestOnesLikeDispatch:
         assert result.returncode == 0
         assert "[flagos dispatch] ones_like -> cuda" in result.stderr
 
+    @pytest.mark.cuda
     def test_flaggems_backend_raises_error(self):
         result = _run_subprocess(
             {"FLAGOS_OP_ones_like": "flaggems"},
@@ -83,10 +86,10 @@ class TestOnesLikeDispatch:
         assert "backend not registered" in result.stderr
 
 
-@pytest.mark.ascend
 class TestOnesLikeAscendDispatch:
     """Verify Ascend backend correctness."""
 
+    @pytest.mark.ascend
     def test_ascend_correctness(self):
         """Verify ones_like on ascend backend matches CPU reference."""
         result = _run_subprocess(

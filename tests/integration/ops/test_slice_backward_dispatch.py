@@ -38,10 +38,10 @@ def _run_subprocess(extra_env: dict, check: bool = True) -> subprocess.Completed
     )
 
 
-@pytest.mark.anyplatform
 class TestSliceBackwardCorrectness:
     """slice_backward correctness on flagos device."""
 
+    @pytest.mark.anyplatform
     def test_slice_backward_basic(self):
         torch.manual_seed(0)
         x = torch.randn(4, 8, device=DEVICE, requires_grad=True)
@@ -54,6 +54,7 @@ class TestSliceBackwardCorrectness:
         ref_grad[:, 2:6] = 1.0
         torch.testing.assert_close(x.grad.cpu(), ref_grad)
 
+    @pytest.mark.anyplatform
     def test_slice_backward_step(self):
         torch.manual_seed(1)
         x = torch.randn(16, device=DEVICE, requires_grad=True)
@@ -63,6 +64,7 @@ class TestSliceBackwardCorrectness:
         ref_grad[::2] = 1.0
         torch.testing.assert_close(x.grad.cpu(), ref_grad)
 
+    @pytest.mark.anyplatform
     def test_slice_backward_matches_cpu(self):
         torch.manual_seed(2)
         x_cpu = torch.randn(8, 16, requires_grad=True)
@@ -77,10 +79,10 @@ class TestSliceBackwardCorrectness:
         torch.testing.assert_close(x_fl.grad.cpu(), x_cpu.grad, rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.cuda
 class TestSliceBackwardDispatch:
     """Verify dispatch routing."""
 
+    @pytest.mark.cuda
     def test_dispatch_log_cuda(self):
         result = _run_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_slice_backward": "cuda"}
@@ -88,6 +90,7 @@ class TestSliceBackwardDispatch:
         assert result.returncode == 0
         assert "[flagos dispatch] slice_backward -> cuda" in result.stderr
 
+    @pytest.mark.cuda
     def test_flaggems_backend_raises_error(self):
         result = _run_subprocess(
             {"FLAGOS_OP_slice_backward": "flaggems"},
@@ -97,10 +100,10 @@ class TestSliceBackwardDispatch:
         assert "backend not registered" in result.stderr
 
 
-@pytest.mark.ascend
 class TestSliceBackwardAscendDispatch:
     """Verify Ascend backend correctness."""
 
+    @pytest.mark.ascend
     def test_ascend_correctness(self):
         """Verify slice_backward on ascend backend matches CPU reference."""
         result = _run_subprocess(

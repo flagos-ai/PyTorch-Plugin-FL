@@ -41,11 +41,11 @@ def _run_mul_subprocess(
     )
 
 
-@pytest.mark.anyplatform
 class TestMulTensorCorrectness:
     """torch.mul correctness on flagos device."""
 
     @pytest.mark.parametrize("shape", [(128, 256), (1,), (64, 64, 64)])
+    @pytest.mark.anyplatform
     def test_mul_shape(self, shape):
         torch.manual_seed(0)
         a = torch.randn(*shape, device=DEVICE)
@@ -54,6 +54,7 @@ class TestMulTensorCorrectness:
         assert out.shape == shape
         assert out.device.type == "flagos"
 
+    @pytest.mark.anyplatform
     def test_mul_broadcast(self):
         torch.manual_seed(1)
         a = torch.randn(4, 8, device=DEVICE)
@@ -62,6 +63,7 @@ class TestMulTensorCorrectness:
         ref = a.cpu() * b.cpu()
         torch.testing.assert_close(out.cpu(), ref, rtol=1e-4, atol=1e-4)
 
+    @pytest.mark.cuda
     def test_mul_matches_cuda(self):
         if not torch.cuda.is_available():
             pytest.skip("CUDA not available")
@@ -75,10 +77,10 @@ class TestMulTensorCorrectness:
         torch.testing.assert_close(out.cpu(), ref.cpu(), rtol=1e-4, atol=1e-4)
 
 
-@pytest.mark.cuda
 class TestMulTensorDispatch:
     """Verify dispatch routing and flaggems backend rejection."""
 
+    @pytest.mark.cuda
     def test_dispatch_log_cuda(self):
         result = _run_mul_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_mul__Tensor": "cuda"}
@@ -86,6 +88,7 @@ class TestMulTensorDispatch:
         assert result.returncode == 0
         assert "[flagos dispatch] mul.Tensor -> cuda" in result.stderr
 
+    @pytest.mark.cuda
     def test_flaggems_backend_raises_error(self):
         """Selecting flaggems backend must fail — not implemented."""
         result = _run_mul_subprocess(
@@ -96,10 +99,10 @@ class TestMulTensorDispatch:
         assert "backend not registered" in result.stderr
 
 
-@pytest.mark.ascend
 class TestMulTensorAscendDispatch:
     """Verify Ascend backend correctness."""
 
+    @pytest.mark.ascend
     def test_ascend_correctness(self):
         """Verify mul.Tensor on ascend backend matches CPU reference."""
         result = _run_mul_subprocess(

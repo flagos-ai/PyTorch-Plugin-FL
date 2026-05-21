@@ -40,11 +40,11 @@ def _run_pow_subprocess(
     )
 
 
-@pytest.mark.anyplatform
 class TestPowTensorScalarCorrectness:
     """torch.pow(tensor, scalar) correctness on flagos device."""
 
     @pytest.mark.parametrize("shape", [(128, 256), (1,), (64, 64, 64)])
+    @pytest.mark.anyplatform
     def test_pow_shape(self, shape):
         torch.manual_seed(0)
         a = torch.randn(*shape, device=DEVICE).abs() + 0.1
@@ -53,6 +53,7 @@ class TestPowTensorScalarCorrectness:
         assert out.device.type == "flagos"
 
     @pytest.mark.parametrize("exp", [2.0, 3.0, 0.5, -1.0])
+    @pytest.mark.anyplatform
     def test_pow_values(self, exp):
         torch.manual_seed(1)
         a = torch.randn(32, 32, device=DEVICE).abs() + 0.1
@@ -60,6 +61,7 @@ class TestPowTensorScalarCorrectness:
         ref = torch.pow(a.cpu(), exp)
         torch.testing.assert_close(out.cpu(), ref, rtol=1e-4, atol=1e-4)
 
+    @pytest.mark.cuda
     def test_pow_matches_cuda(self):
         if not torch.cuda.is_available():
             pytest.skip("CUDA not available")
@@ -71,12 +73,14 @@ class TestPowTensorScalarCorrectness:
         torch.testing.assert_close(out.cpu(), ref.cpu(), rtol=1e-4, atol=1e-4)
 
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
+    @pytest.mark.anyplatform
     def test_pow_dtypes(self, dtype):
         torch.manual_seed(3)
         a = torch.randn(16, 16, device=DEVICE, dtype=dtype).abs() + 0.1
         out = torch.pow(a, 2.0)
         assert out.dtype == dtype
 
+    @pytest.mark.anyplatform
     def test_pow_fast_path_square(self):
         """Test exp=2 fast path."""
         torch.manual_seed(4)
@@ -85,6 +89,7 @@ class TestPowTensorScalarCorrectness:
         ref = a * a
         torch.testing.assert_close(out.cpu(), ref.cpu(), rtol=1e-6, atol=1e-6)
 
+    @pytest.mark.anyplatform
     def test_pow_fast_path_cube(self):
         """Test exp=3 fast path."""
         torch.manual_seed(5)
@@ -94,10 +99,10 @@ class TestPowTensorScalarCorrectness:
         torch.testing.assert_close(out.cpu(), ref.cpu(), rtol=1e-6, atol=1e-6)
 
 
-@pytest.mark.cuda
 class TestPowTensorScalarDispatch:
     """Verify dispatch routing and flaggems backend rejection."""
 
+    @pytest.mark.cuda
     def test_dispatch_log_cuda(self):
         result = _run_pow_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_pow__Tensor_Scalar": "cuda"}
@@ -105,6 +110,7 @@ class TestPowTensorScalarDispatch:
         assert result.returncode == 0
         assert "[flagos dispatch] pow.Tensor_Scalar -> cuda" in result.stderr
 
+    @pytest.mark.cuda
     def test_flaggems_backend_raises_error(self):
         """Selecting flaggems backend must fail — not implemented."""
         result = _run_pow_subprocess(
@@ -115,10 +121,10 @@ class TestPowTensorScalarDispatch:
         assert "backend not registered" in result.stderr
 
 
-@pytest.mark.ascend
 class TestPowTensorScalarAscendDispatch:
     """Verify Ascend backend correctness."""
 
+    @pytest.mark.ascend
     def test_ascend_correctness(self):
         """Verify pow.Tensor_Scalar on ascend backend matches CPU reference."""
         result = _run_pow_subprocess(

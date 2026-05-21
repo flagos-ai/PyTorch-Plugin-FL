@@ -41,11 +41,11 @@ def _run_add_subprocess(
     )
 
 
-@pytest.mark.anyplatform
 class TestAddTensorCorrectness:
     """torch.add correctness on flagos device."""
 
     @pytest.mark.parametrize("shape", [(128, 256), (1,), (64, 64, 64)])
+    @pytest.mark.anyplatform
     def test_add_shape(self, shape):
         torch.manual_seed(0)
         a = torch.randn(*shape, device=DEVICE)
@@ -54,6 +54,7 @@ class TestAddTensorCorrectness:
         assert out.shape == shape
         assert out.device.type == "flagos"
 
+    @pytest.mark.anyplatform
     def test_add_alpha(self):
         torch.manual_seed(1)
         a = torch.randn(32, 32, device=DEVICE)
@@ -62,6 +63,7 @@ class TestAddTensorCorrectness:
         ref = a.cpu() + 2.0 * b.cpu()
         torch.testing.assert_close(out.cpu(), ref, rtol=1e-4, atol=1e-4)
 
+    @pytest.mark.anyplatform
     def test_add_broadcast(self):
         torch.manual_seed(2)
         a = torch.randn(4, 8, device=DEVICE)
@@ -70,6 +72,7 @@ class TestAddTensorCorrectness:
         ref = a.cpu() + b.cpu()
         torch.testing.assert_close(out.cpu(), ref, rtol=1e-4, atol=1e-4)
 
+    @pytest.mark.cuda
     def test_add_matches_cuda(self):
         if not torch.cuda.is_available():
             pytest.skip("CUDA not available")
@@ -83,10 +86,10 @@ class TestAddTensorCorrectness:
         torch.testing.assert_close(out.cpu(), ref.cpu(), rtol=1e-4, atol=1e-4)
 
 
-@pytest.mark.cuda
 class TestAddTensorDispatch:
     """Verify dispatch routing and flaggems backend rejection."""
 
+    @pytest.mark.cuda
     def test_dispatch_log_cuda(self):
         result = _run_add_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_add__Tensor": "cuda"}
@@ -94,6 +97,7 @@ class TestAddTensorDispatch:
         assert result.returncode == 0
         assert "[flagos dispatch] add.Tensor -> cuda" in result.stderr
 
+    @pytest.mark.ascend
     def test_dispatch_log_ascend(self):
         result = _run_add_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_add__Tensor": "ascend"}
@@ -101,6 +105,7 @@ class TestAddTensorDispatch:
         assert result.returncode == 0
         assert "[flagos dispatch] add.Tensor -> ascend" in result.stderr
 
+    @pytest.mark.cuda
     def test_flaggems_backend_raises_error(self):
         """Selecting flaggems backend must fail — not implemented."""
         result = _run_add_subprocess(
@@ -111,10 +116,10 @@ class TestAddTensorDispatch:
         assert "backend not registered" in result.stderr
 
 
-@pytest.mark.ascend
 class TestAddTensorAscendDispatch:
     """Verify Ascend backend correctness."""
 
+    @pytest.mark.ascend
     def test_ascend_correctness(self):
         """Verify add.Tensor on ascend backend matches CPU reference."""
         result = _run_add_subprocess(

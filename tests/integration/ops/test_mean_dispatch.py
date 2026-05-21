@@ -40,7 +40,6 @@ def _run_mean_subprocess(
     )
 
 
-@pytest.mark.anyplatform
 class TestMeanDimCorrectness:
     """torch.mean(dim=...) correctness on flagos device."""
 
@@ -52,6 +51,7 @@ class TestMeanDimCorrectness:
             ((32, 16), 0),
         ],
     )
+    @pytest.mark.anyplatform
     def test_mean_shape(self, shape, dim):
         torch.manual_seed(0)
         a = torch.randn(*shape, device=DEVICE)
@@ -61,12 +61,14 @@ class TestMeanDimCorrectness:
         assert list(out.shape) == expected_shape
         assert out.device.type == "flagos"
 
+    @pytest.mark.anyplatform
     def test_mean_keepdim(self):
         torch.manual_seed(1)
         a = torch.randn(32, 64, device=DEVICE)
         out = torch.mean(a, dim=-1, keepdim=True)
         assert out.shape == (32, 1)
 
+    @pytest.mark.anyplatform
     def test_mean_values(self):
         torch.manual_seed(2)
         a = torch.randn(16, 32, device=DEVICE)
@@ -74,6 +76,7 @@ class TestMeanDimCorrectness:
         ref = a.cpu().mean(dim=-1)
         torch.testing.assert_close(out.cpu(), ref, rtol=1e-4, atol=1e-4)
 
+    @pytest.mark.cuda
     def test_mean_matches_cuda(self):
         if not torch.cuda.is_available():
             pytest.skip("CUDA not available")
@@ -85,10 +88,10 @@ class TestMeanDimCorrectness:
         torch.testing.assert_close(out.cpu(), ref.cpu(), rtol=1e-4, atol=1e-4)
 
 
-@pytest.mark.cuda
 class TestMeanDimDispatch:
     """Verify dispatch routing and flaggems backend rejection."""
 
+    @pytest.mark.cuda
     def test_dispatch_log_cuda(self):
         result = _run_mean_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_mean__dim": "cuda"}
@@ -96,6 +99,7 @@ class TestMeanDimDispatch:
         assert result.returncode == 0
         assert "[flagos dispatch] mean.dim -> cuda" in result.stderr
 
+    @pytest.mark.cuda
     def test_flaggems_backend_raises_error(self):
         """Selecting flaggems backend must fail — not implemented."""
         result = _run_mean_subprocess(
@@ -106,10 +110,10 @@ class TestMeanDimDispatch:
         assert "backend not registered" in result.stderr
 
 
-@pytest.mark.ascend
 class TestMeanDimAscendDispatch:
     """Verify Ascend backend correctness."""
 
+    @pytest.mark.ascend
     def test_ascend_correctness(self):
         """Verify mean.dim on ascend backend matches CPU reference."""
         result = _run_mean_subprocess(

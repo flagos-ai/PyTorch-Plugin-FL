@@ -62,10 +62,10 @@ def _run_subprocess_backward(
     )
 
 
-@pytest.mark.anyplatform
 class TestNllLossForwardCorrectness:
     """nll_loss_forward correctness on flagos device."""
 
+    @pytest.mark.anyplatform
     def test_nll_loss_basic(self):
         torch.manual_seed(0)
         inp = torch.randn(8, 10, device=DEVICE).log_softmax(dim=1)
@@ -74,6 +74,7 @@ class TestNllLossForwardCorrectness:
         assert loss.shape == ()
         assert loss.device.type == "flagos"
 
+    @pytest.mark.anyplatform
     def test_nll_loss_matches_cpu(self):
         torch.manual_seed(1)
         inp_cpu = torch.randn(16, 5).log_softmax(dim=1)
@@ -86,6 +87,7 @@ class TestNllLossForwardCorrectness:
         torch.testing.assert_close(out.cpu(), ref, rtol=1e-4, atol=1e-4)
 
     @pytest.mark.parametrize("reduction", ["mean", "sum", "none"])
+    @pytest.mark.anyplatform
     def test_nll_loss_reduction(self, reduction):
         torch.manual_seed(2)
         inp_cpu = torch.randn(8, 10).log_softmax(dim=1)
@@ -97,6 +99,7 @@ class TestNllLossForwardCorrectness:
         out = F.nll_loss(inp_fl, target_fl, reduction=reduction)
         torch.testing.assert_close(out.cpu(), ref, rtol=1e-4, atol=1e-4)
 
+    @pytest.mark.anyplatform
     def test_nll_loss_ignore_index(self):
         torch.manual_seed(3)
         inp_cpu = torch.randn(8, 10).log_softmax(dim=1)
@@ -110,10 +113,10 @@ class TestNllLossForwardCorrectness:
         torch.testing.assert_close(out.cpu(), ref, rtol=1e-4, atol=1e-4)
 
 
-@pytest.mark.anyplatform
 class TestNllLossBackwardCorrectness:
     """nll_loss_backward correctness on flagos device."""
 
+    @pytest.mark.anyplatform
     def test_nll_loss_backward_basic(self):
         torch.manual_seed(0)
         inp = torch.randn(8, 10, device=DEVICE, requires_grad=True)
@@ -124,6 +127,7 @@ class TestNllLossBackwardCorrectness:
         assert inp.grad is not None
         assert inp.grad.shape == (8, 10)
 
+    @pytest.mark.anyplatform
     def test_nll_loss_backward_matches_cpu(self):
         torch.manual_seed(1)
         inp_cpu = torch.randn(16, 5, requires_grad=True)
@@ -144,10 +148,10 @@ class TestNllLossBackwardCorrectness:
         )
 
 
-@pytest.mark.cuda
 class TestNllLossDispatch:
     """Verify dispatch routing."""
 
+    @pytest.mark.cuda
     def test_dispatch_log_forward_cuda(self):
         result = _run_subprocess_forward(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_nll_loss_forward": "cuda"}
@@ -155,6 +159,7 @@ class TestNllLossDispatch:
         assert result.returncode == 0
         assert "[flagos dispatch] nll_loss_forward -> cuda" in result.stderr
 
+    @pytest.mark.cuda
     def test_dispatch_log_backward_cuda(self):
         result = _run_subprocess_backward(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_nll_loss_backward": "cuda"}
@@ -162,6 +167,7 @@ class TestNllLossDispatch:
         assert result.returncode == 0
         assert "[flagos dispatch] nll_loss_backward -> cuda" in result.stderr
 
+    @pytest.mark.cuda
     def test_flaggems_backend_raises_error(self):
         result = _run_subprocess_forward(
             {"FLAGOS_OP_nll_loss_forward": "flaggems"},
@@ -171,10 +177,10 @@ class TestNllLossDispatch:
         assert "backend not registered" in result.stderr
 
 
-@pytest.mark.ascend
 class TestNllLossForwardAscendDispatch:
     """Verify Ascend backend correctness."""
 
+    @pytest.mark.ascend
     def test_ascend_correctness(self):
         """Verify nll_loss_forward on ascend backend matches CPU reference."""
         result = _run_subprocess_forward(

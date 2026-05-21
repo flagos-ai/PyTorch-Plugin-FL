@@ -37,7 +37,6 @@ def _run_subprocess(extra_env: dict, check: bool = True) -> subprocess.Completed
     )
 
 
-@pytest.mark.anyplatform
 class TestSumDimCorrectness:
     """torch.sum(dim=...) correctness on flagos device."""
 
@@ -50,6 +49,7 @@ class TestSumDimCorrectness:
             ((64, 64, 64), -1),
         ],
     )
+    @pytest.mark.anyplatform
     def test_sum_dim_shape(self, shape, dim):
         torch.manual_seed(0)
         a = torch.randn(*shape, device=DEVICE)
@@ -58,6 +58,7 @@ class TestSumDimCorrectness:
         assert out.shape == ref.shape
         assert out.device.type == "flagos"
 
+    @pytest.mark.anyplatform
     def test_sum_dim_correctness(self):
         torch.manual_seed(1)
         a = torch.randn(32, 32, device=DEVICE)
@@ -65,6 +66,7 @@ class TestSumDimCorrectness:
         ref = torch.sum(a.cpu(), dim=1)
         torch.testing.assert_close(out.cpu(), ref, rtol=1e-4, atol=1e-4)
 
+    @pytest.mark.anyplatform
     def test_sum_dim_keepdim(self):
         torch.manual_seed(2)
         a = torch.randn(16, 32, device=DEVICE)
@@ -73,6 +75,7 @@ class TestSumDimCorrectness:
         assert out.shape == ref.shape
         torch.testing.assert_close(out.cpu(), ref, rtol=1e-4, atol=1e-4)
 
+    @pytest.mark.cuda
     def test_sum_dim_matches_cuda(self):
         if not torch.cuda.is_available():
             pytest.skip("CUDA not available")
@@ -84,6 +87,7 @@ class TestSumDimCorrectness:
         torch.testing.assert_close(out.cpu(), ref.cpu(), rtol=1e-4, atol=1e-4)
 
     @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
+    @pytest.mark.anyplatform
     def test_sum_dim_dtype(self, dtype):
         torch.manual_seed(4)
         a = torch.randn(16, 16, device=DEVICE, dtype=dtype)
@@ -91,6 +95,7 @@ class TestSumDimCorrectness:
         ref = torch.sum(a.cpu().float(), dim=0)
         torch.testing.assert_close(out.cpu().float(), ref, rtol=1e-2, atol=1e-2)
 
+    @pytest.mark.anyplatform
     def test_sum_multi_dim(self):
         torch.manual_seed(5)
         a = torch.randn(8, 16, 32, device=DEVICE)
@@ -100,10 +105,10 @@ class TestSumDimCorrectness:
         torch.testing.assert_close(out.cpu(), ref, rtol=1e-4, atol=1e-4)
 
 
-@pytest.mark.cuda
 class TestSumDimDispatch:
     """Verify dispatch routing."""
 
+    @pytest.mark.cuda
     def test_dispatch_log_cuda(self):
         result = _run_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_sum__dim_IntList": "cuda"}
@@ -111,6 +116,7 @@ class TestSumDimDispatch:
         assert result.returncode == 0
         assert "[flagos dispatch] sum.dim_IntList -> cuda" in result.stderr
 
+    @pytest.mark.cuda
     def test_flaggems_backend_raises_error(self):
         result = _run_subprocess(
             {"FLAGOS_OP_sum__dim_IntList": "flaggems"},
@@ -120,10 +126,10 @@ class TestSumDimDispatch:
         assert "backend not registered" in result.stderr
 
 
-@pytest.mark.ascend
 class TestSumDimAscendDispatch:
     """Verify Ascend backend correctness."""
 
+    @pytest.mark.ascend
     def test_ascend_correctness(self):
         """Verify sum.dim_IntList on ascend backend matches CPU reference."""
         result = _run_subprocess(

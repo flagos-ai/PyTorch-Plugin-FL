@@ -38,11 +38,11 @@ def _run_sin_subprocess(
     )
 
 
-@pytest.mark.anyplatform
 class TestSinCorrectness:
     """torch.sin correctness on flagos device."""
 
     @pytest.mark.parametrize("shape", [(128, 256), (1,), (64, 64, 64)])
+    @pytest.mark.anyplatform
     def test_sin_shape(self, shape):
         torch.manual_seed(0)
         a = torch.randn(*shape, device=DEVICE)
@@ -50,6 +50,7 @@ class TestSinCorrectness:
         assert out.shape == shape
         assert out.device.type == "flagos"
 
+    @pytest.mark.anyplatform
     def test_sin_values(self):
         torch.manual_seed(1)
         a = torch.randn(32, 32, device=DEVICE)
@@ -57,6 +58,7 @@ class TestSinCorrectness:
         ref = torch.sin(a.cpu())
         torch.testing.assert_close(out.cpu(), ref, rtol=1e-4, atol=1e-4)
 
+    @pytest.mark.cuda
     def test_sin_matches_cuda(self):
         if not torch.cuda.is_available():
             pytest.skip("CUDA not available")
@@ -68,6 +70,7 @@ class TestSinCorrectness:
         torch.testing.assert_close(out.cpu(), ref.cpu(), rtol=1e-4, atol=1e-4)
 
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
+    @pytest.mark.anyplatform
     def test_sin_dtypes(self, dtype):
         torch.manual_seed(3)
         a = torch.randn(16, 16, device=DEVICE, dtype=dtype)
@@ -75,10 +78,10 @@ class TestSinCorrectness:
         assert out.dtype == dtype
 
 
-@pytest.mark.cuda
 class TestSinDispatch:
     """Verify dispatch routing and flaggems backend rejection."""
 
+    @pytest.mark.cuda
     def test_dispatch_log_cuda(self):
         result = _run_sin_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_sin": "cuda"}
@@ -86,6 +89,7 @@ class TestSinDispatch:
         assert result.returncode == 0
         assert "[flagos dispatch] sin -> cuda" in result.stderr
 
+    @pytest.mark.cuda
     def test_flaggems_backend_raises_error(self):
         """Selecting flaggems backend must fail — not implemented."""
         result = _run_sin_subprocess(
@@ -96,10 +100,10 @@ class TestSinDispatch:
         assert "backend not registered" in result.stderr
 
 
-@pytest.mark.ascend
 class TestSinAscendDispatch:
     """Verify Ascend backend correctness."""
 
+    @pytest.mark.ascend
     def test_ascend_correctness(self):
         """Verify sin on ascend backend matches CPU reference."""
         result = _run_sin_subprocess(

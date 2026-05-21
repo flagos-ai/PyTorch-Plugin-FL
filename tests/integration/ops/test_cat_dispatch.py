@@ -58,10 +58,10 @@ def _run_cat_subprocess(
     return result
 
 
-@pytest.mark.cuda
 class TestCatDispatch:
     """torch.cat correctness on flagos device."""
 
+    @pytest.mark.anyplatform
     def test_cat_dim0(self):
         torch.manual_seed(0)
         a = torch.randn(32, 64, device=DEVICE, dtype=torch.float32)
@@ -70,6 +70,7 @@ class TestCatDispatch:
         assert out.shape == (48, 64)
         assert out.device.type == "flagos"
 
+    @pytest.mark.anyplatform
     def test_cat_dim1(self):
         torch.manual_seed(1)
         a = torch.randn(32, 64, device=DEVICE, dtype=torch.float32)
@@ -77,6 +78,7 @@ class TestCatDispatch:
         out = torch.cat([a, b], dim=1)
         assert out.shape == (32, 192)
 
+    @pytest.mark.anyplatform
     def test_cat_single_tensor(self):
         torch.manual_seed(2)
         a = torch.randn(8, 16, device=DEVICE, dtype=torch.float32)
@@ -84,6 +86,7 @@ class TestCatDispatch:
         assert out.shape == a.shape
         torch.testing.assert_close(out.cpu(), a.cpu())
 
+    @pytest.mark.anyplatform
     def test_cat_multiple_tensors(self):
         torch.manual_seed(3)
         tensors = [
@@ -92,6 +95,7 @@ class TestCatDispatch:
         out = torch.cat(tensors, dim=0)
         assert out.shape == (20, 8)
 
+    @pytest.mark.anyplatform
     def test_cat_negative_dim(self):
         torch.manual_seed(4)
         a = torch.randn(4, 8, device=DEVICE, dtype=torch.float32)
@@ -99,6 +103,7 @@ class TestCatDispatch:
         out = torch.cat([a, b], dim=-1)
         assert out.shape == (4, 24)
 
+    @pytest.mark.cuda
     def test_cat_matches_cuda_ref(self, cuda_ref):
         """flagos cat result must match CUDA reference."""
         if cuda_ref is None:
@@ -115,6 +120,7 @@ class TestCatDispatch:
             msg="cat result on flagos differs from CUDA reference",
         )
 
+    @pytest.mark.anyplatform
     def test_cat_half(self):
         torch.manual_seed(5)
         a = torch.randn(16, 32, device=DEVICE, dtype=torch.float16)
@@ -123,6 +129,7 @@ class TestCatDispatch:
         assert out.dtype == torch.float16
         assert out.shape == (24, 32)
 
+    @pytest.mark.anyplatform
     def test_cat_3d(self):
         torch.manual_seed(6)
         a = torch.randn(2, 4, 8, device=DEVICE, dtype=torch.float32)
@@ -131,10 +138,10 @@ class TestCatDispatch:
         assert out.shape == (2, 4, 24)
 
 
-@pytest.mark.cuda
 class TestCatDispatchLog:
     """Verify C++ wrapper routes to the correct backend."""
 
+    @pytest.mark.cuda
     def test_dispatch_log_flagos_default(self):
         """Default config routes cat to flagos."""
         result = _run_cat_subprocess(
@@ -144,6 +151,7 @@ class TestCatDispatchLog:
             f"Expected flagos dispatch log, got:\n{result.stderr}"
         )
 
+    @pytest.mark.cuda
     def test_dispatch_log_cuda_override(self):
         """FLAGOS_OP_cat=cuda overrides to cuda backend."""
         result = _run_cat_subprocess(
@@ -153,6 +161,7 @@ class TestCatDispatchLog:
             f"Expected cuda dispatch log, got:\n{result.stderr}"
         )
 
+    @pytest.mark.ascend
     def test_dispatch_log_ascend_override(self):
         """FLAGOS_OP_cat=ascend overrides to ascend backend."""
         result = _run_cat_subprocess(
@@ -163,10 +172,10 @@ class TestCatDispatchLog:
         )
 
 
-@pytest.mark.ascend
 class TestCatAscendDispatch:
     """Verify Ascend backend correctness."""
 
+    @pytest.mark.ascend
     def test_ascend_correctness(self):
         """Verify cat on ascend backend matches CPU reference."""
         result = _run_cat_subprocess(
