@@ -103,6 +103,7 @@ inline void GetApiFunc(const char* api_name, const char* workspace_name,
   }
 }
 
+
 struct AclScalarWrapper {
   aclScalar* acl_scalar = nullptr;
 

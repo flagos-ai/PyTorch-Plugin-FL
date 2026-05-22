@@ -9,10 +9,10 @@ namespace at::native::flagos {
 
 namespace {
 
-// aclnnLe was introduced in CANN 8.0. Older versions expose the same
-// kernel under the name aclnnLessEqual. We probe at runtime so the
-// plugin works on both.
-enum class LeApi { kUnknown, kLe, kLessEqual };
+// aclnnLe was introduced in CANN 8.0. Older versions may expose the
+// kernel under aclnnLessEqual or aclnnLeTensor. We probe at runtime
+// so the plugin works across versions.
+enum class LeApi { kUnknown, kLe, kLessEqual, kLeTensor };
 
 struct LeApiAddrs {
   void* workspace_fn = nullptr;
@@ -21,14 +21,21 @@ struct LeApiAddrs {
 
 LeApiAddrs ResolveLeApi(LeApi& cached) {
   void* handle = ascend::GetOpApiLibHandle();
-  // Try aclnnLe first (CANN 8.0+)
+  // Try aclnnLe (CANN 8.0+)
   void* ws = dlsym(handle, "aclnnLeGetWorkspaceSize");
   void* exec = dlsym(handle, "aclnnLe");
   if (ws && exec) {
     cached = LeApi::kLe;
     return {ws, exec};
   }
-  // Fallback to aclnnLessEqual (CANN 7.x)
+  // Try aclnnLeTensor
+  ws = dlsym(handle, "aclnnLeTensorGetWorkspaceSize");
+  exec = dlsym(handle, "aclnnLeTensor");
+  if (ws && exec) {
+    cached = LeApi::kLeTensor;
+    return {ws, exec};
+  }
+  // Try aclnnLessEqual
   ws = dlsym(handle, "aclnnLessEqualGetWorkspaceSize");
   exec = dlsym(handle, "aclnnLessEqual");
   if (ws && exec) {
@@ -36,7 +43,8 @@ LeApiAddrs ResolveLeApi(LeApi& cached) {
     return {ws, exec};
   }
   TORCH_CHECK(false,
-      "Neither aclnnLe nor aclnnLessEqual found in libopapi.so. "
+      "No le/less-equal operator found in libopapi.so "
+      "(tried aclnnLe, aclnnLeTensor, aclnnLessEqual). "
       "Please check your CANN version.");
   return {};
 }
