@@ -77,7 +77,6 @@ On Ascend, FlagGems and CUDA kernels are disabled. Only the Ascend kernel backen
 
 | Variable | Description |
 |----------|-------------|
-| `FLAGOS_DISABLE_FLAGGEMS_PY` | Set to `1` to disable FlagGems Python-layer registration (required on Ascend) |
 | `FLAGGEMS_SOURCE_DIR` | FlagGems source directory (required when C++ native API ops route to `flaggems` backend) |
 | `FLAGOS_BACKEND_CONFIG` | Override path for `backends.conf` (use `torch_fl/backends_ascend.conf` on Ascend) |
 | `FLAGOS_LOG_DISPATCH` | Set to `1` to print backend selection for each operator dispatch |
@@ -136,9 +135,6 @@ You can disable the FlagGems Python-layer registration entirely, leaving only th
 ```bash
 # Required: tell FlagGems C++ native API where to find Triton kernel sources
 export FLAGGEMS_SOURCE_DIR=$(python -c "import os;import flag_gems;print(os.path.dirname(flag_gems.__file__))")
-
-# Disable Python-layer FlagGems registration
-export FLAGOS_DISABLE_FLAGGEMS_PY=1
 
 python your_script.py
 ```
@@ -214,7 +210,7 @@ pytest tests/integration/test_qwen3_train.py -v -s --device cuda --steps 10
 pytest tests/integration/test_qwen3_train.py -v -s --device flagos --steps 10
 
 # Ascend operator tests
-FLAGOS_DISABLE_FLAGGEMS_PY=1 FLAGOS_BACKEND_CONFIG=torch_fl/backends_ascend.conf \
+FLAGOS_BACKEND_CONFIG=torch_fl/backends_ascend.conf \
   pytest tests/integration/test_factory_ops.py -v --device flagos
 ```
 

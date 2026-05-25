@@ -47,10 +47,11 @@ class FlagosDispatchStub {
 
   void RegisterKernel(FlagosDevice device, FnPtr fn) {
     switch (device) {
-      case FlagosDevice::kCuda:   cuda_fn_ = fn;   break;
-      case FlagosDevice::kFlagOs: flagos_fn_ = fn;  break;
-      case FlagosDevice::kAscend: ascend_fn_ = fn; break;
-      case FlagosDevice::kMusa:   musa_fn_ = fn;    break;
+      case FlagosDevice::kCuda:          cuda_fn_ = fn;           break;
+      case FlagosDevice::kFlagOs:        flagos_fn_ = fn;         break;
+      case FlagosDevice::kFlagOsPython:  flagos_python_fn_ = fn;  break;
+      case FlagosDevice::kAscend:        ascend_fn_ = fn;         break;
+      case FlagosDevice::kMusa:          musa_fn_ = fn;           break;
     }
   }
 
@@ -71,10 +72,11 @@ class FlagosDispatchStub {
  private:
   FnPtr GetFn(FlagosDevice device) const {
     switch (device) {
-      case FlagosDevice::kCuda:   return cuda_fn_;
-      case FlagosDevice::kFlagOs: return flagos_fn_;
-      case FlagosDevice::kAscend: return ascend_fn_;
-      case FlagosDevice::kMusa:   return musa_fn_;
+      case FlagosDevice::kCuda:          return cuda_fn_;
+      case FlagosDevice::kFlagOs:        return flagos_fn_;
+      case FlagosDevice::kFlagOsPython:  return flagos_python_fn_;
+      case FlagosDevice::kAscend:        return ascend_fn_;
+      case FlagosDevice::kMusa:          return musa_fn_;
     }
     return nullptr;
   }
@@ -87,20 +89,22 @@ class FlagosDispatchStub {
     if (!enabled) return;
     const char* name;
     switch (backend) {
-      case FlagosDevice::kCuda:   name = "cuda"; break;
-      case FlagosDevice::kFlagOs: name = "flagos"; break;
-      case FlagosDevice::kAscend: name = "ascend"; break;
-      case FlagosDevice::kMusa:   name = "musa"; break;
-      default:                   name = "unknown"; break;
+      case FlagosDevice::kCuda:          name = "cuda"; break;
+      case FlagosDevice::kFlagOs:        name = "flagos"; break;
+      case FlagosDevice::kFlagOsPython:  name = "flagos_python"; break;
+      case FlagosDevice::kAscend:        name = "ascend"; break;
+      case FlagosDevice::kMusa:          name = "musa"; break;
+      default:                           name = "unknown"; break;
     }
     fprintf(stderr, "[flagos dispatch] %s -> %s\n", op_name.c_str(), name);
   }
 
   const char* stub_name_ = nullptr;
-  FnPtr cuda_fn_   = nullptr;
-  FnPtr flagos_fn_ = nullptr;
-  FnPtr ascend_fn_ = nullptr;
-  FnPtr musa_fn_   = nullptr;
+  FnPtr cuda_fn_           = nullptr;
+  FnPtr flagos_fn_         = nullptr;
+  FnPtr flagos_python_fn_  = nullptr;
+  FnPtr ascend_fn_         = nullptr;
+  FnPtr musa_fn_           = nullptr;
 };
 
 namespace detail {

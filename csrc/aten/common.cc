@@ -80,6 +80,8 @@ std::unordered_map<std::string, FlagosDevice> LoadBackendConfig() {
       table[op] = FlagosDevice::kAscend;
     } else if (val == "flagos" || val == "flaggems") {
       table[op] = FlagosDevice::kFlagOs;
+    } else if (val == "flagos_python" || val == "flaggems_python") {
+      table[op] = FlagosDevice::kFlagOsPython;
     } else {
       fprintf(stderr, "[flagos] unknown backend '%s' for op '%s', using flagos\n", val.c_str(), op.c_str());
       table[op] = FlagosDevice::kFlagOs;
@@ -108,6 +110,9 @@ std::unordered_map<std::string, FlagosDevice> LoadBackendConfig() {
     } else if (v == "flagos" || v == "flaggems") {
       table[op] = FlagosDevice::kFlagOs;
       fprintf(stderr, "[flagos] env override: %s -> flaggems\n", op.c_str());
+    } else if (v == "flagos_python" || v == "flaggems_python") {
+      table[op] = FlagosDevice::kFlagOsPython;
+      fprintf(stderr, "[flagos] env override: %s -> flaggems_python\n", op.c_str());
     }
   }
 

@@ -61,7 +61,6 @@ ACCELERATOR=maca pip install -e . --no-build-isolation
 
 | 变量 | 说明 |
 |------|------|
-| `FLAGOS_DISABLE_FLAGGEMS_PY` | 设为 `1` 关闭 FlagGems Python 层注册（C++ stub-only 模式） |
 | `FLAGGEMS_SOURCE_DIR` | FlagGems 源码目录（当 C++ native API 算子路由到 `flaggems` 后端时必须设置） |
 | `FLAGOS_BACKEND_CONFIG` | 覆盖 `backends.conf` 路径 |
 | `FLAGOS_LOG_DISPATCH` | 设为 `1` 打印每次算子 dispatch 的后端选择 |
@@ -120,9 +119,6 @@ CUDA 平台无此限制。
 ```bash
 # 必须：告知 FlagGems C++ native API Triton kernel 源码位置
 export FLAGGEMS_SOURCE_DIR=$(python -c "import os;import flag_gems;print(os.path.dirname(flag_gems.__file__))")
-
-# 关闭 FlagGems Python 层注册
-export FLAGOS_DISABLE_FLAGGEMS_PY=1
 
 python your_script.py
 ```

@@ -43,6 +43,8 @@
 #include "constant_pad_nd.h"
 #include "embedding_dense_backward.h"
 #include "nll_loss.h"
+#include "abs.h"
+#include "acos.h"
 #endif // USE_ASCEND
 
 #include <ATen/native/CPUFallback.h>
@@ -359,6 +361,14 @@ at::Tensor WrapperNllLossBackward(
   return at::native::flagos::nll_loss_backward_stub(
       grad_output, self, target, weight, reduction, ignore_index, total_weight);
 }
+
+at::Tensor WrapperAbs(const at::Tensor& self) {
+  return at::native::flagos::abs_stub(self);
+}
+
+at::Tensor WrapperAcos(const at::Tensor& self) {
+  return at::native::flagos::acos_stub(self);
+}
 #endif // USE_ASCEND
 
 } // namespace
@@ -416,6 +426,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("embedding_dense_backward", WrapperEmbeddingDenseBackward);
   m.impl("nll_loss_forward", WrapperNllLossForward);
   m.impl("nll_loss_backward", WrapperNllLossBackward);
+  m.impl("abs", WrapperAbs);
+  m.impl("acos", WrapperAcos);
 #endif // USE_ASCEND
 }
 

@@ -29,7 +29,7 @@ target_compile_definitions(${LIBRARY_NAME} PRIVATE
     FLAGOS_SOURCE_ROOT="${CMAKE_SOURCE_DIR}"
 )
 
-set(_LINK_LIBS torch_cpu_library flagos ${CUDA_RUNTIME_LIB})
+set(_LINK_LIBS torch_cpu_library torch_python_library flagos ${CUDA_RUNTIME_LIB})
 if(FLAGGEMS_KERNEL)
   list(APPEND _LINK_LIBS FlagGems::operators)
 endif()
