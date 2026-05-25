@@ -68,88 +68,12 @@ def _patch_cuda_device_context():
 _patch_cuda_device_context()
 
 # Ensure CUDA runtime is initialized so that CUDACachingAllocator is ready.
-# When FLAGOS_DISABLE_FLAGGEMS_PY=1, flag_gems is never imported and CUDA
-# would remain uninitialized, causing "Allocator not initialized for device"
-# errors when C++ stubs route ops to the cuda backend (cuBLAS, etc.).
+# Without this, C++ stubs routing ops to the cuda backend (cuBLAS, etc.)
+# would hit "Allocator not initialized for device" errors.
 if torch.cuda.is_available():
     torch.cuda.init()
 
 
-# Ops that use torch_device_fn.device(device) with explicit device parameter
-# These don't work with flagos device and should use cpu_fallback instead
-_EXCLUDED_OPS = {
-    # Factory functions that take device parameter
-    "randn",
-    "randn_like",
-    "rand",
-    "rand_like",
-    "zeros",
-    "zeros_like",
-    "ones",
-    "ones_like",
-    "full",
-    "full_like",
-    "arange",
-    "arange.start",
-    "arange.start_step",
-    "linspace",
-    "logspace",
-    "eye",
-    "eye.m",
-    "randperm",
-    "empty.memory_format",  # Already registered in C++
-    "empty_strided",  # Already registered in C++
-    # Random ops that use device context
-    "uniform_",
-    "normal.float_Tensor",
-    "normal.Tensor_float",
-    "normal.Tensor_tensor",
-    "exponential_",
-    "multinomial",
-    # Copy ops - already registered in C++, skip to avoid duplicate registration
-    "copy_",
-    "_to_copy",
-    "contiguous",
-    "clone",
-    # log_softmax - FlagGems Triton kernel exceeds MACA's 4KB/thread private memory
-    # limit on large vocab (e.g. Qwen3 151k). Use Python decomposition instead.
-    "_log_softmax",
-    "_log_softmax_backward_data",
-    # Ops dispatched by C++ stub (DispatchStub) which reads backends.conf
-    # at load time to route to flaggems or cuda per-op.
-    "mm",
-    "mm.out",
-    "bmm",
-    "bmm.out",
-    "cat",
-    "embedding",
-    "add.Tensor",
-    "mul.Tensor",
-    "silu",
-    "rsqrt",
-    "mean.dim",
-    "cos",
-    "sin",
-    "neg",
-    "pow.Tensor_Scalar",
-    "all",
-    "_softmax",
-    "bitwise_and.Tensor",
-    "le.Tensor",
-    "where.self",
-    "index.Tensor",
-    "new_ones",
-    "scalar_tensor",
-    "ones_like",
-    "zeros",
-    "silu_backward",
-    "sum.dim_IntList",
-    "slice_backward",
-    "constant_pad_nd",
-    "embedding_dense_backward",
-    "nll_loss_forward",
-    "nll_loss_backward",
-}
 
 
 # Cache for CUDA runtime library
@@ -189,62 +113,12 @@ def _register_flaggems_operators():
     """
     Register FlagGems operators with the PrivateUse1 (flagos) dispatch key.
 
-    Flagos and CUDA share the same GPU memory, so FlagGems Triton kernels
-    can operate directly on flagos tensor pointers without conversion.
-
-    Set FLAGOS_DISABLE_FLAGGEMS_PY=1 to skip Python-layer FlagGems registration,
-    leaving only the C++ stub dispatch path active.
+    Disabled: Python-layer FlagGems registration is not used.
+    All ops are dispatched through the C++ stub path instead.
     """
     global _flaggems_lib, _autograd_lib, _registered_ops
-
-    import os
-
-    if os.environ.get("FLAGOS_DISABLE_FLAGGEMS_PY", "0") == "1":
-        _registered_ops = []
-        return 0
-
-    try:
-        from flag_gems import _FULL_CONFIG
-    except ImportError:
-        # flag_gems not installed, will use cpu_fallback
-        return 0
-
-    _flaggems_lib = torch.library.Library("aten", "IMPL")
     _registered_ops = []
-
-    # Build mapping of backward ops
-    backward_ops = {}
-    for item in _FULL_CONFIG:
-        if len(item) >= 2:
-            op_name = item[0]
-            if "backward" in op_name.lower():
-                backward_ops[op_name] = item[1]
-
-    for item in _FULL_CONFIG:
-        if len(item) < 2:
-            continue
-
-        op_name = item[0]
-        impl_func = item[1]
-
-        # Skip excluded ops - they will use cpu_fallback
-        if op_name in _EXCLUDED_OPS:
-            continue
-
-        # Check version conditions if present
-        if len(item) > 2:
-            condition = item[2]
-            if callable(condition) and not condition():
-                continue
-
-        try:
-            _flaggems_lib.impl(op_name, impl_func, "PrivateUse1")
-            _registered_ops.append(op_name)
-        except Exception:
-            # Some operators may already be registered or have incompatible signatures
-            pass
-
-    return len(_registered_ops)
+    return 0
 
 
 def _register_composite_ops():
