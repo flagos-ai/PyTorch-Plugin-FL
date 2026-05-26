@@ -45,19 +45,13 @@ class TestMulScalarCorrectness:
         ref = torch.mul(a_cuda, 5.0)
         a = a_cuda.to(DEVICE)
         out = torch.mul(a, 5.0)
-        torch.testing.assert_close(
-            out.cpu(), ref.cpu(), rtol=1e-4, atol=1e-4
-        )
+        torch.testing.assert_close(out.cpu(), ref.cpu(), rtol=1e-4, atol=1e-4)
 
-    @pytest.mark.parametrize(
-        "dtype", [torch.float32, torch.float16, torch.bfloat16]
-    )
+    @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
     @pytest.mark.anyplatform
     def test_mul_scalar_dtype(self, dtype):
         torch.manual_seed(3)
         a = torch.randn(16, 16, device=DEVICE, dtype=dtype)
         out = torch.mul(a, 2.0)
         ref = a.cpu().float() * 2.0
-        torch.testing.assert_close(
-            out.cpu().float(), ref, rtol=1e-2, atol=1e-2
-        )
+        torch.testing.assert_close(out.cpu().float(), ref, rtol=1e-2, atol=1e-2)

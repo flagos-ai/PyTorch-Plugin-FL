@@ -22,9 +22,7 @@ import torch_fl  # noqa: F401
 DEVICE = "flagos:0"
 
 
-def _run_subprocess(
-    extra_env: dict, check: bool = True
-) -> subprocess.CompletedProcess:
+def _run_subprocess(extra_env: dict, check: bool = True) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env.update(extra_env)
     code = (
@@ -88,9 +86,7 @@ class TestSliceBackwardCorrectness:
         y_fl = x_fl[:, 4:12]
         (y_fl * 2).sum().backward()
 
-        torch.testing.assert_close(
-            x_fl.grad.cpu(), x_cpu.grad, rtol=1e-5, atol=1e-5
-        )
+        torch.testing.assert_close(x_fl.grad.cpu(), x_cpu.grad, rtol=1e-5, atol=1e-5)
 
 
 class TestSliceBackwardDispatch:
@@ -105,10 +101,7 @@ class TestSliceBackwardDispatch:
             },
             check=False,
         )
-        assert (
-            "[flagos dispatch] slice_backward -> flagos_python"
-            in result.stderr
-        )
+        assert "[flagos dispatch] slice_backward -> flagos_python" in result.stderr
 
     @pytest.mark.cuda
     def test_dispatch_log_cuda_override(self):
