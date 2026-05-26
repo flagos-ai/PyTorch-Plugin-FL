@@ -44,6 +44,7 @@ class TestLeCorrectness:
 
     @pytest.mark.anyplatform
     def test_basic(self):
+        a = torch.tensor([1.0, 2.0, 3.0, 4.0], device=DEVICE)
         b = torch.tensor([2.0, 2.0, 2.0, 2.0], device=DEVICE)
         out = torch.le(a, b)
         expected = torch.tensor([True, True, False, False])
@@ -58,6 +59,9 @@ class TestLeCorrectness:
 
     @pytest.mark.anyplatform
     def test_matches_cpu(self):
+        torch.manual_seed(0)
+        a = torch.randn(16, 16, device=DEVICE)
+        b = torch.randn(16, 16, device=DEVICE)
         out = torch.le(a, b)
         ref = torch.le(a.cpu(), b.cpu())
         torch.testing.assert_close(out.cpu(), ref)
