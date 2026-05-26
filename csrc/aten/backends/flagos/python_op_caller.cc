@@ -42,8 +42,10 @@ struct PythonOpCache {
 };
 
 PythonOpCache& GetCache() {
-  static PythonOpCache cache;
-  return cache;
+  // Intentionally leaked: prevent destructor from running after Python
+  // interpreter finalization, which would crash on Py_DECREF with no GIL.
+  static PythonOpCache* cache = new PythonOpCache();
+  return *cache;
 }
 
 // Convert at::Tensor to Python THPVariable (borrowed ref wrapped in py::object)
