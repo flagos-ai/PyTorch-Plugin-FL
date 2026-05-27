@@ -31,11 +31,11 @@ std::tuple<at::Tensor, at::Tensor> NllLossForwardKernelAscend(
 
   if (weight.has_value()) {
     ascend::AclTensorWrapper acl_weight(weight.value());
-    EXEC_ASCEND_CMD(aclnnNllLoss, acl_self.get(), acl_target.get(),
+    EXEC_ASCEND_CMD(aclnnNLLLoss, acl_self.get(), acl_target.get(),
                     acl_weight.get(), reduction, ignore_index,
                     acl_output.get(), acl_total_weight.get());
   } else {
-    EXEC_ASCEND_CMD(aclnnNllLoss, acl_self.get(), acl_target.get(),
+    EXEC_ASCEND_CMD(aclnnNLLLoss, acl_self.get(), acl_target.get(),
                     nullptr, reduction, ignore_index,
                     acl_output.get(), acl_total_weight.get());
   }
@@ -58,11 +58,11 @@ at::Tensor NllLossBackwardKernelAscend(
 
   if (weight.has_value()) {
     ascend::AclTensorWrapper acl_weight(weight.value());
-    EXEC_ASCEND_CMD(aclnnNllLossBackward, acl_grad_output.get(), acl_self.get(),
+    EXEC_ASCEND_CMD(aclnnNLLLossBackward, acl_grad_output.get(), acl_self.get(),
                     acl_target.get(), acl_weight.get(), reduction, ignore_index,
                     acl_total_weight.get(), acl_grad_input.get());
   } else {
-    EXEC_ASCEND_CMD(aclnnNllLossBackward, acl_grad_output.get(), acl_self.get(),
+    EXEC_ASCEND_CMD(aclnnNLLLossBackward, acl_grad_output.get(), acl_self.get(),
                     acl_target.get(), nullptr, reduction, ignore_index,
                     acl_total_weight.get(), acl_grad_input.get());
   }

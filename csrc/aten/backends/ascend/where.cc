@@ -17,7 +17,7 @@ at::Tensor WhereSelfKernelAscend(const at::Tensor& condition, const at::Tensor& 
   ascend::AclTensorWrapper acl_other(other);
   ascend::AclTensorWrapper acl_out(out);
 
-  EXEC_ASCEND_CMD(aclnnWhere, acl_condition.get(), acl_self.get(), acl_other.get(), acl_out.get());
+  EXEC_ASCEND_CMD(aclnnSWhere, acl_condition.get(), acl_self.get(), acl_other.get(), acl_out.get());
   return out;
 }
 
