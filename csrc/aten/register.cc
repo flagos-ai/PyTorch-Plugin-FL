@@ -14,10 +14,6 @@
 #include "add.h"
 #include "silu.h"
 #include "neg.h"
-
-// Ascend development: only register implemented ops above.
-// Unregistered ops fall through to WrapperCpuFallback automatically.
-#ifndef USE_ASCEND
 #include "bmm.h"
 #include "cat.h"
 #include "embedding.h"
@@ -45,7 +41,6 @@
 #include "nll_loss.h"
 #include "abs.h"
 #include "acos.h"
-#endif // USE_ASCEND
 
 #include <ATen/native/CPUFallback.h>
 
@@ -215,7 +210,6 @@ at::Tensor WrapperNeg(const at::Tensor& self) {
   return at::native::flagos::neg_stub(self);
 }
 
-#ifndef USE_ASCEND
 at::Tensor WrapperBmm(const at::Tensor& self, const at::Tensor& mat2) {
   auto out = at::empty({self.size(0), self.size(1), mat2.size(2)}, self.options());
   at::native::flagos::StructuredBmmOut op(out);
@@ -381,7 +375,6 @@ at::Tensor WrapperAbs(const at::Tensor& self) {
 at::Tensor WrapperAcos(const at::Tensor& self) {
   return at::native::flagos::acos_stub(self);
 }
-#endif // USE_ASCEND
 
 } // namespace
 
@@ -411,7 +404,6 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("add.Scalar", WrapperAddScalar);
   m.impl("silu", WrapperSilu);
   m.impl("neg", WrapperNeg);
-#ifndef USE_ASCEND
   m.impl("bmm", WrapperBmm);
   m.impl("bmm.out", WrapperBmmOut);
   m.impl("cat", WrapperCat);
@@ -441,7 +433,6 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("nll_loss_backward", WrapperNllLossBackward);
   m.impl("abs", WrapperAbs);
   m.impl("acos", WrapperAcos);
-#endif // USE_ASCEND
 }
 
 // Register fallback for all unimplemented operators

@@ -22,7 +22,8 @@ void BmmKernelAscend(
   ascend::AclTensorWrapper acl_mat2(mat2_contig);
   ascend::AclTensorWrapper acl_out(out);
 
-  int8_t cube_math_type = ascend::OpPreparation::get_cube_math_type(false);
+  // allow_hf32=true: use fp32 accumulation for fp16 inputs, matching CUDA TensorCore behavior
+  int8_t cube_math_type = ascend::OpPreparation::get_cube_math_type(true);
   EXEC_ASCEND_CMD(aclnnBatchMatMul, acl_self.get(), acl_mat2.get(), acl_out.get(), cube_math_type);
 }
 

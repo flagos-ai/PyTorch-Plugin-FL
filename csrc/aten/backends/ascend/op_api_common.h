@@ -111,14 +111,61 @@ struct AclScalarWrapper {
   aclScalar* acl_scalar = nullptr;
 
   AclScalarWrapper(const at::Scalar& scalar, at::ScalarType dtype) {
-    if (scalar.isFloatingPoint()) {
-      double val = scalar.toDouble();
-      acl_scalar = aclCreateScalar(&val, ToAclDataType(dtype));
-    } else if (scalar.isIntegral(false)) {
-      int64_t val = scalar.toLong();
-      acl_scalar = aclCreateScalar(&val, ToAclDataType(dtype));
-    } else {
-      TORCH_CHECK(false, "Unsupported scalar type for ACL");
+    // aclCreateScalar reads exactly the number of bytes implied by dataType,
+    // so the pointed-to value must match that width exactly.
+    switch (dtype) {
+      case at::kDouble: {
+        double val = scalar.toDouble();
+        acl_scalar = aclCreateScalar(&val, ACL_DOUBLE);
+        break;
+      }
+      case at::kFloat: {
+        float val = scalar.toFloat();
+        acl_scalar = aclCreateScalar(&val, ACL_FLOAT);
+        break;
+      }
+      case at::kHalf: {
+        at::Half val = static_cast<at::Half>(scalar.toFloat());
+        acl_scalar = aclCreateScalar(&val, ACL_FLOAT16);
+        break;
+      }
+      case at::kBFloat16: {
+        at::BFloat16 val = static_cast<at::BFloat16>(scalar.toFloat());
+        acl_scalar = aclCreateScalar(&val, ACL_BF16);
+        break;
+      }
+      case at::kLong: {
+        int64_t val = scalar.toLong();
+        acl_scalar = aclCreateScalar(&val, ACL_INT64);
+        break;
+      }
+      case at::kInt: {
+        int32_t val = static_cast<int32_t>(scalar.toLong());
+        acl_scalar = aclCreateScalar(&val, ACL_INT32);
+        break;
+      }
+      case at::kShort: {
+        int16_t val = static_cast<int16_t>(scalar.toLong());
+        acl_scalar = aclCreateScalar(&val, ACL_INT16);
+        break;
+      }
+      case at::kChar: {
+        int8_t val = static_cast<int8_t>(scalar.toLong());
+        acl_scalar = aclCreateScalar(&val, ACL_INT8);
+        break;
+      }
+      case at::kByte: {
+        uint8_t val = static_cast<uint8_t>(scalar.toLong());
+        acl_scalar = aclCreateScalar(&val, ACL_UINT8);
+        break;
+      }
+      case at::kBool: {
+        bool val = scalar.toBool();
+        acl_scalar = aclCreateScalar(&val, ACL_BOOL);
+        break;
+      }
+      default:
+        TORCH_CHECK(false, "Unsupported scalar type for ACL: ", dtype);
     }
   }
 
