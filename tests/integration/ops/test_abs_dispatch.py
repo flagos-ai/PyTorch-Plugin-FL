@@ -28,9 +28,7 @@ def _run_abs_subprocess(
     env = os.environ.copy()
     env.update(extra_env)
     code = (
-        "import torch_fl, torch; "
-        "a = torch.randn(4,4,device='flagos:0'); "
-        "torch.abs(a)"
+        "import torch_fl, torch; a = torch.randn(4,4,device='flagos:0'); torch.abs(a)"
     )
     return subprocess.run(
         [sys.executable, "-c", code],

@@ -62,6 +62,7 @@ def _run_embedding_subprocess(
 class TestEmbeddingDispatch:
     """torch.nn.functional.embedding correctness on flagos."""
 
+    @pytest.mark.anyplatform
     def test_embedding_basic(self):
         torch.manual_seed(0)
         weight = torch.randn(100, 64, device=DEVICE, dtype=torch.float32)
@@ -70,6 +71,7 @@ class TestEmbeddingDispatch:
         assert out.shape == (4, 64)
         assert out.device.type == "flagos"
 
+    @pytest.mark.anyplatform
     def test_embedding_2d_indices(self):
         torch.manual_seed(1)
         weight = torch.randn(500, 128, device=DEVICE, dtype=torch.float32)
@@ -77,6 +79,7 @@ class TestEmbeddingDispatch:
         out = F.embedding(indices, weight)
         assert out.shape == (8, 16, 128)
 
+    @pytest.mark.anyplatform
     def test_embedding_correctness(self):
         """Verify embedding == index-select on weight."""
         torch.manual_seed(2)
@@ -91,6 +94,7 @@ class TestEmbeddingDispatch:
             atol=1e-5,
         )
 
+    @pytest.mark.cuda
     def test_embedding_matches_cuda_ref(self, cuda_ref):
         """flagos embedding must match CUDA reference."""
         if cuda_ref is None:
@@ -107,6 +111,7 @@ class TestEmbeddingDispatch:
             msg="embedding on flagos differs from CUDA",
         )
 
+    @pytest.mark.anyplatform
     def test_embedding_half(self):
         torch.manual_seed(3)
         weight = torch.randn(100, 64, device=DEVICE, dtype=torch.float16)
@@ -115,6 +120,7 @@ class TestEmbeddingDispatch:
         assert out.dtype == torch.float16
         assert out.shape == (3, 64)
 
+    @pytest.mark.anyplatform
     def test_embedding_large_vocab(self):
         torch.manual_seed(4)
         weight = torch.randn(10000, 256, device=DEVICE, dtype=torch.float32)
@@ -122,6 +128,7 @@ class TestEmbeddingDispatch:
         out = F.embedding(indices, weight)
         assert out.shape == (64, 256)
 
+    @pytest.mark.anyplatform
     def test_embedding_via_module(self):
         """Test via nn.Embedding module."""
         torch.manual_seed(5)
@@ -135,6 +142,18 @@ class TestEmbeddingDispatch:
 class TestEmbeddingDispatchLog:
     """Verify C++ wrapper routes to correct backend."""
 
+    @pytest.mark.flaggems_python
+    def test_dispatch_log_flaggems_python(self):
+        result = _run_embedding_subprocess(
+            {
+                "FLAGOS_LOG_DISPATCH": "1",
+                "FLAGOS_OP_embedding": "flaggems_python",
+            },
+            check=False,
+        )
+        assert "[flagos dispatch] embedding -> flagos_python" in result.stderr
+
+    @pytest.mark.flaggems
     def test_dispatch_log_flagos_default(self):
         """Default routes embedding to flagos."""
         result = _run_embedding_subprocess(
@@ -144,8 +163,8 @@ class TestEmbeddingDispatchLog:
             f"Expected flagos log, got:\n{result.stderr}"
         )
 
+    @pytest.mark.cuda
     def test_dispatch_log_cuda_override(self):
-        """FLAGOS_OP_embedding=cuda overrides to cuda."""
         result = _run_embedding_subprocess(
             {
                 "FLAGOS_LOG_DISPATCH": "1",
@@ -155,3 +174,23 @@ class TestEmbeddingDispatchLog:
         assert "[flagos dispatch] embedding -> cuda" in result.stderr, (
             f"Expected cuda log, got:\n{result.stderr}"
         )
+
+    @pytest.mark.ascend
+    def test_dispatch_log_ascend_override(self):
+        """FLAGOS_OP_embedding=ascend overrides to ascend backend."""
+        result = _run_embedding_subprocess(
+            {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_embedding": "ascend"}
+        )
+        assert "[flagos dispatch] embedding -> ascend" in result.stderr, (
+            f"Expected ascend dispatch log, got:\n{result.stderr}"
+        )
+
+
+class TestEmbeddingAscendDispatch:
+    """Verify Ascend backend correctness."""
+
+    @pytest.mark.ascend
+    def test_ascend_correctness(self):
+        """Verify embedding on ascend backend matches CPU reference."""
+        result = _run_embedding_subprocess({"FLAGOS_OP_embedding": "ascend"})
+        assert result.returncode == 0

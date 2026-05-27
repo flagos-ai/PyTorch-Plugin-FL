@@ -8,7 +8,7 @@ namespace at::native::flagos {
 namespace {
 
 at::Tensor PowTensorScalarKernelPython(const at::Tensor& self, const at::Scalar& exp) {
-  return CallPythonOp_TS("pow", self, exp);
+  return CallPythonOp_TS("pow_tensor_scalar", self, exp);
 }
 
 } // namespace

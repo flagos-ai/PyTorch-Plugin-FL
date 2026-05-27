@@ -11,21 +11,17 @@
 #include "contiguous_ops.h"
 #include "fallback.h"
 #include "mm.h"
-
-// Ascend development: only register implemented ops above.
-// Unregistered ops fall through to WrapperCpuFallback automatically.
-#ifndef USE_ASCEND
+#include "add.h"
+#include "silu.h"
+#include "neg.h"
 #include "bmm.h"
 #include "cat.h"
 #include "embedding.h"
-#include "add.h"
 #include "mul.h"
-#include "silu.h"
 #include "rsqrt.h"
 #include "mean.h"
 #include "cos.h"
 #include "sin.h"
-#include "neg.h"
 #include "pow.h"
 #include "all.h"
 #include "softmax.h"
@@ -45,7 +41,6 @@
 #include "nll_loss.h"
 #include "abs.h"
 #include "acos.h"
-#endif // USE_ASCEND
 
 #include <ATen/native/CPUFallback.h>
 
@@ -190,7 +185,31 @@ at::Tensor& WrapperMmOut(const at::Tensor& self, const at::Tensor& mat2, at::Ten
   return out;
 }
 
-#ifndef USE_ASCEND
+
+
+at::Tensor WrapperAddTensor(
+    const at::Tensor& self, const at::Tensor& other, const at::Scalar& alpha) {
+  return at::native::flagos::add_tensor_stub(self, other, alpha);
+}
+
+at::Tensor WrapperAddScalar(
+    const at::Tensor& self, const at::Scalar& other, const at::Scalar& alpha) {
+  auto other_tensor = at::scalar_tensor(other, self.options());
+  auto alpha_val = alpha.toDouble();
+  if (alpha_val != 1.0) {
+    other_tensor = other_tensor * alpha;
+  }
+  return at::native::flagos::add_tensor_stub(self, other_tensor, at::Scalar(1));
+}
+
+at::Tensor WrapperSilu(const at::Tensor& self) {
+  return at::native::flagos::silu_stub(self);
+}
+
+at::Tensor WrapperNeg(const at::Tensor& self) {
+  return at::native::flagos::neg_stub(self);
+}
+
 at::Tensor WrapperBmm(const at::Tensor& self, const at::Tensor& mat2) {
   auto out = at::empty({self.size(0), self.size(1), mat2.size(2)}, self.options());
   at::native::flagos::StructuredBmmOut op(out);
@@ -217,18 +236,9 @@ at::Tensor WrapperEmbedding(
       weight, indices, padding_idx.expect_int(), scale_grad_by_freq, sparse);
 }
 
-at::Tensor WrapperAddTensor(
-    const at::Tensor& self, const at::Tensor& other, const at::Scalar& alpha) {
-  return at::native::flagos::add_tensor_stub(self, other, alpha);
-}
-
 at::Tensor WrapperMulTensor(
     const at::Tensor& self, const at::Tensor& other) {
   return at::native::flagos::mul_tensor_stub(self, other);
-}
-
-at::Tensor WrapperSilu(const at::Tensor& self) {
-  return at::native::flagos::silu_stub(self);
 }
 
 at::Tensor WrapperRsqrt(const at::Tensor& self) {
@@ -247,10 +257,6 @@ at::Tensor WrapperCos(const at::Tensor& self) {
 
 at::Tensor WrapperSin(const at::Tensor& self) {
   return at::native::flagos::sin_stub(self);
-}
-
-at::Tensor WrapperNeg(const at::Tensor& self) {
-  return at::native::flagos::neg_stub(self);
 }
 
 at::Tensor WrapperPowTensorScalar(const at::Tensor& self, const at::Scalar& exp) {
@@ -369,7 +375,6 @@ at::Tensor WrapperAbs(const at::Tensor& self) {
 at::Tensor WrapperAcos(const at::Tensor& self) {
   return at::native::flagos::acos_stub(self);
 }
-#endif // USE_ASCEND
 
 } // namespace
 
@@ -395,19 +400,19 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("record_stream", WrapperRecordStream);
   m.impl("mm", WrapperMm);
   m.impl("mm.out", WrapperMmOut);
-#ifndef USE_ASCEND
+  m.impl("add.Tensor", WrapperAddTensor);
+  m.impl("add.Scalar", WrapperAddScalar);
+  m.impl("silu", WrapperSilu);
+  m.impl("neg", WrapperNeg);
   m.impl("bmm", WrapperBmm);
   m.impl("bmm.out", WrapperBmmOut);
   m.impl("cat", WrapperCat);
   m.impl("embedding", WrapperEmbedding);
-  m.impl("add.Tensor", WrapperAddTensor);
   m.impl("mul.Tensor", WrapperMulTensor);
-  m.impl("silu", WrapperSilu);
   m.impl("rsqrt", WrapperRsqrt);
   m.impl("mean.dim", WrapperMeanDim);
   m.impl("cos", WrapperCos);
   m.impl("sin", WrapperSin);
-  m.impl("neg", WrapperNeg);
   m.impl("pow.Tensor_Scalar", WrapperPowTensorScalar);
   m.impl("all", WrapperAll);
   m.impl("_softmax", WrapperSoftmax);
@@ -428,7 +433,6 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("nll_loss_backward", WrapperNllLossBackward);
   m.impl("abs", WrapperAbs);
   m.impl("acos", WrapperAcos);
-#endif // USE_ASCEND
 }
 
 // Register fallback for all unimplemented operators

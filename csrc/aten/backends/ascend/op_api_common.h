@@ -25,6 +25,7 @@ inline aclDataType ToAclDataType(at::ScalarType type) {
     case at::kShort:   return ACL_INT16;
     case at::kChar:    return ACL_INT8;
     case at::kByte:    return ACL_UINT8;
+    case at::kBool:    return ACL_BOOL;
     default:
       TORCH_CHECK(false, "Unsupported dtype for ACL: ", type);
   }
@@ -69,6 +70,9 @@ struct AclTensorWrapper {
     }
   }
 
+  // Release ownership without destroying the tensor
+  void release() { acl_tensor = nullptr; }
+
   const aclTensor* get() const { return acl_tensor; }
 };
 
@@ -101,6 +105,110 @@ inline void GetApiFunc(const char* api_name, const char* workspace_name,
     workspace_func = dlsym(handle, workspace_name);
   }
 }
+
+
+struct AclScalarWrapper {
+  aclScalar* acl_scalar = nullptr;
+
+  AclScalarWrapper(const at::Scalar& scalar, at::ScalarType dtype) {
+    // aclCreateScalar reads exactly the number of bytes implied by dataType,
+    // so the pointed-to value must match that width exactly.
+    switch (dtype) {
+      case at::kDouble: {
+        double val = scalar.toDouble();
+        acl_scalar = aclCreateScalar(&val, ACL_DOUBLE);
+        break;
+      }
+      case at::kFloat: {
+        float val = scalar.toFloat();
+        acl_scalar = aclCreateScalar(&val, ACL_FLOAT);
+        break;
+      }
+      case at::kHalf: {
+        at::Half val = static_cast<at::Half>(scalar.toFloat());
+        acl_scalar = aclCreateScalar(&val, ACL_FLOAT16);
+        break;
+      }
+      case at::kBFloat16: {
+        at::BFloat16 val = static_cast<at::BFloat16>(scalar.toFloat());
+        acl_scalar = aclCreateScalar(&val, ACL_BF16);
+        break;
+      }
+      case at::kLong: {
+        int64_t val = scalar.toLong();
+        acl_scalar = aclCreateScalar(&val, ACL_INT64);
+        break;
+      }
+      case at::kInt: {
+        int32_t val = static_cast<int32_t>(scalar.toLong());
+        acl_scalar = aclCreateScalar(&val, ACL_INT32);
+        break;
+      }
+      case at::kShort: {
+        int16_t val = static_cast<int16_t>(scalar.toLong());
+        acl_scalar = aclCreateScalar(&val, ACL_INT16);
+        break;
+      }
+      case at::kChar: {
+        int8_t val = static_cast<int8_t>(scalar.toLong());
+        acl_scalar = aclCreateScalar(&val, ACL_INT8);
+        break;
+      }
+      case at::kByte: {
+        uint8_t val = static_cast<uint8_t>(scalar.toLong());
+        acl_scalar = aclCreateScalar(&val, ACL_UINT8);
+        break;
+      }
+      case at::kBool: {
+        bool val = scalar.toBool();
+        acl_scalar = aclCreateScalar(&val, ACL_BOOL);
+        break;
+      }
+      default:
+        TORCH_CHECK(false, "Unsupported scalar type for ACL: ", dtype);
+    }
+  }
+
+  ~AclScalarWrapper() {
+    if (acl_scalar) {
+      aclDestroyScalar(acl_scalar);
+    }
+  }
+
+  const aclScalar* get() const { return acl_scalar; }
+};
+
+struct AclIntArrayWrapper {
+  aclIntArray* acl_array = nullptr;
+
+  AclIntArrayWrapper(at::IntArrayRef arr) {
+    acl_array = aclCreateIntArray(arr.data(), arr.size());
+  }
+
+  ~AclIntArrayWrapper() {
+    if (acl_array) {
+      aclDestroyIntArray(acl_array);
+    }
+  }
+
+  const aclIntArray* get() const { return acl_array; }
+};
+
+struct AclTensorListWrapper {
+  aclTensorList* acl_list = nullptr;
+
+  AclTensorListWrapper(const std::vector<const aclTensor*>& tensors) {
+    acl_list = aclCreateTensorList(tensors.data(), tensors.size());
+  }
+
+  ~AclTensorListWrapper() {
+    if (acl_list) {
+      aclDestroyTensorList(acl_list);
+    }
+  }
+
+  const aclTensorList* get() const { return acl_list; }
+};
 
 } // namespace at::native::flagos::ascend
 

@@ -8,7 +8,7 @@ namespace at::native::flagos {
 namespace {
 
 at::Tensor BitwiseAndTensorKernelPython(const at::Tensor& self, const at::Tensor& other) {
-  return CallPythonOp_TT("bitwise_and", self, other);
+  return CallPythonOp_TT("bitwise_and_tensor", self, other);
 }
 
 } // namespace

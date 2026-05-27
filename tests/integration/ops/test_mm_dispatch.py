@@ -128,6 +128,17 @@ class TestMmDispatch:
 class TestMmDispatchLog:
     """Verify C++ wrapper routes to the correct backend."""
 
+    @pytest.mark.flaggems_python
+    def test_dispatch_log_flaggems_python(self):
+        """FLAGOS_OP_mm=flaggems_python routes mm to flagos_python backend."""
+        result = _run_mm_subprocess(
+            {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_mm": "flaggems_python"},
+            check=False,
+        )
+        assert "[flagos dispatch] mm -> flagos_python" in result.stderr, (
+            f"Expected flagos_python dispatch log, got:\n{result.stderr}"
+        )
+
     @pytest.mark.flaggems
     def test_dispatch_log_flagos_flaggems_override(self):
         """FLAGOS_OP_mm=flaggems routes mm to flagos backend."""
@@ -148,6 +159,17 @@ class TestMmDispatchLog:
             f"Expected cuda dispatch log, got:\n{result.stderr}"
         )
 
+    @pytest.mark.ascend
+    def test_dispatch_log_ascend_override(self):
+        """FLAGOS_OP_mm=ascend overrides to ascend backend."""
+        result = _run_mm_subprocess(
+            {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_mm": "ascend"}
+        )
+        assert "[flagos dispatch] mm -> ascend" in result.stderr, (
+            f"Expected ascend dispatch log, got:\n{result.stderr}"
+        )
+
+    @pytest.mark.cuda
     @pytest.mark.flaggems
     def test_dispatch_log_mm_out_flagos_flaggems_override(self):
         """FLAGOS_OP_mm__out=flaggems routes mm.out to flagos backend."""
@@ -169,3 +191,33 @@ class TestMmDispatchLog:
         assert "[flagos dispatch] mm.out -> cuda" in result.stderr, (
             f"Expected cuda dispatch log, got:\n{result.stderr}"
         )
+
+    @pytest.mark.ascend
+    def test_dispatch_log_mm_out_ascend_override(self):
+        """FLAGOS_OP_mm__out=ascend overrides mm.out to ascend."""
+        result = _run_mm_subprocess(
+            {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_mm__out": "ascend"},
+            use_out=True,
+        )
+        assert "[flagos dispatch] mm.out -> ascend" in result.stderr, (
+            f"Expected ascend dispatch log, got:\n{result.stderr}"
+        )
+
+
+class TestMmAscendDispatch:
+    """Verify Ascend backend correctness."""
+
+    @pytest.mark.ascend
+    def test_ascend_correctness(self):
+        """Verify mm on ascend backend matches CPU reference."""
+        result = _run_mm_subprocess({"FLAGOS_OP_mm": "ascend"})
+        assert result.returncode == 0
+
+    @pytest.mark.ascend
+    def test_ascend_out_correctness(self):
+        """Verify mm.out on ascend backend matches CPU reference."""
+        result = _run_mm_subprocess(
+            {"FLAGOS_OP_mm__out": "ascend"},
+            use_out=True,
+        )
+        assert result.returncode == 0

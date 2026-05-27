@@ -8,7 +8,7 @@ namespace at::native::flagos {
 namespace {
 
 at::Tensor DivScalarKernelPython(const at::Tensor& self, const at::Scalar& other) {
-  return CallPythonOp_TS("div", self, other);
+  return CallPythonOp_TS("true_divide", self, other);
 }
 
 } // namespace

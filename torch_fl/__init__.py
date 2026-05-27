@@ -74,8 +74,6 @@ if torch.cuda.is_available():
     torch.cuda.init()
 
 
-
-
 # Cache for CUDA runtime library
 _cudart_lib = None
 _cudaMemcpy = None

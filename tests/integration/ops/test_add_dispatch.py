@@ -3,8 +3,8 @@ add.Tensor dispatch tests
 
 Verifies that torch.add (Tensor variant):
   - produces correct results on flagos device
-  - C++ wrapper routes to cuda backend
-  - attempting flaggems backend raises an error (not implemented)
+  - C++ wrapper routes to flaggems_python backend (default)
+  - dispatch log confirms the actual backend used
 
 Usage:
     pytest tests/integration/ops/test_add_dispatch.py -v
@@ -87,22 +87,41 @@ class TestAddTensorCorrectness:
 
 
 class TestAddTensorDispatch:
-    """Verify dispatch routing and flaggems backend rejection."""
+    """Verify dispatch routing for add.Tensor op."""
+
+    @pytest.mark.flaggems_python
+    def test_dispatch_log_flaggems_python(self):
+        result = _run_add_subprocess(
+            {
+                "FLAGOS_LOG_DISPATCH": "1",
+                "FLAGOS_OP_add__Tensor": "flaggems_python",
+            },
+            check=False,
+        )
+        assert "[flagos dispatch] add.Tensor -> flagos_python" in result.stderr
 
     @pytest.mark.cuda
-    def test_dispatch_log_cuda(self):
+    def test_dispatch_log_cuda_override(self):
         result = _run_add_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_add__Tensor": "cuda"}
         )
         assert result.returncode == 0
         assert "[flagos dispatch] add.Tensor -> cuda" in result.stderr
 
-    @pytest.mark.cuda
-    def test_flaggems_backend_raises_error(self):
-        """Selecting flaggems backend must fail — not implemented."""
+    @pytest.mark.ascend
+    def test_dispatch_log_ascend(self):
         result = _run_add_subprocess(
-            {"FLAGOS_OP_add__Tensor": "flaggems"},
-            check=False,
+            {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_add__Tensor": "ascend"}
         )
-        assert result.returncode != 0
-        assert "backend not registered" in result.stderr
+        assert result.returncode == 0
+        assert "[flagos dispatch] add.Tensor -> ascend" in result.stderr
+
+
+class TestAddTensorAscendDispatch:
+    """Verify Ascend backend correctness."""
+
+    @pytest.mark.ascend
+    def test_ascend_correctness(self):
+        """Verify add.Tensor on ascend backend matches CPU reference."""
+        result = _run_add_subprocess({"FLAGOS_OP_add__Tensor": "ascend"})
+        assert result.returncode == 0

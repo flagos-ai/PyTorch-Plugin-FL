@@ -28,8 +28,10 @@
 - 硬件 Runtime 依赖：
     - CUDA toolkit 12.8 （仅在 CUDA 平台需要）
     - MACA cu-bridge 库（仅在 MACA 平台需要）
+    - CANN toolkit（仅在 Ascend 平台需要）
 - PyTorch 2.11.0
 - FlagGems（5.0.2 版本以上，需要开启 DFLAGGEMS_BUILD_C_EXTENSIONS），源码安装参考文档：[FlagGems 安装](https://flagos-ai.github.io/FlagGems/getting-started/install/)
+  - 注意：Ascend 平台上 FlagGems 为可选依赖
 
 ### 从源码安装（CUDA 平台）
 
@@ -48,21 +50,38 @@ export LD_LIBRARY_PATH=/opt/maca/tools/cu-bridge/lib:$LD_LIBRARY_PATH
 ACCELERATOR=maca pip install -e . --no-build-isolation
 ```
 
+### 从源码安装（Ascend 平台）
+
+```bash
+# 确保 CANN toolkit 已安装并已 source 环境
+# （通常: source /usr/local/Ascend/ascend-toolkit/set_env.sh）
+
+ACCELERATOR=ascend FLAGGEMS_KERNEL=0 CUDA_KERNEL=0 ASCEND_KERNEL=1 \
+  pip install --no-build-isolation -vvv -e .
+```
+
+Ascend 平台上禁用 FlagGems 和 CUDA kernel，仅编译 Ascend kernel 后端（ACL NN API）。
+
 ### 构建环境变量
 
 | 变量 | 说明 |
 |------|------|
-| `ACCELERATOR` | 硬件平台，`cuda`（默认）或 `maca` |
+| `ACCELERATOR` | 硬件平台：`cuda`（默认）、`maca` 或 `ascend` |
 | `CUDA_HOME` | CUDA toolkit 路径 |
 | `MACA_PATH` | MACA SDK 路径（默认 `/opt/maca`） |
+| `ASCEND_HOME` | CANN toolkit 路径（默认 `/usr/local/Ascend/ascend-toolkit/latest`） |
 | `FLAGGEMS_DIR` | FlagGems C++ 库路径（启用低开销 C++ dispatch） |
+| `FLAGGEMS_KERNEL` | 启用 FlagGems kernel 构建（`ON`/`OFF`，默认 `ON`；Ascend 设为 `0`） |
+| `CUDA_KERNEL` | 启用 CUDA kernel 构建（`ON`/`OFF`，默认 `ON`；Ascend 设为 `0`） |
+| `ASCEND_KERNEL` | 启用 Ascend kernel 构建（`ON`/`OFF`，默认 `OFF`；Ascend 设为 `1`） |
 
 ### 运行时环境变量
 
 | 变量 | 说明 |
 |------|------|
+| `FLAGOS_DISABLE_FLAGGEMS_PY` | 设为 `1` 关闭 FlagGems Python 层注册（Ascend 平台必需） |
 | `FLAGGEMS_SOURCE_DIR` | FlagGems 源码目录（当 C++ native API 算子路由到 `flaggems` 后端时必须设置） |
-| `FLAGOS_BACKEND_CONFIG` | 覆盖 `backends.conf` 路径 |
+| `FLAGOS_BACKEND_CONFIG` | 覆盖 `backends.conf` 路径（Ascend 使用 `torch_fl/backends_ascend.conf`） |
 | `FLAGOS_LOG_DISPATCH` | 设为 `1` 打印每次算子 dispatch 的后端选择 |
 | `FLAGOS_OP_<name>` | 按算子覆盖后端（算子名中的 `.` 替换为 `__`） |
 
@@ -172,14 +191,28 @@ export FLAGOS_LOG_DISPATCH=1  # 打印每次算子 dispatch 的后端选择
 
 ## 测试
 
+`tests/integration/ops/` 下的测试通过 `@pytest.mark` 标记平台分类：
+
+| 标记 | 含义 | 运行时机 |
+|------|------|----------|
+| `@pytest.mark.anyplatform` | 正确性测试，所有平台都应运行 | 始终 |
+| `@pytest.mark.cuda` | CUDA/FlagGems dispatch 路由测试 | 仅 CUDA 平台 |
+| `@pytest.mark.ascend` | Ascend 后端 dispatch 测试 | 仅 Ascend 平台 |
+
+### CUDA 平台
+
 ```bash
-export TORCH_DEVICE_BACKEND_AUTOLOAD=0
+# 算子测试（需要 FlagGems 源码用于 C++ native API）
+FLAGOS_DISABLE_FLAGGEMS_PY=1 FLAGGEMS_SOURCE_DIR=/path_to_repos/FlagGems/src/flag_gems \
+  pytest tests/integration/ops/ -v -m "anyplatform or cuda"
 
-# 基础算子测试
-pytest tests/integration/test_factory_ops.py -v
+# Qwen3 推理测试
+FLAGOS_DISABLE_FLAGGEMS_PY=1 FLAGGEMS_SOURCE_DIR=/path_to_repos/FlagGems/src/flag_gems \
+  pytest tests/integration/test_qwen3_infer.py -v -s
 
-# dispatch 路由测试（全平台）
-pytest tests/integration/ops/ -v
+# Qwen3 训练测试（单卡）
+FLAGOS_DISABLE_FLAGGEMS_PY=1 FLAGGEMS_SOURCE_DIR=/path_to_repos/FlagGems/src/flag_gems \
+  pytest tests/integration/test_qwen3_train.py -v -s --steps 10
 
 # 仅运行 CUDA 相关测试
 pytest tests/integration/ops/ -v -m cuda
@@ -193,19 +226,30 @@ pytest tests/integration/ops/ -v -m flaggems_python
 # 仅运行平台无关的正确性测试
 pytest tests/integration/ops/ -v -m anyplatform
 
-# CPU fallback 追踪测试
-pytest tests/integration/test_fallback_trace.py -v
-
-# Qwen3 推理
-pytest tests/integration/test_qwen3_infer.py -v -s
-
-# Qwen3 训练（单卡）
-pytest tests/integration/test_qwen3_train.py -v -s --steps 10
-
 # FlagGems Python wrapper (flagos_python) 端到端测试
 FLAGOS_BACKEND_CONFIG=torch_fl/backends_flagos_py.conf \
   pytest tests/integration/ops/ -v
 ```
+
+### Ascend 平台
+
+```bash
+# 算子测试
+FLAGOS_DISABLE_FLAGGEMS_PY=1 FLAGOS_BACKEND_CONFIG=torch_fl/backends_ascend.conf \
+  pytest tests/integration/ops/ -v -m "anyplatform or ascend"
+
+# Qwen3 推理测试
+FLAGOS_DISABLE_FLAGGEMS_PY=1 FLAGOS_BACKEND_CONFIG=torch_fl/backends_ascend.conf \
+  pytest tests/integration/test_qwen3_infer.py -v -s
+
+# Qwen3 训练测试（单卡）
+FLAGOS_DISABLE_FLAGGEMS_PY=1 FLAGOS_BACKEND_CONFIG=torch_fl/backends_ascend.conf \
+  pytest tests/integration/test_qwen3_train.py -v -s --steps 10
+```
+
+**注意**：Ascend 平台必须设置 `FLAGOS_DISABLE_FLAGGEMS_PY=1` 以跳过 FlagGems Python 层注册，否则会因 NPU 设备检测问题导致崩溃。FlagGems 在 Ascend 平台上是可选的。
+
+`test_qwen3_infer.py` 和 `test_qwen3_train.py` 在所有平台上使用相同代码，仅安装方式（`ACCELERATOR=ascend pip install -e .`）和运行时环境变量不同。
 
 ### Pytest Marks
 
@@ -225,33 +269,49 @@ FLAGOS_BACKEND_CONFIG=torch_fl/backends_flagos_py.conf \
 
 ```
 PyTorch-Plugin-FL/
-├── accelerator/              # 硬件抽象层
-│   ├── include/flagos.h      #   统一 runtime API（memory、stream、device）
-│   ├── csrc/cuda/            #   CUDA runtime 实现
-│   └── csrc/maca/            #   MACA cudart shim（符号版本兼容）
+├── include/                  # 公共头文件
+│   ├── flagos.h              #   统一 runtime API（memory、stream、device）
+│   └── macros.h              #   通用宏定义
 ├── csrc/
 │   ├── aten/                 # ATen 算子层
-│   │   ├── common.{h,cc}    #   后端配置加载、FlagosDevice 枚举
+│   │   ├── common.{h,cc}     #   后端配置加载、FlagosDevice 枚举
 │   │   ├── dispatch_stub.h   #   轻量 dispatch stub（替代 PyTorch DispatchStub）
 │   │   ├── device_boxing.h   #   零拷贝 flagos↔CUDA tensor 元数据转换
 │   │   ├── register.cc       #   PrivateUse1 dispatch key 注册
-│   │   ├── factory_ops/      #   基础算子（empty、copy、contiguous、set、fallback）
-│   │   ├── functional_ops/   #   计算算子（mm、bmm、cat、embedding、softmax 等）
-│   │   └── native/cuda/      #   修改版 CUDA kernel（Loops.cuh 放宽设备检查）
+│   │   ├── {op}.{h,cc}       #   各算子 stub 定义（add、mm、silu 等）
+│   │   └── backends/         #   后端特定 kernel 实现
+│   │       ├── cuda/         #     CUDA kernel（cuBLAS、修改版 PyTorch kernel）
+│   │       ├── flagos/       #     FlagGems C++ native API wrapper
+│   │       └── ascend/       #     Ascend kernel（ACL NN API）
 │   └── runtime/              # 设备运行时
 │       ├── device_allocator  #   设备内存分配器
 │       ├── host_allocator    #   pinned memory 分配器
 │       ├── guard             #   DeviceGuard 实现
-│       └── generator         #   RNG generator
+│       ├── generator         #   RNG generator
+│       ├── hooks             #   运行时 hook
+│       └── accelerator/      #   硬件抽象层
+│           ├── cuda/         #     CUDA runtime 实现
+│           ├── maca/         #     MACA cudart shim（符号版本兼容）
+│           └── ascend/       #     Ascend runtime（基于 ACL 的 memory、stream、device）
 ├── torch_fl/
 │   ├── __init__.py           # 插件入口：注册设备、加载 FlagGems 算子
 │   ├── flagos/               # Python 设备模块（stream、event、RNG、AMP）
+│   ├── accelerator/          # Python accelerator 模块（MACA shim 加载器）
+│   ├── backends.conf         # 默认后端路由配置（CUDA/FlagGems）
+│   ├── backends_ascend.conf  # Ascend 后端路由配置（所有算子 → ascend）
 │   ├── distributed.py        # 分布式训练支持（DDP patch）
 │   ├── integration.py        # FlagGems 算子注册逻辑
-│   └── csrc/                 # C 扩展（module.cc、stub.c）
+│   ├── csrc/                 # C 扩展（module.cc、stub.c）
+│   └── lib/                  # 编译后的共享库（libtorch_fl.so、libflagos.so）
 ├── tests/
 │   ├── integration/          # 自动化集成测试
-│   └── manual/               # 手动测试脚本
+│   │   ├── ops/              #   各算子 dispatch 测试
+│   │   ├── test_qwen3_*.py   #   端到端模型测试
+│   │   └── conftest.py       #   Pytest 配置
+│   ├── manual/               # 手动测试脚本
+│   └── common/               # 测试工具
+├── debug/                    # 开发笔记和调试脚本
+├── cmake/                    # CMake 模块
 ├── setup.py                  # CMake 构建入口
 └── pyproject.toml
 ```
@@ -259,29 +319,29 @@ PyTorch-Plugin-FL/
 ## 架构概览
 
 ```
-┌──────────────────────────────────────────────────────┐
-│  Python: import torch_fl                             │
-│  ┌────────────────┐  ┌────────────────────────────┐  │
-│  │ torch_fl.flagos│  │ torch_fl.distributed       │  │
-│  │ (device API)   │  │ (DDP/FSDP patch)           │  │
-│  └────────────────┘  └────────────────────────────┘  │
-├──────────────────────────────────────────────────────┤
-│  PrivateUse1 Dispatch                                │
-│  ┌─────────────┐  ┌──────────────┐  ┌───────────┐    │
-│  │ FlagGems    │  │ CUDA backend │  │ CPU       │    │
-│  │ (Triton)    │  │ (native)     │  │ fallback  │    │
-│  └─────────────┘  └──────────────┘  └───────────┘    │
-├──────────────────────────────────────────────────────┤
-│  C++ Runtime (csrc/)                                 │
-│  ┌──────────┐ ┌────────┐ ┌───────┐ ┌───────────┐     │
-│  │Allocator │ │ Guard  │ │ RNG   │ │ Hooks     │     │
-│  └──────────┘ └────────┘ └───────┘ └───────────┘     │
-├──────────────────────────────────────────────────────┤
-│  Hardware Abstraction (accelerator/)                 │
-│  ┌──────────────────┐  ┌─────────────────────────┐   │
-│  │ CUDA Runtime     │  │ MACA cu-bridge + shim   │   │
-│  └──────────────────┘  └─────────────────────────┘   │
-└──────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│  Python: import torch_fl                                     │
+│  ┌────────────────┐  ┌────────────────────────────┐          │
+│  │ torch_fl.flagos│  │ torch_fl.distributed       │          │
+│  │ (device API)   │  │ (DDP/FSDP patch)           │          │
+│  └────────────────┘  └────────────────────────────┘          │
+├──────────────────────────────────────────────────────────────┤
+│  PrivateUse1 Dispatch                                        │
+│  ┌─────────────┐  ┌──────────┐  ┌───────────┐  ┌────────┐    │
+│  │ FlagGems    │  │ CUDA     │  │ Ascend    │  │ CPU    │    │
+│  │ (Triton)    │  │ (native) │  │ (ACL NN)  │  │fallback│    │
+│  └─────────────┘  └──────────┘  └───────────┘  └────────┘    │
+├──────────────────────────────────────────────────────────────┤
+│  C++ Runtime (csrc/)                                         │
+│  ┌──────────┐ ┌────────┐ ┌───────┐ ┌───────────┐             │
+│  │Allocator │ │ Guard  │ │ RNG   │ │ Hooks     │             │
+│  └──────────┘ └────────┘ └───────┘ └───────────┘             │
+├──────────────────────────────────────────────────────────────┤
+│  Hardware Abstraction (accelerator/)                         │
+│  ┌──────────────┐  ┌─────────────────────┐  ┌────────────┐   │
+│  │ CUDA Runtime │  │ MACA cu-bridge+shim │  │ Ascend ACL │   │
+│  └──────────────┘  └─────────────────────┘  └────────────┘   │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 ## 许可证

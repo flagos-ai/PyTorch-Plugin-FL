@@ -9,7 +9,7 @@ namespace {
 
 at::Tensor MeanDimKernelPython(const at::Tensor& self, at::OptionalIntArrayRef dim,
                                bool keepdim, std::optional<at::ScalarType> dtype) {
-  return CallPythonOp_TOIB("mean", self, dim, keepdim, dtype);
+  return CallPythonOp_TOIB("mean_dim", self, dim, keepdim, dtype);
 }
 
 } // namespace

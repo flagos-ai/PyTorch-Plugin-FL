@@ -9,7 +9,7 @@ namespace {
 
 at::Tensor SumDimKernelPython(const at::Tensor& self, at::OptionalIntArrayRef dim,
                               bool keepdim, std::optional<at::ScalarType> dtype) {
-  return CallPythonOp_TOIB("sum", self, dim, keepdim, dtype);
+  return CallPythonOp_TOIB("sum_dim", self, dim, keepdim, dtype);
 }
 
 } // namespace
