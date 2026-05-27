@@ -24,6 +24,7 @@ at::Tensor AllKernelAscend(const at::Tensor& self) {
   ascend::AclIntArrayWrapper acl_dim(dim_arr);
 
   EXEC_ASCEND_CMD(aclnnAll, acl_self.get(), acl_dim.get(), false, acl_out.get());
+  aclrtSynchronizeStream(ascend::GetCurrentAclStream());
   return out;
 }
 
