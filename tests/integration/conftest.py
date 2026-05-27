@@ -28,3 +28,6 @@ def pytest_configure(config):
 
     if not torch_fl.flagos.is_available():
         pytest.exit("flagos device is not available.")
+
+    # Initialize flagos device to ensure ACL runtime is properly set up
+    torch_fl.flagos.init()

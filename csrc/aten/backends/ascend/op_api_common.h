@@ -11,6 +11,7 @@
 #include <vector>
 
 #include <acl/acl_base_rt.h>
+#include <acl/acl_rt.h>
 #include <aclnn/acl_meta.h>
 
 namespace at::native::flagos::ascend {
@@ -77,18 +78,27 @@ struct AclTensorWrapper {
 };
 
 inline aclrtStream GetCurrentAclStream() {
-  // After aclrtSetDevice, ACL provides an implicit default stream.
-  // nullptr tells ACL to use the default stream on the current device.
-  return nullptr;
+  static aclrtStream stream = []() -> aclrtStream {
+    aclrtStream s = nullptr;
+    aclrtCreateStream(&s);
+    return s;
+  }();
+  return stream;
 }
 
 inline void* GetOpApiLibHandle() {
   static void* handle = []() -> void* {
-    void* h = dlopen("libopapi.so", RTLD_LAZY);
+    void* h = dlopen("libopapi.so", RTLD_NOW | RTLD_GLOBAL);
     if (!h) {
       const char* err = dlerror();
       throw std::runtime_error(
           std::string("Failed to load libopapi.so: ") + (err ? err : "unknown error"));
+    }
+    // Call Init() to initialize libopapi.so
+    typedef void (*InitFunc)();
+    InitFunc initFunc = reinterpret_cast<InitFunc>(dlsym(h, "Init"));
+    if (initFunc) {
+      initFunc();
     }
     return h;
   }();
@@ -220,6 +230,8 @@ struct AclTensorListWrapper {
     }
   }
 
+  void release() { acl_list = nullptr; }
+
   const aclTensorList* get() const { return acl_list; }
 };
 
@@ -229,20 +241,9 @@ struct AclTensorListWrapper {
   do {                                                                        \
     static void* opApiFuncAddr = nullptr;                                     \
     static void* getWorkspaceSizeFuncAddr = nullptr;                          \
-    static void* initMemAddr = nullptr;                                       \
-    static void* unInitMemAddr = nullptr;                                     \
     at::native::flagos::ascend::GetApiFunc(                                   \
         #aclnn_api, #aclnn_api "GetWorkspaceSize",                            \
         opApiFuncAddr, getWorkspaceSizeFuncAddr);                              \
-    {                                                                         \
-      void* handle = at::native::flagos::ascend::GetOpBaseLibHandle();        \
-      if (!initMemAddr) {                                                     \
-        initMemAddr = dlsym(handle, "InitHugeMemThreadLocal");                \
-      }                                                                       \
-      if (!unInitMemAddr) {                                                   \
-        unInitMemAddr = dlsym(handle, "UnInitHugeMemThreadLocal");            \
-      }                                                                       \
-    }                                                                         \
                                                                               \
     auto acl_stream = at::native::flagos::ascend::GetCurrentAclStream();      \
                                                                               \
@@ -252,12 +253,6 @@ struct AclTensorListWrapper {
     TORCH_CHECK(getWorkspaceSizeFuncAddr && opApiFuncAddr,                     \
         "Failed to load symbols for " #aclnn_api ": ", dlerror());            \
                                                                               \
-    typedef void (*InitMemFunc)(void*, bool);                                 \
-    typedef void (*UnInitMemFunc)(void*, bool);                               \
-    if (initMemAddr) {                                                        \
-      reinterpret_cast<InitMemFunc>(initMemAddr)(nullptr, false);             \
-    }                                                                         \
-                                                                              \
     typedef int (*GetWorkspaceSizeFunc)(...);                                  \
     auto getWorkspaceSize =                                                   \
         reinterpret_cast<GetWorkspaceSizeFunc>(getWorkspaceSizeFuncAddr);      \
@@ -266,10 +261,11 @@ struct AclTensorListWrapper {
         #aclnn_api "GetWorkspaceSize failed, ret=", ws_ret);                  \
                                                                               \
     void* workspace_addr = nullptr;                                           \
+    at::Tensor workspace_tensor;                                              \
     if (workspace_size > 0) {                                                 \
-      auto malloc_ret = ::Malloc(&workspace_addr, workspace_size);            \
-      TORCH_CHECK(malloc_ret == Success,                                      \
-          "Workspace allocation failed for " #aclnn_api);                     \
+      workspace_tensor = at::empty({static_cast<int64_t>(workspace_size)},   \
+          at::TensorOptions().dtype(at::kByte).device(at::kPrivateUse1));    \
+      workspace_addr = workspace_tensor.data_ptr();                           \
     }                                                                         \
                                                                               \
     typedef int (*ExecFunc)(void*, uint64_t, aclOpExecutor*, aclrtStream);    \
@@ -278,13 +274,5 @@ struct AclTensorListWrapper {
         workspace_addr, workspace_size, executor, acl_stream);                \
     TORCH_CHECK(exec_ret == 0, #aclnn_api " execution failed, ret=",         \
         exec_ret);                                                            \
-                                                                              \
-    if (workspace_addr) {                                                     \
-      ::Free(workspace_addr);                                                 \
-    }                                                                         \
-                                                                              \
-    if (unInitMemAddr) {                                                      \
-      reinterpret_cast<UnInitMemFunc>(unInitMemAddr)(nullptr, false);         \
-    }                                                                         \
   } while (false)
 

@@ -13,14 +13,32 @@ at::Tensor CatKernelAscend(const at::ITensorListRef& tensors, int64_t dim) {
   auto materialized = tensors.materialize();
   TORCH_CHECK(!materialized.empty(), "cat: expected a non-empty list of tensors");
 
-  auto first = materialized[0].get();
+  // Filter out empty tensors (numel == 0) to avoid dimension mismatches
+  std::vector<at::Tensor> valid_tensors;
+  for (const auto& t : materialized) {
+    if (t.get().numel() > 0) {
+      valid_tensors.push_back(t.get());
+    }
+  }
+
+  // If all tensors are empty, return the first one
+  if (valid_tensors.empty()) {
+    return materialized[0].get().clone();
+  }
+
+  // If only one non-empty tensor, return it directly
+  if (valid_tensors.size() == 1) {
+    return valid_tensors[0].clone();
+  }
+
+  auto& first = valid_tensors[0];
   auto ndim = first.dim();
   if (dim < 0) dim += ndim;
 
   // Compute output shape
   std::vector<int64_t> out_sizes(first.sizes().begin(), first.sizes().end());
-  for (size_t i = 1; i < materialized.size(); ++i) {
-    out_sizes[dim] += materialized[i].get().size(dim);
+  for (size_t i = 1; i < valid_tensors.size(); ++i) {
+    out_sizes[dim] += valid_tensors[i].size(dim);
   }
 
   auto out = ascend::OpPreparation::apply_tensor_without_format(
@@ -28,13 +46,13 @@ at::Tensor CatKernelAscend(const at::ITensorListRef& tensors, int64_t dim) {
 
   // Build aclTensorList
   std::vector<ascend::AclTensorWrapper> wrappers;
-  wrappers.reserve(materialized.size());
-  for (const auto& t : materialized) {
-    wrappers.emplace_back(t.get());
+  wrappers.reserve(valid_tensors.size());
+  for (auto& t : valid_tensors) {
+    wrappers.emplace_back(t);
   }
 
   std::vector<const aclTensor*> acl_tensors;
-  acl_tensors.reserve(materialized.size());
+  acl_tensors.reserve(valid_tensors.size());
   for (auto& w : wrappers) {
     acl_tensors.push_back(w.get());
   }

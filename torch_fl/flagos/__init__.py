@@ -78,6 +78,43 @@ def _lazy_init():
     _C._init()
     _initialized = True
 
+    # Monkey-patch Tensor.__getitem__ to work around PyTorch C++ dispatch issue
+    # with advanced indexing on custom devices. The C++ __getitem__ fails for
+    # patterns like x[:, tensor_idx] but torch.ops.aten.index.Tensor works.
+    import torch
+    _original_getitem = torch.Tensor.__getitem__
+
+    def _patched_getitem(self, indices):
+        # Only patch for our device
+        if self.device.type not in ('privateuseone', 'flagos'):
+            return _original_getitem(self, indices)
+
+        # Handle tuple of indices with at least one tensor
+        if isinstance(indices, tuple):
+            has_tensor = any(isinstance(idx, torch.Tensor) for idx in indices)
+            if has_tensor:
+                # Convert to list for aten.index.Tensor
+                indices_list = []
+                for idx in indices:
+                    if isinstance(idx, slice):
+                        if idx == slice(None, None, None):
+                            indices_list.append(None)
+                        else:
+                            # Non-trivial slice — fall back to original
+                            return _original_getitem(self, indices)
+                    elif isinstance(idx, torch.Tensor):
+                        indices_list.append(idx)
+                    else:
+                        # Other types (int, etc.) — fall back to original
+                        return _original_getitem(self, indices)
+
+                # Use aten.index.Tensor which works correctly
+                return torch.ops.aten.index.Tensor(self, indices_list)
+
+        return _original_getitem(self, indices)
+
+    torch.Tensor.__getitem__ = _patched_getitem
+
 
 from .random import *  # noqa: F403, E402
 
