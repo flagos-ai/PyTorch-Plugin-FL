@@ -12,13 +12,21 @@ at::Tensor SumDimKernelAscend(const at::Tensor& self, at::OptionalIntArrayRef di
   namespace ascend = at::native::flagos::ascend;
 
   auto out_dtype = dtype.has_value() ? dtype.value() : self.scalar_type();
-  auto out_shape = self.sizes().vec();
+  int64_t ndim = self.dim();
 
+  // Normalize dims to positive values
+  std::vector<int64_t> norm_dims;
   if (dim.has_value()) {
-    auto dims = dim.value();
-    std::vector<int64_t> sorted_dims(dims.begin(), dims.end());
-    std::sort(sorted_dims.rbegin(), sorted_dims.rend());
+    for (int64_t d : dim.value()) {
+      norm_dims.push_back(d < 0 ? d + ndim : d);
+    }
+  }
 
+  // Compute output shape
+  auto out_shape = self.sizes().vec();
+  if (!norm_dims.empty()) {
+    std::vector<int64_t> sorted_dims(norm_dims);
+    std::sort(sorted_dims.rbegin(), sorted_dims.rend());
     for (int64_t d : sorted_dims) {
       if (keepdim) {
         out_shape[d] = 1;
@@ -26,8 +34,8 @@ at::Tensor SumDimKernelAscend(const at::Tensor& self, at::OptionalIntArrayRef di
         out_shape.erase(out_shape.begin() + d);
       }
     }
-  } else {
-    out_shape = keepdim ? std::vector<int64_t>(self.dim(), 1) : std::vector<int64_t>{};
+  } else if (!dim.has_value()) {
+    out_shape = keepdim ? std::vector<int64_t>(ndim, 1) : std::vector<int64_t>{};
   }
 
   auto out = ascend::OpPreparation::apply_tensor_without_format(
@@ -36,11 +44,12 @@ at::Tensor SumDimKernelAscend(const at::Tensor& self, at::OptionalIntArrayRef di
   ascend::AclTensorWrapper acl_self(self);
   ascend::AclTensorWrapper acl_out(out);
 
-  at::IntArrayRef dim_array = dim.has_value() ? dim.value() : at::IntArrayRef{};
-  ascend::AclIntArrayWrapper acl_dim(dim_array);
+  ascend::AclIntArrayWrapper acl_dim(norm_dims);
 
-  EXEC_ASCEND_CMD(aclnnSum, acl_self.get(), acl_dim.get(), keepdim,
-                  static_cast<int8_t>(out_dtype), acl_out.get());
+  aclDataType acl_dtype = ascend::ToAclDataType(out_dtype);
+
+  EXEC_ASCEND_CMD(aclnnReduceSum, acl_self.get(), acl_dim.get(), keepdim,
+                  acl_dtype, acl_out.get());
   return out;
 }
 
