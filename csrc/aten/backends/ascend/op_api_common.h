@@ -216,9 +216,20 @@ struct AclTensorListWrapper {
   do {                                                                        \
     static void* opApiFuncAddr = nullptr;                                     \
     static void* getWorkspaceSizeFuncAddr = nullptr;                          \
+    static void* initMemAddr = nullptr;                                       \
+    static void* unInitMemAddr = nullptr;                                     \
     at::native::flagos::ascend::GetApiFunc(                                   \
         #aclnn_api, #aclnn_api "GetWorkspaceSize",                            \
         opApiFuncAddr, getWorkspaceSizeFuncAddr);                              \
+    {                                                                         \
+      void* handle = at::native::flagos::ascend::GetOpApiLibHandle();         \
+      if (!initMemAddr) {                                                     \
+        initMemAddr = dlsym(handle, "InitHugeMemThreadLocal");                \
+      }                                                                       \
+      if (!unInitMemAddr) {                                                   \
+        unInitMemAddr = dlsym(handle, "UnInitHugeMemThreadLocal");            \
+      }                                                                       \
+    }                                                                         \
                                                                               \
     auto acl_stream = at::native::flagos::ascend::GetCurrentAclStream();      \
                                                                               \
@@ -227,6 +238,12 @@ struct AclTensorListWrapper {
                                                                               \
     TORCH_CHECK(getWorkspaceSizeFuncAddr && opApiFuncAddr,                     \
         "Failed to load symbols for " #aclnn_api ": ", dlerror());            \
+                                                                              \
+    typedef void (*InitMemFunc)(void*, bool);                                 \
+    typedef void (*UnInitMemFunc)(void*, bool);                               \
+    if (initMemAddr) {                                                        \
+      reinterpret_cast<InitMemFunc>(initMemAddr)(nullptr, false);             \
+    }                                                                         \
                                                                               \
     typedef int (*GetWorkspaceSizeFunc)(...);                                  \
     auto getWorkspaceSize =                                                   \
@@ -251,6 +268,10 @@ struct AclTensorListWrapper {
                                                                               \
     if (workspace_addr) {                                                     \
       ::Free(workspace_addr);                                                 \
+    }                                                                         \
+                                                                              \
+    if (unInitMemAddr) {                                                      \
+      reinterpret_cast<UnInitMemFunc>(unInitMemAddr)(nullptr, false);         \
     }                                                                         \
   } while (false)
 
