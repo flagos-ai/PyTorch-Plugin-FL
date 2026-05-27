@@ -82,11 +82,12 @@ def _lazy_init():
     # with advanced indexing on custom devices. The C++ __getitem__ fails for
     # patterns like x[:, tensor_idx] but torch.ops.aten.index.Tensor works.
     import torch
+
     _original_getitem = torch.Tensor.__getitem__
 
     def _patched_getitem(self, indices):
         # Only patch for our device
-        if self.device.type not in ('privateuseone', 'flagos'):
+        if self.device.type not in ("privateuseone", "flagos"):
             return _original_getitem(self, indices)
 
         # Handle tuple of indices with at least one tensor
