@@ -3,7 +3,7 @@ pow.Tensor_Scalar dispatch tests
 
 Verifies that torch.pow(tensor, scalar):
   - produces correct results on flagos device
-  - C++ wrapper routes to cuda backend
+  - C++ wrapper routes to metax backend
   - attempting flaggems backend raises an error (not implemented)
 
 Usage:
@@ -29,7 +29,7 @@ def _run_pow_subprocess(
     env.update(extra_env)
     code = (
         "import torch_fl, torch; "
-        "a = torch.randn(4,4,device='flagos:0').abs() + 0.1; "
+        "a = (torch.randn(4,4).abs() + 0.1).to('flagos:0'); "
         "torch.pow(a, 2.0)"
     )
     return subprocess.run(
@@ -46,7 +46,7 @@ class TestPowTensorScalarCorrectness:
     @pytest.mark.parametrize("shape", [(128, 256), (1,), (64, 64, 64)])
     def test_pow_shape(self, shape):
         torch.manual_seed(0)
-        a = torch.randn(*shape, device=DEVICE).abs() + 0.1
+        a = (torch.randn(*shape).abs() + 0.1).to(DEVICE)
         out = torch.pow(a, 2.0)
         assert out.shape == shape
         assert out.device.type == "flagos"
@@ -54,7 +54,7 @@ class TestPowTensorScalarCorrectness:
     @pytest.mark.parametrize("exp", [2.0, 3.0, 0.5, -1.0])
     def test_pow_values(self, exp):
         torch.manual_seed(1)
-        a = torch.randn(32, 32, device=DEVICE).abs() + 0.1
+        a = (torch.randn(32, 32).abs() + 0.1).to(DEVICE)
         out = torch.pow(a, exp)
         ref = torch.pow(a.cpu(), exp)
         torch.testing.assert_close(out.cpu(), ref, rtol=1e-4, atol=1e-4)
@@ -72,7 +72,7 @@ class TestPowTensorScalarCorrectness:
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
     def test_pow_dtypes(self, dtype):
         torch.manual_seed(3)
-        a = torch.randn(16, 16, device=DEVICE, dtype=dtype).abs() + 0.1
+        a = (torch.randn(16, 16, dtype=dtype).abs() + 0.1).to(DEVICE)
         out = torch.pow(a, 2.0)
         assert out.dtype == dtype
 
@@ -96,12 +96,12 @@ class TestPowTensorScalarCorrectness:
 class TestPowTensorScalarDispatch:
     """Verify dispatch routing and flaggems backend rejection."""
 
-    def test_dispatch_log_cuda(self):
+    def test_dispatch_log_metax(self):
         result = _run_pow_subprocess(
-            {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_pow__Tensor_Scalar": "cuda"}
+            {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_pow__Tensor_Scalar": "metax"}
         )
         assert result.returncode == 0
-        assert "[flagos dispatch] pow.Tensor_Scalar -> cuda" in result.stderr
+        assert "[flagos dispatch] pow.Tensor_Scalar -> metax" in result.stderr
 
     def test_flaggems_backend_raises_error(self):
         """Selecting flaggems backend must fail — not implemented."""
