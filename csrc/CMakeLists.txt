@@ -79,6 +79,17 @@ if(ACCELERATOR STREQUAL "metax")
     "${METAX_PATH}/include"
     "${METAX_PATH}/include/mcr"
     "${CMAKE_CURRENT_SOURCE_DIR}/aten/backends/metax")
+
+  find_library(MCBLAS_LIB mcblas
+      PATHS "${METAX_PATH}/lib"
+            "${METAX_PATH}/lib64"
+            "/opt/maca/lib"
+            "/opt/maca/lib64")
+  if(MCBLAS_LIB)
+    target_link_libraries(${LIBRARY_NAME} PRIVATE ${MCBLAS_LIB})
+  else()
+    message(WARNING "mcblas not found, MetaX mm will fallback to naive kernel")
+  endif()
 endif()
 
 install(TARGETS ${LIBRARY_NAME}

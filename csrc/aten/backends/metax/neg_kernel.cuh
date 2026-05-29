@@ -46,6 +46,11 @@ inline at::Tensor NegKernel(const at::Tensor& self) {
                   .add_input(self)
                   .build();
 
+  if (!iter.is_contiguous() && iter.numel() > 0) {
+    const auto shape = iter.output().sizes();
+    return NegKernel(self.expand(shape).contiguous());
+  }
+
   if (!iter.can_use_32bit_indexing()) {
     for (auto& sub_iter : iter.with_32bit_indexing()) {
       AT_DISPATCH_ALL_TYPES_AND_COMPLEX_AND3(
@@ -59,9 +64,7 @@ inline at::Tensor NegKernel(const at::Tensor& self) {
     return iter.output();
   }
 
-  TORCH_CHECK(
-      iter.is_contiguous(),
-      "MetaX neg requires contiguous flagos tensors");
+  TORCH_INTERNAL_ASSERT(iter.is_contiguous());
 
   AT_DISPATCH_ALL_TYPES_AND_COMPLEX_AND3(
       at::ScalarType::Half,

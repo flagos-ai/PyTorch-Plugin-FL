@@ -47,6 +47,8 @@
 #endif // USE_ASCEND
 
 #include <ATen/native/CPUFallback.h>
+#include <ATen/ops/_index_put_impl.h>
+#include <ATen/ops/index_put.h>
 
 #include <torch/library.h>
 
@@ -111,6 +113,14 @@ at::Tensor WrapperCopyFromAndResize(
   return at::native::flagos::_copy_from_and_resize(self, dst);
 }
 
+at::Tensor& WrapperCopy_(
+    at::Tensor& self,
+    const at::Tensor& src,
+    bool non_blocking) {
+  at::native::flagos::_copy_from(src, self, non_blocking);
+  return self;
+}
+
 at::Scalar WrapperLocalScalarDense(const at::Tensor& self) {
   return at::native::flagos::local_scalar_dense_stub(self);
 }
@@ -161,6 +171,36 @@ at::Tensor WrapperToCopy(
     std::optional<c10::MemoryFormat> memory_format) {
   return at::native::flagos::to_copy_stub(
       self, dtype, layout, device, pin_memory, non_blocking, memory_format);
+}
+
+at::Tensor& WrapperIndexPut_(
+    at::Tensor& self,
+    const c10::List<::std::optional<at::Tensor>>& indices,
+    const at::Tensor& values,
+    bool accumulate) {
+  at::Tensor self_cpu = self.cpu();
+  at::Tensor values_cpu = values.cpu();
+  c10::List<::std::optional<at::Tensor>> indices_cpu;
+  for (int64_t i = 0; i < static_cast<int64_t>(indices.size()); ++i) {
+    auto opt = indices.get(i);
+    if (opt.has_value() && opt->defined()) {
+      indices_cpu.push_back(opt->cpu());
+    } else {
+      indices_cpu.push_back(std::nullopt);
+    }
+  }
+  at::index_put_(self_cpu, indices_cpu, values_cpu, accumulate);
+  self.copy_(self_cpu);
+  return self;
+}
+
+at::Tensor& WrapperIndexPutImpl_(
+    at::Tensor& self,
+    const c10::List<::std::optional<at::Tensor>>& indices,
+    const at::Tensor& values,
+    bool accumulate,
+    bool /*unsafe*/) {
+  return WrapperIndexPut_(self, indices, values, accumulate);
 }
 
 void WrapperCpuFallback(
@@ -374,6 +414,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("_reshape_alias", WrapperReshapeAlias);
   m.impl("_copy_from", WrapperCopyFrom);
   m.impl("_copy_from_and_resize", WrapperCopyFromAndResize);
+  m.impl("copy_", WrapperCopy_);
   m.impl("_local_scalar_dense", WrapperLocalScalarDense);
   m.impl("set_.source_Tensor", WrapperSetSourceTensor);
   m.impl("set_.source_Storage", WrapperSetSourceStorage);
@@ -384,6 +425,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("contiguous", WrapperContiguous);
   m.impl("clone", WrapperClone);
   m.impl("_to_copy", WrapperToCopy);
+  m.impl("index_put_", WrapperIndexPut_);
+  m.impl("_index_put_impl_", WrapperIndexPutImpl_);
   m.impl("record_stream", WrapperRecordStream);
   m.impl("mm", WrapperMm);
   m.impl("mm.out", WrapperMmOut);

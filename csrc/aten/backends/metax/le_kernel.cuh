@@ -56,6 +56,22 @@ inline at::Tensor LeTensorKernel(
                   .declare_static_dtype(at::kBool)
                   .build();
 
+  if (!iter.is_contiguous() && iter.numel() > 0) {
+    if (self.device() != other.device()) {
+      if (self.device().is_cpu() && self.numel() == 1) {
+        return LeTensorKernel(self.to(other.device(), other.scalar_type()), other);
+      }
+      if (other.device().is_cpu() && other.numel() == 1) {
+        return LeTensorKernel(self, other.to(self.device(), self.scalar_type()));
+      }
+    } else {
+      const auto shape = iter.output().sizes();
+      return LeTensorKernel(
+          self.expand(shape).contiguous(),
+          other.expand(shape).contiguous());
+    }
+  }
+
   if (!iter.can_use_32bit_indexing()) {
     for (auto& sub_iter : iter.with_32bit_indexing()) {
       AT_DISPATCH_ALL_TYPES_AND3(
@@ -69,9 +85,7 @@ inline at::Tensor LeTensorKernel(
     return iter.output();
   }
 
-  TORCH_CHECK(
-      iter.is_contiguous(),
-      "MetaX le requires contiguous flagos tensors");
+  TORCH_INTERNAL_ASSERT(iter.is_contiguous());
 
   AT_DISPATCH_ALL_TYPES_AND3(
       at::ScalarType::Half,

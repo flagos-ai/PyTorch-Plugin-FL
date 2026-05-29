@@ -22,6 +22,25 @@ import torch_fl  # noqa: F401
 DEVICE = "flagos:0"
 
 
+def bmm4d(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """
+    4D BMM wrapper:
+      a: [B, H, M, K]
+      b: [B, H, K, N]
+      out: [B, H, M, N]
+    Implemented via flatten -> torch.bmm -> reshape.
+    """
+    assert a.dim() == 4 and b.dim() == 4, "bmm4d expects 4D tensors"
+    assert a.shape[:2] == b.shape[:2], "batch/head dims must match"
+    assert a.shape[-1] == b.shape[-2], "K dimension mismatch"
+    bsz, heads, m, k = a.shape
+    n = b.shape[-1]
+    a3 = a.reshape(bsz * heads, m, k).contiguous()
+    b3 = b.reshape(bsz * heads, k, n).contiguous()
+    out3 = torch.bmm(a3, b3)
+    return out3.reshape(bsz, heads, m, n)
+
+
 @pytest.fixture(scope="session")
 def cuda_ref():
     """Reference bmm results computed on CUDA."""
@@ -114,6 +133,88 @@ class TestBmmDispatch:
         out = torch.bmm(a, b)
         assert out.dtype == torch.float16
         assert out.shape == (4, 64, 32)
+
+    def test_bmm_half_attention_like_matches_cpu(self):
+        """
+        Simulate attention q@k^T BMM shape and compare flagos vs CPU.
+        Shape mapping:
+          [B, H, Q, D] x [B, H, D, K] -> flatten to [B*H, Q, D] x [B*H, D, K]
+        """
+        torch.manual_seed(7)
+        batch = 1
+        heads = 16
+        q_len = 64
+        k_len = 64
+        head_dim = 64
+
+        q = torch.randn(batch, heads, q_len, head_dim, dtype=torch.float16)
+        k = torch.randn(batch, heads, k_len, head_dim, dtype=torch.float16)
+        k_t = k.transpose(-1, -2).contiguous()
+
+        a_cpu = q.reshape(batch * heads, q_len, head_dim).contiguous()
+        b_cpu = k_t.reshape(batch * heads, head_dim, k_len).contiguous()
+        ref = torch.bmm(a_cpu, b_cpu)
+
+        a = a_cpu.to(DEVICE)
+        b = b_cpu.to(DEVICE)
+        out = torch.bmm(a, b).float().cpu()
+        ref = ref.float().cpu()
+
+        torch.testing.assert_close(
+            out,
+            ref,
+            rtol=8e-2,
+            atol=8e-2,
+            msg="attention-like fp16 bmm on flagos differs from CPU reference",
+        )
+
+    def test_bmm4d_fp16_matches_cpu_reference(self):
+        """
+        Validate 4D bmm wrapper (flatten+bmm+reshape) with attention-like shapes.
+        """
+        torch.manual_seed(11)
+        bsz, heads, q_len, k_len, head_dim = 1, 16, 22, 22, 128
+        q_cpu = torch.randn(bsz, heads, q_len, head_dim, dtype=torch.float16)
+        k_cpu = torch.randn(bsz, heads, k_len, head_dim, dtype=torch.float16)
+        k_t_cpu = k_cpu.transpose(-1, -2).contiguous()
+
+        ref = torch.matmul(q_cpu.float(), k_t_cpu.float())
+        out = (
+            bmm4d(
+                q_cpu.to(DEVICE),
+                k_t_cpu.to(DEVICE),
+            )
+            .float()
+            .cpu()
+        )
+        torch.testing.assert_close(
+            out,
+            ref,
+            rtol=8e-2,
+            atol=8e-2,
+            msg="bmm4d fp16 on flagos differs from CPU reference",
+        )
+
+    def test_flagos_4d_matmul_vs_bmm4d(self):
+        """
+        Compare current flagos 4D matmul path against bmm4d path.
+        If this fails while bmm4d matches CPU, current 4D matmul path is incorrect.
+        """
+        torch.manual_seed(12)
+        bsz, heads, q_len, k_len, head_dim = 1, 16, 22, 22, 128
+        q = torch.randn(bsz, heads, q_len, head_dim, dtype=torch.float16, device=DEVICE)
+        k = torch.randn(bsz, heads, k_len, head_dim, dtype=torch.float16, device=DEVICE)
+        k_t = k.transpose(-1, -2).contiguous()
+
+        out_matmul = torch.matmul(q, k_t).float().cpu()
+        out_bmm4d = bmm4d(q, k_t).float().cpu()
+        torch.testing.assert_close(
+            out_matmul,
+            out_bmm4d,
+            rtol=8e-2,
+            atol=8e-2,
+            msg="flagos 4D matmul and bmm4d are inconsistent",
+        )
 
 
 class TestBmmDispatchLog:

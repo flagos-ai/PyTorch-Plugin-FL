@@ -67,6 +67,33 @@ def _run_mm_subprocess(
     return result
 
 
+def _run_mm_half_subprocess(
+    extra_env: dict, check: bool = True
+) -> subprocess.CompletedProcess:
+    """Run a fp16 mm call in a subprocess and return the result."""
+    env = os.environ.copy()
+    env.update(extra_env)
+    code = (
+        "import torch_fl, torch; "
+        "torch.manual_seed(3); "
+        "a = torch.randn(64,128,device='flagos:0',dtype=torch.float16); "
+        "b = torch.randn(128,32,device='flagos:0',dtype=torch.float16); "
+        "out = torch.mm(a, b); "
+        "assert out.shape == (64, 32)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    if check:
+        assert result.returncode == 0, (
+            f"Subprocess failed (exit {result.returncode}):\n{result.stderr}\n{result.stdout}"
+        )
+    return result
+
+
 class TestMmDispatch:
     """torch.mm correctness and cross-device consistency."""
 
@@ -118,6 +145,19 @@ class TestMmDispatch:
         out = torch.mm(a, b)
         assert out.dtype == torch.float16
         assert out.shape == (64, 32)
+
+    def test_mm_half_hgemm_strict(self):
+        """
+        Same fp16 case as test_mm_half, but force mcblasHgemm path.
+        Strict mode ensures we fail fast if Hgemm is unavailable.
+        """
+        result = _run_mm_half_subprocess(
+            {
+                "FLAGOS_METAX_MM_HALF_MODE": "hgemm",
+                "FLAGOS_METAX_MM_HALF_HGEMM_STRICT": "1",
+            }
+        )
+        assert result.returncode == 0
 
 
 class TestMmDispatchLog:

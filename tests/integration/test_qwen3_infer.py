@@ -4,10 +4,11 @@ Qwen3 End-to-End Inference Test (pytest)
 All tests run on the flagos device.
 
 Usage:
-    pytest tests/integration/test_qwen3_infer.py -v -s
+    pytest tests/integration/test_qwen3_infer.py -v -s --model /path/to/model
 """
 
 import time
+
 import pytest
 import torch
 import torch_fl
@@ -38,8 +39,6 @@ def ctx(request):
         f"Model device: {next(model.parameters()).device}  "
         f"load time: {time.time() - t0:.2f}s"
     )
-    # default attn: sdpa
-    model.model.layers[0].self_attn.config._attn_implementation = "eager"
 
     text = tokenizer.apply_chat_template(
         [
@@ -60,6 +59,7 @@ def ctx(request):
         "tokenizer": tokenizer,
         "inputs": inputs,
         "max_new_tokens": max_new_tokens,
+        "model_path": model_path,
     }
 
 

@@ -1,4 +1,24 @@
+import os
+from pathlib import Path
+
 import pytest
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _ensure_backend_config() -> None:
+    """Ensure MetaX backend config is set before importing torch_fl (if not already specified)."""
+    if os.environ.get("FLAGOS_BACKEND_CONFIG"):
+        return
+    accel = os.environ.get("ACCELERATOR", "").lower()
+    use_metax = accel in ("metax", "maca") or Path("/dev/mxcd").exists()
+    if use_metax:
+        cfg = _REPO_ROOT / "torch_fl" / "backends_metax.conf"
+        if cfg.is_file():
+            os.environ["FLAGOS_BACKEND_CONFIG"] = str(cfg)
+
+
+_ensure_backend_config()
 
 
 def pytest_addoption(parser):

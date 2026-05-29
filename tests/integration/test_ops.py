@@ -76,7 +76,9 @@ class TestArithmetic:
 
     def test_neg(self, device):
         a = torch.tensor([1.0, -2.0, 3.0], device=device)
-        assert torch.allclose(torch.neg(a), torch.tensor([-1.0, 2.0, -3.0], device=device))
+        assert torch.allclose(
+            torch.neg(a), torch.tensor([-1.0, 2.0, -3.0], device=device)
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +93,9 @@ class TestMatrixOps:
         b = torch.randn(128, 32, device=device)
         out = torch.mm(a, b)
         assert out.shape == (64, 32)
-        assert torch.allclose(out.cpu(), torch.mm(a.cpu(), b.cpu()), rtol=1e-4, atol=1e-4)
+        assert torch.allclose(
+            out.cpu(), torch.mm(a.cpu(), b.cpu()), rtol=1e-4, atol=1e-4
+        )
 
     def test_mm_out(self, device):
         torch.manual_seed(1)
@@ -99,7 +103,9 @@ class TestMatrixOps:
         b = torch.randn(16, 8, device=device)
         out = torch.empty(32, 8, device=device)
         torch.mm(a, b, out=out)
-        assert torch.allclose(out.cpu(), torch.mm(a.cpu(), b.cpu()), rtol=1e-4, atol=1e-4)
+        assert torch.allclose(
+            out.cpu(), torch.mm(a.cpu(), b.cpu()), rtol=1e-4, atol=1e-4
+        )
 
     def test_matmul(self, device):
         a = torch.randn(64, 128, device=device)
