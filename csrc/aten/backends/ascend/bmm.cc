@@ -27,6 +27,6 @@ void BmmKernelAscend(
   EXEC_ASCEND_CMD(aclnnBatchMatMul, acl_self.get(), acl_mat2.get(), acl_out.get(), cube_math_type);
 }
 
-FLAGOS_REGISTER_DISPATCH(BmmFn, bmm_stub, FlagosDevice::kAscend, BmmKernelAscend)
+REGISTER_IMPL_TO_DISPATCHER(BmmFn, bmm_dispatcher, Backend::kAscend, BmmKernelAscend)
 
 } // namespace at::native::flagos

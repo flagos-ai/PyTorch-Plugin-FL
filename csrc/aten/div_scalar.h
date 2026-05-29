@@ -4,11 +4,11 @@
 
 #include <ATen/core/Tensor.h>
 #include <c10/core/Scalar.h>
-#include "dispatch_stub.h"
+#include "dispatcher.h"
 
 namespace at::native::flagos {
 
 using DivScalarFn = at::Tensor (*)(const at::Tensor&, const at::Scalar&);
-FLAGOS_DECLARE_DISPATCH(DivScalarFn, div_scalar_stub)
+DECLARE_DISPATCHER(DivScalarFn, div_scalar_dispatcher)
 
 } // namespace at::native::flagos

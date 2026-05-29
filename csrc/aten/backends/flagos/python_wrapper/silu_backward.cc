@@ -13,6 +13,6 @@ at::Tensor SiluBackwardKernelPython(const at::Tensor& grad_output, const at::Ten
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(SiluBackwardFn, silu_backward_stub, FlagosDevice::kFlagOsPython, SiluBackwardKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(SiluBackwardFn, silu_backward_dispatcher, Backend::kFlagOsPython, SiluBackwardKernelPython)
 
 } // namespace at::native::flagos

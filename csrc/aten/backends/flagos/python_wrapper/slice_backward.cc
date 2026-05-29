@@ -23,6 +23,6 @@ at::Tensor SliceBackwardKernelPython(const at::Tensor& grad_output, at::IntArray
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(SliceBackwardFn, slice_backward_stub, FlagosDevice::kFlagOsPython, SliceBackwardKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(SliceBackwardFn, slice_backward_dispatcher, Backend::kFlagOsPython, SliceBackwardKernelPython)
 
 } // namespace at::native::flagos

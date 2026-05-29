@@ -22,6 +22,6 @@ at::Tensor SiluKernelAscend(const at::Tensor& self) {
   return out;
 }
 
-FLAGOS_REGISTER_DISPATCH(SiluFn, silu_stub, FlagosDevice::kAscend, SiluKernelAscend)
+REGISTER_IMPL_TO_DISPATCHER(SiluFn, silu_dispatcher, Backend::kAscend, SiluKernelAscend)
 
 } // namespace at::native::flagos

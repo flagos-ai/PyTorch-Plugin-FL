@@ -4,7 +4,7 @@
 
 namespace at::native::flagos {
 
-FLAGOS_DEFINE_DISPATCH(NllLossForwardFn, nll_loss_forward_stub, "nll_loss_forward")
-FLAGOS_DEFINE_DISPATCH(NllLossBackwardFn, nll_loss_backward_stub, "nll_loss_backward")
+ADD_IMPL_TO_DISPATCHER(NllLossForwardFn, nll_loss_forward_dispatcher, "nll_loss_forward")
+ADD_IMPL_TO_DISPATCHER(NllLossBackwardFn, nll_loss_backward_dispatcher, "nll_loss_backward")
 
 } // namespace at::native::flagos

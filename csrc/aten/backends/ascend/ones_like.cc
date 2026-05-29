@@ -27,6 +27,6 @@ at::Tensor OnesLikeKernelAscend(
   return result;
 }
 
-FLAGOS_REGISTER_DISPATCH(OnesLikeFn, ones_like_stub, FlagosDevice::kAscend, OnesLikeKernelAscend)
+REGISTER_IMPL_TO_DISPATCHER(OnesLikeFn, ones_like_dispatcher, Backend::kAscend, OnesLikeKernelAscend)
 
 } // namespace at::native::flagos

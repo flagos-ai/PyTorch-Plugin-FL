@@ -13,6 +13,6 @@ at::Tensor AbsKernelPython(const at::Tensor& self) {
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(AbsFn, abs_stub, FlagosDevice::kFlagOsPython, AbsKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(AbsFn, abs_dispatcher, Backend::kFlagOsPython, AbsKernelPython)
 
 } // namespace at::native::flagos

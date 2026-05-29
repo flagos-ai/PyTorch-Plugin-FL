@@ -41,8 +41,8 @@ std::string DefaultConfigPath() {
   return FLAGOS_SOURCE_ROOT "/torch_fl/backends.conf";
 }
 
-std::unordered_map<std::string, FlagosDevice> LoadBackendConfig() {
-  std::unordered_map<std::string, FlagosDevice> table;
+std::unordered_map<std::string, Backend> LoadBackendConfig() {
+  std::unordered_map<std::string, Backend> table;
 
   const char* env = std::getenv("FLAGOS_BACKEND_CONFIG");
   std::string path = env ? env : DefaultConfigPath();
@@ -75,16 +75,16 @@ std::unordered_map<std::string, FlagosDevice> LoadBackendConfig() {
     if (op.empty() || val.empty()) continue;
 
     if (val == "cuda") {
-      table[op] = FlagosDevice::kCuda;
+      table[op] = Backend::kCuda;
     } else if (val == "ascend") {
-      table[op] = FlagosDevice::kAscend;
+      table[op] = Backend::kAscend;
     } else if (val == "flagos" || val == "flaggems") {
-      table[op] = FlagosDevice::kFlagOs;
+      table[op] = Backend::kFlagOs;
     } else if (val == "flagos_python" || val == "flaggems_python") {
-      table[op] = FlagosDevice::kFlagOsPython;
+      table[op] = Backend::kFlagOsPython;
     } else {
       fprintf(stderr, "[flagos] unknown backend '%s' for op '%s', using flagos\n", val.c_str(), op.c_str());
-      table[op] = FlagosDevice::kFlagOs;
+      table[op] = Backend::kFlagOs;
     }
   }
 
@@ -102,16 +102,16 @@ std::unordered_map<std::string, FlagosDevice> LoadBackendConfig() {
     if (!override_val) continue;
     std::string v(override_val);
     if (v == "cuda") {
-      table[op] = FlagosDevice::kCuda;
+      table[op] = Backend::kCuda;
       fprintf(stderr, "[flagos] env override: %s -> cuda\n", op.c_str());
     } else if (v == "ascend") {
-      table[op] = FlagosDevice::kAscend;
+      table[op] = Backend::kAscend;
       fprintf(stderr, "[flagos] env override: %s -> ascend\n", op.c_str());
     } else if (v == "flagos" || v == "flaggems") {
-      table[op] = FlagosDevice::kFlagOs;
+      table[op] = Backend::kFlagOs;
       fprintf(stderr, "[flagos] env override: %s -> flaggems\n", op.c_str());
     } else if (v == "flagos_python" || v == "flaggems_python") {
-      table[op] = FlagosDevice::kFlagOsPython;
+      table[op] = Backend::kFlagOsPython;
       fprintf(stderr, "[flagos] env override: %s -> flaggems_python\n", op.c_str());
     }
   }
@@ -119,17 +119,17 @@ std::unordered_map<std::string, FlagosDevice> LoadBackendConfig() {
   return table;
 }
 
-const std::unordered_map<std::string, FlagosDevice>& BackendTable() {
+const std::unordered_map<std::string, Backend>& BackendTable() {
   static const auto table = LoadBackendConfig();
   return table;
 }
 
 } // namespace
 
-FlagosDevice GetBackendForOp(const std::string& op_name) {
+Backend GetBackendForOp(const std::string& op_name) {
   const auto& table = BackendTable();
   auto it = table.find(op_name);
-  return it != table.end() ? it->second : FlagosDevice::kFlagOs;
+  return it != table.end() ? it->second : Backend::kFlagOs;
 }
 
 } // namespace at::native::flagos

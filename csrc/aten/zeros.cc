@@ -4,6 +4,6 @@
 
 namespace at::native::flagos {
 
-FLAGOS_DEFINE_DISPATCH(ZerosFn, zeros_stub, "zeros")
+ADD_IMPL_TO_DISPATCHER(ZerosFn, zeros_dispatcher, "zeros")
 
 } // namespace at::native::flagos

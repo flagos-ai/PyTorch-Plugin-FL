@@ -4,6 +4,6 @@
 
 namespace at::native::flagos {
 
-FLAGOS_DEFINE_DISPATCH(AbsFn, abs_stub, "abs")
+ADD_IMPL_TO_DISPATCHER(AbsFn, abs_dispatcher, "abs")
 
 } // namespace at::native::flagos

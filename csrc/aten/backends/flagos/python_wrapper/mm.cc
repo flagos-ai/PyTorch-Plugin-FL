@@ -14,6 +14,6 @@ void MmKernelPython(const at::Tensor& self, const at::Tensor& mat2, at::Tensor& 
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(MmFn, mm_stub, FlagosDevice::kFlagOsPython, MmKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(MmFn, mm_dispatcher, Backend::kFlagOsPython, MmKernelPython)
 
 } // namespace at::native::flagos

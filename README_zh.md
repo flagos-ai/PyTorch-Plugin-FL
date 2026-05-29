@@ -79,7 +79,6 @@ Ascend 平台上禁用 FlagGems 和 CUDA kernel，仅编译 Ascend kernel 后端
 
 | 变量 | 说明 |
 |------|------|
-| `FLAGOS_DISABLE_FLAGGEMS_PY` | 设为 `1` 关闭 FlagGems Python 层注册（Ascend 平台必需） |
 | `FLAGGEMS_SOURCE_DIR` | FlagGems 源码目录（当 C++ native API 算子路由到 `flaggems` 后端时必须设置） |
 | `FLAGOS_BACKEND_CONFIG` | 覆盖 `backends.conf` 路径（Ascend 使用 `torch_fl/backends_ascend.conf`） |
 | `FLAGOS_LOG_DISPATCH` | 设为 `1` 打印每次算子 dispatch 的后端选择 |
@@ -203,15 +202,15 @@ export FLAGOS_LOG_DISPATCH=1  # 打印每次算子 dispatch 的后端选择
 
 ```bash
 # 算子测试（需要 FlagGems 源码用于 C++ native API）
-FLAGOS_DISABLE_FLAGGEMS_PY=1 FLAGGEMS_SOURCE_DIR=/path_to_repos/FlagGems/src/flag_gems \
+FLAGGEMS_SOURCE_DIR=/path_to_repos/FlagGems/src/flag_gems \
   pytest tests/integration/ops/ -v -m "anyplatform or cuda"
 
 # Qwen3 推理测试
-FLAGOS_DISABLE_FLAGGEMS_PY=1 FLAGGEMS_SOURCE_DIR=/path_to_repos/FlagGems/src/flag_gems \
+FLAGGEMS_SOURCE_DIR=/path_to_repos/FlagGems/src/flag_gems \
   pytest tests/integration/test_qwen3_infer.py -v -s
 
 # Qwen3 训练测试（单卡）
-FLAGOS_DISABLE_FLAGGEMS_PY=1 FLAGGEMS_SOURCE_DIR=/path_to_repos/FlagGems/src/flag_gems \
+FLAGGEMS_SOURCE_DIR=/path_to_repos/FlagGems/src/flag_gems \
   pytest tests/integration/test_qwen3_train.py -v -s --steps 10
 
 # 仅运行 CUDA 相关测试
@@ -235,19 +234,17 @@ FLAGOS_BACKEND_CONFIG=torch_fl/backends_flagos_py.conf \
 
 ```bash
 # 算子测试
-FLAGOS_DISABLE_FLAGGEMS_PY=1 FLAGOS_BACKEND_CONFIG=torch_fl/backends_ascend.conf \
+FLAGOS_BACKEND_CONFIG=torch_fl/backends_ascend.conf \
   pytest tests/integration/ops/ -v -m "anyplatform or ascend"
 
 # Qwen3 推理测试
-FLAGOS_DISABLE_FLAGGEMS_PY=1 FLAGOS_BACKEND_CONFIG=torch_fl/backends_ascend.conf \
+FLAGOS_BACKEND_CONFIG=torch_fl/backends_ascend.conf \
   pytest tests/integration/test_qwen3_infer.py -v -s
 
 # Qwen3 训练测试（单卡）
-FLAGOS_DISABLE_FLAGGEMS_PY=1 FLAGOS_BACKEND_CONFIG=torch_fl/backends_ascend.conf \
+FLAGOS_BACKEND_CONFIG=torch_fl/backends_ascend.conf \
   pytest tests/integration/test_qwen3_train.py -v -s --steps 10
 ```
-
-**注意**：Ascend 平台必须设置 `FLAGOS_DISABLE_FLAGGEMS_PY=1` 以跳过 FlagGems Python 层注册，否则会因 NPU 设备检测问题导致崩溃。FlagGems 在 Ascend 平台上是可选的。
 
 `test_qwen3_infer.py` 和 `test_qwen3_train.py` 在所有平台上使用相同代码，仅安装方式（`ACCELERATOR=ascend pip install -e .`）和运行时环境变量不同。
 
@@ -274,8 +271,8 @@ PyTorch-Plugin-FL/
 │   └── macros.h              #   通用宏定义
 ├── csrc/
 │   ├── aten/                 # ATen 算子层
-│   │   ├── common.{h,cc}     #   后端配置加载、FlagosDevice 枚举
-│   │   ├── dispatch_stub.h   #   轻量 dispatch stub（替代 PyTorch DispatchStub）
+│   │   ├── common.{h,cc}     #   后端配置加载、Backend 枚举
+│   │   ├── dispatcher.h      #   轻量算子 dispatcher（替代 PyTorch DispatchStub）
 │   │   ├── device_boxing.h   #   零拷贝 flagos↔CUDA tensor 元数据转换
 │   │   ├── register.cc       #   PrivateUse1 dispatch key 注册
 │   │   ├── {op}.{h,cc}       #   各算子 stub 定义（add、mm、silu 等）

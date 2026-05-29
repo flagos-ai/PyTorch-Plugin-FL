@@ -22,6 +22,6 @@ at::Tensor NegKernelAscend(const at::Tensor& self) {
   return out;
 }
 
-FLAGOS_REGISTER_DISPATCH(NegFn, neg_stub, FlagosDevice::kAscend, NegKernelAscend)
+REGISTER_IMPL_TO_DISPATCHER(NegFn, neg_dispatcher, Backend::kAscend, NegKernelAscend)
 
 } // namespace at::native::flagos

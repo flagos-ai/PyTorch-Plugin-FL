@@ -14,6 +14,6 @@ void BmmKernelPython(const at::Tensor& self, const at::Tensor& mat2, at::Tensor&
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(BmmFn, bmm_stub, FlagosDevice::kFlagOsPython, BmmKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(BmmFn, bmm_dispatcher, Backend::kFlagOsPython, BmmKernelPython)
 
 } // namespace at::native::flagos

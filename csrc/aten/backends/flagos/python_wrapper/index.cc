@@ -1,7 +1,7 @@
 // Copyright (c) 2026, BAAI. All rights reserved.
 
 #include "../python_op_caller.h"
-#include "../../../cat.h"
+#include "../../../index.h"
 
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -26,23 +26,28 @@ at::Tensor PythonToTensorLocal(const py::object& obj) {
   return THPVariable_Unpack(raw);
 }
 
-at::Tensor CatKernelPython(const at::ITensorListRef& tensors, int64_t dim) {
+at::Tensor IndexTensorKernelPython(const at::Tensor& self, const c10::List<::std::optional<at::Tensor>>& indices) {
   py::gil_scoped_acquire gil;
 
-  // Build Python list of tensors
-  py::list py_tensors;
-  for (const at::Tensor& t : tensors) {
-    py_tensors.append(TensorToPythonLocal(t));
+  // Build Python list of index tensors (None for missing dims)
+  py::list py_indices;
+  for (size_t i = 0; i < indices.size(); ++i) {
+    const auto& idx = indices[i];
+    if (idx.has_value()) {
+      py_indices.append(TensorToPythonLocal(*idx));
+    } else {
+      py_indices.append(py::none());
+    }
   }
 
   static py::module_ ops_module = py::module_::import("flag_gems.ops");
-  py::object func = ops_module.attr("cat");
-  py::object result = func(py_tensors, py::int_(dim));
+  py::object func = ops_module.attr("index");
+  py::object result = func(TensorToPythonLocal(self), py::tuple(py_indices));
   return PythonToTensorLocal(result);
 }
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(CatFn, cat_stub, FlagosDevice::kFlagOsPython, CatKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(IndexTensorFn, index_tensor_dispatcher, Backend::kFlagOsPython, IndexTensorKernelPython)
 
 } // namespace at::native::flagos

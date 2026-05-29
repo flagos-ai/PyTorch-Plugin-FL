@@ -13,6 +13,6 @@ at::Tensor BitwiseAndTensorKernelPython(const at::Tensor& self, const at::Tensor
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(BitwiseAndTensorFn, bitwise_and_tensor_stub, FlagosDevice::kFlagOsPython, BitwiseAndTensorKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(BitwiseAndTensorFn, bitwise_and_tensor_dispatcher, Backend::kFlagOsPython, BitwiseAndTensorKernelPython)
 
 } // namespace at::native::flagos

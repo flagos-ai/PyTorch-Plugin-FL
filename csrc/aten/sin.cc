@@ -4,6 +4,6 @@
 
 namespace at::native::flagos {
 
-FLAGOS_DEFINE_DISPATCH(SinFn, sin_stub, "sin")
+ADD_IMPL_TO_DISPATCHER(SinFn, sin_dispatcher, "sin")
 
 } // namespace at::native::flagos

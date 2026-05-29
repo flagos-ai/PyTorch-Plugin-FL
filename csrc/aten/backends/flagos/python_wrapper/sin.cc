@@ -13,6 +13,6 @@ at::Tensor SinKernelPython(const at::Tensor& self) {
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(SinFn, sin_stub, FlagosDevice::kFlagOsPython, SinKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(SinFn, sin_dispatcher, Backend::kFlagOsPython, SinKernelPython)
 
 } // namespace at::native::flagos

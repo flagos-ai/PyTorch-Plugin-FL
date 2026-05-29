@@ -22,6 +22,6 @@ at::Tensor ZerosKernelAscend(
   return result;
 }
 
-FLAGOS_REGISTER_DISPATCH(ZerosFn, zeros_stub, FlagosDevice::kAscend, ZerosKernelAscend)
+REGISTER_IMPL_TO_DISPATCHER(ZerosFn, zeros_dispatcher, Backend::kAscend, ZerosKernelAscend)
 
 } // namespace at::native::flagos

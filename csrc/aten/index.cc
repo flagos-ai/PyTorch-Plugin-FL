@@ -4,6 +4,6 @@
 
 namespace at::native::flagos {
 
-FLAGOS_DEFINE_DISPATCH(IndexTensorFn, index_tensor_stub, "index.Tensor")
+ADD_IMPL_TO_DISPATCHER(IndexTensorFn, index_tensor_dispatcher, "index.Tensor")
 
 } // namespace at::native::flagos

@@ -103,6 +103,6 @@ at::Tensor LeTensorKernelAscend(const at::Tensor& self, const at::Tensor& other)
   return out;
 }
 
-FLAGOS_REGISTER_DISPATCH(LeTensorFn, le_tensor_stub, FlagosDevice::kAscend, LeTensorKernelAscend)
+REGISTER_IMPL_TO_DISPATCHER(LeTensorFn, le_tensor_dispatcher, Backend::kAscend, LeTensorKernelAscend)
 
 } // namespace at::native::flagos

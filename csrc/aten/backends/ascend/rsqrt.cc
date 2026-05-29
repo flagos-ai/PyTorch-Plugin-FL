@@ -19,6 +19,6 @@ at::Tensor RsqrtKernelAscend(const at::Tensor& self) {
   return out;
 }
 
-FLAGOS_REGISTER_DISPATCH(RsqrtFn, rsqrt_stub, FlagosDevice::kAscend, RsqrtKernelAscend)
+REGISTER_IMPL_TO_DISPATCHER(RsqrtFn, rsqrt_dispatcher, Backend::kAscend, RsqrtKernelAscend)
 
 } // namespace at::native::flagos

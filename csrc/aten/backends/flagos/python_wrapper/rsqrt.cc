@@ -13,6 +13,6 @@ at::Tensor RsqrtKernelPython(const at::Tensor& self) {
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(RsqrtFn, rsqrt_stub, FlagosDevice::kFlagOsPython, RsqrtKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(RsqrtFn, rsqrt_dispatcher, Backend::kFlagOsPython, RsqrtKernelPython)
 
 } // namespace at::native::flagos

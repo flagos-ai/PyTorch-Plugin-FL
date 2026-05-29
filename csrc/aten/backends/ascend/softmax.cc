@@ -21,6 +21,6 @@ at::Tensor SoftmaxKernelAscend(const at::Tensor& self, int64_t dim, bool half_to
   return out;
 }
 
-FLAGOS_REGISTER_DISPATCH(SoftmaxFn, softmax_stub, FlagosDevice::kAscend, SoftmaxKernelAscend)
+REGISTER_IMPL_TO_DISPATCHER(SoftmaxFn, softmax_dispatcher, Backend::kAscend, SoftmaxKernelAscend)
 
 } // namespace at::native::flagos

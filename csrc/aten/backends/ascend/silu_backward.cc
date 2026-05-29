@@ -20,6 +20,6 @@ at::Tensor SiluBackwardKernelAscend(const at::Tensor& grad_output, const at::Ten
   return grad_input;
 }
 
-FLAGOS_REGISTER_DISPATCH(SiluBackwardFn, silu_backward_stub, FlagosDevice::kAscend, SiluBackwardKernelAscend)
+REGISTER_IMPL_TO_DISPATCHER(SiluBackwardFn, silu_backward_dispatcher, Backend::kAscend, SiluBackwardKernelAscend)
 
 } // namespace at::native::flagos

@@ -4,6 +4,6 @@
 
 namespace at::native::flagos {
 
-FLAGOS_DEFINE_DISPATCH(EmbeddingFn, embedding_stub, "embedding")
+ADD_IMPL_TO_DISPATCHER(EmbeddingFn, embedding_dispatcher, "embedding")
 
 } // namespace at::native::flagos

@@ -3,12 +3,12 @@
 #pragma once
 
 #include <ATen/core/Tensor.h>
-#include "dispatch_stub.h"
+#include "dispatcher.h"
 
 namespace at::native::flagos {
 
 using SumDimFn = at::Tensor (*)(const at::Tensor&, at::OptionalIntArrayRef,
                                 bool, std::optional<at::ScalarType>);
-FLAGOS_DECLARE_DISPATCH(SumDimFn, sum_dim_stub)
+DECLARE_DISPATCHER(SumDimFn, sum_dim_dispatcher)
 
 } // namespace at::native::flagos

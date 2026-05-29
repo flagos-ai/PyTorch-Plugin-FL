@@ -268,5 +268,6 @@ struct AclTensorListWrapper {
         workspace_addr, workspace_size, executor, acl_stream);                \
     TORCH_CHECK(exec_ret == 0, #aclnn_api " execution failed, ret=",         \
         exec_ret);                                                            \
+    aclrtSynchronizeStream(acl_stream);                                       \
   } while (false)
 

@@ -3,11 +3,11 @@
 #pragma once
 
 #include <ATen/core/Tensor.h>
-#include "dispatch_stub.h"
+#include "dispatcher.h"
 
 namespace at::native::flagos {
 
 using RsqrtFn = at::Tensor (*)(const at::Tensor&);
-FLAGOS_DECLARE_DISPATCH(RsqrtFn, rsqrt_stub)
+DECLARE_DISPATCHER(RsqrtFn, rsqrt_dispatcher)
 
 } // namespace at::native::flagos

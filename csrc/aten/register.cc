@@ -189,7 +189,7 @@ at::Tensor& WrapperMmOut(const at::Tensor& self, const at::Tensor& mat2, at::Ten
 
 at::Tensor WrapperAddTensor(
     const at::Tensor& self, const at::Tensor& other, const at::Scalar& alpha) {
-  return at::native::flagos::add_tensor_stub(self, other, alpha);
+  return at::native::flagos::add_tensor_dispatcher(self, other, alpha);
 }
 
 at::Tensor WrapperAddScalar(
@@ -199,15 +199,15 @@ at::Tensor WrapperAddScalar(
   if (alpha_val != 1.0) {
     other_tensor = other_tensor * alpha;
   }
-  return at::native::flagos::add_tensor_stub(self, other_tensor, at::Scalar(1));
+  return at::native::flagos::add_tensor_dispatcher(self, other_tensor, at::Scalar(1));
 }
 
 at::Tensor WrapperSilu(const at::Tensor& self) {
-  return at::native::flagos::silu_stub(self);
+  return at::native::flagos::silu_dispatcher(self);
 }
 
 at::Tensor WrapperNeg(const at::Tensor& self) {
-  return at::native::flagos::neg_stub(self);
+  return at::native::flagos::neg_dispatcher(self);
 }
 
 at::Tensor WrapperBmm(const at::Tensor& self, const at::Tensor& mat2) {
@@ -226,67 +226,67 @@ at::Tensor& WrapperBmmOut(const at::Tensor& self, const at::Tensor& mat2, at::Te
 }
 
 at::Tensor WrapperCat(const at::ITensorListRef& tensors, int64_t dim) {
-  return at::native::flagos::cat_stub(tensors, dim);
+  return at::native::flagos::cat_dispatcher(tensors, dim);
 }
 
 at::Tensor WrapperEmbedding(
     const at::Tensor& weight, const at::Tensor& indices,
     c10::SymInt padding_idx, bool scale_grad_by_freq, bool sparse) {
-  return at::native::flagos::embedding_stub(
+  return at::native::flagos::embedding_dispatcher(
       weight, indices, padding_idx.expect_int(), scale_grad_by_freq, sparse);
 }
 
 at::Tensor WrapperMulTensor(
     const at::Tensor& self, const at::Tensor& other) {
-  return at::native::flagos::mul_tensor_stub(self, other);
+  return at::native::flagos::mul_tensor_dispatcher(self, other);
 }
 
 at::Tensor WrapperRsqrt(const at::Tensor& self) {
-  return at::native::flagos::rsqrt_stub(self);
+  return at::native::flagos::rsqrt_dispatcher(self);
 }
 
 at::Tensor WrapperMeanDim(
     const at::Tensor& self, at::OptionalIntArrayRef dim,
     bool keepdim, std::optional<at::ScalarType> dtype) {
-  return at::native::flagos::mean_dim_stub(self, dim, keepdim, dtype);
+  return at::native::flagos::mean_dim_dispatcher(self, dim, keepdim, dtype);
 }
 
 at::Tensor WrapperCos(const at::Tensor& self) {
-  return at::native::flagos::cos_stub(self);
+  return at::native::flagos::cos_dispatcher(self);
 }
 
 at::Tensor WrapperSin(const at::Tensor& self) {
-  return at::native::flagos::sin_stub(self);
+  return at::native::flagos::sin_dispatcher(self);
 }
 
 at::Tensor WrapperPowTensorScalar(const at::Tensor& self, const at::Scalar& exp) {
-  return at::native::flagos::pow_tensor_scalar_stub(self, exp);
+  return at::native::flagos::pow_tensor_scalar_dispatcher(self, exp);
 }
 
 at::Tensor WrapperAll(const at::Tensor& self) {
-  return at::native::flagos::all_stub(self);
+  return at::native::flagos::all_dispatcher(self);
 }
 
 at::Tensor WrapperSoftmax(const at::Tensor& self, int64_t dim, bool half_to_float) {
-  return at::native::flagos::softmax_stub(self, dim, half_to_float);
+  return at::native::flagos::softmax_dispatcher(self, dim, half_to_float);
 }
 
 at::Tensor WrapperBitwiseAndTensor(const at::Tensor& self, const at::Tensor& other) {
-  return at::native::flagos::bitwise_and_tensor_stub(self, other);
+  return at::native::flagos::bitwise_and_tensor_dispatcher(self, other);
 }
 
 at::Tensor WrapperLeTensor(const at::Tensor& self, const at::Tensor& other) {
-  return at::native::flagos::le_tensor_stub(self, other);
+  return at::native::flagos::le_tensor_dispatcher(self, other);
 }
 
 at::Tensor WrapperWhereSelf(
     const at::Tensor& condition, const at::Tensor& self, const at::Tensor& other) {
-  return at::native::flagos::where_self_stub(condition, self, other);
+  return at::native::flagos::where_self_dispatcher(condition, self, other);
 }
 
 at::Tensor WrapperIndexTensor(
     const at::Tensor& self, const c10::List<::std::optional<at::Tensor>>& indices) {
-  return at::native::flagos::index_tensor_stub(self, indices);
+  return at::native::flagos::index_tensor_dispatcher(self, indices);
 }
 
 at::Tensor WrapperNewOnes(
@@ -295,7 +295,7 @@ at::Tensor WrapperNewOnes(
     std::optional<at::Layout> layout,
     std::optional<at::Device> device,
     std::optional<bool> pin_memory) {
-  return at::native::flagos::new_ones_stub(self, size, dtype, layout, device, pin_memory);
+  return at::native::flagos::new_ones_dispatcher(self, size, dtype, layout, device, pin_memory);
 }
 
 at::Tensor WrapperScalarTensor(
@@ -304,7 +304,7 @@ at::Tensor WrapperScalarTensor(
     std::optional<at::Layout> layout,
     std::optional<at::Device> device,
     std::optional<bool> pin_memory) {
-  return at::native::flagos::scalar_tensor_stub(s, dtype, layout, device, pin_memory);
+  return at::native::flagos::scalar_tensor_dispatcher(s, dtype, layout, device, pin_memory);
 }
 
 at::Tensor WrapperOnesLike(
@@ -314,7 +314,7 @@ at::Tensor WrapperOnesLike(
     std::optional<at::Device> device,
     std::optional<bool> pin_memory,
     std::optional<at::MemoryFormat> memory_format) {
-  return at::native::flagos::ones_like_stub(self, dtype, layout, device, pin_memory, memory_format);
+  return at::native::flagos::ones_like_dispatcher(self, dtype, layout, device, pin_memory, memory_format);
 }
 
 at::Tensor WrapperZeros(
@@ -323,57 +323,57 @@ at::Tensor WrapperZeros(
     std::optional<at::Layout> layout,
     std::optional<at::Device> device,
     std::optional<bool> pin_memory) {
-  return at::native::flagos::zeros_stub(size, dtype, layout, device, pin_memory);
+  return at::native::flagos::zeros_dispatcher(size, dtype, layout, device, pin_memory);
 }
 
 at::Tensor WrapperSiluBackward(const at::Tensor& grad_output, const at::Tensor& self) {
-  return at::native::flagos::silu_backward_stub(grad_output, self);
+  return at::native::flagos::silu_backward_dispatcher(grad_output, self);
 }
 
 at::Tensor WrapperSumDimIntList(
     const at::Tensor& self, at::OptionalIntArrayRef dim,
     bool keepdim, std::optional<at::ScalarType> dtype) {
-  return at::native::flagos::sum_dim_stub(self, dim, keepdim, dtype);
+  return at::native::flagos::sum_dim_dispatcher(self, dim, keepdim, dtype);
 }
 
 at::Tensor WrapperSliceBackward(
     const at::Tensor& grad_output, at::IntArrayRef input_sizes,
     int64_t dim, int64_t start, int64_t end, int64_t step) {
-  return at::native::flagos::slice_backward_stub(grad_output, input_sizes, dim, start, end, step);
+  return at::native::flagos::slice_backward_dispatcher(grad_output, input_sizes, dim, start, end, step);
 }
 
 at::Tensor WrapperConstantPadNd(
     const at::Tensor& self, at::IntArrayRef pad, const at::Scalar& value) {
-  return at::native::flagos::constant_pad_nd_stub(self, pad, value);
+  return at::native::flagos::constant_pad_nd_dispatcher(self, pad, value);
 }
 
 at::Tensor WrapperEmbeddingDenseBackward(
     const at::Tensor& grad_output, const at::Tensor& indices,
     int64_t num_weights, int64_t padding_idx, bool scale_grad_by_freq) {
-  return at::native::flagos::embedding_dense_backward_stub(
+  return at::native::flagos::embedding_dense_backward_dispatcher(
       grad_output, indices, num_weights, padding_idx, scale_grad_by_freq);
 }
 
 std::tuple<at::Tensor, at::Tensor> WrapperNllLossForward(
     const at::Tensor& self, const at::Tensor& target,
     const std::optional<at::Tensor>& weight, int64_t reduction, int64_t ignore_index) {
-  return at::native::flagos::nll_loss_forward_stub(self, target, weight, reduction, ignore_index);
+  return at::native::flagos::nll_loss_forward_dispatcher(self, target, weight, reduction, ignore_index);
 }
 
 at::Tensor WrapperNllLossBackward(
     const at::Tensor& grad_output, const at::Tensor& self, const at::Tensor& target,
     const std::optional<at::Tensor>& weight, int64_t reduction,
     int64_t ignore_index, const at::Tensor& total_weight) {
-  return at::native::flagos::nll_loss_backward_stub(
+  return at::native::flagos::nll_loss_backward_dispatcher(
       grad_output, self, target, weight, reduction, ignore_index, total_weight);
 }
 
 at::Tensor WrapperAbs(const at::Tensor& self) {
-  return at::native::flagos::abs_stub(self);
+  return at::native::flagos::abs_dispatcher(self);
 }
 
 at::Tensor WrapperAcos(const at::Tensor& self) {
-  return at::native::flagos::acos_stub(self);
+  return at::native::flagos::acos_dispatcher(self);
 }
 
 } // namespace

@@ -4,6 +4,6 @@
 
 namespace at::native::flagos {
 
-FLAGOS_DEFINE_DISPATCH(ScalarTensorFn, scalar_tensor_stub, "scalar_tensor")
+ADD_IMPL_TO_DISPATCHER(ScalarTensorFn, scalar_tensor_dispatcher, "scalar_tensor")
 
 } // namespace at::native::flagos

@@ -37,9 +37,9 @@ const at::Tensor& StructuredMmOut::maybe_get_output(int64_t) {
 }
 
 void StructuredMmOut::impl(const at::Tensor& self, const at::Tensor& mat2, const std::string& op_name) {
-  mm_stub.DispatchAs(op_name, self, mat2, out_);
+  mm_dispatcher.DispatchAs(op_name, self, mat2, out_);
 }
 
-FLAGOS_DEFINE_DISPATCH(MmFn, mm_stub, "mm")
+ADD_IMPL_TO_DISPATCHER(MmFn, mm_dispatcher, "mm")
 
 } // namespace at::native::flagos

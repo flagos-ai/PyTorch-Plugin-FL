@@ -16,6 +16,6 @@ at::Tensor NegKernelPython(const at::Tensor& self) {
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(NegFn, neg_stub, FlagosDevice::kFlagOsPython, NegKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(NegFn, neg_dispatcher, Backend::kFlagOsPython, NegKernelPython)
 
 } // namespace at::native::flagos

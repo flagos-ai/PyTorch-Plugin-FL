@@ -191,6 +191,6 @@ at::Tensor IndexTensorKernelAscend(const at::Tensor& self,
   return result_tensor;
 }
 
-FLAGOS_REGISTER_DISPATCH(IndexTensorFn, index_tensor_stub, FlagosDevice::kAscend, IndexTensorKernelAscend)
+REGISTER_IMPL_TO_DISPATCHER(IndexTensorFn, index_tensor_dispatcher, Backend::kAscend, IndexTensorKernelAscend)
 
 } // namespace at::native::flagos

@@ -22,6 +22,6 @@ at::Tensor EmbeddingKernelPython(const at::Tensor& weight, const at::Tensor& ind
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(EmbeddingFn, embedding_stub, FlagosDevice::kFlagOsPython, EmbeddingKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(EmbeddingFn, embedding_dispatcher, Backend::kFlagOsPython, EmbeddingKernelPython)
 
 } // namespace at::native::flagos

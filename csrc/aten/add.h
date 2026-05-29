@@ -3,11 +3,11 @@
 #pragma once
 
 #include <ATen/core/Tensor.h>
-#include "dispatch_stub.h"
+#include "dispatcher.h"
 
 namespace at::native::flagos {
 
 using AddTensorFn = at::Tensor (*)(const at::Tensor&, const at::Tensor&, const at::Scalar&);
-FLAGOS_DECLARE_DISPATCH(AddTensorFn, add_tensor_stub)
+DECLARE_DISPATCHER(AddTensorFn, add_tensor_dispatcher)
 
 } // namespace at::native::flagos

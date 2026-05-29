@@ -13,6 +13,6 @@ at::Tensor DivScalarKernelPython(const at::Tensor& self, const at::Scalar& other
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(DivScalarFn, div_scalar_stub, FlagosDevice::kFlagOsPython, DivScalarKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(DivScalarFn, div_scalar_dispatcher, Backend::kFlagOsPython, DivScalarKernelPython)
 
 } // namespace at::native::flagos

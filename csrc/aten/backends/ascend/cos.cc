@@ -19,6 +19,6 @@ at::Tensor CosKernelAscend(const at::Tensor& self) {
   return out;
 }
 
-FLAGOS_REGISTER_DISPATCH(CosFn, cos_stub, FlagosDevice::kAscend, CosKernelAscend)
+REGISTER_IMPL_TO_DISPATCHER(CosFn, cos_dispatcher, Backend::kAscend, CosKernelAscend)
 
 } // namespace at::native::flagos

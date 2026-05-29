@@ -16,6 +16,6 @@ at::Tensor CatKernelFlaggems(const at::ITensorListRef& tensors, int64_t dim) {
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(CatFn, cat_stub, FlagosDevice::kFlagOs, CatKernelFlaggems)
+REGISTER_IMPL_TO_DISPATCHER(CatFn, cat_dispatcher, Backend::kFlagOs, CatKernelFlaggems)
 
 } // namespace at::native::flagos

@@ -77,7 +77,6 @@ On Ascend, FlagGems and CUDA kernels are disabled. Only the Ascend kernel backen
 
 | Variable | Description |
 |----------|-------------|
-| `FLAGOS_DISABLE_FLAGGEMS_PY` | Set to `1` to disable FlagGems Python-layer registration (required on Ascend) |
 | `FLAGGEMS_SOURCE_DIR` | FlagGems source directory (required when C++ native API ops route to `flaggems` backend) |
 | `FLAGOS_BACKEND_CONFIG` | Override path for `backends.conf` (use `torch_fl/backends_ascend.conf` on Ascend) |
 | `FLAGOS_LOG_DISPATCH` | Set to `1` to print backend selection for each operator dispatch |
@@ -201,15 +200,15 @@ Tests in `tests/integration/ops/` are marked with `@pytest.mark` to indicate pla
 
 ```bash
 # Operator tests (requires FlagGems source for C++ native API)
-FLAGOS_DISABLE_FLAGGEMS_PY=1 FLAGGEMS_SOURCE_DIR=/path_to_repos/FlagGems/src/flag_gems \
+FLAGGEMS_SOURCE_DIR=/path_to_repos/FlagGems/src/flag_gems \
   pytest tests/integration/ops/ -v -m "anyplatform or cuda"
 
 # Qwen3 inference test
-FLAGOS_DISABLE_FLAGGEMS_PY=1 FLAGGEMS_SOURCE_DIR=/path_to_repos/FlagGems/src/flag_gems \
+FLAGGEMS_SOURCE_DIR=/path_to_repos/FlagGems/src/flag_gems \
   pytest tests/integration/test_qwen3_infer.py -v -s
 
 # Qwen3 training test (single GPU)
-FLAGOS_DISABLE_FLAGGEMS_PY=1 FLAGGEMS_SOURCE_DIR=/path_to_repos/FlagGems/src/flag_gems \
+FLAGGEMS_SOURCE_DIR=/path_to_repos/FlagGems/src/flag_gems \
   pytest tests/integration/test_qwen3_train.py -v -s --steps 10
 
 # Run only CUDA-specific tests
@@ -233,19 +232,17 @@ FLAGOS_BACKEND_CONFIG=torch_fl/backends_flagos_py.conf \
 
 ```bash
 # Operator tests
-FLAGOS_DISABLE_FLAGGEMS_PY=1 FLAGOS_BACKEND_CONFIG=torch_fl/backends_ascend.conf \
+FLAGOS_BACKEND_CONFIG=torch_fl/backends_ascend.conf \
   pytest tests/integration/ops/ -v -m "anyplatform or ascend"
 
 # Qwen3 inference test
-FLAGOS_DISABLE_FLAGGEMS_PY=1 FLAGOS_BACKEND_CONFIG=torch_fl/backends_ascend.conf \
+FLAGOS_BACKEND_CONFIG=torch_fl/backends_ascend.conf \
   pytest tests/integration/test_qwen3_infer.py -v -s
 
 # Qwen3 training test (single GPU)
-FLAGOS_DISABLE_FLAGGEMS_PY=1 FLAGOS_BACKEND_CONFIG=torch_fl/backends_ascend.conf \
+FLAGOS_BACKEND_CONFIG=torch_fl/backends_ascend.conf \
   pytest tests/integration/test_qwen3_train.py -v -s --steps 10
 ```
-
-**Note**: `FLAGOS_DISABLE_FLAGGEMS_PY=1` is required on Ascend to skip FlagGems Python-layer registration, which crashes due to NPU device detection issues. FlagGems is optional on Ascend platform.
 
 The `test_qwen3_infer.py` and `test_qwen3_train.py` tests use the same code on all platforms — only the installation method (`ACCELERATOR=ascend pip install -e .`) and runtime environment variables differ.
 
@@ -276,8 +273,8 @@ PyTorch-Plugin-FL/
 │   └── csrc/ascend/          #   Ascend runtime (ACL-based memory, stream, device)
 ├── csrc/
 │   ├── aten/                 # ATen operator layer
-│   │   ├── common.{h,cc}     #   Backend config loading, FlagosDevice enum
-│   │   ├── dispatch_stub.h   #   Lightweight dispatch stub (replaces PyTorch DispatchStub)
+│   │   ├── common.{h,cc}     #   Backend config loading, Backend enum
+│   │   ├── dispatcher.h      #   Lightweight op dispatcher (replaces PyTorch DispatchStub)
 │   │   ├── device_boxing.h   #   Zero-copy flagos↔CUDA tensor metadata conversion
 │   │   ├── register.cc       #   PrivateUse1 dispatch key registration
 │   │   ├── {op}.{h,cc}       #   Per-operator stub definitions (add, mm, silu, etc.)

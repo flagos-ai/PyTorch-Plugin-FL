@@ -14,6 +14,6 @@ at::Tensor SumDimKernelPython(const at::Tensor& self, at::OptionalIntArrayRef di
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(SumDimFn, sum_dim_stub, FlagosDevice::kFlagOsPython, SumDimKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(SumDimFn, sum_dim_dispatcher, Backend::kFlagOsPython, SumDimKernelPython)
 
 } // namespace at::native::flagos

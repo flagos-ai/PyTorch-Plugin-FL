@@ -3,11 +3,11 @@
 #pragma once
 
 #include <ATen/core/Tensor.h>
-#include "dispatch_stub.h"
+#include "dispatcher.h"
 
 namespace at::native::flagos {
 
 using NegFn = at::Tensor (*)(const at::Tensor&);
-FLAGOS_DECLARE_DISPATCH(NegFn, neg_stub)
+DECLARE_DISPATCHER(NegFn, neg_dispatcher)
 
 } // namespace at::native::flagos

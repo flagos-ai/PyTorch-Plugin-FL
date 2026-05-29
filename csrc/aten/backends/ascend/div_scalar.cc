@@ -21,6 +21,6 @@ at::Tensor DivScalarKernelAscend(const at::Tensor& self, const at::Scalar& other
   return out;
 }
 
-FLAGOS_REGISTER_DISPATCH(DivScalarFn, div_scalar_stub, FlagosDevice::kAscend, DivScalarKernelAscend)
+REGISTER_IMPL_TO_DISPATCHER(DivScalarFn, div_scalar_dispatcher, Backend::kAscend, DivScalarKernelAscend)
 
 } // namespace at::native::flagos

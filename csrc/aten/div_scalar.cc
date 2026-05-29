@@ -4,6 +4,6 @@
 
 namespace at::native::flagos {
 
-FLAGOS_DEFINE_DISPATCH(DivScalarFn, div_scalar_stub, "div.Scalar")
+ADD_IMPL_TO_DISPATCHER(DivScalarFn, div_scalar_dispatcher, "div.Scalar")
 
 } // namespace at::native::flagos

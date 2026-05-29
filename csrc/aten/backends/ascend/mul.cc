@@ -29,6 +29,6 @@ at::Tensor MulTensorKernelAscend(const at::Tensor& self, const at::Tensor& other
   return out;
 }
 
-FLAGOS_REGISTER_DISPATCH(MulTensorFn, mul_tensor_stub, FlagosDevice::kAscend, MulTensorKernelAscend)
+REGISTER_IMPL_TO_DISPATCHER(MulTensorFn, mul_tensor_dispatcher, Backend::kAscend, MulTensorKernelAscend)
 
 } // namespace at::native::flagos

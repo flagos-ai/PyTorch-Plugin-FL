@@ -4,6 +4,6 @@
 
 namespace at::native::flagos {
 
-FLAGOS_DEFINE_DISPATCH(CatFn, cat_stub, "cat")
+ADD_IMPL_TO_DISPATCHER(CatFn, cat_dispatcher, "cat")
 
 } // namespace at::native::flagos

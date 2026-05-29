@@ -13,6 +13,6 @@ at::Tensor MulTensorKernelPython(const at::Tensor& self, const at::Tensor& other
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(MulTensorFn, mul_tensor_stub, FlagosDevice::kFlagOsPython, MulTensorKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(MulTensorFn, mul_tensor_dispatcher, Backend::kFlagOsPython, MulTensorKernelPython)
 
 } // namespace at::native::flagos

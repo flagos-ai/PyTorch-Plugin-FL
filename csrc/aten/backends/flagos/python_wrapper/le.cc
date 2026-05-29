@@ -13,6 +13,6 @@ at::Tensor LeTensorKernelPython(const at::Tensor& self, const at::Tensor& other)
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(LeTensorFn, le_tensor_stub, FlagosDevice::kFlagOsPython, LeTensorKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(LeTensorFn, le_tensor_dispatcher, Backend::kFlagOsPython, LeTensorKernelPython)
 
 } // namespace at::native::flagos

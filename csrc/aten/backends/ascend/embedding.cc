@@ -28,6 +28,6 @@ at::Tensor EmbeddingKernelAscend(
   return out;
 }
 
-FLAGOS_REGISTER_DISPATCH(EmbeddingFn, embedding_stub, FlagosDevice::kAscend, EmbeddingKernelAscend)
+REGISTER_IMPL_TO_DISPATCHER(EmbeddingFn, embedding_dispatcher, Backend::kAscend, EmbeddingKernelAscend)
 
 } // namespace at::native::flagos

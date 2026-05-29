@@ -22,6 +22,6 @@ at::Tensor EmbeddingDenseBackwardKernelPython(const at::Tensor& grad_output, con
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(EmbeddingDenseBackwardFn, embedding_dense_backward_stub, FlagosDevice::kFlagOsPython, EmbeddingDenseBackwardKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(EmbeddingDenseBackwardFn, embedding_dense_backward_dispatcher, Backend::kFlagOsPython, EmbeddingDenseBackwardKernelPython)
 
 } // namespace at::native::flagos

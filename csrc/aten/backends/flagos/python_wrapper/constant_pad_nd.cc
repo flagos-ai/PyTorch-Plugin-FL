@@ -23,6 +23,6 @@ at::Tensor ConstantPadNdKernelPython(const at::Tensor& self, at::IntArrayRef pad
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(ConstantPadNdFn, constant_pad_nd_stub, FlagosDevice::kFlagOsPython, ConstantPadNdKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(ConstantPadNdFn, constant_pad_nd_dispatcher, Backend::kFlagOsPython, ConstantPadNdKernelPython)
 
 } // namespace at::native::flagos

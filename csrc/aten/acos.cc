@@ -4,6 +4,6 @@
 
 namespace at::native::flagos {
 
-FLAGOS_DEFINE_DISPATCH(AcosFn, acos_stub, "acos")
+ADD_IMPL_TO_DISPATCHER(AcosFn, acos_dispatcher, "acos")
 
 } // namespace at::native::flagos

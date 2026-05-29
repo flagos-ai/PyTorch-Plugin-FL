@@ -42,7 +42,6 @@ std::tuple<at::Tensor, at::Tensor> NllLossForwardKernelAscend(
   EXEC_ASCEND_CMD(aclnnNLLLoss, acl_self.get(), acl_target.get(),
                   acl_weight.get(), reduction, ignore_index,
                   acl_output.get(), acl_total_weight.get());
-  aclrtSynchronizeStream(ascend::GetCurrentAclStream());
 
   if (reduction != 0) {
     output = output.squeeze(0);
@@ -83,11 +82,10 @@ at::Tensor NllLossBackwardKernelAscend(
   EXEC_ASCEND_CMD(aclnnNLLLossBackward, acl_grad_output.get(), acl_self.get(),
                   acl_target.get(), acl_weight.get(), reduction, ignore_index,
                   acl_total_weight.get(), acl_grad_input.get());
-  aclrtSynchronizeStream(ascend::GetCurrentAclStream());
   return grad_input;
 }
 
-FLAGOS_REGISTER_DISPATCH(NllLossForwardFn, nll_loss_forward_stub, FlagosDevice::kAscend, NllLossForwardKernelAscend)
-FLAGOS_REGISTER_DISPATCH(NllLossBackwardFn, nll_loss_backward_stub, FlagosDevice::kAscend, NllLossBackwardKernelAscend)
+REGISTER_IMPL_TO_DISPATCHER(NllLossForwardFn, nll_loss_forward_dispatcher, Backend::kAscend, NllLossForwardKernelAscend)
+REGISTER_IMPL_TO_DISPATCHER(NllLossBackwardFn, nll_loss_backward_dispatcher, Backend::kAscend, NllLossBackwardKernelAscend)
 
 } // namespace at::native::flagos

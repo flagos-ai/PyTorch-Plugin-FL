@@ -13,6 +13,6 @@ at::Tensor MulScalarKernelPython(const at::Tensor& self, const at::Scalar& other
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(MulScalarFn, mul_scalar_stub, FlagosDevice::kFlagOsPython, MulScalarKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(MulScalarFn, mul_scalar_dispatcher, Backend::kFlagOsPython, MulScalarKernelPython)
 
 } // namespace at::native::flagos

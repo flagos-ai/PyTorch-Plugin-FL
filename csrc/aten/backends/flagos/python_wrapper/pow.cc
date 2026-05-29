@@ -13,6 +13,6 @@ at::Tensor PowTensorScalarKernelPython(const at::Tensor& self, const at::Scalar&
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(PowTensorScalarFn, pow_tensor_scalar_stub, FlagosDevice::kFlagOsPython, PowTensorScalarKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(PowTensorScalarFn, pow_tensor_scalar_dispatcher, Backend::kFlagOsPython, PowTensorScalarKernelPython)
 
 } // namespace at::native::flagos

@@ -4,6 +4,6 @@
 
 namespace at::native::flagos {
 
-FLAGOS_DEFINE_DISPATCH(SiluBackwardFn, silu_backward_stub, "silu_backward")
+ADD_IMPL_TO_DISPATCHER(SiluBackwardFn, silu_backward_dispatcher, "silu_backward")
 
 } // namespace at::native::flagos

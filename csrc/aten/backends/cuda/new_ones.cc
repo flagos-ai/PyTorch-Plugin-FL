@@ -26,6 +26,6 @@ at::Tensor NewOnesKernelCuda(
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(NewOnesFn, new_ones_stub, FlagosDevice::kCuda, NewOnesKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(NewOnesFn, new_ones_dispatcher, Backend::kCuda, NewOnesKernelCuda)
 
 } // namespace at::native::flagos

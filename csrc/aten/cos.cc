@@ -4,6 +4,6 @@
 
 namespace at::native::flagos {
 
-FLAGOS_DEFINE_DISPATCH(CosFn, cos_stub, "cos")
+ADD_IMPL_TO_DISPATCHER(CosFn, cos_dispatcher, "cos")
 
 } // namespace at::native::flagos
