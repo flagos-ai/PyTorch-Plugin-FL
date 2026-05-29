@@ -29,7 +29,10 @@ endif()
 if(FLAGGEMS_KERNEL AND ACCELERATOR STREQUAL "ascend")
   add_library(flagos_stream SHARED "${CMAKE_CURRENT_SOURCE_DIR}/runtime/flagos_stream_api.cc")
   target_compile_definitions(flagos_stream PRIVATE USE_ASCEND=1)
-  target_include_directories(flagos_stream PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  target_include_directories(flagos_stream PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}
+      ${ASCEND_HOME}/include
+  )
   target_link_libraries(flagos_stream PRIVATE torch_cpu_library)
   install(TARGETS flagos_stream
       LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
