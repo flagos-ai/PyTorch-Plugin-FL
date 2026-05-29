@@ -31,7 +31,12 @@ target_compile_definitions(${LIBRARY_NAME} PRIVATE
 
 set(_LINK_LIBS torch_cpu_library torch_python_library flagos ${CUDA_RUNTIME_LIB})
 if(FLAGGEMS_KERNEL)
-  list(APPEND _LINK_LIBS FlagGems::operators)
+  # FlagGemsTargets.cmake exports 'operators' (without namespace prefix)
+  if(TARGET FlagGems::operators)
+    list(APPEND _LINK_LIBS FlagGems::operators)
+  elseif(TARGET operators)
+    list(APPEND _LINK_LIBS operators)
+  endif()
 endif()
 
 if(ACCELERATOR STREQUAL "ascend")
