@@ -107,7 +107,7 @@ def build_deps():
     cmake_args.append(f"-DACCELERATOR={ACCELERATOR}")
 
     # Kernel build options from environment
-    for kernel_opt in ("FLAGGEMS_KERNEL", "CUDA_KERNEL", "ASCEND_KERNEL"):
+    for kernel_opt in ("FLAGGEMS_KERNEL", "FLAGGEMS_PYTHON", "CUDA_KERNEL", "ASCEND_KERNEL"):
         val = os.environ.get(kernel_opt)
         if val is not None:
             cmake_val = (

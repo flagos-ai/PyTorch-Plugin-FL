@@ -1,7 +1,8 @@
 set(LIBRARY_NAME torch_fl)
 
 option(CUDA_KERNEL "Build CUDA kernel implementations" ON)
-option(FLAGGEMS_KERNEL "Build FlagGems kernel implementations" ON)
+option(FLAGGEMS_KERNEL "Build FlagGems C++ kernel wrappers (requires liboperators.so)" ON)
+option(FLAGGEMS_PYTHON "Build FlagGems Python kernel wrappers (calls via Python, no C++ linking)" OFF)
 option(ASCEND_KERNEL "Build Ascend kernel implementations" OFF)
 
 file(GLOB_RECURSE SOURCE_FILES
@@ -18,8 +19,12 @@ list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/runtime/flagos_stream_api\\.cc")
 if(NOT CUDA_KERNEL)
   list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/cuda/.*")
 endif()
-if(NOT FLAGGEMS_KERNEL)
+if(NOT FLAGGEMS_KERNEL AND NOT FLAGGEMS_PYTHON)
+  # Neither C++ nor Python wrappers: exclude entire flagos backend
   list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/flagos/.*")
+elseif(FLAGGEMS_PYTHON AND NOT FLAGGEMS_KERNEL)
+  # Python wrappers only: exclude C++ wrappers (bmm.cc, cat.cc, etc.) but keep python_op_caller and python_wrapper/
+  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/flagos/(bmm|cat|embedding|mm|softmax)\\.cc")
 endif()
 if(NOT ASCEND_KERNEL)
   list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/ascend/.*")
