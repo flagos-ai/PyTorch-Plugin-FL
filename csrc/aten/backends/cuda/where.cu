@@ -43,6 +43,6 @@ at::Tensor WhereKernelCuda(
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(WhereSelfFn, where_self_stub, FlagosDevice::kCuda, WhereKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(WhereSelfFn, where_self_dispatcher, Backend::kCuda, WhereKernelCuda)
 
 } // namespace at::native::flagos

@@ -64,6 +64,6 @@ at::Tensor MeanDimKernelCuda(
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(MeanDimFn, mean_dim_stub, FlagosDevice::kCuda, MeanDimKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(MeanDimFn, mean_dim_dispatcher, Backend::kCuda, MeanDimKernelCuda)
 
 } // namespace at::native::flagos

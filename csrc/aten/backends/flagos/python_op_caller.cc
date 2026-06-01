@@ -1,7 +1,6 @@
 // Copyright (c) 2026, BAAI. All rights reserved.
 
 #include "python_op_caller.h"
-#include "../../device_boxing.h"
 
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -50,32 +49,26 @@ PythonOpCache& GetCache() {
   return *cache;
 }
 
-// Convert at::Tensor to Python THPVariable (borrowed ref wrapped in py::object)
-// CPU scalar tensors (0-dim) are moved to CUDA since FlagGems kernels
-// cannot access CPU memory. PrivateUse1 tensors are assumed to be already
-// boxed to CUDA by the caller (via DeviceBoxingGuard).
+// Convert at::Tensor to Python THPVariable.
+// CPU scalar tensors are moved to the flagos device since FlagGems kernels
+// cannot access CPU memory.
 py::object TensorToPython(const at::Tensor& t) {
   if (!t.defined()) return py::none();
   if (t.device().is_cpu() && t.dim() == 0) {
-    auto cuda_t = t.to(c10::Device(c10::DeviceType::CUDA, 0));
-    PyObject* obj = THPVariable_Wrap(cuda_t);
+    auto dev_t = t.to(c10::Device(c10::DeviceType::PrivateUse1, 0));
+    PyObject* obj = THPVariable_Wrap(dev_t);
     return py::reinterpret_steal<py::object>(obj);
   }
   PyObject* obj = THPVariable_Wrap(t);
   return py::reinterpret_steal<py::object>(obj);
 }
 
-// Convert Python THPVariable back to at::Tensor
-// Unboxes device back to flagos (PrivateUse1).
+// Convert Python THPVariable back to at::Tensor.
 at::Tensor PythonToTensor(const py::object& obj) {
   if (obj.is_none()) return at::Tensor();
   PyObject* raw = obj.ptr();
   TORCH_CHECK(THPVariable_Check(raw), "Expected a Tensor from Python op");
-  at::Tensor result = THPVariable_Unpack(raw);
-  if (result.defined() && result.device().type() == c10::DeviceType::CUDA) {
-    UnboxToFlagos(result);
-  }
-  return result;
+  return THPVariable_Unpack(raw);
 }
 
 // Convert at::Scalar to Python
@@ -105,7 +98,7 @@ py::object IntArrayRefToPython(at::IntArrayRef arr) {
 // Convert OptionalIntArrayRef to Python
 // Empty dim list means "reduce all dims" which maps to None in FlagGems.
 py::object OptionalIntArrayRefToPython(at::OptionalIntArrayRef arr) {
-  if (!arr.has_value() || arr->empty()) return py::none();
+  if (!arr.has_value()) return py::none();
   return IntArrayRefToPython(*arr);
 }
 
@@ -134,7 +127,6 @@ py::object OptionalDtypeToPython(std::optional<at::ScalarType> dtype) {
 at::Tensor CallPythonOp_T(const char* func_name, const at::Tensor& self) {
   auto& cache = GetCache();
   cache.EnsureInitialized();
-  DeviceBoxingGuard guard(self);
   py::gil_scoped_acquire gil;
   auto func = cache.GetFunc(func_name);
   py::object result = func(TensorToPython(self));
@@ -144,7 +136,6 @@ at::Tensor CallPythonOp_T(const char* func_name, const at::Tensor& self) {
 at::Tensor& CallPythonOp_T_inplace(const char* func_name, at::Tensor& self) {
   auto& cache = GetCache();
   cache.EnsureInitialized();
-  DeviceBoxingGuard guard(self);
   py::gil_scoped_acquire gil;
   auto func = cache.GetFunc(func_name);
   func(TensorToPython(self));
@@ -154,7 +145,6 @@ at::Tensor& CallPythonOp_T_inplace(const char* func_name, at::Tensor& self) {
 at::Tensor CallPythonOp_TT(const char* func_name, const at::Tensor& a, const at::Tensor& b) {
   auto& cache = GetCache();
   cache.EnsureInitialized();
-  DeviceBoxingGuard guard(a, b);
   py::gil_scoped_acquire gil;
   auto func = cache.GetFunc(func_name);
   py::object result = func(TensorToPython(a), TensorToPython(b));
@@ -164,7 +154,6 @@ at::Tensor CallPythonOp_TT(const char* func_name, const at::Tensor& a, const at:
 at::Tensor CallPythonOp_TTS(const char* func_name, const at::Tensor& a, const at::Tensor& b, const at::Scalar& alpha) {
   auto& cache = GetCache();
   cache.EnsureInitialized();
-  DeviceBoxingGuard guard(a, b);
   py::gil_scoped_acquire gil;
   auto func = cache.GetFunc(func_name);
   py::object result = func(TensorToPython(a), TensorToPython(b), "alpha"_a = ScalarToPython(alpha));
@@ -174,7 +163,6 @@ at::Tensor CallPythonOp_TTS(const char* func_name, const at::Tensor& a, const at
 at::Tensor CallPythonOp_TS(const char* func_name, const at::Tensor& self, const at::Scalar& other) {
   auto& cache = GetCache();
   cache.EnsureInitialized();
-  DeviceBoxingGuard guard(self);
   py::gil_scoped_acquire gil;
   auto func = cache.GetFunc(func_name);
   py::object result = func(TensorToPython(self), ScalarToPython(other));
@@ -184,7 +172,6 @@ at::Tensor CallPythonOp_TS(const char* func_name, const at::Tensor& self, const 
 at::Tensor CallPythonOp_TIB(const char* func_name, const at::Tensor& self, int64_t dim, bool flag) {
   auto& cache = GetCache();
   cache.EnsureInitialized();
-  DeviceBoxingGuard guard(self);
   py::gil_scoped_acquire gil;
   auto func = cache.GetFunc(func_name);
   py::object result = func(TensorToPython(self), py::int_(dim), py::bool_(flag));
@@ -196,7 +183,6 @@ at::Tensor CallPythonOp_TOIB(const char* func_name, const at::Tensor& self,
                               std::optional<at::ScalarType> dtype) {
   auto& cache = GetCache();
   cache.EnsureInitialized();
-  DeviceBoxingGuard guard(self);
   py::gil_scoped_acquire gil;
   auto func = cache.GetFunc(func_name);
   py::object result = func(
@@ -210,29 +196,25 @@ at::Tensor CallPythonOp_TOIB(const char* func_name, const at::Tensor& self,
 at::Tensor CallPythonOp_TTT(const char* func_name, const at::Tensor& a, const at::Tensor& b, const at::Tensor& c) {
   auto& cache = GetCache();
   cache.EnsureInitialized();
-  DeviceBoxingGuard guard(a, b, c);
   py::gil_scoped_acquire gil;
   auto func = cache.GetFunc(func_name);
   py::object result = func(TensorToPython(a), TensorToPython(b), TensorToPython(c));
   return PythonToTensor(result);
 }
 
+at::Tensor CallPythonOp_TD(const char* func_name, const at::Tensor& self,
+                            std::optional<at::ScalarType> dtype) {
+  auto& cache = GetCache();
+  cache.EnsureInitialized();
+  py::gil_scoped_acquire gil;
+  auto func = cache.GetFunc(func_name);
+  py::object result = func(TensorToPython(self), "dtype"_a = OptionalDtypeToPython(dtype));
+  return PythonToTensor(result);
+}
+
 at::Tensor CallPythonOp_Generic(const char* func_name, const std::vector<c10::IValue>& args) {
   auto& cache = GetCache();
   cache.EnsureInitialized();
-
-  // Collect all tensor args for boxing guard
-  std::vector<at::Tensor> tensors;
-  for (const auto& val : args) {
-    if (val.isTensor() && val.toTensor().defined()) {
-      tensors.push_back(val.toTensor());
-    }
-  }
-  for (auto& t : tensors) {
-    if (t.device().type() == c10::DeviceType::PrivateUse1) {
-      BoxToCuda(t);
-    }
-  }
 
   py::gil_scoped_acquire gil;
   auto func = cache.GetFunc(func_name);
@@ -264,16 +246,7 @@ at::Tensor CallPythonOp_Generic(const char* func_name, const std::vector<c10::IV
     }
   }
 
-  py::object result = func(*py_args);
-
-  // Unbox tensors back to flagos
-  for (auto& t : tensors) {
-    if (t.device().type() == c10::DeviceType::CUDA) {
-      UnboxToFlagos(t);
-    }
-  }
-
-  return PythonToTensor(result);
+  return PythonToTensor(func(*py_args));
 }
 
 } // namespace at::native::flagos

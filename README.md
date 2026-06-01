@@ -36,7 +36,9 @@ A custom PyTorch device plugin based on the PrivateUse1 extension mechanism, reg
 ```bash
 git clone https://github.com/flagos-ai/PyTorch-Plugin-FL.git && cd PyTorch-Plugin-FL
 
-pip install -e . --no-build-isolation
+ACCELERATOR=cuda FLAGGEMS_DIR=/path/to/FlagGems/build/cpython-312/ \
+  FLAGGEMS_KERNEL=1 FLAGGEMS_PYTHON=1 CUDA_KERNEL=1 \
+  pip install --no-build-isolation -vvv -e .
 ```
 
 ### Build from Source (MACA Platform)
@@ -54,11 +56,12 @@ ACCELERATOR=maca pip install -e . --no-build-isolation
 # Ensure CANN toolkit is installed and environment is sourced
 # (typically: source /usr/local/Ascend/ascend-toolkit/set_env.sh)
 
-ACCELERATOR=ascend FLAGGEMS_KERNEL=0 CUDA_KERNEL=0 ASCEND_KERNEL=1 \
+ACCELERATOR=ascend FLAGGEMS_KERNEL=0 FLAGGEMS_PYTHON=1 \
+  CUDA_KERNEL=0 ASCEND_KERNEL=1 \
   pip install --no-build-isolation -vvv -e .
 ```
 
-On Ascend, FlagGems and CUDA kernels are disabled. Only the Ascend kernel backend (ACL NN API) is compiled.
+On Ascend, FlagGems C++ kernels and CUDA kernels are disabled. Only the Ascend kernel backend (ACL NN API) is compiled, with FlagGems Python wrappers enabled for ops that route to FlagGems.
 
 ### Build Environment Variables
 
@@ -69,7 +72,8 @@ On Ascend, FlagGems and CUDA kernels are disabled. Only the Ascend kernel backen
 | `MACA_PATH` | MACA SDK path (default `/opt/maca`) |
 | `ASCEND_HOME` | CANN toolkit path (default `/usr/local/Ascend/ascend-toolkit/latest`) |
 | `FLAGGEMS_DIR` | FlagGems C++ library path (enables low-overhead C++ dispatch) |
-| `FLAGGEMS_KERNEL` | Enable FlagGems kernel build (`ON`/`OFF`, default `ON`; set `0` for Ascend) |
+| `FLAGGEMS_KERNEL` | Enable FlagGems C++ kernel wrappers (`ON`/`OFF`, default `ON`; set `0` for Ascend) |
+| `FLAGGEMS_PYTHON` | Enable FlagGems Python kernel wrappers (`ON`/`OFF`, default `OFF`; set `1` to enable) |
 | `CUDA_KERNEL` | Enable CUDA kernel build (`ON`/`OFF`, default `ON`; set `0` for Ascend) |
 | `ASCEND_KERNEL` | Enable Ascend kernel build (`ON`/`OFF`, default `OFF`; set `1` for Ascend) |
 

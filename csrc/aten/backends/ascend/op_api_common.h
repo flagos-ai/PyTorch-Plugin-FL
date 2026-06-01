@@ -3,6 +3,7 @@
 #pragma once
 
 #include <include/flagos.h>
+#include "runtime/accelerator/ascend/acl_stream.h"
 
 #include <ATen/ATen.h>
 #include <dlfcn.h>
@@ -82,12 +83,7 @@ struct AclTensorWrapper {
 };
 
 inline aclrtStream GetCurrentAclStream() {
-  static aclrtStream stream = []() -> aclrtStream {
-    aclrtStream s = nullptr;
-    aclrtCreateStream(&s);
-    return s;
-  }();
-  return stream;
+  return GetDefaultAclStream();
 }
 
 inline void* GetOpApiLibHandle() {

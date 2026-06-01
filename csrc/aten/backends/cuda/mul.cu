@@ -53,6 +53,6 @@ at::Tensor MulKernelCuda(
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(MulTensorFn, mul_tensor_stub, FlagosDevice::kCuda, MulKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(MulTensorFn, mul_tensor_dispatcher, Backend::kCuda, MulKernelCuda)
 
 } // namespace at::native::flagos
