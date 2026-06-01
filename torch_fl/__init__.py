@@ -74,8 +74,22 @@ def _patch_flaggems_codegen_config():
 
     # FlagGems' ASCEND backend expects torch.npu to exist (device_name="npu").
     # Provide torch.flagos as a shim so gen_torch_device_object() succeeds.
+    # Mark is_available()=False so transformers/accelerate don't think real
+    # NPU hardware is present and try to import npu_fusion_attention etc.
     if not hasattr(torch, "npu"):
-        torch.npu = flagos
+        import types
+        _npu_device_shim = types.ModuleType("torch.npu")
+        _npu_device_shim.is_available = lambda: False
+        _npu_device_shim.device_count = flagos.device_count
+        _npu_device_shim.current_device = flagos.current_device
+        _npu_device_shim.set_device = flagos.set_device
+        _npu_device_shim.synchronize = flagos.synchronize
+        _npu_device_shim.device = flagos.device
+        _npu_device_shim.Stream = flagos.Stream
+        _npu_device_shim.Event = flagos.Event
+        _npu_device_shim.current_stream = flagos.current_stream
+        _npu_device_shim.default_generators = flagos.default_generators
+        torch.npu = _npu_device_shim
 
     # FlagGems' ASCEND backend imports torch_npu in _get_vendor_from_quick_cmd.
     # Provide a minimal shim module so the import doesn't fail.
@@ -85,7 +99,7 @@ def _patch_flaggems_codegen_config():
         import types
         import importlib.machinery
         _npu_shim = types.ModuleType("torch_npu")
-        _npu_shim.npu = flagos
+        _npu_shim.npu = _npu_device_shim
         _npu_shim.__spec__ = importlib.machinery.ModuleSpec(
             name="torch_npu",
             loader=None,
