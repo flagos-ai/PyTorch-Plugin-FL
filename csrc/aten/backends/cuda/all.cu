@@ -36,6 +36,6 @@ at::Tensor AllKernelCuda(const at::Tensor& self) {
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(AllFn, all_stub, FlagosDevice::kCuda, AllKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(AllFn, all_dispatcher, Backend::kCuda, AllKernelCuda)
 
 } // namespace at::native::flagos

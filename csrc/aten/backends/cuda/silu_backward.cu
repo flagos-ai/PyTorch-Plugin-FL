@@ -38,6 +38,6 @@ at::Tensor SiluBackwardKernelCuda(const at::Tensor& grad_output, const at::Tenso
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(SiluBackwardFn, silu_backward_stub, FlagosDevice::kCuda, SiluBackwardKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(SiluBackwardFn, silu_backward_dispatcher, Backend::kCuda, SiluBackwardKernelCuda)
 
 } // namespace at::native::flagos

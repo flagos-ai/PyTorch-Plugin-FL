@@ -34,6 +34,6 @@ at::Tensor BitwiseAndKernelCuda(const at::Tensor& self, const at::Tensor& other)
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(BitwiseAndTensorFn, bitwise_and_tensor_stub, FlagosDevice::kCuda, BitwiseAndKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(BitwiseAndTensorFn, bitwise_and_tensor_dispatcher, Backend::kCuda, BitwiseAndKernelCuda)
 
 } // namespace at::native::flagos
