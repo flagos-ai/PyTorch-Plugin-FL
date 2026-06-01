@@ -28,6 +28,15 @@ if is_maca_available():
     patch_torch_cuda_for_maca()
 
 
+# Load libflagos_stream.so with RTLD_GLOBAL so that liboperators.so (FlagGems)
+# can resolve FlagOS_GetCurrentStream at runtime.
+import ctypes  # noqa: E402
+import os as _os  # noqa: E402
+
+_flagos_stream_path = _os.path.join(_os.path.dirname(__file__), "lib", "libflagos_stream.so")
+if _os.path.exists(_flagos_stream_path):
+    ctypes.CDLL(_flagos_stream_path, mode=ctypes.RTLD_GLOBAL)
+
 import torch_fl._C  # type: ignore[misc]  # noqa: E402, F401
 from . import flagos  # noqa: E402
 
@@ -41,6 +50,66 @@ torch.utils.generate_methods_for_privateuse1_backend(for_storage=True)
 _flaggems_lib = None
 _autograd_lib = None
 _registered_ops = []
+
+
+def _patch_flaggems_codegen_config():
+    """
+    Configure FlagGems to use ASCEND codegen config on the flagos device.
+
+    FlagGems uses GEMS_VENDOR env var to detect the hardware vendor. On Ascend
+    hardware without torch_npu, FlagGems can't auto-detect the vendor and falls
+    back to NVIDIA config (prefer_block_pointer=True). This triggers a
+    triton-ascend compiler bug with tl.make_block_ptr.
+
+    Fix: set GEMS_VENDOR=ascend so FlagGems uses the ASCEND codegen config
+    (prefer_block_pointer=False), and register torch.flagos as torch.npu shim
+    so FlagGems' gen_torch_device_object('ascend') resolves correctly.
+    """
+    import os
+    import sys
+
+    # Set vendor before FlagGems runtime initializes
+    if "GEMS_VENDOR" not in os.environ:
+        os.environ["GEMS_VENDOR"] = "ascend"
+
+    # FlagGems' ASCEND backend expects torch.npu to exist (device_name="npu").
+    # Provide torch.flagos as a shim so gen_torch_device_object() succeeds.
+    # Mark is_available()=False so transformers/accelerate don't think real
+    # NPU hardware is present and try to import npu_fusion_attention etc.
+    if not hasattr(torch, "npu"):
+        import types
+        _npu_device_shim = types.ModuleType("torch.npu")
+        _npu_device_shim.is_available = lambda: False
+        _npu_device_shim.device_count = flagos.device_count
+        _npu_device_shim.current_device = flagos.current_device
+        _npu_device_shim.set_device = flagos.set_device
+        _npu_device_shim.synchronize = flagos.synchronize
+        _npu_device_shim.device = flagos.device
+        _npu_device_shim.Stream = flagos.Stream
+        _npu_device_shim.Event = flagos.Event
+        _npu_device_shim.current_stream = flagos.current_stream
+        _npu_device_shim.default_generators = flagos.default_generators
+        torch.npu = _npu_device_shim
+
+    # FlagGems' ASCEND backend imports torch_npu in _get_vendor_from_quick_cmd.
+    # Provide a minimal shim module so the import doesn't fail.
+    # Also set __spec__ to satisfy importlib.util.find_spec() checks (used by
+    # accelerate.utils.imports.is_npu_available).
+    if "torch_npu" not in sys.modules:
+        import types
+        import importlib.machinery
+        _npu_shim = types.ModuleType("torch_npu")
+        _npu_shim.npu = _npu_device_shim
+        _npu_shim.__spec__ = importlib.machinery.ModuleSpec(
+            name="torch_npu",
+            loader=None,
+            origin="torch_fl_shim",
+        )
+        sys.modules["torch_npu"] = _npu_shim
+
+
+# Patch FlagGems codegen config before any FlagGems code is imported
+_patch_flaggems_codegen_config()
 
 
 def _patch_cuda_device_context():

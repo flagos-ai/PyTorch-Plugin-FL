@@ -1,7 +1,8 @@
 set(LIBRARY_NAME torch_fl)
 
 option(CUDA_KERNEL "Build CUDA kernel implementations" ON)
-option(FLAGGEMS_KERNEL "Build FlagGems kernel implementations" ON)
+option(FLAGGEMS_KERNEL "Build FlagGems C++ kernel wrappers (requires liboperators.so)" ON)
+option(FLAGGEMS_PYTHON "Build FlagGems Python kernel wrappers (calls via Python, no C++ linking)" OFF)
 option(ASCEND_KERNEL "Build Ascend kernel implementations" OFF)
 
 file(GLOB_RECURSE SOURCE_FILES
@@ -11,16 +12,38 @@ file(GLOB_RECURSE SOURCE_FILES
 
 # Exclude runtime/accelerator (built separately as subdirectory)
 list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/runtime/accelerator/.*")
+# flagos_stream_api is built as a separate shared lib
+list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/runtime/flagos_stream_api\\.cc")
 
 # Exclude backend kernel directories based on options
 if(NOT CUDA_KERNEL)
   list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/cuda/.*")
 endif()
-if(NOT FLAGGEMS_KERNEL)
+if(NOT FLAGGEMS_KERNEL AND NOT FLAGGEMS_PYTHON)
+  # Neither C++ nor Python wrappers: exclude entire flagos backend
   list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/flagos/.*")
+elseif(FLAGGEMS_PYTHON AND NOT FLAGGEMS_KERNEL)
+  # Python wrappers only: exclude C++ wrappers (bmm.cc, cat.cc, etc.) but keep python_op_caller and python_wrapper/
+  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/flagos/(bmm|cat|embedding|mm|softmax)\\.cc")
 endif()
 if(NOT ASCEND_KERNEL)
   list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/ascend/.*")
+endif()
+
+# Build flagos_stream as a standalone shared lib so liboperators.so can resolve it at runtime
+if(FLAGGEMS_KERNEL AND ACCELERATOR STREQUAL "ascend")
+  add_library(flagos_stream SHARED "${CMAKE_CURRENT_SOURCE_DIR}/runtime/flagos_stream_api.cc")
+  target_compile_definitions(flagos_stream PRIVATE USE_ASCEND=1)
+  target_include_directories(flagos_stream PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}
+      ${ASCEND_HOME}/include
+  )
+  find_library(ASCENDCL_LIB ascendcl
+      PATHS ${ASCEND_HOME}/lib64)
+  target_link_libraries(flagos_stream PRIVATE torch_cpu_library ${ASCENDCL_LIB})
+  install(TARGETS flagos_stream
+      LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  )
 endif()
 
 add_library(${LIBRARY_NAME} SHARED ${SOURCE_FILES})
@@ -31,7 +54,12 @@ target_compile_definitions(${LIBRARY_NAME} PRIVATE
 
 set(_LINK_LIBS torch_cpu_library torch_python_library flagos ${CUDA_RUNTIME_LIB})
 if(FLAGGEMS_KERNEL)
-  list(APPEND _LINK_LIBS FlagGems::operators)
+  # FlagGemsTargets.cmake exports 'operators' (without namespace prefix)
+  if(TARGET FlagGems::operators)
+    list(APPEND _LINK_LIBS FlagGems::operators)
+  elseif(TARGET operators)
+    list(APPEND _LINK_LIBS operators)
+  endif()
 endif()
 
 if(ACCELERATOR STREQUAL "ascend")

@@ -43,6 +43,10 @@ at::Tensor CallPythonOp_TOIB(const char* func_name, const at::Tensor& self,
 // (Tensor, Tensor, Tensor) -> Tensor
 at::Tensor CallPythonOp_TTT(const char* func_name, const at::Tensor& a, const at::Tensor& b, const at::Tensor& c);
 
+// (Tensor, optional<ScalarType>) -> Tensor  [keyword: dtype=...]
+at::Tensor CallPythonOp_TD(const char* func_name, const at::Tensor& self,
+                            std::optional<at::ScalarType> dtype);
+
 // Generic variadic caller using Python *args/**kwargs.
 // For ops with complex signatures not covered above.
 // Arguments are passed as a vector of IValues.

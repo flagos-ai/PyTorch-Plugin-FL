@@ -4,7 +4,8 @@ set(ACCELERATOR "cuda" CACHE STRING "Accelerator platform: cuda, maca, or ascend
 
 # Kernel build options (can be overridden via -D flags from setup.py)
 option(CUDA_KERNEL "Build CUDA kernel implementations" ON)
-option(FLAGGEMS_KERNEL "Build FlagGems kernel implementations" ON)
+option(FLAGGEMS_KERNEL "Build FlagGems C++ kernel wrappers (requires liboperators.so)" ON)
+option(FLAGGEMS_PYTHON "Build FlagGems Python kernel wrappers (calls via Python, no C++ linking)" OFF)
 option(ASCEND_KERNEL "Build Ascend kernel implementations" OFF)
 
 if(ACCELERATOR STREQUAL "ascend")
@@ -116,20 +117,62 @@ endif()
 find_package(Torch REQUIRED)
 
 if(FLAGGEMS_KERNEL)
-  # Allow override via env var, otherwise try the installed flag_gems package
+  # Allow override via cmake var or env var
+  # setup.py passes -DFlagGems_DIR=..., CMakeLists uses FLAGGEMS_DIR internally
+  if(FlagGems_DIR AND NOT FLAGGEMS_DIR)
+    set(FLAGGEMS_DIR "${FlagGems_DIR}")
+  endif()
   if(NOT FLAGGEMS_DIR)
     set(FLAGGEMS_DIR "$ENV{FLAGGEMS_DIR}")
   endif()
   if(NOT FLAGGEMS_DIR)
-    set(FLAGGEMS_DIR "/root/miniconda3/envs/pytorch/lib/python3.12/site-packages/flag_gems/lib/cmake/FlagGems")
+    # Try FLAGGEMS_SOURCE_DIR (cmake var from setup.py or env var)
+    if(NOT FLAGGEMS_SOURCE_DIR)
+      set(FLAGGEMS_SOURCE_DIR "$ENV{FLAGGEMS_SOURCE_DIR}")
+    endif()
+    if(FLAGGEMS_SOURCE_DIR)
+      # Check if it points to the repo root (has build/ dir with FlagGemsConfig.cmake)
+      file(GLOB _FLAGGEMS_BUILD_CONFIGS "${FLAGGEMS_SOURCE_DIR}/build/*/FlagGemsConfig.cmake")
+      if(_FLAGGEMS_BUILD_CONFIGS)
+        list(GET _FLAGGEMS_BUILD_CONFIGS 0 _FLAGGEMS_CONFIG)
+        get_filename_component(FLAGGEMS_DIR "${_FLAGGEMS_CONFIG}" DIRECTORY)
+      endif()
+    endif()
   endif()
+  if(NOT FLAGGEMS_DIR)
+    # Auto-detect from installed flag_gems package
+    execute_process(
+      COMMAND ${PYTHON_EXECUTABLE} -c "import flag_gems; print(flag_gems.__path__[0])"
+      OUTPUT_VARIABLE _FLAGGEMS_PKG_PATH
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_QUIET
+      RESULT_VARIABLE _FLAGGEMS_DETECT_RET
+    )
+    if(_FLAGGEMS_DETECT_RET EQUAL 0 AND _FLAGGEMS_PKG_PATH)
+      set(FLAGGEMS_DIR "${_FLAGGEMS_PKG_PATH}/lib/cmake/FlagGems")
+    endif()
+  endif()
+  if(NOT FLAGGEMS_DIR)
+    message(FATAL_ERROR "Cannot find FlagGems. Set FLAGGEMS_DIR or FLAGGEMS_SOURCE_DIR.")
+  endif()
+  message(STATUS "FlagGems cmake dir: ${FLAGGEMS_DIR}")
   # FlagGemsConfig.cmake calls find_dependency(Torch MODULE), which needs FindTorch.cmake in MODULE_PATH
+  if(FLAGGEMS_SOURCE_DIR AND EXISTS "${FLAGGEMS_SOURCE_DIR}/cmake")
+    list(APPEND CMAKE_MODULE_PATH "${FLAGGEMS_SOURCE_DIR}/cmake")
+  endif()
   list(APPEND CMAKE_MODULE_PATH "${FLAGGEMS_DIR}")
   find_package(FlagGems REQUIRED PATHS "${FLAGGEMS_DIR}" NO_DEFAULT_PATH)
 
   # Embed liboperators.so dir into RPATH so it's found at runtime without LD_LIBRARY_PATH
-  # FLAGGEMS_DIR is .../flag_gems/lib/cmake/FlagGems; liboperators.so is at .../flag_gems/lib/
-  get_filename_component(_flaggems_libdir "${FLAGGEMS_DIR}/../.." ABSOLUTE)
+  set(_flaggems_libdir "${FLAGGEMS_DIR}/lib")
+  get_target_property(_flaggems_lib_location operators IMPORTED_LOCATION_RELEASE)
+  if(NOT _flaggems_lib_location)
+    get_target_property(_flaggems_lib_location operators IMPORTED_LOCATION)
+  endif()
+  if(_flaggems_lib_location)
+    get_filename_component(_flaggems_libdir "${_flaggems_lib_location}" DIRECTORY)
+  endif()
+  message(STATUS "FlagGems liboperators RPATH: ${_flaggems_libdir}")
   list(APPEND CMAKE_INSTALL_RPATH "${_flaggems_libdir}")
 endif()
 
