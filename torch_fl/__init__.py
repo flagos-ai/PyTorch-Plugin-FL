@@ -79,10 +79,18 @@ def _patch_flaggems_codegen_config():
 
     # FlagGems' ASCEND backend imports torch_npu in _get_vendor_from_quick_cmd.
     # Provide a minimal shim module so the import doesn't fail.
+    # Also set __spec__ to satisfy importlib.util.find_spec() checks (used by
+    # accelerate.utils.imports.is_npu_available).
     if "torch_npu" not in sys.modules:
         import types
+        import importlib.machinery
         _npu_shim = types.ModuleType("torch_npu")
         _npu_shim.npu = flagos
+        _npu_shim.__spec__ = importlib.machinery.ModuleSpec(
+            name="torch_npu",
+            loader=None,
+            origin="torch_fl_shim",
+        )
         sys.modules["torch_npu"] = _npu_shim
 
 
