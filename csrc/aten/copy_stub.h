@@ -5,12 +5,12 @@
 #include <ATen/core/Tensor.h>
 #include <optional>
 
-#include "dispatch_stub.h"
+#include "dispatcher.h"
 
 namespace at::native::flagos {
 
 using LocalScalarDenseFn = at::Scalar (*)(const at::Tensor&);
-FLAGOS_DECLARE_DISPATCH(LocalScalarDenseFn, local_scalar_dense_stub)
+DECLARE_DISPATCHER(LocalScalarDenseFn, local_scalar_dense_stub)
 
 using ToCopyFn = at::Tensor (*)(
     const at::Tensor&,
@@ -20,6 +20,6 @@ using ToCopyFn = at::Tensor (*)(
     std::optional<bool>,
     bool,
     std::optional<c10::MemoryFormat>);
-FLAGOS_DECLARE_DISPATCH(ToCopyFn, to_copy_stub)
+DECLARE_DISPATCHER(ToCopyFn, to_copy_stub)
 
 }  // namespace at::native::flagos
