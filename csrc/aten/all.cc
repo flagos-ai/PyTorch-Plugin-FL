@@ -4,6 +4,6 @@
 
 namespace at::native::flagos {
 
-FLAGOS_DEFINE_DISPATCH(AllFn, all_stub, "all")
+ADD_IMPL_TO_DISPATCHER(AllFn, all_dispatcher, "all")
 
 } // namespace at::native::flagos

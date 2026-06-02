@@ -4,6 +4,6 @@
 
 namespace at::native::flagos {
 
-FLAGOS_DEFINE_DISPATCH(MeanDimFn, mean_dim_stub, "mean.dim")
+ADD_IMPL_TO_DISPATCHER(MeanDimFn, mean_dim_dispatcher, "mean.dim")
 
 } // namespace at::native::flagos

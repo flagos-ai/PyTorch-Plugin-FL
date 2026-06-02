@@ -3,8 +3,8 @@ add.Tensor dispatch tests
 
 Verifies that torch.add (Tensor variant):
   - produces correct results on flagos device
-  - C++ wrapper routes to cuda backend
-  - attempting flaggems backend raises an error (not implemented)
+  - C++ wrapper routes to flaggems_python backend (default)
+  - dispatch log confirms the actual backend used
 
 Usage:
     pytest tests/integration/ops/test_add_dispatch.py -v
@@ -45,6 +45,7 @@ class TestAddTensorCorrectness:
     """torch.add correctness on flagos device."""
 
     @pytest.mark.parametrize("shape", [(128, 256), (1,), (64, 64, 64)])
+    @pytest.mark.anyplatform
     def test_add_shape(self, shape):
         torch.manual_seed(0)
         a = torch.randn(*shape, device=DEVICE)
@@ -53,6 +54,7 @@ class TestAddTensorCorrectness:
         assert out.shape == shape
         assert out.device.type == "flagos"
 
+    @pytest.mark.anyplatform
     def test_add_alpha(self):
         torch.manual_seed(1)
         a = torch.randn(32, 32, device=DEVICE)
@@ -61,6 +63,7 @@ class TestAddTensorCorrectness:
         ref = a.cpu() + 2.0 * b.cpu()
         torch.testing.assert_close(out.cpu(), ref, rtol=1e-4, atol=1e-4)
 
+    @pytest.mark.anyplatform
     def test_add_broadcast(self):
         torch.manual_seed(2)
         a = torch.randn(4, 8, device=DEVICE)
@@ -69,6 +72,7 @@ class TestAddTensorCorrectness:
         ref = a.cpu() + b.cpu()
         torch.testing.assert_close(out.cpu(), ref, rtol=1e-4, atol=1e-4)
 
+    @pytest.mark.cuda
     def test_add_matches_cuda(self):
         if not torch.cuda.is_available():
             pytest.skip("CUDA not available")
@@ -83,20 +87,41 @@ class TestAddTensorCorrectness:
 
 
 class TestAddTensorDispatch:
-    """Verify dispatch routing and flaggems backend rejection."""
+    """Verify dispatch routing for add.Tensor op."""
 
-    def test_dispatch_log_cuda(self):
+    @pytest.mark.flaggems_python
+    def test_dispatch_log_flaggems_python(self):
+        result = _run_add_subprocess(
+            {
+                "FLAGOS_LOG_DISPATCH": "1",
+                "FLAGOS_OP_add__Tensor": "flaggems_python",
+            },
+            check=False,
+        )
+        assert "[flagos dispatch] add.Tensor -> flagos_python" in result.stderr
+
+    @pytest.mark.cuda
+    def test_dispatch_log_cuda_override(self):
         result = _run_add_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_add__Tensor": "cuda"}
         )
         assert result.returncode == 0
         assert "[flagos dispatch] add.Tensor -> cuda" in result.stderr
 
-    def test_flaggems_backend_raises_error(self):
-        """Selecting flaggems backend must fail — not implemented."""
+    @pytest.mark.ascend
+    def test_dispatch_log_ascend(self):
         result = _run_add_subprocess(
-            {"FLAGOS_OP_add__Tensor": "flaggems"},
-            check=False,
+            {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_add__Tensor": "ascend"}
         )
-        assert result.returncode != 0
-        assert "backend not registered" in result.stderr
+        assert result.returncode == 0
+        assert "[flagos dispatch] add.Tensor -> ascend" in result.stderr
+
+
+class TestAddTensorAscendDispatch:
+    """Verify Ascend backend correctness."""
+
+    @pytest.mark.ascend
+    def test_ascend_correctness(self):
+        """Verify add.Tensor on ascend backend matches CPU reference."""
+        result = _run_add_subprocess({"FLAGOS_OP_add__Tensor": "ascend"})
+        assert result.returncode == 0

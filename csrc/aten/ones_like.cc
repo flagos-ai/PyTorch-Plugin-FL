@@ -4,6 +4,6 @@
 
 namespace at::native::flagos {
 
-FLAGOS_DEFINE_DISPATCH(OnesLikeFn, ones_like_stub, "ones_like")
+ADD_IMPL_TO_DISPATCHER(OnesLikeFn, ones_like_dispatcher, "ones_like")
 
 } // namespace at::native::flagos

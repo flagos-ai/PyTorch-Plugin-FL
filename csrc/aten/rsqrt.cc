@@ -4,6 +4,6 @@
 
 namespace at::native::flagos {
 
-FLAGOS_DEFINE_DISPATCH(RsqrtFn, rsqrt_stub, "rsqrt")
+ADD_IMPL_TO_DISPATCHER(RsqrtFn, rsqrt_dispatcher, "rsqrt")
 
 } // namespace at::native::flagos

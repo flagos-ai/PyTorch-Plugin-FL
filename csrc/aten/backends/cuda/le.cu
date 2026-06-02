@@ -33,6 +33,6 @@ at::Tensor LeKernelCuda(const at::Tensor& self, const at::Tensor& other) {
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(LeTensorFn, le_tensor_stub, FlagosDevice::kCuda, LeKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(LeTensorFn, le_tensor_dispatcher, Backend::kCuda, LeKernelCuda)
 
 } // namespace at::native::flagos

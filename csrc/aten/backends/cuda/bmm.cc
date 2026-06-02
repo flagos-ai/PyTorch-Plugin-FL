@@ -31,6 +31,6 @@ void BmmKernelCuda(
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(BmmFn, bmm_stub, FlagosDevice::kCuda, BmmKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(BmmFn, bmm_dispatcher, Backend::kCuda, BmmKernelCuda)
 
 } // namespace at::native::flagos

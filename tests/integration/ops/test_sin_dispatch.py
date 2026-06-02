@@ -3,8 +3,8 @@ sin dispatch tests
 
 Verifies that torch.sin:
   - produces correct results on flagos device
-  - C++ wrapper routes to cuda backend
-  - attempting flaggems backend raises an error (not implemented)
+  - C++ wrapper routes to flaggems_python backend (default)
+  - dispatch log confirms the actual backend used
 
 Usage:
     pytest tests/integration/ops/test_sin_dispatch.py -v
@@ -42,6 +42,7 @@ class TestSinCorrectness:
     """torch.sin correctness on flagos device."""
 
     @pytest.mark.parametrize("shape", [(128, 256), (1,), (64, 64, 64)])
+    @pytest.mark.anyplatform
     def test_sin_shape(self, shape):
         torch.manual_seed(0)
         a = torch.randn(*shape, device=DEVICE)
@@ -49,6 +50,7 @@ class TestSinCorrectness:
         assert out.shape == shape
         assert out.device.type == "flagos"
 
+    @pytest.mark.anyplatform
     def test_sin_values(self):
         torch.manual_seed(1)
         a = torch.randn(32, 32, device=DEVICE)
@@ -56,6 +58,7 @@ class TestSinCorrectness:
         ref = torch.sin(a.cpu())
         torch.testing.assert_close(out.cpu(), ref, rtol=1e-4, atol=1e-4)
 
+    @pytest.mark.cuda
     def test_sin_matches_cuda(self):
         if not torch.cuda.is_available():
             pytest.skip("CUDA not available")
@@ -67,6 +70,7 @@ class TestSinCorrectness:
         torch.testing.assert_close(out.cpu(), ref.cpu(), rtol=1e-4, atol=1e-4)
 
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
+    @pytest.mark.anyplatform
     def test_sin_dtypes(self, dtype):
         torch.manual_seed(3)
         a = torch.randn(16, 16, device=DEVICE, dtype=dtype)
@@ -75,20 +79,33 @@ class TestSinCorrectness:
 
 
 class TestSinDispatch:
-    """Verify dispatch routing and flaggems backend rejection."""
+    """Verify dispatch routing for sin op."""
 
-    def test_dispatch_log_cuda(self):
+    @pytest.mark.flaggems_python
+    def test_dispatch_log_flaggems_python(self):
+        result = _run_sin_subprocess(
+            {
+                "FLAGOS_LOG_DISPATCH": "1",
+                "FLAGOS_OP_sin": "flaggems_python",
+            },
+            check=False,
+        )
+        assert "[flagos dispatch] sin -> flagos_python" in result.stderr
+
+    @pytest.mark.cuda
+    def test_dispatch_log_cuda_override(self):
         result = _run_sin_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_sin": "cuda"}
         )
         assert result.returncode == 0
         assert "[flagos dispatch] sin -> cuda" in result.stderr
 
-    def test_flaggems_backend_raises_error(self):
-        """Selecting flaggems backend must fail — not implemented."""
-        result = _run_sin_subprocess(
-            {"FLAGOS_OP_sin": "flaggems"},
-            check=False,
-        )
-        assert result.returncode != 0
-        assert "backend not registered" in result.stderr
+
+class TestSinAscendDispatch:
+    """Verify Ascend backend correctness."""
+
+    @pytest.mark.ascend
+    def test_ascend_correctness(self):
+        """Verify sin on ascend backend matches CPU reference."""
+        result = _run_sin_subprocess({"FLAGOS_OP_sin": "ascend"})
+        assert result.returncode == 0

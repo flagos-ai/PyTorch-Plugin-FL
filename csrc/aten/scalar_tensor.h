@@ -4,7 +4,7 @@
 
 #include <ATen/core/Tensor.h>
 #include <c10/core/Scalar.h>
-#include "dispatch_stub.h"
+#include "dispatcher.h"
 
 namespace at::native::flagos {
 
@@ -13,6 +13,6 @@ using ScalarTensorFn = at::Tensor (*)(const at::Scalar&,
                                       std::optional<at::Layout>,
                                       std::optional<at::Device>,
                                       std::optional<bool>);
-FLAGOS_DECLARE_DISPATCH(ScalarTensorFn, scalar_tensor_stub)
+DECLARE_DISPATCHER(ScalarTensorFn, scalar_tensor_dispatcher)
 
 } // namespace at::native::flagos

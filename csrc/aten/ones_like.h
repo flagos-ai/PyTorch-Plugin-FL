@@ -3,7 +3,7 @@
 #pragma once
 
 #include <ATen/core/Tensor.h>
-#include "dispatch_stub.h"
+#include "dispatcher.h"
 
 namespace at::native::flagos {
 
@@ -13,6 +13,6 @@ using OnesLikeFn = at::Tensor (*)(const at::Tensor&,
                                   std::optional<at::Device>,
                                   std::optional<bool>,
                                   std::optional<at::MemoryFormat>);
-FLAGOS_DECLARE_DISPATCH(OnesLikeFn, ones_like_stub)
+DECLARE_DISPATCHER(OnesLikeFn, ones_like_dispatcher)
 
 } // namespace at::native::flagos

@@ -67,6 +67,6 @@ at::Tensor SumDimKernelCuda(
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(SumDimFn, sum_dim_stub, FlagosDevice::kCuda, SumDimKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(SumDimFn, sum_dim_dispatcher, Backend::kCuda, SumDimKernelCuda)
 
 } // namespace at::native::flagos

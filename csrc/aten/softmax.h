@@ -3,11 +3,11 @@
 #pragma once
 
 #include <ATen/core/Tensor.h>
-#include "dispatch_stub.h"
+#include "dispatcher.h"
 
 namespace at::native::flagos {
 
 using SoftmaxFn = at::Tensor (*)(const at::Tensor&, int64_t, bool);
-FLAGOS_DECLARE_DISPATCH(SoftmaxFn, softmax_stub)
+DECLARE_DISPATCHER(SoftmaxFn, softmax_dispatcher)
 
 } // namespace at::native::flagos

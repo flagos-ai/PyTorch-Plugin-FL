@@ -33,6 +33,6 @@ at::Tensor NegKernelCuda(const at::Tensor& self) {
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(NegFn, neg_stub, FlagosDevice::kCuda, NegKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(NegFn, neg_dispatcher, Backend::kCuda, NegKernelCuda)
 
 } // namespace at::native::flagos

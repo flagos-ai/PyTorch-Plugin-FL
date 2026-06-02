@@ -85,6 +85,6 @@ at::Tensor AddKernelCuda(
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(AddTensorFn, add_tensor_stub, FlagosDevice::kCuda, AddKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(AddTensorFn, add_tensor_dispatcher, Backend::kCuda, AddKernelCuda)
 
 } // namespace at::native::flagos

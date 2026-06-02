@@ -5,14 +5,14 @@
 #include <ATen/core/Tensor.h>
 #include <ATen/ops/bmm_meta.h>
 #include <ATen/ops/bmm_native.h>
-#include "dispatch_stub.h"
+#include "dispatcher.h"
 
 #include <string>
 
 namespace at::native::flagos {
 
 using BmmFn = void (*)(const at::Tensor&, const at::Tensor&, at::Tensor&);
-FLAGOS_DECLARE_DISPATCH(BmmFn, bmm_stub)
+DECLARE_DISPATCHER(BmmFn, bmm_dispatcher)
 
 struct StructuredBmmOut final : public at::meta::structured_bmm {
   explicit StructuredBmmOut(at::Tensor& out) : out_(out) {}

@@ -3,11 +3,11 @@
 #pragma once
 
 #include <ATen/core/Tensor.h>
-#include "dispatch_stub.h"
+#include "dispatcher.h"
 
 namespace at::native::flagos {
 
 using CatFn = at::Tensor (*)(const at::ITensorListRef&, int64_t);
-FLAGOS_DECLARE_DISPATCH(CatFn, cat_stub)
+DECLARE_DISPATCHER(CatFn, cat_dispatcher)
 
 } // namespace at::native::flagos

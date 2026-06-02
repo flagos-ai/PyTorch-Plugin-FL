@@ -4,6 +4,6 @@
 
 namespace at::native::flagos {
 
-FLAGOS_DEFINE_DISPATCH(PowTensorScalarFn, pow_tensor_scalar_stub, "pow.Tensor_Scalar")
+ADD_IMPL_TO_DISPATCHER(PowTensorScalarFn, pow_tensor_scalar_dispatcher, "pow.Tensor_Scalar")
 
 } // namespace at::native::flagos

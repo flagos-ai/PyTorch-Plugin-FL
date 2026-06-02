@@ -3,12 +3,12 @@
 #pragma once
 
 #include <ATen/core/Tensor.h>
-#include "dispatch_stub.h"
+#include "dispatcher.h"
 
 namespace at::native::flagos {
 
 using SliceBackwardFn = at::Tensor (*)(const at::Tensor&, at::IntArrayRef,
                                        int64_t, int64_t, int64_t, int64_t);
-FLAGOS_DECLARE_DISPATCH(SliceBackwardFn, slice_backward_stub)
+DECLARE_DISPATCHER(SliceBackwardFn, slice_backward_dispatcher)
 
 } // namespace at::native::flagos

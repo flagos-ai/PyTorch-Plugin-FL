@@ -3,11 +3,11 @@
 #pragma once
 
 #include <ATen/core/Tensor.h>
-#include "dispatch_stub.h"
+#include "dispatcher.h"
 
 namespace at::native::flagos {
 
 using SiluBackwardFn = at::Tensor (*)(const at::Tensor&, const at::Tensor&);
-FLAGOS_DECLARE_DISPATCH(SiluBackwardFn, silu_backward_stub)
+DECLARE_DISPATCHER(SiluBackwardFn, silu_backward_dispatcher)
 
 } // namespace at::native::flagos

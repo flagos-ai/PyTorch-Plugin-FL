@@ -33,6 +33,6 @@ at::Tensor SinKernelCuda(const at::Tensor& self) {
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(SinFn, sin_stub, FlagosDevice::kCuda, SinKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(SinFn, sin_dispatcher, Backend::kCuda, SinKernelCuda)
 
 } // namespace at::native::flagos

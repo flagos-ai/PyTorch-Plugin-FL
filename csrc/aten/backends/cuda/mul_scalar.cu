@@ -35,6 +35,6 @@ at::Tensor MulScalarKernelCuda(const at::Tensor& self, const at::Scalar& other) 
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(MulScalarFn, mul_scalar_stub, FlagosDevice::kCuda, MulScalarKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(MulScalarFn, mul_scalar_dispatcher, Backend::kCuda, MulScalarKernelCuda)
 
 } // namespace at::native::flagos

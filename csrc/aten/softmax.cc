@@ -4,6 +4,6 @@
 
 namespace at::native::flagos {
 
-FLAGOS_DEFINE_DISPATCH(SoftmaxFn, softmax_stub, "_softmax")
+ADD_IMPL_TO_DISPATCHER(SoftmaxFn, softmax_dispatcher, "_softmax")
 
 } // namespace at::native::flagos

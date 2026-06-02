@@ -13,7 +13,8 @@ void MmKernelAscend(
     const at::Tensor& mat2,
     at::Tensor& out) {
   namespace ascend = at::native::flagos::ascend;
-  int8_t cube_math_type = ascend::OpPreparation::get_cube_math_type(false);
+  // allow_hf32=true: use fp32 accumulation for fp16 inputs, matching CUDA TensorCore behavior
+  int8_t cube_math_type = ascend::OpPreparation::get_cube_math_type(true);
 
   ascend::AclTensorWrapper acl_self(self);
   ascend::AclTensorWrapper acl_mat2(mat2);
@@ -22,6 +23,6 @@ void MmKernelAscend(
   EXEC_ASCEND_CMD(aclnnMm, acl_self.get(), acl_mat2.get(), acl_out.get(), cube_math_type);
 }
 
-FLAGOS_REGISTER_DISPATCH(MmFn, mm_stub, FlagosDevice::kAscend, MmKernelAscend)
+REGISTER_IMPL_TO_DISPATCHER(MmFn, mm_dispatcher, Backend::kAscend, MmKernelAscend)
 
 } // namespace at::native::flagos

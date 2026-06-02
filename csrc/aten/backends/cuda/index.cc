@@ -36,6 +36,6 @@ at::Tensor IndexKernelCuda(
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(IndexTensorFn, index_tensor_stub, FlagosDevice::kCuda, IndexKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(IndexTensorFn, index_tensor_dispatcher, Backend::kCuda, IndexKernelCuda)
 
 } // namespace at::native::flagos

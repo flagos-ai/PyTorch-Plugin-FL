@@ -3,11 +3,11 @@
 #pragma once
 
 #include <ATen/core/Tensor.h>
-#include "dispatch_stub.h"
+#include "dispatcher.h"
 
 namespace at::native::flagos {
 
 using WhereSelfFn = at::Tensor (*)(const at::Tensor&, const at::Tensor&, const at::Tensor&);
-FLAGOS_DECLARE_DISPATCH(WhereSelfFn, where_self_stub)
+DECLARE_DISPATCHER(WhereSelfFn, where_self_dispatcher)
 
 } // namespace at::native::flagos

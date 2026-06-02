@@ -40,6 +40,6 @@ at::Tensor CatKernelCuda(const at::ITensorListRef& tensors, int64_t dim) {
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(CatFn, cat_stub, FlagosDevice::kCuda, CatKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(CatFn, cat_dispatcher, Backend::kCuda, CatKernelCuda)
 
 } // namespace at::native::flagos

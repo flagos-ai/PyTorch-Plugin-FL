@@ -4,6 +4,6 @@
 
 namespace at::native::flagos {
 
-FLAGOS_DEFINE_DISPATCH(ConstantPadNdFn, constant_pad_nd_stub, "constant_pad_nd")
+ADD_IMPL_TO_DISPATCHER(ConstantPadNdFn, constant_pad_nd_dispatcher, "constant_pad_nd")
 
 } // namespace at::native::flagos
