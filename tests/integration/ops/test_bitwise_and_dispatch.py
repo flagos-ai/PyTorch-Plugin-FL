@@ -109,6 +109,7 @@ class TestBitwiseAndDispatch:
         assert result.returncode != 0
         assert "backend not registered" in result.stderr
 
+
 class TestBitwiseAndAscendDispatch:
     """Verify Ascend backend correctness."""
 

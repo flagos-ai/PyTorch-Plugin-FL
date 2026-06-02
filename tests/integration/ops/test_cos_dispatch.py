@@ -120,6 +120,7 @@ class TestCosDispatch:
         assert result.returncode != 0
         assert "backend not registered" in result.stderr
 
+
 class TestCosAscendDispatch:
     """Verify Ascend backend correctness."""
 

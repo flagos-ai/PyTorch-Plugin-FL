@@ -34,6 +34,7 @@ def pytest_collection_modifyitems(
         if any(keyword in nodeid for keyword in keywords):
             item.add_marker(skip_cuda_flaggems)
 
+
 def pytest_configure(config):
     config.addinivalue_line("markers", "anyplatform: runs on any platform")
     config.addinivalue_line("markers", "cuda: requires CUDA platform")

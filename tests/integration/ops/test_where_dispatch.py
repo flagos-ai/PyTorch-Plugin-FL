@@ -121,6 +121,7 @@ class TestWhereDispatch:
         assert result.returncode != 0
         assert "backend not registered" in result.stderr
 
+
 class TestWhereAscendDispatch:
     """Verify Ascend backend correctness."""
 
