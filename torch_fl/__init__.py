@@ -86,6 +86,7 @@ def _patch_flaggems_codegen_config():
     # NPU hardware is present and try to import npu_fusion_attention etc.
     if not hasattr(torch, "npu"):
         import types
+
         _npu_device_shim = types.ModuleType("torch.npu")
         _npu_device_shim.is_available = lambda: False
         _npu_device_shim.device_count = flagos.device_count
@@ -106,6 +107,7 @@ def _patch_flaggems_codegen_config():
     if "torch_npu" not in sys.modules:
         import types
         import importlib.machinery
+
         _npu_shim = types.ModuleType("torch_npu")
         _npu_shim.npu = _npu_device_shim
         _npu_shim.__spec__ = importlib.machinery.ModuleSpec(

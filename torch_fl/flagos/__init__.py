@@ -160,11 +160,14 @@ class Stream(torch.cuda.Stream):
 class Event:
     """Simple timing event using host-side timestamps after device sync."""
 
-    def __init__(self, enable_timing=False, blocking=False, interprocess=False, external=False):
+    def __init__(
+        self, enable_timing=False, blocking=False, interprocess=False, external=False
+    ):
         self._time = None
 
     def record(self, stream=None):
         import time as _time
+
         _C._synchronize()
         self._time = _time.perf_counter()
 
