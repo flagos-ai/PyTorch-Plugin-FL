@@ -138,6 +138,7 @@ class TestBmmDispatch:
         assert out.dtype == torch.float16
         assert out.shape == (4, 64, 32)
 
+    @pytest.mark.anyplatform
     def test_bmm_half_attention_like_matches_cpu(self):
         """
         Simulate attention q@k^T BMM shape and compare flagos vs CPU.
@@ -172,6 +173,7 @@ class TestBmmDispatch:
             msg="attention-like fp16 bmm on flagos differs from CPU reference",
         )
 
+    @pytest.mark.anyplatform
     def test_bmm4d_fp16_matches_cpu_reference(self):
         """
         Validate 4D bmm wrapper (flatten+bmm+reshape) with attention-like shapes.
@@ -199,6 +201,7 @@ class TestBmmDispatch:
             msg="bmm4d fp16 on flagos differs from CPU reference",
         )
 
+    @pytest.mark.anyplatform
     def test_flagos_4d_matmul_vs_bmm4d(self):
         """
         Compare current flagos 4D matmul path against bmm4d path.
@@ -235,6 +238,7 @@ class TestBmmDispatchLog:
             f"Expected flagos_python dispatch log, got:\n{result.stderr}"
         )
 
+    @pytest.mark.anyplatform
     def test_dispatch_log_flagos_default(self):
         """Default config routes bmm to flagos."""
         result = _run_bmm_subprocess(

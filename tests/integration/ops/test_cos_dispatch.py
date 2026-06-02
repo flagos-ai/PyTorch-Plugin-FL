@@ -102,6 +102,7 @@ class TestCosDispatch:
         assert result.returncode == 0, f"Failed:\n{result.stderr}"
         assert "[flagos dispatch] cos -> cuda" in result.stderr
 
+    @pytest.mark.anyplatform
     def test_dispatch_log_metax(self):
         result = _run_cos_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_cos": "metax"}
@@ -109,6 +110,7 @@ class TestCosDispatch:
         assert result.returncode == 0, f"Failed:\n{result.stderr}"
         assert "[flagos dispatch] cos -> metax" in result.stderr
 
+    @pytest.mark.anyplatform
     def test_flaggems_backend_raises_error(self):
         """Selecting flaggems backend must fail — not implemented."""
         result = _run_cos_subprocess(

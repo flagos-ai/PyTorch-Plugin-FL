@@ -151,6 +151,7 @@ class TestMmDispatch:
         assert out.dtype == torch.float16
         assert out.shape == (64, 32)
 
+    @pytest.mark.anyplatform
     def test_mm_half_hgemm_strict(self):
         """
         Same fp16 case as test_mm_half, but force mcblasHgemm path.

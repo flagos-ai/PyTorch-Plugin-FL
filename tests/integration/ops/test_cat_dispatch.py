@@ -127,6 +127,7 @@ class TestCatDispatch:
         assert out.shape == (4, 24)
         torch.testing.assert_close(out.cpu(), ref, rtol=1e-5, atol=1e-5)
 
+    @pytest.mark.anyplatform
     def test_cat_cache_init_empty_1d_with_dim_minus2(self):
         """Match transformers DynamicLayer.update first cat call."""
         k_cache = torch.tensor([], device=DEVICE, dtype=torch.float16)
@@ -173,6 +174,7 @@ class TestCatDispatch:
         assert out.shape == (2, 4, 24)
         torch.testing.assert_close(out.cpu(), ref, rtol=1e-5, atol=1e-5)
 
+    @pytest.mark.anyplatform
     def test_cat_rotate_half_pattern(self):
         """RoPE rotate_half uses cat((-x2, x1), dim=-1) on 4D tensors."""
         torch.manual_seed(7)
@@ -183,6 +185,7 @@ class TestCatDispatch:
         ref = torch.cat((-x2.float().cpu(), x1.float().cpu()), dim=-1)
         torch.testing.assert_close(out.float().cpu(), ref, rtol=1e-3, atol=1e-3)
 
+    @pytest.mark.anyplatform
     def test_cat_4d_dim0(self):
         """4D concatenation along dim=0 (outer/inner dimensions differ from dim=-2, covering different stride patterns)."""
         torch.manual_seed(8)
@@ -191,6 +194,7 @@ class TestCatDispatch:
         out = torch.cat([a, b], dim=0)
         _assert_exact_match(out, _cat_cpu_reference([a, b], dim=0))
 
+    @pytest.mark.anyplatform
     def test_cat_4d_dim1(self):
         """4D concatenation along dim=1."""
         torch.manual_seed(9)
@@ -199,6 +203,7 @@ class TestCatDispatch:
         out = torch.cat([a, b], dim=1)
         _assert_exact_match(out, _cat_cpu_reference([a, b], dim=1))
 
+    @pytest.mark.anyplatform
     def test_cat_noncontiguous_inputs(self):
         """metax cat will first make inputs contiguous; non-contiguous inputs should also match CPU behavior."""
         torch.manual_seed(10)
@@ -226,6 +231,7 @@ class TestCatDispatch:
 class TestCatInferencePatterns:
     """Common cat usage in inference loop (excluding KV operations)."""
 
+    @pytest.mark.anyplatform
     def test_cat_attention_mask_extend_decode(self):
         """Each decode step extends attention_mask: cat([mask, ones], dim=-1)."""
         torch.manual_seed(20)
@@ -234,6 +240,7 @@ class TestCatInferencePatterns:
         out = torch.cat([mask, extra], dim=-1)
         _assert_exact_match(out, _cat_cpu_reference([mask, extra], dim=-1))
 
+    @pytest.mark.anyplatform
     def test_cat_attention_mask_repeated_extend(self):
         """Simulate multiple decode steps extending mask continuously, maintaining the same prefix for each step."""
         torch.manual_seed(21)
@@ -244,6 +251,7 @@ class TestCatInferencePatterns:
             mask = torch.cat([mask, extra], dim=-1)
             _assert_exact_match(mask[:, :-1], prev, msg="mask prefix corrupted")
 
+    @pytest.mark.anyplatform
     def test_cat_stack_position_ids(self):
         """Some paths concatenate position_ids along dim."""
         torch.manual_seed(22)
@@ -287,6 +295,7 @@ class TestCatKvCacheAppend:
             msg="appended K suffix wrong after cat(dim=-2)",
         )
 
+    @pytest.mark.anyplatform
     def test_cat_kv_cache_append_matches_cpu_reference(self):
         """flagos cat result should match CPU reference (typical Qwen3-0.6B decode shape)."""
         torch.manual_seed(0)
@@ -305,6 +314,7 @@ class TestCatKvCacheAppend:
             msg="flagos cat(dim=-2) differs from CPU reference",
         )
 
+    @pytest.mark.anyplatform
     def test_cat_kv_cache_append_large_magnitude_fp16(self):
         """
         Use large dynamic range fp16 values (|x| can reach hundreds) similar to inference.
@@ -325,6 +335,7 @@ class TestCatKvCacheAppend:
             f"prefill prefix max abs diff {max_diff} after cat, expected 0"
         )
 
+    @pytest.mark.anyplatform
     def test_cat_kv_cache_append_v_cache(self):
         """V cache append with same shape, ensuring both K/V paths are covered."""
         torch.manual_seed(7)
@@ -340,6 +351,7 @@ class TestCatKvCacheAppend:
             out[:, :, seq_len:, :].cpu(), v_new.cpu(), rtol=0, atol=0
         )
 
+    @pytest.mark.anyplatform
     def test_cat_kv_cache_repeated_single_token_appends(self):
         """Simulate generate loop: each step appends 1 token, history prefix should always remain unchanged."""
         torch.manual_seed(30)
@@ -355,6 +367,7 @@ class TestCatKvCacheAppend:
                 cache[:, :, prev_len:, :], new_tok, msg=f"step {step} new token slice"
             )
 
+    @pytest.mark.anyplatform
     def test_cat_kv_cache_multi_token_chunk(self):
         """Append multiple tokens at once (chunked prefill / mini-batch decode)."""
         torch.manual_seed(31)
@@ -364,6 +377,7 @@ class TestCatKvCacheAppend:
         _assert_kv_prefix_unchanged(out, cache, 20)
         _assert_exact_match(out, _cat_cpu_reference([cache, chunk], dim=-2))
 
+    @pytest.mark.anyplatform
     def test_cat_kv_cache_three_tensors(self):
         """Concatenate three tensors at once (segmented cache / manual concatenation)."""
         torch.manual_seed(32)
@@ -383,6 +397,7 @@ class TestCatKvCacheAppend:
             )
             offset += n
 
+    @pytest.mark.anyplatform
     def test_cat_kv_cache_batch_dim_gt_one(self):
         """When batch_size > 1, each batch row is concatenated independently."""
         torch.manual_seed(33)
@@ -392,6 +407,7 @@ class TestCatKvCacheAppend:
         _assert_kv_prefix_unchanged(out, cache, 15)
         _assert_exact_match(out, _cat_cpu_reference([cache, new_tok], dim=-2))
 
+    @pytest.mark.anyplatform
     def test_cat_kv_cache_gqa_query_head_shape(self):
         """When Q is projected to num_attention_heads=16 (not kv_heads=8), same concatenation along seq dimension."""
         torch.manual_seed(34)
@@ -411,6 +427,7 @@ class TestCatKvCacheAppend:
         _assert_kv_prefix_unchanged(out, cache, 11)
         _assert_exact_match(out, _cat_cpu_reference([cache, new_tok], dim=-2))
 
+    @pytest.mark.anyplatform
     def test_cat_kv_cache_noncontiguous_inputs(self):
         """Non-contiguous KV cache: cat views with head_dim step=2."""
         torch.manual_seed(36)
@@ -421,6 +438,7 @@ class TestCatKvCacheAppend:
         out = torch.cat([cache_nc, new_tok], dim=-2)
         _assert_exact_match(out, _cat_cpu_reference([cache_nc, new_tok], dim=-2))
 
+    @pytest.mark.anyplatform
     def test_cat_kv_cache_empty_1d_then_states(self):
         """Same as DynamicLayer first update: empty 1D cache + first segment states."""
         empty = torch.tensor([], device=DEVICE, dtype=torch.float16)

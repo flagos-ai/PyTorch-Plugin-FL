@@ -105,6 +105,7 @@ class TestWhereDispatch:
         assert result.returncode == 0, f"Failed:\n{result.stderr}"
         assert "[flagos dispatch] where.self -> cuda" in result.stderr
 
+    @pytest.mark.anyplatform
     def test_dispatch_log_metax(self):
         result = _run_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_where__self": "metax"}
@@ -112,6 +113,7 @@ class TestWhereDispatch:
         assert result.returncode == 0, f"Failed:\n{result.stderr}"
         assert "[flagos dispatch] where.self -> metax" in result.stderr
 
+    @pytest.mark.anyplatform
     def test_flaggems_backend_raises_error(self):
         result = _run_subprocess(
             {"FLAGOS_OP_where__self": "flaggems"},
