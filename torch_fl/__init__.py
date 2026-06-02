@@ -276,9 +276,9 @@ def _register_flaggems_operators():
         _registered_ops = []
         return 0
 
-    try:
-        from flag_gems import _FULL_CONFIG
-    except ImportError:
+    import importlib.util
+
+    if importlib.util.find_spec("flag_gems") is None:
         # flag_gems not installed, will use cpu_fallback
         return 0
 

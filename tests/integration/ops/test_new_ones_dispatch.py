@@ -15,7 +15,6 @@ import pytest
 import subprocess
 import sys
 
-import pytest
 import torch
 import torch_fl  # noqa: F401
 
