@@ -8,7 +8,7 @@
 
 namespace c10::flagos {
 
-static DeviceAllocator global_flagos_alloc;
-REGISTER_ALLOCATOR(c10::DeviceType::PrivateUse1, &global_flagos_alloc);
+static DeviceAllocator global_device_alloc;
+REGISTER_ALLOCATOR(c10::DeviceType::PrivateUse1, &global_device_alloc);
 
 } // namespace c10::flagos

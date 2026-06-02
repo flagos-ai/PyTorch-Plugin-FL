@@ -3,7 +3,7 @@
 #pragma once
 
 #include <include/flagos.h>
-#include "acl_stream.h"
+#include "runtime/accelerator/ascend/acl_stream.h"
 
 #include <ATen/ATen.h>
 #include <dlfcn.h>

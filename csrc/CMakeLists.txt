@@ -12,8 +12,8 @@ file(GLOB_RECURSE SOURCE_FILES
 
 # Exclude runtime/accelerator (built separately as subdirectory)
 list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/runtime/accelerator/.*")
-# flagos_stream_api is built as a separate shared lib
-list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/runtime/flagos_stream_api\\.cc")
+# stream_api is built as a separate shared lib
+list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/runtime/accelerator/ascend/stream_api\\.cc")
 
 # Exclude backend kernel directories based on options
 if(NOT CUDA_KERNEL)
@@ -30,18 +30,18 @@ if(NOT ASCEND_KERNEL)
   list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/ascend/.*")
 endif()
 
-# Build flagos_stream as a standalone shared lib so liboperators.so can resolve it at runtime
+# Build stream_api as a standalone shared lib so liboperators.so can resolve it at runtime
 if(FLAGGEMS_KERNEL AND ACCELERATOR STREQUAL "ascend")
-  add_library(flagos_stream SHARED "${CMAKE_CURRENT_SOURCE_DIR}/runtime/flagos_stream_api.cc")
-  target_compile_definitions(flagos_stream PRIVATE USE_ASCEND=1)
-  target_include_directories(flagos_stream PRIVATE
+  add_library(stream_api SHARED "${CMAKE_CURRENT_SOURCE_DIR}/runtime/accelerator/ascend/stream_api.cc")
+  target_compile_definitions(stream_api PRIVATE USE_ASCEND=1)
+  target_include_directories(stream_api PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}
       ${ASCEND_HOME}/include
   )
   find_library(ASCENDCL_LIB ascendcl
       PATHS ${ASCEND_HOME}/lib64)
-  target_link_libraries(flagos_stream PRIVATE torch_cpu_library ${ASCENDCL_LIB})
-  install(TARGETS flagos_stream
+  target_link_libraries(stream_api PRIVATE torch_cpu_library ${ASCENDCL_LIB})
+  install(TARGETS stream_api
       LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
   )
 endif()

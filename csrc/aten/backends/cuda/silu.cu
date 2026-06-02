@@ -36,6 +36,6 @@ at::Tensor SiluKernelCuda(const at::Tensor& self) {
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(SiluFn, silu_stub, FlagosDevice::kCuda, SiluKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(SiluFn, silu_dispatcher, Backend::kCuda, SiluKernelCuda)
 
 } // namespace at::native::flagos

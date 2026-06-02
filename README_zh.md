@@ -38,7 +38,9 @@
 ```bash
 git clone https://github.com/flagos-ai/PyTorch-Plugin-FL.git && cd PyTorch-Plugin-FL
 
-pip install -e . --no-build-isolation
+ACCELERATOR=cuda FLAGGEMS_DIR=/path/to/FlagGems/build/cpython-312/ \
+  FLAGGEMS_KERNEL=1 FLAGGEMS_PYTHON=1 CUDA_KERNEL=1 \
+  pip install --no-build-isolation -vvv -e .
 ```
 
 ### 从源码安装（MACA 平台）
@@ -56,11 +58,12 @@ ACCELERATOR=maca pip install -e . --no-build-isolation
 # 确保 CANN toolkit 已安装并已 source 环境
 # （通常: source /usr/local/Ascend/ascend-toolkit/set_env.sh）
 
-ACCELERATOR=ascend FLAGGEMS_KERNEL=0 CUDA_KERNEL=0 ASCEND_KERNEL=1 \
+ACCELERATOR=ascend FLAGGEMS_KERNEL=0 FLAGGEMS_PYTHON=1 \
+  CUDA_KERNEL=0 ASCEND_KERNEL=1 \
   pip install --no-build-isolation -vvv -e .
 ```
 
-Ascend 平台上禁用 FlagGems 和 CUDA kernel，仅编译 Ascend kernel 后端（ACL NN API）。
+Ascend 平台上禁用 FlagGems C++ kernel 和 CUDA kernel，仅编译 Ascend kernel 后端（ACL NN API），同时启用 FlagGems Python 封装用于路由到 FlagGems 的算子。
 
 ### 构建环境变量
 
@@ -71,7 +74,8 @@ Ascend 平台上禁用 FlagGems 和 CUDA kernel，仅编译 Ascend kernel 后端
 | `MACA_PATH` | MACA SDK 路径（默认 `/opt/maca`） |
 | `ASCEND_HOME` | CANN toolkit 路径（默认 `/usr/local/Ascend/ascend-toolkit/latest`） |
 | `FLAGGEMS_DIR` | FlagGems C++ 库路径（启用低开销 C++ dispatch） |
-| `FLAGGEMS_KERNEL` | 启用 FlagGems kernel 构建（`ON`/`OFF`，默认 `ON`；Ascend 设为 `0`） |
+| `FLAGGEMS_KERNEL` | 启用 FlagGems C++ kernel 封装（`ON`/`OFF`，默认 `ON`；Ascend 设为 `0`） |
+| `FLAGGEMS_PYTHON` | 启用 FlagGems Python kernel 封装（`ON`/`OFF`，默认 `OFF`；设为 `1` 启用） |
 | `CUDA_KERNEL` | 启用 CUDA kernel 构建（`ON`/`OFF`，默认 `ON`；Ascend 设为 `0`） |
 | `ASCEND_KERNEL` | 启用 Ascend kernel 构建（`ON`/`OFF`，默认 `OFF`；Ascend 设为 `1`） |
 

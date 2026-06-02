@@ -28,14 +28,22 @@ if is_maca_available():
     patch_torch_cuda_for_maca()
 
 
-# Load libflagos_stream.so with RTLD_GLOBAL so that liboperators.so (FlagGems)
-# can resolve FlagOS_GetCurrentStream at runtime.
+# Expose libtorch symbols globally so triton-ascend's JIT-compiled launcher .so
+# can resolve c10/ATen symbols (it links implicitly, not via DT_NEEDED).
 import ctypes  # noqa: E402
 import os as _os  # noqa: E402
 
-_flagos_stream_path = _os.path.join(_os.path.dirname(__file__), "lib", "libflagos_stream.so")
-if _os.path.exists(_flagos_stream_path):
-    ctypes.CDLL(_flagos_stream_path, mode=ctypes.RTLD_GLOBAL)
+_torch_lib = _os.path.join(_os.path.dirname(torch.__file__), "lib")
+for _lib in ("libc10.so", "libtorch.so", "libtorch_cpu.so"):
+    _p = _os.path.join(_torch_lib, _lib)
+    if _os.path.exists(_p):
+        ctypes.CDLL(_p, mode=ctypes.RTLD_GLOBAL)
+
+# Load libstream_api.so with RTLD_GLOBAL so that liboperators.so (FlagGems)
+# can resolve GetCurrentStream at runtime.
+_stream_api_path = _os.path.join(_os.path.dirname(__file__), "lib", "libstream_api.so")
+if _os.path.exists(_stream_api_path):
+    ctypes.CDLL(_stream_api_path, mode=ctypes.RTLD_GLOBAL)
 
 import torch_fl._C  # type: ignore[misc]  # noqa: E402, F401
 from . import flagos  # noqa: E402

@@ -8,12 +8,12 @@
 
 #ifdef USE_ASCEND
 
-#include "aten/backends/ascend/acl_stream.h"
+#include "acl_stream.h"
 
 extern "C" {
 
 __attribute__((visibility("default")))
-void* FlagOS_GetCurrentStream(int device_index) {
+void* GetCurrentStream(int device_index) {
   (void)device_index;
   return (void*)at::native::flagos::ascend::GetDefaultAclStream();
 }
