@@ -78,8 +78,68 @@ def _lazy_init():
     _C._init()
     _initialized = True
 
+    # Eagerly import FlagGems to avoid deep import chain during dispatch.
+    # FlagGems has a deep lazy import chain (fused → FLA → utils → models → sqlalchemy)
+    # that can exceed Python's recursion limit when triggered inside PyTorch dispatch.
+    try:
+        import flag_gems  # noqa: F401
+    except ImportError:
+        pass  # FlagGems not installed, skip
+
+    # Monkey-patch Tensor.__getitem__ to work around PyTorch C++ dispatch issue
+    # with advanced indexing on custom devices. The C++ __getitem__ fails for
+    # patterns like x[:, tensor_idx] but torch.ops.aten.index.Tensor works.
+    import torch
+
+    _original_getitem = torch.Tensor.__getitem__
+
+    def _patched_getitem(self, indices):
+        # Only patch for our device
+        if self.device.type not in ("privateuseone", "flagos"):
+            return _original_getitem(self, indices)
+
+        # Handle tuple of indices with at least one tensor
+        if isinstance(indices, tuple):
+            has_tensor = any(isinstance(idx, torch.Tensor) for idx in indices)
+            if has_tensor:
+                # Convert to list for aten.index.Tensor
+                indices_list = []
+                for idx in indices:
+                    if isinstance(idx, slice):
+                        if idx == slice(None, None, None):
+                            indices_list.append(None)
+                        else:
+                            # Non-trivial slice — fall back to original
+                            return _original_getitem(self, indices)
+                    elif isinstance(idx, torch.Tensor):
+                        indices_list.append(idx)
+                    else:
+                        # Other types (int, etc.) — fall back to original
+                        return _original_getitem(self, indices)
+
+                # Use aten.index.Tensor which works correctly
+                return torch.ops.aten.index.Tensor(self, indices_list)
+
+        return _original_getitem(self, indices)
+
+    torch.Tensor.__getitem__ = _patched_getitem
+
 
 from .random import *  # noqa: F403, E402
+
+
+# default_generators: list of one Generator per device, required by FlagGems
+class _DefaultGenerators:
+    """Lazy list-like accessor for per-device default generators."""
+
+    def __getitem__(self, device):
+        return _C._get_default_generator(device)
+
+    def __len__(self):
+        return device_count()
+
+
+default_generators = _DefaultGenerators()
 
 
 # ---------------------------------------------------------------------------
@@ -97,10 +157,33 @@ class Stream(torch.cuda.Stream):
         return super().__new__(cls, device=device, priority=priority, **kwargs)
 
 
-class Event(torch.cuda.Event):
-    """Flagos event that wraps a CUDA event."""
+class Event:
+    """Simple timing event using host-side timestamps after device sync."""
 
-    pass
+    def __init__(
+        self, enable_timing=False, blocking=False, interprocess=False, external=False
+    ):
+        self._time = None
+
+    def record(self, stream=None):
+        import time as _time
+
+        _C._synchronize()
+        self._time = _time.perf_counter()
+
+    def elapsed_time(self, end_event):
+        if self._time is None or end_event._time is None:
+            raise RuntimeError("Events have not been recorded")
+        return (end_event._time - self._time) * 1000.0
+
+    def synchronize(self):
+        _C._synchronize()
+
+    def query(self):
+        return True
+
+    def wait(self, stream=None):
+        pass
 
 
 def current_stream(device=None):
@@ -142,4 +225,5 @@ __all__ = [
     "Event",
     "current_stream",
     "stream",
+    "default_generators",
 ]

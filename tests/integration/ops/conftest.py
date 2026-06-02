@@ -33,3 +33,12 @@ def pytest_collection_modifyitems(
         nodeid = item.nodeid
         if any(keyword in nodeid for keyword in keywords):
             item.add_marker(skip_cuda_flaggems)
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "anyplatform: runs on any platform")
+    config.addinivalue_line("markers", "cuda: requires CUDA platform")
+    config.addinivalue_line("markers", "ascend: requires Ascend platform")
+    config.addinivalue_line("markers", "flaggems: requires FlagGems (Triton) backend")
+    config.addinivalue_line(
+        "markers", "flaggems_python: requires FlagGems Python wrapper backend"
+    )

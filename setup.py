@@ -296,6 +296,7 @@ def build_deps():
     # Kernel build options from environment
     for kernel_opt in (
         "FLAGGEMS_KERNEL",
+        "FLAGGEMS_PYTHON",
         "CUDA_KERNEL",
         "METAX_KERNEL",
         "ASCEND_KERNEL",
@@ -311,6 +312,14 @@ def build_deps():
     build_jobs = _cmake_build_jobs()
     build_env["CMAKE_BUILD_PARALLEL_LEVEL"] = str(build_jobs)
     cmake = "cmake"
+
+    # FlagGems C++ library path (optional, enables low-overhead C++ dispatch)
+    flaggems_dir = os.environ.get("FLAGGEMS_DIR")
+    if flaggems_dir:
+        cmake_args.append(f"-DFlagGems_DIR={flaggems_dir}")
+    flaggems_source_dir = os.environ.get("FLAGGEMS_SOURCE_DIR")
+    if flaggems_source_dir:
+        cmake_args.append(f"-DFLAGGEMS_SOURCE_DIR={flaggems_source_dir}")
 
     if ACCELERATOR == "metax":
         metax_path = _setup_metax_build_env(build_env)

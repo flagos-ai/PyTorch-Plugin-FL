@@ -1,7 +1,8 @@
 set(LIBRARY_NAME torch_fl)
 
 option(CUDA_KERNEL "Build CUDA kernel implementations" ON)
-option(FLAGGEMS_KERNEL "Build FlagGems kernel implementations" ON)
+option(FLAGGEMS_KERNEL "Build FlagGems C++ kernel wrappers (requires liboperators.so)" ON)
+option(FLAGGEMS_PYTHON "Build FlagGems Python kernel wrappers (calls via Python, no C++ linking)" OFF)
 option(METAX_KERNEL "Build MetaX kernel implementations" OFF)
 option(ASCEND_KERNEL "Build Ascend kernel implementations" OFF)
 
@@ -12,13 +13,19 @@ file(GLOB_RECURSE SOURCE_FILES
 
 # Exclude runtime/accelerator (built separately as subdirectory)
 list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/runtime/accelerator/.*")
+# stream_api is built as a separate shared lib
+list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/runtime/accelerator/ascend/stream_api\\.cc")
 
 # Exclude backend kernel directories based on options
 if(NOT CUDA_KERNEL)
   list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/cuda/.*")
 endif()
-if(NOT FLAGGEMS_KERNEL)
+if(NOT FLAGGEMS_KERNEL AND NOT FLAGGEMS_PYTHON)
+  # Neither C++ nor Python wrappers: exclude entire flagos backend
   list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/flagos/.*")
+elseif(FLAGGEMS_PYTHON AND NOT FLAGGEMS_KERNEL)
+  # Python wrappers only: exclude C++ wrappers (bmm.cc, cat.cc, etc.) but keep python_op_caller and python_wrapper/
+  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/flagos/(bmm|cat|embedding|mm|softmax)\\.cc")
 endif()
 if(NOT METAX_KERNEL)
   list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/metax/.*")
@@ -43,13 +50,33 @@ endif()
 add_library(${LIBRARY_NAME} SHARED ${_torch_fl_sources})
 set_target_properties(${LIBRARY_NAME} PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+# Build stream_api as a standalone shared lib so liboperators.so can resolve it at runtime
+if(FLAGGEMS_KERNEL AND ACCELERATOR STREQUAL "ascend")
+  add_library(stream_api SHARED "${CMAKE_CURRENT_SOURCE_DIR}/runtime/accelerator/ascend/stream_api.cc")
+  target_compile_definitions(stream_api PRIVATE USE_ASCEND=1)
+  target_include_directories(stream_api PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}
+      ${ASCEND_HOME}/include
+  )
+  find_library(ASCENDCL_LIB ascendcl
+      PATHS ${ASCEND_HOME}/lib64)
+  target_link_libraries(stream_api PRIVATE torch_cpu_library ${ASCENDCL_LIB})
+  install(TARGETS stream_api
+      LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  )
+endif()
+
 target_compile_definitions(${LIBRARY_NAME} PRIVATE
     FLAGOS_SOURCE_ROOT="${CMAKE_SOURCE_DIR}"
 )
 
-set(_torch_fl_link_libs torch_cpu_library flagos ${CUDA_RUNTIME_LIB})
+set(_torch_fl_link_libs torch_cpu_library torch_python_library flagos ${CUDA_RUNTIME_LIB})
 if(FLAGGEMS_KERNEL)
-  list(APPEND _torch_fl_link_libs FlagGems::operators)
+  if(TARGET FlagGems::operators)
+    list(APPEND _torch_fl_link_libs FlagGems::operators)
+  elseif(TARGET operators)
+    list(APPEND _torch_fl_link_libs operators)
+  endif()
 endif()
 
 if(ACCELERATOR STREQUAL "ascend")

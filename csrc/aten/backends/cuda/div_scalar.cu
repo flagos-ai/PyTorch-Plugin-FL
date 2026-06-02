@@ -35,6 +35,6 @@ at::Tensor DivScalarKernelCuda(const at::Tensor& self, const at::Scalar& other) 
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(DivScalarFn, div_scalar_stub, FlagosDevice::kCuda, DivScalarKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(DivScalarFn, div_scalar_dispatcher, Backend::kCuda, DivScalarKernelCuda)
 
 } // namespace at::native::flagos

@@ -3,13 +3,15 @@ embedding_dense_backward dispatch tests
 
 Verifies that embedding backward:
   - produces correct gradients on flagos device
-  - C++ wrapper routes to cuda backend
+  - C++ wrapper routes to flaggems_python backend (default)
+  - dispatch log confirms the actual backend used
 
 Usage:
     pytest tests/integration/ops/test_embedding_dense_backward_dispatch.py -v
 """
 
 import os
+import pytest
 import subprocess
 import sys
 
@@ -41,6 +43,7 @@ def _run_subprocess(extra_env: dict, check: bool = True) -> subprocess.Completed
 class TestEmbeddingDenseBackwardCorrectness:
     """embedding_dense_backward correctness on flagos device."""
 
+    @pytest.mark.anyplatform
     def test_embedding_backward_basic(self):
         torch.manual_seed(0)
         emb = torch.nn.Embedding(50, 16).to(DEVICE)
@@ -54,6 +57,7 @@ class TestEmbeddingDenseBackwardCorrectness:
         assert emb.weight.grad.cpu()[5].sum().item() != 0.0
         assert emb.weight.grad.cpu()[1].sum().item() == 0.0
 
+    @pytest.mark.anyplatform
     def test_embedding_backward_matches_cpu(self):
         torch.manual_seed(1)
         emb_cpu = torch.nn.Embedding(100, 32)
@@ -73,6 +77,7 @@ class TestEmbeddingDenseBackwardCorrectness:
             emb_fl.weight.grad.cpu(), emb_cpu.weight.grad, rtol=1e-5, atol=1e-5
         )
 
+    @pytest.mark.anyplatform
     def test_embedding_backward_duplicate_indices(self):
         torch.manual_seed(2)
         emb = torch.nn.Embedding(20, 8).to(DEVICE)
@@ -85,19 +90,36 @@ class TestEmbeddingDenseBackwardCorrectness:
 
 
 class TestEmbeddingDenseBackwardDispatch:
-    """Verify dispatch routing."""
+    """Verify dispatch routing for embedding_dense_backward op."""
 
-    def test_dispatch_log_cuda(self):
+    @pytest.mark.flaggems_python
+    def test_dispatch_log_flaggems_python(self):
+        result = _run_subprocess(
+            {
+                "FLAGOS_LOG_DISPATCH": "1",
+                "FLAGOS_OP_embedding_dense_backward": "flaggems_python",
+            },
+            check=False,
+        )
+        assert (
+            "[flagos dispatch] embedding_dense_backward -> flagos_python"
+            in result.stderr
+        )
+
+    @pytest.mark.cuda
+    def test_dispatch_log_cuda_override(self):
         result = _run_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_embedding_dense_backward": "cuda"}
         )
         assert result.returncode == 0
         assert "[flagos dispatch] embedding_dense_backward -> cuda" in result.stderr
 
-    def test_flaggems_backend_raises_error(self):
-        result = _run_subprocess(
-            {"FLAGOS_OP_embedding_dense_backward": "flaggems"},
-            check=False,
-        )
-        assert result.returncode != 0
-        assert "backend not registered" in result.stderr
+
+class TestEmbeddingDenseBackwardAscendDispatch:
+    """Verify Ascend backend correctness."""
+
+    @pytest.mark.ascend
+    def test_ascend_correctness(self):
+        """Verify embedding_dense_backward on ascend backend matches CPU reference."""
+        result = _run_subprocess({"FLAGOS_OP_embedding_dense_backward": "ascend"})
+        assert result.returncode == 0

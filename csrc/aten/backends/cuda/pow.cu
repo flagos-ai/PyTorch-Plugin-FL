@@ -47,6 +47,6 @@ at::Tensor PowTensorScalarKernelCuda(
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(PowTensorScalarFn, pow_tensor_scalar_stub, FlagosDevice::kCuda, PowTensorScalarKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(PowTensorScalarFn, pow_tensor_scalar_dispatcher, Backend::kCuda, PowTensorScalarKernelCuda)
 
 } // namespace at::native::flagos

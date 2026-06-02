@@ -93,6 +93,7 @@ class TestBmmDispatch:
         "B,M,K,N",
         [(4, 128, 256, 64), (1, 1, 1, 1), (8, 512, 512, 512)],
     )
+    @pytest.mark.anyplatform
     def test_bmm_shape(self, B, M, K, N):
         torch.manual_seed(0)
         a = torch.randn(B, M, K, device=DEVICE, dtype=torch.float32)
@@ -101,6 +102,7 @@ class TestBmmDispatch:
         assert out.shape == (B, M, N)
         assert out.device.type == "flagos"
 
+    @pytest.mark.anyplatform
     def test_bmm_out(self):
         torch.manual_seed(1)
         a = torch.randn(4, 64, 128, device=DEVICE, dtype=torch.float32)
@@ -110,6 +112,7 @@ class TestBmmDispatch:
         assert ret.data_ptr() == out.data_ptr()
         assert out.shape == (4, 64, 32)
 
+    @pytest.mark.cuda
     def test_bmm_matches_cuda_ref(self, cuda_ref):
         """flagos bmm result must match CUDA reference."""
         if cuda_ref is None:
@@ -126,6 +129,7 @@ class TestBmmDispatch:
             msg="bmm result on flagos differs from CUDA reference",
         )
 
+    @pytest.mark.anyplatform
     def test_bmm_half(self):
         torch.manual_seed(3)
         a = torch.randn(4, 64, 128, device=DEVICE, dtype=torch.float16)
@@ -220,6 +224,17 @@ class TestBmmDispatch:
 class TestBmmDispatchLog:
     """Verify C++ wrapper routes to the correct backend."""
 
+    @pytest.mark.flaggems_python
+    def test_dispatch_log_flaggems_python(self):
+        """FLAGOS_OP_bmm=flaggems_python routes bmm to flagos_python backend."""
+        result = _run_bmm_subprocess(
+            {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_bmm": "flaggems_python"},
+            check=False,
+        )
+        assert "[flagos dispatch] bmm -> flagos_python" in result.stderr, (
+            f"Expected flagos_python dispatch log, got:\n{result.stderr}"
+        )
+
     def test_dispatch_log_flagos_default(self):
         """Default config routes bmm to flagos."""
         result = _run_bmm_subprocess(
@@ -229,6 +244,7 @@ class TestBmmDispatchLog:
             f"Expected flagos dispatch log, got:\n{result.stderr}"
         )
 
+    @pytest.mark.cuda
     def test_dispatch_log_cuda_override(self):
         """FLAGOS_OP_bmm=cuda overrides to cuda backend."""
         result = _run_bmm_subprocess(
@@ -238,6 +254,7 @@ class TestBmmDispatchLog:
             f"Expected cuda dispatch log, got:\n{result.stderr}"
         )
 
+    @pytest.mark.cuda
     def test_dispatch_log_bmm_out_flagos_default(self):
         """Default config routes bmm.out to flagos."""
         result = _run_bmm_subprocess(
@@ -248,6 +265,7 @@ class TestBmmDispatchLog:
             f"Expected flagos dispatch log, got:\n{result.stderr}"
         )
 
+    @pytest.mark.cuda
     def test_dispatch_log_bmm_out_cuda_override(self):
         """FLAGOS_OP_bmm__out=cuda overrides bmm.out to cuda."""
         result = _run_bmm_subprocess(
@@ -257,3 +275,32 @@ class TestBmmDispatchLog:
         assert "[flagos dispatch] bmm.out -> cuda" in result.stderr, (
             f"Expected cuda dispatch log, got:\n{result.stderr}"
         )
+
+    @pytest.mark.ascend
+    def test_dispatch_log_ascend_override(self):
+        """FLAGOS_OP_bmm=ascend overrides to ascend backend."""
+        result = _run_bmm_subprocess(
+            {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_bmm": "ascend"}
+        )
+        assert "[flagos dispatch] bmm -> ascend" in result.stderr, (
+            f"Expected ascend dispatch log, got:\n{result.stderr}"
+        )
+
+
+class TestBmmAscendDispatch:
+    """Verify Ascend backend correctness."""
+
+    @pytest.mark.ascend
+    def test_ascend_correctness(self):
+        """Verify bmm on ascend backend matches CPU reference."""
+        result = _run_bmm_subprocess({"FLAGOS_OP_bmm": "ascend"})
+        assert result.returncode == 0
+
+    @pytest.mark.ascend
+    def test_ascend_out_correctness(self):
+        """Verify bmm.out on ascend backend matches CPU reference."""
+        result = _run_bmm_subprocess(
+            {"FLAGOS_OP_bmm__out": "ascend"},
+            use_out=True,
+        )
+        assert result.returncode == 0

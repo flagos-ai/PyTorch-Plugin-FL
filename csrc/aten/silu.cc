@@ -4,6 +4,6 @@
 
 namespace at::native::flagos {
 
-FLAGOS_DEFINE_DISPATCH(SiluFn, silu_stub, "silu")
+ADD_IMPL_TO_DISPATCHER(SiluFn, silu_dispatcher, "silu")
 
 } // namespace at::native::flagos

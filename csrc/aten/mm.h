@@ -5,14 +5,14 @@
 #include <ATen/core/Tensor.h>
 #include <ATen/ops/mm_meta.h>
 #include <ATen/ops/mm_native.h>
-#include "dispatch_stub.h"
+#include "dispatcher.h"
 
 #include <string>
 
 namespace at::native::flagos {
 
 using MmFn = void (*)(const at::Tensor&, const at::Tensor&, at::Tensor&);
-FLAGOS_DECLARE_DISPATCH(MmFn, mm_stub)
+DECLARE_DISPATCHER(MmFn, mm_dispatcher)
 
 // Structured mm op for PrivateUse1 (flagos) dispatch key.
 // meta() is inherited from at::meta::structured_mm (PyTorch-generated).

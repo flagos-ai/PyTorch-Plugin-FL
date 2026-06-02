@@ -3,11 +3,11 @@
 #pragma once
 
 #include <ATen/core/Tensor.h>
-#include "dispatch_stub.h"
+#include "dispatcher.h"
 
 namespace at::native::flagos {
 
 using SiluFn = at::Tensor (*)(const at::Tensor&);
-FLAGOS_DECLARE_DISPATCH(SiluFn, silu_stub)
+DECLARE_DISPATCHER(SiluFn, silu_dispatcher)
 
 } // namespace at::native::flagos

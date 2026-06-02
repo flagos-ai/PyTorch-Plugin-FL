@@ -33,6 +33,6 @@ at::Tensor RsqrtKernelCuda(const at::Tensor& self) {
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(RsqrtFn, rsqrt_stub, FlagosDevice::kCuda, RsqrtKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(RsqrtFn, rsqrt_dispatcher, Backend::kCuda, RsqrtKernelCuda)
 
 } // namespace at::native::flagos

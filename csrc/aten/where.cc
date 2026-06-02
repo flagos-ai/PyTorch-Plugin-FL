@@ -4,6 +4,6 @@
 
 namespace at::native::flagos {
 
-FLAGOS_DEFINE_DISPATCH(WhereSelfFn, where_self_stub, "where.self")
+ADD_IMPL_TO_DISPATCHER(WhereSelfFn, where_self_dispatcher, "where.self")
 
 } // namespace at::native::flagos

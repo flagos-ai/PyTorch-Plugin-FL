@@ -4,6 +4,6 @@
 
 namespace at::native::flagos {
 
-FLAGOS_DEFINE_DISPATCH(MulTensorFn, mul_tensor_stub, "mul.Tensor")
+ADD_IMPL_TO_DISPATCHER(MulTensorFn, mul_tensor_dispatcher, "mul.Tensor")
 
 } // namespace at::native::flagos

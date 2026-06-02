@@ -44,6 +44,7 @@ class TestSoftmaxCorrectness:
     """torch.softmax correctness on flagos device."""
 
     @pytest.mark.parametrize("shape", [(128, 256), (1, 10), (2, 8, 64)])
+    @pytest.mark.anyplatform
     def test_softmax_shape(self, shape):
         torch.manual_seed(0)
         x = torch.randn(*shape, device=DEVICE)
@@ -51,6 +52,7 @@ class TestSoftmaxCorrectness:
         assert out.shape == shape
         assert out.device.type == "flagos"
 
+    @pytest.mark.anyplatform
     def test_softmax_sums_to_one(self):
         torch.manual_seed(1)
         x = torch.randn(32, 64, device=DEVICE)
@@ -58,6 +60,7 @@ class TestSoftmaxCorrectness:
         sums = out.sum(dim=-1).cpu()
         torch.testing.assert_close(sums, torch.ones(32), rtol=1e-4, atol=1e-4)
 
+    @pytest.mark.anyplatform
     def test_softmax_matches_cpu(self):
         torch.manual_seed(2)
         x_cpu = torch.randn(16, 32)
@@ -66,6 +69,7 @@ class TestSoftmaxCorrectness:
         out = torch.softmax(x, dim=-1)
         torch.testing.assert_close(out.cpu(), ref, rtol=1e-4, atol=1e-4)
 
+    @pytest.mark.anyplatform
     def test_softmax_dim0(self):
         torch.manual_seed(3)
         x = torch.randn(8, 16, device=DEVICE)
@@ -73,6 +77,7 @@ class TestSoftmaxCorrectness:
         sums = out.sum(dim=0).cpu()
         torch.testing.assert_close(sums, torch.ones(16), rtol=1e-4, atol=1e-4)
 
+    @pytest.mark.anyplatform
     def test_softmax_half(self):
         torch.manual_seed(4)
         x = torch.randn(8, 16, device=DEVICE, dtype=torch.float16)
@@ -85,6 +90,15 @@ class TestSoftmaxCorrectness:
 class TestSoftmaxDispatch:
     """Verify C++ wrapper routes to the correct backend."""
 
+    @pytest.mark.flaggems_python
+    def test_dispatch_log_flaggems_python(self):
+        result = _run_softmax_subprocess(
+            {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP__softmax": "flaggems_python"},
+            check=False,
+        )
+        assert "[flagos dispatch] _softmax -> flagos_python" in result.stderr
+
+    @pytest.mark.flaggems
     def test_dispatch_log_flagos(self):
         result = _run_softmax_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP__softmax": "flaggems"}
@@ -92,9 +106,20 @@ class TestSoftmaxDispatch:
         assert result.returncode == 0, f"Failed:\n{result.stderr}"
         assert "[flagos dispatch] _softmax -> flagos" in result.stderr
 
+    @pytest.mark.cuda
     def test_dispatch_log_cuda(self):
         result = _run_softmax_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP__softmax": "cuda"}
         )
         assert result.returncode == 0, f"Failed:\n{result.stderr}"
         assert "[flagos dispatch] _softmax -> cuda" in result.stderr
+
+
+class TestSoftmaxAscendDispatch:
+    """Verify Ascend backend correctness."""
+
+    @pytest.mark.ascend
+    def test_ascend_correctness(self):
+        """Verify softmax on ascend backend matches CPU reference."""
+        result = _run_softmax_subprocess({"FLAGOS_OP__softmax": "ascend"})
+        assert result.returncode == 0

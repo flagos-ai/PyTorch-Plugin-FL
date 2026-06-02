@@ -3,7 +3,7 @@
 #pragma once
 
 #include <ATen/core/Tensor.h>
-#include "dispatch_stub.h"
+#include "dispatcher.h"
 
 namespace at::native::flagos {
 
@@ -12,6 +12,6 @@ using NewOnesFn = at::Tensor (*)(const at::Tensor&, at::IntArrayRef,
                                  std::optional<at::Layout>,
                                  std::optional<at::Device>,
                                  std::optional<bool>);
-FLAGOS_DECLARE_DISPATCH(NewOnesFn, new_ones_stub)
+DECLARE_DISPATCHER(NewOnesFn, new_ones_dispatcher)
 
 } // namespace at::native::flagos

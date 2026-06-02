@@ -18,6 +18,6 @@ void BmmKernelFlaggems(
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(BmmFn, bmm_stub, FlagosDevice::kFlagOs, BmmKernelFlaggems)
+REGISTER_IMPL_TO_DISPATCHER(BmmFn, bmm_dispatcher, Backend::kFlagOs, BmmKernelFlaggems)
 
 } // namespace at::native::flagos

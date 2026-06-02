@@ -3,11 +3,11 @@
 #pragma once
 
 #include <ATen/core/Tensor.h>
-#include "dispatch_stub.h"
+#include "dispatcher.h"
 
 namespace at::native::flagos {
 
 using CosFn = at::Tensor (*)(const at::Tensor&);
-FLAGOS_DECLARE_DISPATCH(CosFn, cos_stub)
+DECLARE_DISPATCHER(CosFn, cos_dispatcher)
 
 } // namespace at::native::flagos

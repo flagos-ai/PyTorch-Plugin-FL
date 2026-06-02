@@ -11,6 +11,7 @@ Usage:
 """
 
 import os
+import pytest
 import subprocess
 import sys
 
@@ -43,6 +44,7 @@ def _run_subprocess(extra_env: dict, check: bool = True) -> subprocess.Completed
 class TestWhereCorrectness:
     """torch.where correctness on flagos device."""
 
+    @pytest.mark.anyplatform
     def test_basic(self):
         cond = torch.tensor([True, False, True, False], device=DEVICE)
         a = torch.tensor([1.0, 2.0, 3.0, 4.0], device=DEVICE)
@@ -51,8 +53,8 @@ class TestWhereCorrectness:
         expected = torch.tensor([1.0, 6.0, 3.0, 8.0])
         torch.testing.assert_close(out.cpu(), expected)
 
+    @pytest.mark.anyplatform
     def test_matches_cpu(self):
-        torch.manual_seed(0)
         x = torch.randn(32, 32, device=DEVICE)
         y = torch.randn(32, 32, device=DEVICE)
         cond = x > 0
@@ -60,6 +62,7 @@ class TestWhereCorrectness:
         ref = torch.where(cond.cpu(), x.cpu(), y.cpu())
         torch.testing.assert_close(out.cpu(), ref, rtol=1e-5, atol=1e-5)
 
+    @pytest.mark.anyplatform
     def test_broadcast(self):
         torch.manual_seed(1)
         cond = torch.tensor([[True], [False], [True]], device=DEVICE)
@@ -69,6 +72,7 @@ class TestWhereCorrectness:
         ref = torch.where(cond.cpu(), a.cpu(), b.cpu())
         torch.testing.assert_close(out.cpu(), ref, rtol=1e-5, atol=1e-5)
 
+    @pytest.mark.anyplatform
     def test_output_device(self):
         cond = torch.tensor([True, False], device=DEVICE)
         a = torch.tensor([1.0, 2.0], device=DEVICE)
@@ -78,9 +82,21 @@ class TestWhereCorrectness:
 
 
 class TestWhereDispatch:
-    """Verify dispatch routing."""
+    """Verify dispatch routing for where.self op."""
 
-    def test_dispatch_log_cuda(self):
+    @pytest.mark.flaggems_python
+    def test_dispatch_log_flaggems_python(self):
+        result = _run_subprocess(
+            {
+                "FLAGOS_LOG_DISPATCH": "1",
+                "FLAGOS_OP_where__self": "flaggems_python",
+            },
+            check=False,
+        )
+        assert "[flagos dispatch] where.self -> flagos_python" in result.stderr
+
+    @pytest.mark.cuda
+    def test_dispatch_log_cuda_override(self):
         result = _run_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_where__self": "cuda"}
         )
@@ -103,3 +119,12 @@ class TestWhereDispatch:
         )
         assert result.returncode != 0
         assert "backend not registered" in result.stderr
+
+class TestWhereAscendDispatch:
+    """Verify Ascend backend correctness."""
+
+    @pytest.mark.ascend
+    def test_ascend_correctness(self):
+        """Verify where.self on ascend backend matches CPU reference."""
+        result = _run_subprocess({"FLAGOS_OP_where__self": "ascend"})
+        assert result.returncode == 0

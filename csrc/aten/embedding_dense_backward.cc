@@ -4,6 +4,6 @@
 
 namespace at::native::flagos {
 
-FLAGOS_DEFINE_DISPATCH(EmbeddingDenseBackwardFn, embedding_dense_backward_stub, "embedding_dense_backward")
+ADD_IMPL_TO_DISPATCHER(EmbeddingDenseBackwardFn, embedding_dense_backward_dispatcher, "embedding_dense_backward")
 
 } // namespace at::native::flagos

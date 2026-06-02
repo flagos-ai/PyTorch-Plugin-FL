@@ -14,6 +14,6 @@ at::Tensor SoftmaxKernelFlaggems(const at::Tensor& self, int64_t dim, bool half_
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(SoftmaxFn, softmax_stub, FlagosDevice::kFlagOs, SoftmaxKernelFlaggems)
+REGISTER_IMPL_TO_DISPATCHER(SoftmaxFn, softmax_dispatcher, Backend::kFlagOs, SoftmaxKernelFlaggems)
 
 } // namespace at::native::flagos

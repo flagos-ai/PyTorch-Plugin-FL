@@ -4,6 +4,6 @@
 
 namespace at::native::flagos {
 
-FLAGOS_DEFINE_DISPATCH(MulScalarFn, mul_scalar_stub, "mul.Scalar")
+ADD_IMPL_TO_DISPATCHER(MulScalarFn, mul_scalar_dispatcher, "mul.Scalar")
 
 } // namespace at::native::flagos

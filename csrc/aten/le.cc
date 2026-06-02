@@ -4,6 +4,6 @@
 
 namespace at::native::flagos {
 
-FLAGOS_DEFINE_DISPATCH(LeTensorFn, le_tensor_stub, "le.Tensor")
+ADD_IMPL_TO_DISPATCHER(LeTensorFn, le_tensor_dispatcher, "le.Tensor")
 
 } // namespace at::native::flagos

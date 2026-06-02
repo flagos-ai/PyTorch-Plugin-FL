@@ -3,8 +3,8 @@ mul.Tensor dispatch tests
 
 Verifies that torch.mul (Tensor variant):
   - produces correct results on flagos device
-  - C++ wrapper routes to cuda backend
-  - attempting flaggems backend raises an error (not implemented)
+  - C++ wrapper routes to flaggems_python backend (default)
+  - dispatch log confirms the actual backend used
 
 Usage:
     pytest tests/integration/ops/test_mul_dispatch.py -v
@@ -45,6 +45,7 @@ class TestMulTensorCorrectness:
     """torch.mul correctness on flagos device."""
 
     @pytest.mark.parametrize("shape", [(128, 256), (1,), (64, 64, 64)])
+    @pytest.mark.anyplatform
     def test_mul_shape(self, shape):
         torch.manual_seed(0)
         a = torch.randn(*shape, device=DEVICE)
@@ -53,6 +54,7 @@ class TestMulTensorCorrectness:
         assert out.shape == shape
         assert out.device.type == "flagos"
 
+    @pytest.mark.anyplatform
     def test_mul_broadcast(self):
         torch.manual_seed(1)
         a = torch.randn(4, 8, device=DEVICE)
@@ -61,6 +63,7 @@ class TestMulTensorCorrectness:
         ref = a.cpu() * b.cpu()
         torch.testing.assert_close(out.cpu(), ref, rtol=1e-4, atol=1e-4)
 
+    @pytest.mark.cuda
     def test_mul_matches_cuda(self):
         if not torch.cuda.is_available():
             pytest.skip("CUDA not available")
@@ -75,20 +78,33 @@ class TestMulTensorCorrectness:
 
 
 class TestMulTensorDispatch:
-    """Verify dispatch routing and flaggems backend rejection."""
+    """Verify dispatch routing for mul.Tensor op."""
 
-    def test_dispatch_log_cuda(self):
+    @pytest.mark.flaggems_python
+    def test_dispatch_log_flaggems_python(self):
+        result = _run_mul_subprocess(
+            {
+                "FLAGOS_LOG_DISPATCH": "1",
+                "FLAGOS_OP_mul__Tensor": "flaggems_python",
+            },
+            check=False,
+        )
+        assert "[flagos dispatch] mul.Tensor -> flagos_python" in result.stderr
+
+    @pytest.mark.cuda
+    def test_dispatch_log_cuda_override(self):
         result = _run_mul_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_mul__Tensor": "cuda"}
         )
         assert result.returncode == 0
         assert "[flagos dispatch] mul.Tensor -> cuda" in result.stderr
 
-    def test_flaggems_backend_raises_error(self):
-        """Selecting flaggems backend must fail — not implemented."""
-        result = _run_mul_subprocess(
-            {"FLAGOS_OP_mul__Tensor": "flaggems"},
-            check=False,
-        )
-        assert result.returncode != 0
-        assert "backend not registered" in result.stderr
+
+class TestMulTensorAscendDispatch:
+    """Verify Ascend backend correctness."""
+
+    @pytest.mark.ascend
+    def test_ascend_correctness(self):
+        """Verify mul.Tensor on ascend backend matches CPU reference."""
+        result = _run_mul_subprocess({"FLAGOS_OP_mul__Tensor": "ascend"})
+        assert result.returncode == 0

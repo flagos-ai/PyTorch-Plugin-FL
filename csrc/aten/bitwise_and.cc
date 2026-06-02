@@ -4,6 +4,6 @@
 
 namespace at::native::flagos {
 
-FLAGOS_DEFINE_DISPATCH(BitwiseAndTensorFn, bitwise_and_tensor_stub, "bitwise_and.Tensor")
+ADD_IMPL_TO_DISPATCHER(BitwiseAndTensorFn, bitwise_and_tensor_dispatcher, "bitwise_and.Tensor")
 
 } // namespace at::native::flagos

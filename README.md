@@ -36,7 +36,9 @@ A custom PyTorch device plugin based on the PrivateUse1 extension mechanism, reg
 ```bash
 git clone https://github.com/flagos-ai/PyTorch-Plugin-FL.git && cd PyTorch-Plugin-FL
 
-pip install -e . --no-build-isolation
+ACCELERATOR=cuda FLAGGEMS_DIR=/path/to/FlagGems/build/cpython-312/ \
+  FLAGGEMS_KERNEL=1 FLAGGEMS_PYTHON=1 CUDA_KERNEL=1 \
+  pip install --no-build-isolation -vvv -e .
 ```
 
 ### Build from Source (MetaX Platform)
@@ -54,11 +56,12 @@ ACCELERATOR=metax pip install -e . --no-build-isolation
 # Ensure CANN toolkit is installed and environment is sourced
 # (typically: source /usr/local/Ascend/ascend-toolkit/set_env.sh)
 
-ACCELERATOR=ascend FLAGGEMS_KERNEL=0 CUDA_KERNEL=0 ASCEND_KERNEL=1 \
+ACCELERATOR=ascend FLAGGEMS_KERNEL=0 FLAGGEMS_PYTHON=1 \
+  CUDA_KERNEL=0 ASCEND_KERNEL=1 \
   pip install --no-build-isolation -vvv -e .
 ```
 
-On Ascend, FlagGems and CUDA kernels are disabled. Only the Ascend kernel backend (ACL NN API) is compiled.
+On Ascend, FlagGems C++ kernels and CUDA kernels are disabled. Only the Ascend kernel backend (ACL NN API) is compiled, with FlagGems Python wrappers enabled for ops that route to FlagGems.
 
 ### Build Environment Variables
 
@@ -69,7 +72,8 @@ On Ascend, FlagGems and CUDA kernels are disabled. Only the Ascend kernel backen
 | `METAX_PATH` | MetaX SDK path (default `/opt/maca`) |
 | `ASCEND_HOME` | CANN toolkit path (default `/usr/local/Ascend/ascend-toolkit/latest`) |
 | `FLAGGEMS_DIR` | FlagGems C++ library path (enables low-overhead C++ dispatch) |
-| `FLAGGEMS_KERNEL` | Enable FlagGems kernel build (`ON`/`OFF`, default `ON`; set `0` for Ascend) |
+| `FLAGGEMS_KERNEL` | Enable FlagGems C++ kernel wrappers (`ON`/`OFF`, default `ON`; set `0` for Ascend) |
+| `FLAGGEMS_PYTHON` | Enable FlagGems Python kernel wrappers (`ON`/`OFF`, default `OFF`; set `1` to enable) |
 | `CUDA_KERNEL` | Enable CUDA kernel build (`ON`/`OFF`, default `ON`; set `0` for Ascend) |
 | `ASCEND_KERNEL` | Enable Ascend kernel build (`ON`/`OFF`, default `OFF`; set `1` for Ascend) |
 
@@ -77,7 +81,6 @@ On Ascend, FlagGems and CUDA kernels are disabled. Only the Ascend kernel backen
 
 | Variable | Description |
 |----------|-------------|
-| `FLAGOS_DISABLE_FLAGGEMS_PY` | Set to `1` to disable FlagGems Python-layer registration (required on Ascend) |
 | `FLAGGEMS_SOURCE_DIR` | FlagGems source directory (required when C++ native API ops route to `flaggems` backend) |
 | `FLAGOS_BACKEND_CONFIG` | Override path for `backends.conf` (use `torch_fl/backends_ascend.conf` on Ascend) |
 | `FLAGOS_LOG_DISPATCH` | Set to `1` to print backend selection for each operator dispatch |
@@ -137,9 +140,6 @@ You can disable the FlagGems Python-layer registration entirely, leaving only th
 # Required: tell FlagGems C++ native API where to find Triton kernel sources
 export FLAGGEMS_SOURCE_DIR=$(python -c "import os;import flag_gems;print(os.path.dirname(flag_gems.__file__))")
 
-# Disable Python-layer FlagGems registration
-export FLAGOS_DISABLE_FLAGGEMS_PY=1
-
 python your_script.py
 ```
 
@@ -192,66 +192,131 @@ export FLAGOS_LOG_DISPATCH=1  # Print backend selection for each operator dispat
 
 ## Testing
 
+Tests in `tests/integration/ops/` are marked with `@pytest.mark` to indicate platform scope:
+
+| Mark | Meaning | When to run |
+|------|---------|-------------|
+| `@pytest.mark.anyplatform` | Correctness tests, run everywhere | Always |
+| `@pytest.mark.cuda` | CUDA/FlagGems dispatch routing tests | CUDA platform only |
+| `@pytest.mark.ascend` | Ascend backend dispatch tests | Ascend platform only |
+
+### CUDA Platform
+
 ```bash
-export TORCH_DEVICE_BACKEND_AUTOLOAD=0
+# Operator tests (requires FlagGems source for C++ native API)
+FLAGGEMS_SOURCE_DIR=/path_to_repos/FlagGems/src/flag_gems \
+  pytest tests/integration/ops/ -v -m "anyplatform or cuda"
 
-# Basic operator tests
-pytest tests/integration/test_factory_ops.py -v --device cuda
-pytest tests/integration/test_factory_ops.py -v --device flagos
+# Qwen3 inference test
+FLAGGEMS_SOURCE_DIR=/path_to_repos/FlagGems/src/flag_gems \
+  pytest tests/integration/test_qwen3_infer.py -v -s
 
-# Dispatch routing tests
-pytest tests/integration/ops/ -v
+# Qwen3 training test (single GPU)
+FLAGGEMS_SOURCE_DIR=/path_to_repos/FlagGems/src/flag_gems \
+  pytest tests/integration/test_qwen3_train.py -v -s --steps 10
 
-# CPU fallback tracing tests
-pytest tests/integration/test_fallback_trace.py -v
+# Run only CUDA-specific tests
+pytest tests/integration/ops/ -v -m cuda
 
-# Qwen3 inference
-pytest tests/integration/test_qwen3_infer.py -v -s --device cuda
-pytest tests/integration/test_qwen3_infer.py -v -s --device flagos
+# Run only FlagGems (Triton) backend tests
+pytest tests/integration/ops/ -v -m flaggems
 
-# Qwen3 training (single GPU)
-pytest tests/integration/test_qwen3_train.py -v -s --device cuda --steps 10
-pytest tests/integration/test_qwen3_train.py -v -s --device flagos --steps 10
+# Run only FlagGems Python wrapper tests
+pytest tests/integration/ops/ -v -m flaggems_python
 
-# Ascend operator tests
-FLAGOS_DISABLE_FLAGGEMS_PY=1 FLAGOS_BACKEND_CONFIG=torch_fl/backends_ascend.conf \
-  pytest tests/integration/test_factory_ops.py -v --device flagos
+# Run platform-agnostic correctness tests
+pytest tests/integration/ops/ -v -m anyplatform
+
+# FlagGems Python wrapper (flagos_python) end-to-end tests
+FLAGOS_BACKEND_CONFIG=torch_fl/backends_flagos_py.conf \
+  pytest tests/integration/ops/ -v
 ```
+
+### Ascend Platform
+
+```bash
+# Operator tests
+FLAGOS_BACKEND_CONFIG=torch_fl/backends_ascend.conf \
+  pytest tests/integration/ops/ -v -m "anyplatform or ascend"
+
+# Qwen3 inference test
+FLAGOS_BACKEND_CONFIG=torch_fl/backends_ascend.conf \
+  pytest tests/integration/test_qwen3_infer.py -v -s
+
+# Qwen3 training test (single GPU)
+FLAGOS_BACKEND_CONFIG=torch_fl/backends_ascend.conf \
+  pytest tests/integration/test_qwen3_train.py -v -s --steps 10
+```
+
+The `test_qwen3_infer.py` and `test_qwen3_train.py` tests use the same code on all platforms — only the installation method (`ACCELERATOR=ascend pip install -e .`) and runtime environment variables differ.
+
+### Pytest Marks
+
+Operator tests in `tests/integration/ops/` use pytest marks to indicate platform/backend requirements:
+
+| Mark | Description |
+|------|-------------|
+| `@pytest.mark.anyplatform` | Platform-agnostic correctness tests (shape, dtype, broadcast) |
+| `@pytest.mark.cuda` | Requires CUDA backend or CUDA reference comparison |
+| `@pytest.mark.flaggems` | Requires FlagGems (Triton) backend |
+| `@pytest.mark.flaggems_python` | Requires FlagGems Python wrapper (pybind11 path) |
+| `@pytest.mark.ascend` | Requires Ascend NPU backend |
+
+Use `-m <mark>` to run specific test categories. Example: `pytest tests/integration/ops/ -m cuda` runs only CUDA tests.
 
 ## Project Structure
 
 ```
 PyTorch-Plugin-FL/
+├── include/                  # Public headers
+│   ├── flagos.h              #   Unified runtime API (memory, stream, device)
+│   └── macros.h              #   Common macros
 ├── accelerator/              # Hardware abstraction layer
-│   ├── include/flagos.h      #   Unified runtime API (memory, stream, device)
 │   ├── csrc/cuda/            #   CUDA runtime implementation
 │   ├── csrc/metax/            #   MetaX cudart shim (symbol version compatibility)
 │   └── csrc/ascend/           #   Ascend runtime (ACL-based memory, stream, device)
 ├── csrc/
 │   ├── aten/                 # ATen operator layer
-│   │   ├── common.{h,cc}    #   Backend config loading, FlagosDevice enum
-│   │   ├── dispatch_stub.h   #   Lightweight dispatch stub (replaces PyTorch DispatchStub)
+│   │   ├── common.{h,cc}     #   Backend config loading, Backend enum
+│   │   ├── dispatcher.h      #   Lightweight op dispatcher (replaces PyTorch DispatchStub)
 │   │   ├── device_boxing.h   #   Zero-copy flagos↔CUDA tensor metadata conversion
 │   │   ├── register.cc       #   PrivateUse1 dispatch key registration
+│   │   ├── {op}.{h,cc}       #   Per-operator stub definitions (add, mm, silu, etc.)
 │   │   ├── factory_ops/      #   Basic operators (empty, copy, contiguous, set, fallback)
 │   │   ├── functional_ops/   #   Compute operators (mm, bmm, cat, embedding, softmax, etc.)
-│   │   ├── backends/ascend/  # Ascend kernel implementations (ACL NN API)
-│   │   └── native/cuda/      #   Modified CUDA kernels (Loops.cuh with relaxed device checks)
+│   │   └── backends/         #   Backend-specific kernel implementations
+│   │       ├── cuda/         #     CUDA kernels (cuBLAS, modified PyTorch kernels)
+│   │       ├── flagos/       #     FlagGems C++ native API wrappers
+│   │       └── ascend/       #     Ascend kernels (ACL NN API)
 │   └── runtime/              # Device runtime
 │       ├── device_allocator  #   Device memory allocator
 │       ├── host_allocator    #   Pinned memory allocator
 │       ├── guard             #   DeviceGuard implementation
-│       └── generator         #   RNG generator
+│       ├── generator         #   RNG generator
+│       ├── hooks             #   Runtime hooks
+│       └── accelerator/      #   Hardware abstraction layer
+│           ├── cuda/         #     CUDA runtime implementation
+│           ├── maca/         #     MACA cudart shim (symbol version compatibility)
+│           └── ascend/       #     Ascend runtime (ACL-based memory, stream, device)
 ├── torch_fl/
 │   ├── __init__.py           # Plugin entry point: register device, load FlagGems operators
 │   ├── flagos/               # Python device module (stream, event, RNG, AMP)
-│   ├── backends_ascend.conf   # Ascend backend routing config (all ops → ascend)
+│   ├── accelerator/          # Python accelerator module (MACA shim loader)
+│   ├── backends.conf         # Default backend routing config (CUDA/FlagGems)
+│   ├── backends_ascend.conf  # Ascend backend routing config (all ops → ascend)
 │   ├── distributed.py        # Distributed training support (DDP patch)
 │   ├── integration.py        # FlagGems operator registration logic
-│   └── csrc/                 # C extension (module.cc, stub.c)
+│   ├── csrc/                 # C extension (module.cc, stub.c)
+│   └── lib/                  # Compiled shared libraries (libtorch_fl.so, libflagos.so)
 ├── tests/
 │   ├── integration/          # Automated integration tests
-│   └── manual/               # Manual test scripts
+│   │   ├── ops/              #   Per-operator dispatch tests
+│   │   ├── test_qwen3_*.py   #   End-to-end model tests
+│   │   └── conftest.py       #   Pytest configuration
+│   ├── manual/               # Manual test scripts
+│   └── common/               # Test utilities
+├── debug/                    # Development notes and debug scripts
+├── cmake/                    # CMake modules
 ├── setup.py                  # CMake build entry point
 └── pyproject.toml
 ```

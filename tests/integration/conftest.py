@@ -23,9 +23,6 @@ _ensure_backend_config()
 
 def pytest_addoption(parser):
     parser.addoption(
-        "--device", default="flagos", help="Device to run tests on (flagos, cuda)"
-    )
-    parser.addoption(
         "--model", default="/nfs/hcr/models/Qwen/Qwen3-0.6B", help="Path to Qwen3 model"
     )
     parser.addoption(
@@ -51,3 +48,6 @@ def pytest_configure(config):
 
     if not torch_fl.flagos.is_available():
         pytest.exit("flagos device is not available.")
+
+    # Initialize flagos device to ensure ACL runtime is properly set up
+    torch_fl.flagos.init()

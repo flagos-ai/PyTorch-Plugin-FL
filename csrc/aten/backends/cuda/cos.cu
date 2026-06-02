@@ -33,6 +33,6 @@ at::Tensor CosKernelCuda(const at::Tensor& self) {
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(CosFn, cos_stub, FlagosDevice::kCuda, CosKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(CosFn, cos_dispatcher, Backend::kCuda, CosKernelCuda)
 
 } // namespace at::native::flagos

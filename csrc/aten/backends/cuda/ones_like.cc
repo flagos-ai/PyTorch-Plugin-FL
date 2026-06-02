@@ -31,6 +31,6 @@ at::Tensor OnesLikeKernelCuda(
 
 } // namespace
 
-FLAGOS_REGISTER_DISPATCH(OnesLikeFn, ones_like_stub, FlagosDevice::kCuda, OnesLikeKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(OnesLikeFn, ones_like_dispatcher, Backend::kCuda, OnesLikeKernelCuda)
 
 } // namespace at::native::flagos

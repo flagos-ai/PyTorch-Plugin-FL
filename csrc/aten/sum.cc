@@ -4,6 +4,6 @@
 
 namespace at::native::flagos {
 
-FLAGOS_DEFINE_DISPATCH(SumDimFn, sum_dim_stub, "sum.dim_IntList")
+ADD_IMPL_TO_DISPATCHER(SumDimFn, sum_dim_dispatcher, "sum.dim_IntList")
 
 } // namespace at::native::flagos
