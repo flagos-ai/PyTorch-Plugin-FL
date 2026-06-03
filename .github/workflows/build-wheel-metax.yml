@@ -1,4 +1,4 @@
-name: Build Wheel (MACA)
+name: Build Wheel (MetaX)
 
 on:
   workflow_call:
@@ -18,7 +18,7 @@ on:
 
 jobs:
   build:
-    name: Build Check (MACA)
+    name: Build Check (MetaX)
     runs-on: [self-hosted, maca, gpu-8]
 
     steps:
@@ -29,10 +29,10 @@ jobs:
 
       - name: Build package
         env:
-          ACCELERATOR: maca
+          ACCELERATOR: metax
         run: |
           export LD_LIBRARY_PATH=/opt/maca-3.3.0/tools/cu-bridge/lib:$LD_LIBRARY_PATH
-          ACCELERATOR=maca python -m build --wheel
+          ACCELERATOR=metax python -m build --wheel
 
       - name: Verify wheel
         run: |
@@ -51,5 +51,5 @@ jobs:
         if: inputs.upload-artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wheel-maca
+          name: wheel-metax
           path: dist/*.whl

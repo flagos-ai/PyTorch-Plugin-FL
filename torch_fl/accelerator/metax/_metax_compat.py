@@ -1,23 +1,23 @@
 """
-MACA compatibility layer for torch.cuda on MetaX (Muxi) hardware.
+MetaX compatibility layer for torch.cuda on MetaX (MetaX) hardware.
 
 On MetaX systems, PyTorch's bundled libcudart.so.12 (CUDA 12.x) is ABI-incompatible
-with MACA's cu-bridge (CUDA 11.6 compat). Basic CUDA calls (device_count, is_available)
+with MetaX's cu-bridge (CUDA 11.6 compat). Basic CUDA calls (device_count, is_available)
 work via LD_PRELOAD of libsymbol_cu.so, but get_device_properties fails because
-PyTorch calls cudaGetDeviceProperties_v2 (CUDA 12 API) which MACA doesn't provide.
+PyTorch calls cudaGetDeviceProperties_v2 (CUDA 12 API) which MetaX doesn't provide.
 
 This module monkey-patches torch.cuda.get_device_properties and get_device_name
-to use MACA's native mcruntime API via ctypes, bypassing the incompatible C++ path.
+to use MetaX's native mcruntime API via ctypes, bypassing the incompatible C++ path.
 
 Usage:
     Before importing flag_gems or any code that calls torch.cuda.get_device_properties:
 
-        from torch_fl._maca_compat import patch_torch_cuda_for_maca
-        patch_torch_cuda_for_maca()
+        from torch_fl._metax_compat import patch_torch_cuda_for_metax
+        patch_torch_cuda_for_metax()
 
 Environment:
-    Requires LD_PRELOAD=/opt/maca/lib/libsymbol_cu.so and MACA SDK installed.
-    Set MACA_PATH env var if MACA is not at /opt/maca.
+    Requires LD_PRELOAD=/opt/maca/lib/libsymbol_cu.so and MetaX SDK installed.
+    Set METAX_PATH env var if MetaX is not at /opt/maca.
 """
 
 import ctypes
@@ -29,9 +29,9 @@ from typing import Union
 import torch
 
 
-def _find_maca_path():
-    """Find the MACA SDK root path."""
-    for env_var in ("MACA_PATH", "MACA_HOME"):
+def _find_metax_path():
+    """Find the MetaX SDK root path."""
+    for env_var in ("METAX_PATH", "METAX_HOME", "MACA_PATH", "MACA_HOME"):
         path = os.environ.get(env_var)
         if path and os.path.isdir(path):
             return path
@@ -41,9 +41,9 @@ def _find_maca_path():
     return None
 
 
-def _load_mcruntime(maca_path):
-    """Load MACA mcruntime library via ctypes."""
-    lib_path = os.path.join(maca_path, "lib", "libmcruntime.so")
+def _load_mcruntime(metax_path):
+    """Load MetaX mcruntime library via ctypes."""
+    lib_path = os.path.join(metax_path, "lib", "libmcruntime.so")
     if not os.path.isfile(lib_path):
         return None
     try:
@@ -53,7 +53,7 @@ def _load_mcruntime(maca_path):
 
 
 @dataclass
-class _MacaDeviceProperties:
+class _MetaxDeviceProperties:
     """Minimal device properties matching torch.cuda._CudaDeviceProperties interface."""
 
     name: str = ""
@@ -77,9 +77,9 @@ class _MacaDeviceProperties:
     gcnArchName: str = ""
 
 
-def _query_maca_device_properties(mcruntime, device_index):
-    """Query device properties from MACA native API."""
-    props = _MacaDeviceProperties()
+def _query_metax_device_properties(mcruntime, device_index):
+    """Query device properties from MetaX native API."""
+    props = _MetaxDeviceProperties()
 
     # mcDeviceGetName(char *name, int len, int device)
     name_buf = ctypes.create_string_buffer(256)
@@ -108,12 +108,12 @@ def _query_maca_device_properties(mcruntime, device_index):
     props.shared_memory_per_block = get_attr(8)
     props.shared_memory_per_multiprocessor = get_attr(81)
 
-    # Major/minor from MACA may not map to CUDA compute capability.
+    # Major/minor from MetaX may not map to CUDA compute capability.
     # Use reasonable defaults for MetaX GPUs.
     raw_major = get_attr(21)
     raw_minor = get_attr(22)
     if raw_major > 100:
-        # MACA returns non-standard values; use a sensible default
+        # MetaX returns non-standard values; use a sensible default
         props.major = 8
         props.minor = 0
     else:
@@ -138,26 +138,26 @@ def _query_maca_device_properties(mcruntime, device_index):
 
 
 # Cache for device properties
-_maca_props_cache = {}
+_metax_props_cache = {}
 _mcruntime = None
 _patched = False
 
 
-def is_maca_available():
-    """Check if MACA runtime is available."""
-    maca_path = _find_maca_path()
-    if maca_path is None:
+def is_metax_available():
+    """Check if MetaX runtime is available."""
+    metax_path = _find_metax_path()
+    if metax_path is None:
         return False
-    return _load_mcruntime(maca_path) is not None
+    return _load_mcruntime(metax_path) is not None
 
 
-def patch_torch_cuda_for_maca():
+def patch_torch_cuda_for_metax():
     """
-    Monkey-patch torch.cuda functions to work on MACA hardware.
+    Monkey-patch torch.cuda functions to work on MetaX hardware.
 
     This patches:
-    - torch.cuda.get_device_properties: uses MACA native API
-    - torch.cuda.get_device_name: uses MACA native API
+    - torch.cuda.get_device_properties: uses MetaX native API
+    - torch.cuda.get_device_name: uses MetaX native API
     - torch.cuda._lazy_init: skips capability check
     - torch.cuda.get_device_capability: returns sensible defaults
 
@@ -169,17 +169,17 @@ def patch_torch_cuda_for_maca():
     if _patched:
         return True
 
-    maca_path = _find_maca_path()
-    if maca_path is None:
-        warnings.warn("MACA SDK not found, skipping torch.cuda patches")
+    metax_path = _find_metax_path()
+    if metax_path is None:
+        warnings.warn("MetaX SDK not found, skipping torch.cuda patches")
         return False
 
-    _mcruntime = _load_mcruntime(maca_path)
+    _mcruntime = _load_mcruntime(metax_path)
     if _mcruntime is None:
-        warnings.warn(f"Cannot load libmcruntime.so from {maca_path}/lib/")
+        warnings.warn(f"Cannot load libmcruntime.so from {metax_path}/lib/")
         return False
 
-    # Skip PyTorch's CUDA capability check (it fails because MACA reports
+    # Skip PyTorch's CUDA capability check (it fails because MetaX reports
     # CUDA 11.6 but PyTorch expects CUDA 12.0+ runtime)
     if hasattr(torch.cuda, "_queued_calls"):
         torch.cuda._queued_calls.clear()
@@ -187,7 +187,7 @@ def patch_torch_cuda_for_maca():
     def _patched_get_device_properties(
         device: Union[torch.device, int, str, None] = None,
     ):
-        """Get device properties from MACA native API."""
+        """Get device properties from MetaX native API."""
         if device is None:
             device_index = torch.cuda.current_device()
         elif isinstance(device, torch.device):
@@ -197,23 +197,23 @@ def patch_torch_cuda_for_maca():
         else:
             device_index = int(device)
 
-        if device_index not in _maca_props_cache:
-            _maca_props_cache[device_index] = _query_maca_device_properties(
+        if device_index not in _metax_props_cache:
+            _metax_props_cache[device_index] = _query_metax_device_properties(
                 _mcruntime, device_index
             )
-        return _maca_props_cache[device_index]
+        return _metax_props_cache[device_index]
 
     def _patched_get_device_name(
         device: Union[torch.device, int, str, None] = None,
     ) -> str:
-        """Get device name from MACA native API."""
+        """Get device name from MetaX native API."""
         props = _patched_get_device_properties(device)
         return props.name
 
     def _patched_get_device_capability(
         device: Union[torch.device, int, str, None] = None,
     ):
-        """Get device capability from MACA (returns sensible defaults)."""
+        """Get device capability from MetaX (returns sensible defaults)."""
         props = _patched_get_device_properties(device)
         return (props.major, props.minor)
 
@@ -222,10 +222,10 @@ def patch_torch_cuda_for_maca():
     torch.cuda.get_device_capability = _patched_get_device_capability
 
     # Patch basic CUDA tensor operations that use NVIDIA-specific kernels.
-    # On MACA, PyTorch's built-in CUDA kernels (fill_, zero_, copy_) fail
+    # On MetaX, PyTorch's built-in CUDA kernels (fill_, zero_, copy_) fail
     # because they are compiled for NVIDIA GPUs. We replace them with
-    # implementations using MACA's cu-bridge runtime API (cudaMemset, cudaMemcpy).
-    _patch_cuda_tensor_ops(maca_path)
+    # implementations using MetaX's cu-bridge runtime API (cudaMemset, cudaMemcpy).
+    _patch_cuda_tensor_ops(metax_path)
 
     _patched = True
     return True
@@ -238,23 +238,23 @@ _cudart = None
 
 
 def _get_cudart():
-    """Get the MACA-compatible CUDA runtime library (cached)."""
+    """Get the MetaX-compatible CUDA runtime library (cached)."""
     global _cudart
     if _cudart is not None:
         return _cudart
-    # libsymbol_cu.so provides cuda* API functions compatible with MACA
+    # libsymbol_cu.so provides cuda* API functions compatible with MetaX
     try:
         _cudart = ctypes.CDLL("libsymbol_cu.so")
     except OSError:
-        maca_path = _find_maca_path()
-        if maca_path:
-            _cudart = ctypes.CDLL(os.path.join(maca_path, "lib", "libsymbol_cu.so"))
+        metax_path = _find_metax_path()
+        if metax_path:
+            _cudart = ctypes.CDLL(os.path.join(metax_path, "lib", "libsymbol_cu.so"))
     return _cudart
 
 
-def _patch_cuda_tensor_ops(maca_path):
+def _patch_cuda_tensor_ops(metax_path):
     """
-    Patch PyTorch's CUDA tensor ops to use MACA runtime API instead of
+    Patch PyTorch's CUDA tensor ops to use MetaX runtime API instead of
     NVIDIA-specific CUDA kernels.
 
     Patched operations:
@@ -291,7 +291,7 @@ def _patch_cuda_tensor_ops(maca_path):
     cudaStreamSynchronize.argtypes = [ctypes.c_void_p]
     cudaStreamSynchronize.restype = ctypes.c_int
 
-    def _maca_copy_to_cuda(dst, src):
+    def _metax_copy_to_cuda(dst, src):
         """Copy src (CPU, contiguous) into dst (CUDA, contiguous) via cudaMemcpyAsync."""
         nbytes = src.nelement() * src.element_size()
         ret = cudaMemcpyAsync(
@@ -303,13 +303,13 @@ def _patch_cuda_tensor_ops(maca_path):
 
     _orig_zero = torch.Tensor.zero_
 
-    def _maca_zero_(self):
-        """zero_() using cudaMemsetAsync for CUDA tensors on MACA."""
+    def _metax_zero_(self):
+        """zero_() using cudaMemsetAsync for CUDA tensors on MetaX."""
         if not self.is_cuda:
             return _orig_zero(self)
         if not self.is_contiguous():
             raise NotImplementedError(
-                "MACA compat: zero_() on non-contiguous CUDA tensors is not supported. "
+                "MetaX compat: zero_() on non-contiguous CUDA tensors is not supported. "
                 "Call .contiguous() first."
             )
         ptr = self.data_ptr()
@@ -317,27 +317,27 @@ def _patch_cuda_tensor_ops(maca_path):
         ret = cudaMemsetAsync(ptr, 0, nbytes, None)
         if ret != 0:
             cpu_zeros = torch.zeros(self.shape, dtype=self.dtype, device="cpu")
-            _maca_copy_to_cuda(self, cpu_zeros)
+            _metax_copy_to_cuda(self, cpu_zeros)
         return self
 
-    torch.Tensor.zero_ = _maca_zero_
+    torch.Tensor.zero_ = _metax_zero_
 
     _orig_fill = torch.Tensor.fill_
 
-    def _maca_fill_(self, value):
-        """fill_() for CUDA tensors on MACA."""
+    def _metax_fill_(self, value):
+        """fill_() for CUDA tensors on MetaX."""
         if not self.is_cuda:
             return _orig_fill(self, value)
         if value == 0 and self.is_contiguous():
-            return _maca_zero_(self)
+            return _metax_zero_(self)
         # Create on CPU and copy to CUDA
         cpu_t = torch.full(self.shape, value, dtype=self.dtype, device="cpu")
         if not self.is_contiguous():
             raise NotImplementedError(
-                "MACA compat: fill_() on non-contiguous CUDA tensors is not supported. "
+                "MetaX compat: fill_() on non-contiguous CUDA tensors is not supported. "
                 "Call .contiguous() first."
             )
-        _maca_copy_to_cuda(self, cpu_t)
+        _metax_copy_to_cuda(self, cpu_t)
         return self
 
-    torch.Tensor.fill_ = _maca_fill_
+    torch.Tensor.fill_ = _metax_fill_

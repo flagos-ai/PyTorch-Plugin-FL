@@ -5,8 +5,8 @@ A custom PyTorch device plugin based on the PrivateUse1 extension mechanism, reg
 ## Features
 
 - Automatically registers FlagGems Triton operators as dispatch implementations for the `flagos` device
-- Configurable backend routing: select FlagGems or native vendor backend (CUDA/MACA/Ascend) at per-operator granularity
-- Currently supports CUDA, MACA (MetaX), and Ascend hardware platforms
+- Configurable backend routing: select FlagGems or native vendor backend (CUDA/MetaX/Ascend) at per-operator granularity
+- Currently supports CUDA, MetaX, and Ascend hardware platforms
 - Complete device management API (stream, event, RNG, AMP)
 ## Requirements
 
@@ -25,7 +25,7 @@ A custom PyTorch device plugin based on the PrivateUse1 extension mechanism, reg
 
 - Hardware Runtime Dependencies:
     - CUDA toolkit 12.8 (required only on CUDA platform)
-    - MACA cu-bridge library (required only on MACA platform)
+    - MetaX cu-bridge library (required only on MetaX platform)
     - CANN toolkit (required only on Ascend platform)
 - PyTorch 2.11.0
 - FlagGems (version 5.0.2 or higher, requires DFLAGGEMS_BUILD_C_EXTENSIONS enabled). For source installation, refer to: [FlagGems Installation](https://flagos-ai.github.io/FlagGems/getting-started/install/)
@@ -41,13 +41,13 @@ ACCELERATOR=cuda FLAGGEMS_DIR=/path/to/FlagGems/build/cpython-312/ \
   pip install --no-build-isolation -vvv -e .
 ```
 
-### Build from Source (MACA Platform)
+### Build from Source (MetaX Platform)
 
 ```bash
-# Set MACA cu-bridge library path, depending on the actual cu-bridge path in your environment
+# Set MetaX cu-bridge library path, depending on the actual cu-bridge path in your environment
 export LD_LIBRARY_PATH=/opt/maca/tools/cu-bridge/lib:$LD_LIBRARY_PATH
 
-ACCELERATOR=maca pip install -e . --no-build-isolation
+ACCELERATOR=metax pip install -e . --no-build-isolation
 ```
 
 ### Build from Source (Ascend Platform)
@@ -67,9 +67,9 @@ On Ascend, FlagGems C++ kernels and CUDA kernels are disabled. Only the Ascend k
 
 | Variable | Description |
 |----------|-------------|
-| `ACCELERATOR` | Hardware platform: `cuda` (default), `maca`, or `ascend` |
+| `ACCELERATOR` | Hardware platform: `cuda` (default), `metax`, or `ascend` |
 | `CUDA_HOME` | CUDA toolkit path |
-| `MACA_PATH` | MACA SDK path (default `/opt/maca`) |
+| `METAX_PATH` | MetaX SDK path (default `/opt/maca`) |
 | `ASCEND_HOME` | CANN toolkit path (default `/usr/local/Ascend/ascend-toolkit/latest`) |
 | `FLAGGEMS_DIR` | FlagGems C++ library path (enables low-overhead C++ dispatch) |
 | `FLAGGEMS_KERNEL` | Enable FlagGems C++ kernel wrappers (`ON`/`OFF`, default `ON`; set `0` for Ascend) |
@@ -119,16 +119,16 @@ with torch_fl.flagos.device(0):
     a = torch.randn(10, 10, device="flagos")
 ```
 
-### MACA Platform Import Order
+### MetaX Platform Import Order
 
-On MetaX (MACA) hardware, you **must** import `torch_fl` before `import torch`:
+On MetaX hardware, you **must** import `torch_fl` before `import torch`:
 
 ```python
 import torch_fl  # Must import first
 import torch
 ```
 
-Reason: PyTorch's bundled CUDA 12.x runtime is ABI-incompatible with MACA's cu-bridge (CUDA 11.6 compatibility layer). `torch_fl` preloads a shim library to provide the required symbol versions.
+Reason: PyTorch's bundled CUDA 12.x runtime is ABI-incompatible with MetaX's cu-bridge (CUDA 11.6 compatibility layer). `torch_fl` preloads a shim library to provide the required symbol versions.
 
 This restriction does not apply to CUDA platforms.
 
@@ -273,8 +273,8 @@ PyTorch-Plugin-FL/
 │   └── macros.h              #   Common macros
 ├── accelerator/              # Hardware abstraction layer
 │   ├── csrc/cuda/            #   CUDA runtime implementation
-│   ├── csrc/maca/            #   MACA cudart shim (symbol version compatibility)
-│   └── csrc/ascend/          #   Ascend runtime (ACL-based memory, stream, device)
+│   ├── csrc/metax/            #   MetaX cudart shim (symbol version compatibility)
+│   └── csrc/ascend/           #   Ascend runtime (ACL-based memory, stream, device)
 ├── csrc/
 │   ├── aten/                 # ATen operator layer
 │   │   ├── common.{h,cc}     #   Backend config loading, Backend enum
@@ -344,7 +344,7 @@ PyTorch-Plugin-FL/
 ├──────────────────────────────────────────────────────────────┤
 │  Hardware Abstraction (accelerator/)                         │
 │  ┌──────────────┐  ┌─────────────────────┐  ┌────────────┐   │
-│  │ CUDA Runtime │  │ MACA cu-bridge+shim │  │ Ascend ACL │   │
+│  │ CUDA Runtime │  │ MetaX cu-bridge+shim │  │ Ascend ACL │   │
 │  └──────────────┘  └─────────────────────┘  └────────────┘   │
 └──────────────────────────────────────────────────────────────┘
 ```

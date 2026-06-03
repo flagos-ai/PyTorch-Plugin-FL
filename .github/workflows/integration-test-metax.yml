@@ -1,4 +1,4 @@
-name: Integration Tests (MACA)
+name: Integration Tests (MetaX)
 
 on:
   workflow_call:
@@ -18,7 +18,7 @@ on:
 
 jobs:
   integration-tests:
-    name: Integration Tests (MACA GPU)
+    name: Integration Tests (MetaX GPU)
     runs-on: [self-hosted, maca, gpu-8]
     timeout-minutes: ${{ inputs.timeout-minutes }}
     container:
@@ -44,7 +44,7 @@ jobs:
         run: |
           export LD_LIBRARY_PATH=/opt/maca-3.3.0/tools/cu-bridge/lib:$LD_LIBRARY_PATH
           pip install --upgrade pip
-          ACCELERATOR=maca pip install -e . --no-build-isolation
+          ACCELERATOR=metax pip install -e . --no-build-isolation
           pip install pytest
 
       - name: Run ops tests

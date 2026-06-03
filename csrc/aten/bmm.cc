@@ -2,10 +2,6 @@
 
 #include "bmm.h"
 
-#include <ATen/core/Tensor.h>
-#include <ATen/native/Resize.h>
-#include <ATen/ops/bmm_native.h>
-
 namespace at::native::flagos {
 
 void StructuredBmmOut::set_output_strided(
@@ -14,10 +10,7 @@ void StructuredBmmOut::set_output_strided(
     at::IntArrayRef strides,
     at::TensorOptions options,
     at::DimnameList names) {
-  at::native::resize_output(out_, sizes);
-  if (!names.empty()) {
-    at::namedinference::propagate_names(out_, names);
-  }
+  out_.resize_(sizes);
 }
 
 void StructuredBmmOut::set_output_raw_strided(
@@ -26,10 +19,7 @@ void StructuredBmmOut::set_output_raw_strided(
     at::IntArrayRef strides,
     at::TensorOptions options,
     at::DimnameList names) {
-  at::native::resize_output(out_, sizes);
-  if (!names.empty()) {
-    at::namedinference::propagate_names(out_, names);
-  }
+  out_.resize_(sizes);
 }
 
 const at::Tensor& StructuredBmmOut::maybe_get_output(int64_t) {

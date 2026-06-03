@@ -6,6 +6,7 @@
 
 #include "copy_ops.h"
 #include "contiguous_ops.h"
+#include "copy_stub.h"
 
 #include <ATen/native/Resize.h>
 #include <ATen/ops/copy_native.h>
@@ -13,6 +14,38 @@
 #include "device_boxing.h"
 
 namespace at::native::flagos {
+
+ADD_IMPL_TO_DISPATCHER(
+    LocalScalarDenseFn, local_scalar_dense_stub, "_local_scalar_dense")
+ADD_IMPL_TO_DISPATCHER(ToCopyFn, to_copy_stub, "_to_copy")
+
+namespace {
+
+at::Scalar LocalScalarDenseKernel(const at::Tensor& self) {
+  return ::at::native::flagos::_local_scalar_dense(self);
+}
+
+at::Tensor ToCopyKernel(
+    const at::Tensor& self,
+    std::optional<c10::ScalarType> dtype,
+    std::optional<c10::Layout> layout,
+    std::optional<c10::Device> device,
+    std::optional<bool> pin_memory,
+    bool non_blocking,
+    std::optional<c10::MemoryFormat> memory_format) {
+  return ::at::native::flagos::_to_copy(
+      self, dtype, layout, device, pin_memory, non_blocking, memory_format);
+}
+
+}  // namespace
+
+REGISTER_IMPL_TO_DISPATCHER(
+    LocalScalarDenseFn,
+    local_scalar_dense_stub,
+    Backend::kFlagOs,
+    LocalScalarDenseKernel);
+REGISTER_IMPL_TO_DISPATCHER(
+    ToCopyFn, to_copy_stub, Backend::kFlagOs, ToCopyKernel);
 
 at::Tensor _copy_from(
     const at::Tensor& self,
@@ -23,10 +56,9 @@ at::Tensor _copy_from(
 
   // Both flagos tensors: copy on-device.
   if (self.is_privateuseone() && dst.is_privateuseone()) {
-#ifdef USE_ASCEND
-    // On Ascend there is no CUDA runtime, so we cannot box to CUDA and use
-    // TensorIterator's CUDA copy kernel.  Instead, for contiguous same-shape
-    // tensors we memcpy directly; otherwise we round-trip through CPU.
+    // PrivateUse1 -> PrivateUse1 copy path for non-CUDA accelerators (e.g.
+    // MetaX/Ascend). Avoid boxing to CUDA here, otherwise higher-level ops like
+    // clone(memory_format=...) can trigger CUDA runtime initialization.
     if (self.is_contiguous() && dst.is_contiguous() &&
         self.sizes().equals(dst.sizes()) &&
         self.scalar_type() == dst.scalar_type()) {
@@ -39,9 +71,14 @@ at::Tensor _copy_from(
           ? self
           : at::native::flagos::contiguous(self, c10::MemoryFormat::Contiguous);
       size_t nbytes = self_contig.numel() * self_contig.element_size();
-      at::Tensor cpu_src = at::empty(self_contig.sizes(), self_contig.options().device(at::kCPU));
+      at::Tensor cpu_src =
+          at::empty(self_contig.sizes(), self_contig.options().device(at::kCPU));
       if (nbytes > 0) {
-        Memcpy(cpu_src.data_ptr(), self_contig.data_ptr(), nbytes, MemcpyDeviceToHost);
+        Memcpy(
+            cpu_src.data_ptr(),
+            self_contig.data_ptr(),
+            nbytes,
+            MemcpyDeviceToHost);
       }
       size_t dst_storage_nbytes = dst.storage().nbytes();
       at::Tensor cpu_dst_storage = at::empty(
@@ -74,12 +111,6 @@ at::Tensor _copy_from(
             MemcpyHostToDevice);
       }
     }
-#else
-    // On platforms with CUDA runtime (NVIDIA/MACA), box to CUDA and use
-    // TensorIterator + CUDA copy kernel without re-entering _copy_from.
-    DeviceBoxingGuard guard(self, dst);
-    at::native::copy_(const_cast<at::Tensor&>(dst), self, non_blocking);
-#endif
     return dst;
   }
 
@@ -87,8 +118,9 @@ at::Tensor _copy_from(
   // For non-contiguous dst, copy into a contiguous temp on dst's device,
   // then use the boxing path to scatter into dst with proper strides.
   at::Tensor self_contig = self.is_contiguous() ? self
-      : (self.is_privateuseone() ? at::native::flagos::contiguous(self, c10::MemoryFormat::Contiguous)
-                                 : self.contiguous());
+      : (self.is_privateuseone()
+             ? at::native::flagos::contiguous(self, c10::MemoryFormat::Contiguous)
+             : self.contiguous());
 
   size_t nbytes = self_contig.numel() * self_contig.element_size();
 
@@ -135,7 +167,12 @@ at::Tensor _copy_from(
 #endif
     }
   } else {
-    TORCH_CHECK(false, "Unsupported device combination for copy: ", self.device(), " -> ", dst.device());
+    TORCH_CHECK(
+        false,
+        "Unsupported device combination for copy: ",
+        self.device(),
+        " -> ",
+        dst.device());
   }
 
   return dst;
@@ -149,9 +186,15 @@ at::Tensor _copy_from_and_resize(
 }
 
 at::Scalar _local_scalar_dense(const at::Tensor& self) {
-  TORCH_CHECK(self.numel() == 1, "_local_scalar_dense expects a tensor with 1 element");
+  TORCH_CHECK(
+      self.numel() == 1,
+      "_local_scalar_dense expects a tensor with 1 element");
   at::Tensor cpu_tensor = at::empty({1}, self.options().device(at::kCPU));
-  Memcpy(cpu_tensor.data_ptr(), self.data_ptr(), self.element_size(), MemcpyDeviceToHost);
+  Memcpy(
+      cpu_tensor.data_ptr(),
+      self.data_ptr(),
+      self.element_size(),
+      MemcpyDeviceToHost);
   return cpu_tensor.item();
 }
 
@@ -163,7 +206,6 @@ at::Tensor _to_copy(
     std::optional<bool> pin_memory_opt,
     bool non_blocking,
     std::optional<c10::MemoryFormat> memory_format_opt) {
-
   TORCH_CHECK(
       !layout_opt.has_value() || self.layout() == layout_opt.value(),
       "to(options) doesn't support converting to a different layout, "
@@ -198,7 +240,7 @@ at::Tensor _to_copy(
         : 0;
     device = c10::Device(device.type(), device_index);
   }
-  
+
   if (device == self.device() && dtype == self.scalar_type()) {
     if (memory_format == c10::MemoryFormat::Preserve) {
       return self.clone();
@@ -214,9 +256,13 @@ at::Tensor _to_copy(
   at::Tensor result;
 
   if (src_is_flagos && dst_is_cuda) {
-    int device_index = device.index() >= 0 ? device.index() : (self.device().index() >= 0 ? self.device().index() : 0);
+    int device_index =
+        device.index() >= 0 ? device.index()
+                            : (self.device().index() >= 0 ? self.device().index() : 0);
     at::Tensor self_contig = self.contiguous();
-    at::Tensor temp = at::empty(self_contig.sizes(), self_contig.options().device(c10::Device(c10::kCUDA, device_index)));
+    at::Tensor temp = at::empty(
+        self_contig.sizes(),
+        self_contig.options().device(c10::Device(c10::kCUDA, device_index)));
     size_t nbytes = self_contig.numel() * self_contig.element_size();
     if (nbytes > 0) {
       Memcpy(temp.data_ptr(), self_contig.data_ptr(), nbytes, MemcpyDeviceToDevice);
@@ -227,26 +273,44 @@ at::Tensor _to_copy(
     at::Tensor self_contig = self.contiguous();
     if (dtype != self.scalar_type()) {
       size_t nbytes = self_contig.numel() * self_contig.element_size();
-      at::Tensor cpu_tensor = at::empty(self_contig.sizes(), self_contig.options().device(at::kCPU));
+      at::Tensor cpu_tensor =
+          at::empty(self_contig.sizes(), self_contig.options().device(at::kCPU));
       if (nbytes > 0) {
-        Memcpy(cpu_tensor.data_ptr(), self_contig.data_ptr(), nbytes, MemcpyDeviceToHost);
+        Memcpy(
+            cpu_tensor.data_ptr(),
+            self_contig.data_ptr(),
+            nbytes,
+            MemcpyDeviceToHost);
       }
       cpu_tensor = cpu_tensor.to(dtype);
-      result = at::empty(cpu_tensor.sizes(), cpu_tensor.options().device(c10::Device(c10::kPrivateUse1, device_index)));
+      result = at::empty(
+          cpu_tensor.sizes(),
+          cpu_tensor.options().device(c10::Device(c10::kPrivateUse1, device_index)));
       size_t result_nbytes = cpu_tensor.numel() * cpu_tensor.element_size();
       if (result_nbytes > 0) {
-        Memcpy(result.data_ptr(), cpu_tensor.data_ptr(), result_nbytes, MemcpyHostToDevice);
+        Memcpy(
+            result.data_ptr(),
+            cpu_tensor.data_ptr(),
+            result_nbytes,
+            MemcpyHostToDevice);
       }
     } else {
-      result = at::empty(self_contig.sizes(), self_contig.options().device(c10::Device(c10::kPrivateUse1, device_index)));
+      result = at::empty(
+          self_contig.sizes(),
+          self_contig.options().device(c10::Device(c10::kPrivateUse1, device_index)));
       size_t nbytes = self_contig.numel() * self_contig.element_size();
       if (nbytes > 0) {
-        Memcpy(result.data_ptr(), self_contig.data_ptr(), nbytes, MemcpyDeviceToDevice);
+        Memcpy(
+            result.data_ptr(),
+            self_contig.data_ptr(),
+            nbytes,
+            MemcpyDeviceToDevice);
       }
     }
   } else if (src_is_flagos && dst_is_cpu) {
     at::Tensor self_contig = self.contiguous();
-    at::Tensor temp = at::empty(self_contig.sizes(), self_contig.options().device(at::kCPU));
+    at::Tensor temp =
+        at::empty(self_contig.sizes(), self_contig.options().device(at::kCPU));
     size_t nbytes = self_contig.numel() * self_contig.element_size();
     if (nbytes > 0) {
       Memcpy(temp.data_ptr(), self_contig.data_ptr(), nbytes, MemcpyDeviceToHost);
@@ -258,7 +322,9 @@ at::Tensor _to_copy(
     if (dtype != self.scalar_type()) {
       src_contig = src_contig.to(dtype);
     }
-    result = at::empty(src_contig.sizes(), src_contig.options().device(c10::Device(c10::kPrivateUse1, device_index)));
+    result = at::empty(
+        src_contig.sizes(),
+        src_contig.options().device(c10::Device(c10::kPrivateUse1, device_index)));
     size_t nbytes = src_contig.numel() * src_contig.element_size();
     if (nbytes > 0) {
       if (self.is_cpu()) {
@@ -273,7 +339,9 @@ at::Tensor _to_copy(
     at::Tensor cpu_tensor = self.to(at::kCPU).to(dtype);
     if (dst_is_flagos) {
       int device_index = device.index() >= 0 ? device.index() : 0;
-      result = at::empty(cpu_tensor.sizes(), cpu_tensor.options().device(c10::Device(c10::kPrivateUse1, device_index)));
+      result = at::empty(
+          cpu_tensor.sizes(),
+          cpu_tensor.options().device(c10::Device(c10::kPrivateUse1, device_index)));
       size_t nbytes = cpu_tensor.numel() * cpu_tensor.element_size();
       if (nbytes > 0) {
         Memcpy(result.data_ptr(), cpu_tensor.data_ptr(), nbytes, MemcpyHostToDevice);

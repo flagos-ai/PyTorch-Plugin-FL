@@ -1,8 +1,11 @@
+import os
 import sys
 
-from torch_fl.accelerator.maca._maca_cudart_shim import ensure_cudart_shim
+# Optional: PyTorch wheels may require libcudart.so.12 version tags on MetaX.
+if os.environ.get("FLAGOS_METAX_CUDART_SHIM", "0") == "1":
+    from torch_fl.accelerator.metax._metax_cudart_shim import ensure_cudart_shim
 
-ensure_cudart_shim()
+    ensure_cudart_shim()
 
 import torch  # noqa: E402
 
@@ -14,18 +17,15 @@ if sys.platform == "win32":
     del _load_dll_libraries
 
 
-# Apply MACA compatibility patches before importing FlagGems.
-# On MetaX (Muxi) hardware, PyTorch's bundled CUDA 12.x runtime is
-# ABI-incompatible with MACA's cu-bridge (CUDA 11.6). This patches
-# torch.cuda.get_device_properties/get_device_name to use MACA's
-# native mcruntime API, allowing FlagGems initialization to succeed.
-from torch_fl.accelerator.maca._maca_compat import (  # noqa: E402
-    is_maca_available,
-    patch_torch_cuda_for_maca,
-)
+# Optional FlagGems-on-MetaX compat (does not patch torch.cuda unless enabled).
+if os.environ.get("FLAGOS_METAX_COMPAT", "0") == "1":
+    from torch_fl.accelerator.metax._metax_compat import (  # noqa: E402
+        is_metax_available,
+        patch_torch_cuda_for_metax,
+    )
 
-if is_maca_available():
-    patch_torch_cuda_for_maca()
+    if is_metax_available():
+        patch_torch_cuda_for_metax()
 
 
 # Expose libtorch symbols globally so triton-ascend's JIT-compiled launcher .so
@@ -146,11 +146,89 @@ def _patch_cuda_device_context():
 # Patch torch.cuda.device before FlagGems is used
 _patch_cuda_device_context()
 
-# Ensure CUDA runtime is initialized so that CUDACachingAllocator is ready.
-# Without this, C++ stubs routing ops to the cuda backend (cuBLAS, etc.)
-# would hit "Allocator not initialized for device" errors.
-if torch.cuda.is_available():
+# Initialize CUDA runtime only when FlagGems Python path needs it (CUDA backend ops).
+if (
+    os.environ.get("FLAGOS_DISABLE_FLAGGEMS_PY", "0") != "1"
+    and torch.cuda.is_available()
+):
     torch.cuda.init()
+
+
+# Ops that use torch_device_fn.device(device) with explicit device parameter
+# These don't work with flagos device and should use cpu_fallback instead
+_EXCLUDED_OPS = {
+    # Factory functions that take device parameter
+    "randn",
+    "randn_like",
+    "rand",
+    "rand_like",
+    "zeros",
+    "zeros_like",
+    "ones",
+    "ones_like",
+    "full",
+    "full_like",
+    "arange",
+    "arange.start",
+    "arange.start_step",
+    "linspace",
+    "logspace",
+    "eye",
+    "eye.m",
+    "randperm",
+    "empty.memory_format",  # Already registered in C++
+    "empty_strided",  # Already registered in C++
+    # Random ops that use device context
+    "uniform_",
+    "normal.float_Tensor",
+    "normal.Tensor_float",
+    "normal.Tensor_tensor",
+    "exponential_",
+    "multinomial",
+    # Copy ops - already registered in C++, skip to avoid duplicate registration
+    "copy_",
+    "_to_copy",
+    "contiguous",
+    "clone",
+    # log_softmax - FlagGems Triton kernel exceeds MetaX's 4KB/thread private memory
+    # limit on large vocab (e.g. Qwen3 151k). Use Python decomposition instead.
+    "_log_softmax",
+    "_log_softmax_backward_data",
+    # Ops dispatched by C++ stub (DispatchStub) which reads backends.conf
+    # at load time to route to flaggems or cuda per-op.
+    "mm",
+    "mm.out",
+    "bmm",
+    "bmm.out",
+    "cat",
+    "embedding",
+    "add.Tensor",
+    "mul.Tensor",
+    "silu",
+    "rsqrt",
+    "mean.dim",
+    "cos",
+    "sin",
+    "neg",
+    "pow.Tensor_Scalar",
+    "all",
+    "_softmax",
+    "bitwise_and.Tensor",
+    "le.Tensor",
+    "where.self",
+    "index.Tensor",
+    "new_ones",
+    "scalar_tensor",
+    "ones_like",
+    "zeros",
+    "silu_backward",
+    "sum.dim_IntList",
+    "slice_backward",
+    "constant_pad_nd",
+    "embedding_dense_backward",
+    "nll_loss_forward",
+    "nll_loss_backward",
+}
 
 
 # Cache for CUDA runtime library
@@ -165,7 +243,6 @@ def _get_cudaMemcpy():
         return _cudaMemcpy
 
     import ctypes
-    import os
 
     # Try to load CUDA runtime library
     try:
@@ -194,6 +271,18 @@ def _register_flaggems_operators():
     All ops are dispatched through the C++ stub path instead.
     """
     global _flaggems_lib, _autograd_lib, _registered_ops
+
+    if os.environ.get("FLAGOS_DISABLE_FLAGGEMS_PY", "0") == "1":
+        _registered_ops = []
+        return 0
+
+    import importlib.util
+
+    if importlib.util.find_spec("flag_gems") is None:
+        # flag_gems not installed, will use cpu_fallback
+        return 0
+
+    _flaggems_lib = torch.library.Library("aten", "IMPL")
     _registered_ops = []
     return 0
 
@@ -211,28 +300,6 @@ def _register_composite_ops():
     """
     lib = torch.library.Library("aten", "IMPL")
 
-    # slice_backward: used by autograd for tensor slicing (x[..., :n])
-    # Implementation mirrors PyTorch's native slice_backward which calls slice_scatter
-    def slice_backward_impl(grad_output, input_sizes, dim, start, end, step):
-        # Convert SymInt to int for compatibility
-        input_sizes = [int(s) for s in input_sizes]
-        dim = int(dim)
-        start = int(start)
-        end = int(end)
-        step = int(step)
-        # Clamp end to input_sizes[dim] (PyTorch passes large values like sys.maxsize)
-        if end > input_sizes[dim]:
-            end = input_sizes[dim]
-        grad_input = torch.zeros(
-            input_sizes, dtype=grad_output.dtype, device=grad_output.device
-        )
-        return torch.slice_scatter(grad_input, grad_output, dim, start, end, step)
-
-    # lib.impl("slice_backward", slice_backward_impl, "PrivateUse1")
-
-    # log_softmax: decompose into softmax + log to avoid FlagGems Triton kernel
-    # that exceeds MACA's 4KB/thread private memory on large vocab dimensions.
-    # The softmax kernel already has proper tiling for large N.
     def log_softmax_impl(self, dim, half_to_float=False):
         dtype = torch.float32 if half_to_float else self.dtype
         out = torch.softmax(self.to(torch.float32), dim=dim)
@@ -267,7 +334,6 @@ def is_flaggems_enabled():
 # Auto-register FlagGems operators on import
 _register_flaggems_operators()
 _composite_ops_lib = _register_composite_ops()
-
 
 # Re-export integration utilities
 from torch_fl.integration import (  # noqa: E402

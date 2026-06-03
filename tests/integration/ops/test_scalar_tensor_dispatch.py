@@ -3,7 +3,7 @@ scalar_tensor dispatch tests
 
 Verifies that torch.scalar_tensor:
   - produces correct results on flagos device
-  - C++ wrapper routes to cuda backend
+  - C++ wrapper routes to cuda/metax backend
   - attempting flaggems backend raises an error (not implemented)
 
 Usage:
@@ -64,10 +64,20 @@ class TestScalarTensorDispatch:
         result = _run_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_scalar_tensor": "cuda"}
         )
+        if result.returncode != 0 and "backend not registered" in result.stderr:
+            pytest.skip("cuda backend not available in this build")
         assert result.returncode == 0, f"Failed:\n{result.stderr}"
         assert "[flagos dispatch] scalar_tensor -> cuda" in result.stderr
 
-    @pytest.mark.cuda
+    @pytest.mark.metax
+    def test_dispatch_log_metax(self):
+        result = _run_subprocess(
+            {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_scalar_tensor": "metax"}
+        )
+        assert result.returncode == 0, f"Failed:\n{result.stderr}"
+        assert "[flagos dispatch] scalar_tensor -> metax" in result.stderr
+
+    @pytest.mark.anyplatform
     def test_flaggems_backend_raises_error(self):
         result = _run_subprocess(
             {"FLAGOS_OP_scalar_tensor": "flaggems"},
