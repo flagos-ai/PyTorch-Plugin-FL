@@ -102,7 +102,7 @@ class TestSinDispatch:
         assert result.returncode == 0, f"Failed:\n{result.stderr}"
         assert "[flagos dispatch] sin -> cuda" in result.stderr
 
-    @pytest.mark.anyplatform
+    @pytest.mark.metax
     def test_dispatch_log_metax(self):
         result = _run_sin_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_sin": "metax"}
