@@ -4,7 +4,7 @@
 // - aten::_local_scalar_dense.default
 // - aten::_to_copy.default
 
-#include "../../copy_stub.h"
+#include "../../copy_dispatcher.h"
 
 #include "../../copy_ops.h"
 
@@ -28,14 +28,14 @@ at::Tensor ToCopyKernelMetax(
       self, dtype, layout, device, pin_memory, non_blocking, memory_format);
 }
 
-}  // namespace
+} // namespace
 
-FLAGOS_REGISTER_DISPATCH(
+REGISTER_IMPL_TO_DISPATCHER(
     LocalScalarDenseFn,
-    local_scalar_dense_stub,
-    FlagosDevice::kMetax,
+    local_scalar_dense_dispatcher,
+    Backend::kMetax,
     LocalScalarDenseKernelMetax);
-FLAGOS_REGISTER_DISPATCH(
-    ToCopyFn, to_copy_stub, FlagosDevice::kMetax, ToCopyKernelMetax);
+REGISTER_IMPL_TO_DISPATCHER(
+    ToCopyFn, to_copy_dispatcher, Backend::kMetax, ToCopyKernelMetax);
 
-}  // namespace at::native::flagos
+} // namespace at::native::flagos

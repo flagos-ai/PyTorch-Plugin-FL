@@ -6,7 +6,7 @@
 
 namespace at::native::flagos {
 
-FLAGOS_REGISTER_DISPATCH(
-    MulTensorFn, mul_tensor_stub, FlagosDevice::kMetax, MulTensorKernel)
+REGISTER_IMPL_TO_DISPATCHER(
+    MulTensorFn, mul_tensor_dispatcher, Backend::kMetax, MulTensorKernel)
 
-}  // namespace at::native::flagos
+} // namespace at::native::flagos

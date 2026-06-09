@@ -37,7 +37,7 @@ void LaunchNegIter(at::TensorIteratorBase& iter) {
   metax::Launch1d(n, NegContigKernel<scalar_t>, out, self);
 }
 
-}  // namespace
+} // namespace
 
 inline at::Tensor NegKernel(const at::Tensor& self) {
   at::Tensor output;
@@ -77,4 +77,4 @@ inline at::Tensor NegKernel(const at::Tensor& self) {
   return iter.output();
 }
 
-}  // namespace at::native::flagos
+} // namespace at::native::flagos

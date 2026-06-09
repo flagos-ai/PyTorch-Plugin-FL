@@ -168,7 +168,7 @@ void LaunchMmMcblas(
 }
 #endif
 
-}  // namespace
+} // namespace
 
 inline void MmKernelMetax(
     const at::Tensor& self,
@@ -199,4 +199,4 @@ inline void MmKernelMetax(
 #endif
 }
 
-}  // namespace at::native::flagos
+} // namespace at::native::flagos

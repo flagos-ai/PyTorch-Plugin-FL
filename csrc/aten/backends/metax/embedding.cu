@@ -6,7 +6,7 @@
 
 namespace at::native::flagos {
 
-FLAGOS_REGISTER_DISPATCH(
-    EmbeddingFn, embedding_stub, FlagosDevice::kMetax, EmbeddingKernel)
+REGISTER_IMPL_TO_DISPATCHER(
+    EmbeddingFn, embedding_dispatcher, Backend::kMetax, EmbeddingKernel)
 
-}  // namespace at::native::flagos
+} // namespace at::native::flagos

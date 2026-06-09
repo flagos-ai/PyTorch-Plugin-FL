@@ -6,6 +6,6 @@
 
 namespace at::native::flagos {
 
-FLAGOS_REGISTER_DISPATCH(NegFn, neg_stub, FlagosDevice::kMetax, NegKernel)
+REGISTER_IMPL_TO_DISPATCHER(NegFn, neg_dispatcher, Backend::kMetax, NegKernel)
 
-}  // namespace at::native::flagos
+} // namespace at::native::flagos

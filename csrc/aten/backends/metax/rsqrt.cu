@@ -6,7 +6,7 @@
 
 namespace at::native::flagos {
 
-FLAGOS_REGISTER_DISPATCH(
-    RsqrtFn, rsqrt_stub, FlagosDevice::kMetax, RsqrtKernelMetax)
+REGISTER_IMPL_TO_DISPATCHER(
+    RsqrtFn, rsqrt_dispatcher, Backend::kMetax, RsqrtKernelMetax)
 
-}  // namespace at::native::flagos
+} // namespace at::native::flagos

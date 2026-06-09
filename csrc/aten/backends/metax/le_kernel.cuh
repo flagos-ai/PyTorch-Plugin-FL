@@ -41,7 +41,7 @@ void LaunchLeIter(at::TensorIteratorBase& iter) {
   metax::Launch1d(n, LeContigKernel<scalar_t>, out, self, other);
 }
 
-}  // namespace
+} // namespace
 
 inline at::Tensor LeTensorKernel(
     const at::Tensor& self,
@@ -98,4 +98,4 @@ inline at::Tensor LeTensorKernel(
   return iter.output();
 }
 
-}  // namespace at::native::flagos
+} // namespace at::native::flagos

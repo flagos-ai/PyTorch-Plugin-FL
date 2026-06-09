@@ -56,7 +56,7 @@ int LaunchAllBoolReduce(int64_t n, const bool* data) {
   return host_flag;
 }
 
-}  // namespace
+} // namespace
 
 inline at::Tensor AllKernel(const at::Tensor& self) {
   at::Tensor result = at::empty({}, self.options().dtype(at::kBool));
@@ -74,4 +74,4 @@ inline at::Tensor AllKernel(const at::Tensor& self) {
   return result;
 }
 
-}  // namespace at::native::flagos
+} // namespace at::native::flagos

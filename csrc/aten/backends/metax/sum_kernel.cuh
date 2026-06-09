@@ -160,7 +160,7 @@ at::Tensor ZerosLikeShape(
   return result;
 }
 
-}  // namespace
+} // namespace
 
 inline at::Tensor SumDimKernelMetax(
     const at::Tensor& self,
@@ -235,4 +235,4 @@ inline at::Tensor SumDimKernelMetax(
   return result;
 }
 
-}  // namespace at::native::flagos
+} // namespace at::native::flagos

@@ -41,7 +41,7 @@ void LaunchBitwiseAndContig(
   metax::Launch1d(n, BitwiseAndContigKernel<scalar_t>, out, a, b);
 }
 
-}  // namespace
+} // namespace
 
 inline at::Tensor BitwiseAndKernelMetax(
     const at::Tensor& self,
@@ -68,4 +68,4 @@ inline at::Tensor BitwiseAndKernelMetax(
   return output;
 }
 
-}  // namespace at::native::flagos
+} // namespace at::native::flagos

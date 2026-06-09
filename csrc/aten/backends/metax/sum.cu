@@ -6,7 +6,7 @@
 
 namespace at::native::flagos {
 
-FLAGOS_REGISTER_DISPATCH(
-    SumDimFn, sum_dim_stub, FlagosDevice::kMetax, SumDimKernelMetax)
+REGISTER_IMPL_TO_DISPATCHER(
+    SumDimFn, sum_dim_dispatcher, Backend::kMetax, SumDimKernelMetax)
 
-}  // namespace at::native::flagos
+} // namespace at::native::flagos

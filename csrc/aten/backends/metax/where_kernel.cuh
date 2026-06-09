@@ -45,7 +45,7 @@ void LaunchWhereContig(
   metax::Launch1d(n, WhereContigKernel<scalar_t>, out, cond, self, other);
 }
 
-}  // namespace
+} // namespace
 
 inline at::Tensor WhereKernelMetax(
     const at::Tensor& condition,
@@ -81,4 +81,4 @@ inline at::Tensor WhereKernelMetax(
   return output;
 }
 
-}  // namespace at::native::flagos
+} // namespace at::native::flagos

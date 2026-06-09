@@ -177,7 +177,7 @@ void LaunchBmmMcblas(
 }
 #endif
 
-}  // namespace
+} // namespace
 
 inline void BmmKernelMetax(
     const at::Tensor& self,
@@ -209,4 +209,4 @@ inline void BmmKernelMetax(
 #endif
 }
 
-}  // namespace at::native::flagos
+} // namespace at::native::flagos

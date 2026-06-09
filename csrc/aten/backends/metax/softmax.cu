@@ -6,7 +6,7 @@
 
 namespace at::native::flagos {
 
-FLAGOS_REGISTER_DISPATCH(
-    SoftmaxFn, softmax_stub, FlagosDevice::kMetax, SoftmaxKernelMetax)
+REGISTER_IMPL_TO_DISPATCHER(
+    SoftmaxFn, softmax_dispatcher, Backend::kMetax, SoftmaxKernelMetax)
 
-}  // namespace at::native::flagos
+} // namespace at::native::flagos

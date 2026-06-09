@@ -6,10 +6,10 @@
 
 namespace at::native::flagos {
 
-FLAGOS_REGISTER_DISPATCH(
+REGISTER_IMPL_TO_DISPATCHER(
     BitwiseAndTensorFn,
-    bitwise_and_tensor_stub,
-    FlagosDevice::kMetax,
+    bitwise_and_tensor_dispatcher,
+    Backend::kMetax,
     BitwiseAndKernelMetax)
 
-}  // namespace at::native::flagos
+} // namespace at::native::flagos

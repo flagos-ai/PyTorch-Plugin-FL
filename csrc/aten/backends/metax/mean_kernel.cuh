@@ -151,7 +151,7 @@ at::Tensor MeanDimsTyped(
   return input;
 }
 
-}  // namespace
+} // namespace
 
 inline at::Tensor MeanDimKernel(
     const at::Tensor& self,
@@ -226,4 +226,4 @@ inline at::Tensor MeanDimKernel(
   return result;
 }
 
-}  // namespace at::native::flagos
+} // namespace at::native::flagos

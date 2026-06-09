@@ -23,9 +23,9 @@ at::Tensor SliceBackwardKernelMetax(
   return out_cpu.to(grad_output.device(), out_cpu.scalar_type());
 }
 
-}  // namespace
+} // namespace
 
-FLAGOS_REGISTER_DISPATCH(
-    SliceBackwardFn, slice_backward_stub, FlagosDevice::kMetax, SliceBackwardKernelMetax)
+REGISTER_IMPL_TO_DISPATCHER(
+    SliceBackwardFn, slice_backward_dispatcher, Backend::kMetax, SliceBackwardKernelMetax)
 
-}  // namespace at::native::flagos
+} // namespace at::native::flagos

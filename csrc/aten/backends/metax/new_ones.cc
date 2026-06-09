@@ -22,7 +22,7 @@ at::Tensor NewOnesKernelMetax(
                      .device(device.value_or(self.device()))
                      .pinned_memory(pin_memory.value_or(false));
   at::Tensor result = at::empty(size, options);
-  return at::native::flagos::ones_like_stub(
+  return at::native::flagos::ones_like_dispatcher(
       result,
       std::nullopt,
       std::nullopt,
@@ -31,9 +31,9 @@ at::Tensor NewOnesKernelMetax(
       std::nullopt);
 }
 
-}  // namespace
+} // namespace
 
-FLAGOS_REGISTER_DISPATCH(
-    NewOnesFn, new_ones_stub, FlagosDevice::kMetax, NewOnesKernelMetax)
+REGISTER_IMPL_TO_DISPATCHER(
+    NewOnesFn, new_ones_dispatcher, Backend::kMetax, NewOnesKernelMetax)
 
-}  // namespace at::native::flagos
+} // namespace at::native::flagos

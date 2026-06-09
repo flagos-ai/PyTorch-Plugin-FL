@@ -6,7 +6,7 @@
 
 namespace at::native::flagos {
 
-FLAGOS_REGISTER_DISPATCH(
-    MeanDimFn, mean_dim_stub, FlagosDevice::kMetax, MeanDimKernel)
+REGISTER_IMPL_TO_DISPATCHER(
+    MeanDimFn, mean_dim_dispatcher, Backend::kMetax, MeanDimKernel)
 
-}  // namespace at::native::flagos
+} // namespace at::native::flagos

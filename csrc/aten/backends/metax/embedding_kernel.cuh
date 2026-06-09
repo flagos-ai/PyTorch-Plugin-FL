@@ -73,7 +73,7 @@ void LaunchEmbedding(
       padding_idx);
 }
 
-}  // namespace
+} // namespace
 
 inline at::Tensor EmbeddingKernel(
     const at::Tensor& weight,
@@ -115,4 +115,4 @@ inline at::Tensor EmbeddingKernel(
   return output;
 }
 
-}  // namespace at::native::flagos
+} // namespace at::native::flagos

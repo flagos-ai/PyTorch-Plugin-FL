@@ -35,7 +35,7 @@ void LaunchFillOnes(at::Tensor& output) {
   metax::Launch1d(n, FillOnesKernel<scalar_t>, out_ptr);
 }
 
-}  // namespace
+} // namespace
 
 inline at::Tensor OnesLikeKernelMetax(
     const at::Tensor& self,
@@ -69,4 +69,4 @@ inline at::Tensor OnesLikeKernelMetax(
   return result;
 }
 
-}  // namespace at::native::flagos
+} // namespace at::native::flagos

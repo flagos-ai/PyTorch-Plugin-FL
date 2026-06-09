@@ -97,7 +97,7 @@ at::Tensor SoftmaxTyped(const at::Tensor& self, int64_t dim) {
   return output;
 }
 
-}  // namespace
+} // namespace
 
 inline at::Tensor SoftmaxKernelMetax(
     const at::Tensor& self,
@@ -132,4 +132,4 @@ inline at::Tensor SoftmaxKernelMetax(
   return result;
 }
 
-}  // namespace at::native::flagos
+} // namespace at::native::flagos

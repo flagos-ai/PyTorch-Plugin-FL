@@ -6,7 +6,7 @@
 
 namespace at::native::flagos {
 
-FLAGOS_REGISTER_DISPATCH(
-    OnesLikeFn, ones_like_stub, FlagosDevice::kMetax, OnesLikeKernelMetax)
+REGISTER_IMPL_TO_DISPATCHER(
+    OnesLikeFn, ones_like_dispatcher, Backend::kMetax, OnesLikeKernelMetax)
 
-}  // namespace at::native::flagos
+} // namespace at::native::flagos

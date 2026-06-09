@@ -6,6 +6,6 @@
 
 namespace at::native::flagos {
 
-FLAGOS_REGISTER_DISPATCH(SiluFn, silu_stub, FlagosDevice::kMetax, SiluKernelMetax)
+REGISTER_IMPL_TO_DISPATCHER(SiluFn, silu_dispatcher, Backend::kMetax, SiluKernelMetax)
 
-}  // namespace at::native::flagos
+} // namespace at::native::flagos

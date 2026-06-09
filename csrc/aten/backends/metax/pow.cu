@@ -6,10 +6,10 @@
 
 namespace at::native::flagos {
 
-FLAGOS_REGISTER_DISPATCH(
+REGISTER_IMPL_TO_DISPATCHER(
     PowTensorScalarFn,
-    pow_tensor_scalar_stub,
-    FlagosDevice::kMetax,
+    pow_tensor_scalar_dispatcher,
+    Backend::kMetax,
     PowTensorScalarKernelMetax)
 
-}  // namespace at::native::flagos
+} // namespace at::native::flagos

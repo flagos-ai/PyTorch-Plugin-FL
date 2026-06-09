@@ -10,7 +10,7 @@
 namespace at::native::flagos {
 
 using LocalScalarDenseFn = at::Scalar (*)(const at::Tensor&);
-DECLARE_DISPATCHER(LocalScalarDenseFn, local_scalar_dense_stub)
+DECLARE_DISPATCHER(LocalScalarDenseFn, local_scalar_dense_dispatcher)
 
 using ToCopyFn = at::Tensor (*)(
     const at::Tensor&,
@@ -20,6 +20,6 @@ using ToCopyFn = at::Tensor (*)(
     std::optional<bool>,
     bool,
     std::optional<c10::MemoryFormat>);
-DECLARE_DISPATCHER(ToCopyFn, to_copy_stub)
+DECLARE_DISPATCHER(ToCopyFn, to_copy_dispatcher)
 
 }  // namespace at::native::flagos

@@ -107,8 +107,8 @@ at::Tensor CatKernelMetax(const at::ITensorListRef& tensors, int64_t dim) {
   return out;
 }
 
-}  // namespace
+} // namespace
 
-FLAGOS_REGISTER_DISPATCH(CatFn, cat_stub, FlagosDevice::kMetax, CatKernelMetax)
+REGISTER_IMPL_TO_DISPATCHER(CatFn, cat_dispatcher, Backend::kMetax, CatKernelMetax)
 
-}  // namespace at::native::flagos
+} // namespace at::native::flagos

@@ -21,12 +21,12 @@ at::Tensor EmbeddingDenseBackwardKernelMetax(
   return out_cpu.to(grad_output.device(), out_cpu.scalar_type());
 }
 
-}  // namespace
+} // namespace
 
-FLAGOS_REGISTER_DISPATCH(
+REGISTER_IMPL_TO_DISPATCHER(
     EmbeddingDenseBackwardFn,
-    embedding_dense_backward_stub,
-    FlagosDevice::kMetax,
+    embedding_dense_backward_dispatcher,
+    Backend::kMetax,
     EmbeddingDenseBackwardKernelMetax)
 
-}  // namespace at::native::flagos
+} // namespace at::native::flagos

@@ -6,6 +6,6 @@
 
 namespace at::native::flagos {
 
-FLAGOS_REGISTER_DISPATCH(MmFn, mm_stub, FlagosDevice::kMetax, MmKernelMetax)
+REGISTER_IMPL_TO_DISPATCHER(MmFn, mm_dispatcher, Backend::kMetax, MmKernelMetax)
 
-}  // namespace at::native::flagos
+} // namespace at::native::flagos

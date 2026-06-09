@@ -6,7 +6,7 @@
 
 #include "copy_ops.h"
 #include "contiguous_ops.h"
-#include "copy_stub.h"
+#include "copy_dispatcher.h"
 
 #include <ATen/native/Resize.h>
 #include <ATen/ops/copy_native.h>
@@ -16,8 +16,8 @@
 namespace at::native::flagos {
 
 ADD_IMPL_TO_DISPATCHER(
-    LocalScalarDenseFn, local_scalar_dense_stub, "_local_scalar_dense")
-ADD_IMPL_TO_DISPATCHER(ToCopyFn, to_copy_stub, "_to_copy")
+    LocalScalarDenseFn, local_scalar_dense_dispatcher, "_local_scalar_dense")
+ADD_IMPL_TO_DISPATCHER(ToCopyFn, to_copy_dispatcher, "_to_copy")
 
 namespace {
 
@@ -41,11 +41,11 @@ at::Tensor ToCopyKernel(
 
 REGISTER_IMPL_TO_DISPATCHER(
     LocalScalarDenseFn,
-    local_scalar_dense_stub,
+    local_scalar_dense_dispatcher,
     Backend::kFlagOs,
     LocalScalarDenseKernel);
 REGISTER_IMPL_TO_DISPATCHER(
-    ToCopyFn, to_copy_stub, Backend::kFlagOs, ToCopyKernel);
+    ToCopyFn, to_copy_dispatcher, Backend::kFlagOs, ToCopyKernel);
 
 at::Tensor _copy_from(
     const at::Tensor& self,

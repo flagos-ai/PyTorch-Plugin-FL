@@ -17,9 +17,9 @@ at::Tensor ConstantPadNdKernelMetax(
   return out_cpu.to(self.device(), out_cpu.scalar_type());
 }
 
-}  // namespace
+} // namespace
 
-FLAGOS_REGISTER_DISPATCH(
-    ConstantPadNdFn, constant_pad_nd_stub, FlagosDevice::kMetax, ConstantPadNdKernelMetax)
+REGISTER_IMPL_TO_DISPATCHER(
+    ConstantPadNdFn, constant_pad_nd_dispatcher, Backend::kMetax, ConstantPadNdKernelMetax)
 
-}  // namespace at::native::flagos
+} // namespace at::native::flagos

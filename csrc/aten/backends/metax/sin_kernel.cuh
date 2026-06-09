@@ -41,7 +41,7 @@ void LaunchSinIter(at::TensorIteratorBase& iter) {
       n, SinContigKernel<scalar_t, opmath_t>, out, self);
 }
 
-}  // namespace
+} // namespace
 
 inline at::Tensor SinKernelMetax(const at::Tensor& self) {
   at::Tensor output;
@@ -82,4 +82,4 @@ inline at::Tensor SinKernelMetax(const at::Tensor& self) {
   return iter.output();
 }
 
-}  // namespace at::native::flagos
+} // namespace at::native::flagos

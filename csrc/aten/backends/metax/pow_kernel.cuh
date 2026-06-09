@@ -82,7 +82,7 @@ void LaunchPowIter(at::TensorIteratorBase& iter, opmath_t exp) {
   }
 }
 
-}  // namespace
+} // namespace
 
 inline at::Tensor PowTensorScalarKernelMetax(
     const at::Tensor& self,
@@ -133,4 +133,4 @@ inline at::Tensor PowTensorScalarKernelMetax(
   return iter.output();
 }
 
-}  // namespace at::native::flagos
+} // namespace at::native::flagos

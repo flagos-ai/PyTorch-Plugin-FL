@@ -102,7 +102,7 @@ void LaunchAddIter(at::TensorIteratorBase& iter, opmath_t alpha) {
   }
 }
 
-}  // namespace
+} // namespace
 
 inline at::Tensor AddTensorKernel(
     const at::Tensor& self,
@@ -174,4 +174,4 @@ inline at::Tensor AddTensorKernel(
   return iter.output();
 }
 
-}  // namespace at::native::flagos
+} // namespace at::native::flagos

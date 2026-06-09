@@ -19,7 +19,7 @@ bool TensorIsCpuOnly(const at::Tensor& tensor) {
       !keys.has(c10::DispatchKey::PrivateUse1);
 }
 
-int64_t FlagosDeviceIndex(const at::Tensor& ref, int64_t fallback = 0) {
+int64_t GetDeviceIndex(const at::Tensor& ref, int64_t fallback = 0) {
   if (!ref.key_set().has(c10::DispatchKey::PrivateUse1)) {
     return fallback;
   }
@@ -44,11 +44,11 @@ at::Tensor CopyToCpu(const at::Tensor& tensor, c10::ScalarType dtype) {
   return dst;
 }
 
-at::Tensor CopyToFlagos(
+at::Tensor CopyToDevice(
     const at::Tensor& cpu_tensor,
     const at::Tensor& device_ref) {
   const at::Tensor src = cpu_tensor.contiguous();
-  const int64_t device_index = FlagosDeviceIndex(device_ref, 0);
+  const int64_t device_index = GetDeviceIndex(device_ref, 0);
   at::Tensor dst = at::empty(
       src.sizes(),
       at::TensorOptions().dtype(src.scalar_type()).device(
@@ -76,8 +76,8 @@ std::tuple<at::Tensor, at::Tensor> NllLossForwardKernelMetax(
   auto [out_cpu, total_weight_cpu] =
       at::nll_loss_forward(self_cpu, target_cpu, weight_cpu, reduction, ignore_index);
   return std::make_tuple(
-      CopyToFlagos(out_cpu, self),
-      CopyToFlagos(total_weight_cpu, self));
+      CopyToDevice(out_cpu, self),
+      CopyToDevice(total_weight_cpu, self));
 }
 
 at::Tensor NllLossBackwardKernelMetax(
@@ -105,20 +105,20 @@ at::Tensor NllLossBackwardKernelMetax(
       reduction,
       ignore_index,
       total_weight_cpu);
-  return CopyToFlagos(out_cpu, grad_output);
+  return CopyToDevice(out_cpu, grad_output);
 }
 
-}  // namespace
+} // namespace
 
-FLAGOS_REGISTER_DISPATCH(
+REGISTER_IMPL_TO_DISPATCHER(
     NllLossForwardFn,
-    nll_loss_forward_stub,
-    FlagosDevice::kMetax,
+    nll_loss_forward_dispatcher,
+    Backend::kMetax,
     NllLossForwardKernelMetax)
-FLAGOS_REGISTER_DISPATCH(
+REGISTER_IMPL_TO_DISPATCHER(
     NllLossBackwardFn,
-    nll_loss_backward_stub,
-    FlagosDevice::kMetax,
+    nll_loss_backward_dispatcher,
+    Backend::kMetax,
     NllLossBackwardKernelMetax)
 
-}  // namespace at::native::flagos
+} // namespace at::native::flagos

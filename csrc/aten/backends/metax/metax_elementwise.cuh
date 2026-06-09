@@ -34,4 +34,4 @@ inline void Launch1d(int64_t n, Kernel kernel, Args... args) {
       cudaGetErrorString(err));
 }
 
-}  // namespace at::native::flagos::metax
+} // namespace at::native::flagos::metax

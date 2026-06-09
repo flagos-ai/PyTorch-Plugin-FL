@@ -99,7 +99,7 @@ void LaunchMulIter(at::TensorIteratorBase& iter) {
   }
 }
 
-}  // namespace
+} // namespace
 
 inline at::Tensor MulTensorKernel(
     const at::Tensor& self,
@@ -165,4 +165,4 @@ inline at::Tensor MulTensorKernel(
   return iter.output();
 }
 
-}  // namespace at::native::flagos
+} // namespace at::native::flagos

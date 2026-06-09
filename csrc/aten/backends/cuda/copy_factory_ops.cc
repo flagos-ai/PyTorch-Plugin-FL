@@ -4,7 +4,7 @@
 // - aten::_local_scalar_dense.default
 // - aten::_to_copy.default
 
-#include "../../copy_stub.h"
+#include "../../copy_dispatcher.h"
 
 #include "../../copy_ops.h"
 
@@ -30,12 +30,12 @@ at::Tensor ToCopyKernelCuda(
 
 }  // namespace
 
-FLAGOS_REGISTER_DISPATCH(
+REGISTER_IMPL_TO_DISPATCHER(
     LocalScalarDenseFn,
-    local_scalar_dense_stub,
-    FlagosDevice::kCuda,
+    local_scalar_dense_dispatcher,
+    Backend::kCuda,
     LocalScalarDenseKernelCuda);
-FLAGOS_REGISTER_DISPATCH(
-    ToCopyFn, to_copy_stub, FlagosDevice::kCuda, ToCopyKernelCuda);
+REGISTER_IMPL_TO_DISPATCHER(
+    ToCopyFn, to_copy_dispatcher, Backend::kCuda, ToCopyKernelCuda);
 
 }  // namespace at::native::flagos

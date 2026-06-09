@@ -6,6 +6,6 @@
 
 namespace at::native::flagos {
 
-FLAGOS_REGISTER_DISPATCH(CosFn, cos_stub, FlagosDevice::kMetax, CosKernelMetax)
+REGISTER_IMPL_TO_DISPATCHER(CosFn, cos_dispatcher, Backend::kMetax, CosKernelMetax)
 
-}  // namespace at::native::flagos
+} // namespace at::native::flagos

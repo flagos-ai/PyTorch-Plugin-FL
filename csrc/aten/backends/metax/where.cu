@@ -6,7 +6,7 @@
 
 namespace at::native::flagos {
 
-FLAGOS_REGISTER_DISPATCH(
-    WhereSelfFn, where_self_stub, FlagosDevice::kMetax, WhereKernelMetax)
+REGISTER_IMPL_TO_DISPATCHER(
+    WhereSelfFn, where_self_dispatcher, Backend::kMetax, WhereKernelMetax)
 
-}  // namespace at::native::flagos
+} // namespace at::native::flagos

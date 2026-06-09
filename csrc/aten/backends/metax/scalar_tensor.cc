@@ -24,9 +24,9 @@ at::Tensor ScalarTensorKernelMetax(
   return result;
 }
 
-}  // namespace
+} // namespace
 
-FLAGOS_REGISTER_DISPATCH(
-    ScalarTensorFn, scalar_tensor_stub, FlagosDevice::kMetax, ScalarTensorKernelMetax)
+REGISTER_IMPL_TO_DISPATCHER(
+    ScalarTensorFn, scalar_tensor_dispatcher, Backend::kMetax, ScalarTensorKernelMetax)
 
-}  // namespace at::native::flagos
+} // namespace at::native::flagos
