@@ -3,41 +3,47 @@ import os
 import pytest
 
 
-def _is_metax_runtime() -> bool:
+def _detect_platform() -> str:
+    """Infer the active hardware/backend platform from env."""
     accelerator = os.environ.get("ACCELERATOR", "").lower()
-    if accelerator == "metax":
-        return True
+    if accelerator == "ascend":
+        return "ascend"
+    if accelerator in ("metax", "maca"):
+        return "metax"
 
     backend_cfg = os.environ.get("FLAGOS_BACKEND_CONFIG", "").lower()
-    return "metax" in backend_cfg
+    if "ascend" in backend_cfg:
+        return "ascend"
+    if "metax" in backend_cfg:
+        return "metax"
+    return "default"
+
+
+# Markers to skip per platform (tests for other backends are not compiled/available).
+_PLATFORM_SKIP_MARKERS: dict[str, tuple[str, ...]] = {
+    "metax": ("cuda", "ascend", "flaggems_python"),
+    "ascend": ("cuda", "metax"),
+    "default": ("metax", "ascend"),
+}
 
 
 def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
-    if _is_metax_runtime():
-        skip_cuda_flaggems = pytest.mark.skip(
-            reason="Skipped on metax runtime: test requires CUDA/flaggems backend"
-        )
-        cuda_keywords = (
-            "dispatch_log_cuda",
-            "flaggems",
-            "flagos_default",
-            "matches_cuda",
-            "cuda_ref",
-            "cuda_override",
-        )
-        for item in items:
-            nodeid = item.nodeid
-            if any(keyword in nodeid for keyword in cuda_keywords):
-                item.add_marker(skip_cuda_flaggems)
-    else:
-        skip_metax = pytest.mark.skip(
-            reason="Skipped off metax runtime: test requires MetaX backend"
-        )
-        for item in items:
-            if item.get_closest_marker("metax") or "dispatch_log_metax" in item.nodeid:
-                item.add_marker(skip_metax)
+    platform = _detect_platform()
+    markers_to_skip = _PLATFORM_SKIP_MARKERS.get(platform, ())
+    for item in items:
+        for marker_name in markers_to_skip:
+            if item.get_closest_marker(marker_name):
+                item.add_marker(
+                    pytest.mark.skip(
+                        reason=(
+                            f"Skipped on {platform} runtime: "
+                            f"requires @{marker_name} backend"
+                        )
+                    )
+                )
+                break
 
 
 def pytest_configure(config):

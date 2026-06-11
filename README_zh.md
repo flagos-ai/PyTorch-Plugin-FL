@@ -45,19 +45,27 @@ ACCELERATOR=cuda FLAGGEMS_DIR=/path/to/FlagGems/build/cpython-312/ \
 
 ### 从源码安装（MetaX 平台）
 
-MetaX 构建与 NPU 模式类似：**主工程仅 CXX**，设备算子由 `mxcc/cucc` 编译 `backends/metax/*.cu` 后以 object 链入 `libtorch_fl.so`；运行时走 `runtime/accelerator/metax`（cu-bridge），**不**使用 `cmake_metax`、不委托 `at::cuda`/`at::maca`。
+MetaX 构建与 Ascend 类似：**主工程仅 CXX**，设备算子由 `mxcc`/`cucc` 编译 `csrc/aten/backends/metax/*.cu` 后以 object 链入 `libtorch_fl.so`；运行时走 `runtime/accelerator/metax`（cu-bridge），**不**委托 `at::cuda`/`at::maca`。
+
+**前置依赖**
+
+- MetaX MACA SDK（默认 `/opt/maca`），含 cu-bridge 与 `mxcc`/`cucc`
+- 与 MetaX 栈匹配的 PyTorch wheel（见下方[运行时说明](#metax-运行时说明)）
+- FlagGems 5.0.2+（可选；仅当算子路由到 `flagos_python` 时需要）
 
 ```bash
+git clone https://github.com/flagos-ai/PyTorch-Plugin-FL.git && cd PyTorch-Plugin-FL
+
+# MetaX SDK 路径（按实际安装位置调整）
 export METAX_PATH=/opt/maca
 export PATH=/opt/maca/tools/cu-bridge/bin:/opt/maca/bin:/opt/maca/mxgpu_llvm/bin:$PATH
 export LD_LIBRARY_PATH=/opt/maca/lib:/opt/maca/tools/cu-bridge/lib:/opt/maca/mxgpu_llvm/lib:$LD_LIBRARY_PATH
-export FLAGOS_BACKEND_CONFIG=/path/to/torch_fl/backends_metax.conf
-export FLAGOS_DISABLE_FLAGGEMS_PY=1   # 仅测 C++ metax 算子时建议开启
 
-ACCELERATOR=metax pip install -e . --no-build-isolation
+ACCELERATOR=metax METAX_KERNEL=ON FLAGGEMS_PYTHON=1 FLAGGEMS_KERNEL=0 CUDA_KERNEL=0 \
+  pip install --no-build-isolation -vvv -e .
 ```
 
-> 算子路由示例见 `torch_fl/backends_metax.conf`（`add.Tensor` / `mul.Tensor` / `le.Tensor` / `all` → `metax`）。若 PyTorch wheel 加载报 `libcudart.so.12` 版本符号，可设 `FLAGOS_METAX_CUDART_SHIM=1`；若需 FlagGems 与 MetaX 设备名兼容，可设 `FLAGOS_METAX_COMPAT=1`。
+> 在 MetaX 上，PyPI 通用版 Triton（`nvidia` 后端）无法为 MetaX 硬件 JIT 内核。请使用 `torch_fl/backends_metax.conf` 或 `torch_fl/backends_metax_flagos_py.conf`，将不兼容算子路由到 metax C++ kernel（见[MetaX 后端配置](#metax-后端配置)）。
 
 ### 从源码安装（Ascend 平台）
 
@@ -81,6 +89,7 @@ Ascend 平台上禁用 FlagGems C++ kernel 和 CUDA kernel，仅编译 Ascend ke
 | `CUDA_HOME` | CUDA toolkit 路径 |
 | `METAX_PATH` | MetaX SDK 路径（默认 `/opt/maca`，metax 构建必需） |
 | `METAX_ARCH` / `METAX_MXCC` | 可选：GPU 架构或 mxcc/cucc 编译器路径 |
+| `METAX_KERNEL` | 启用 MetaX C++ kernel 构建（`ON`/`OFF`；`ACCELERATOR=metax` 时自动开启） |
 | `ASCEND_HOME` | CANN toolkit 路径（默认 `/usr/local/Ascend/ascend-toolkit/latest`） |
 | `FLAGGEMS_DIR` | FlagGems C++ 库路径（启用低开销 C++ dispatch） |
 | `FLAGGEMS_KERNEL` | 启用 FlagGems C++ kernel 封装（`ON`/`OFF`，默认 `ON`；Ascend 设为 `0`） |
@@ -93,10 +102,12 @@ Ascend 平台上禁用 FlagGems C++ kernel 和 CUDA kernel，仅编译 Ascend ke
 | 变量 | 说明 |
 |------|------|
 | `FLAGOS_DISABLE_FLAGGEMS_PY` | 设为 `1` 关闭 FlagGems Python 层注册（C++ stub-only 模式） |
-| `FLAGOS_METAX_CUDART_SHIM` | 设为 `1` 在 import 前加载 libcudart 兼容 shim（少数 PyTorch wheel 需要） |
+| `FLAGOS_METAX_CUDART_SHIM` | 设为 `1` 在 import 前加载 libcudart 兼容 shim（通用 PyTorch wheel 常需） |
 | `FLAGOS_METAX_COMPAT` | 设为 `1` 为 FlagGems 修补 `torch.cuda` 设备属性查询 |
-| `FLAGGEMS_SOURCE_DIR` | FlagGems 源码目录（当 C++ native API 算子路由到 `flaggems` 后端时必须设置） |
-| `FLAGOS_BACKEND_CONFIG` | 覆盖 `backends.conf` 路径（Ascend 使用 `torch_fl/backends_ascend.conf`） |
+| `GEMS_VENDOR` | FlagGems 厂商名；MetaX 上设为 `metax` |
+| `LD_PRELOAD` | 常设为 `/opt/maca/lib/libsymbol_cu.so`，用于 cu-bridge 符号解析 |
+| `FLAGGEMS_SOURCE_DIR` | FlagGems 源码目录（算子路由到 `flaggems` 或 `flagos_python` 时需设置） |
+| `FLAGOS_BACKEND_CONFIG` | 覆盖后端路由配置（MetaX：`backends_metax.conf` 或 `backends_metax_flagos_py.conf`） |
 | `FLAGOS_LOG_DISPATCH` | 设为 `1` 打印每次算子 dispatch 的后端选择 |
 | `FLAGOS_OP_<name>` | 按算子覆盖后端（算子名中的 `.` 替换为 `__`） |
 
@@ -145,6 +156,29 @@ import torch
 原因：PyTorch 自带的 CUDA 12.x 运行时与 MetaX 的 cu-bridge（CUDA 11.6 兼容层）ABI 不兼容。`torch_fl` 会预加载一个 shim 库来提供所需的符号版本。
 
 CUDA 平台无此限制。
+
+### MetaX 运行时环境
+
+运行测试或推理前，配置 SDK 路径与混合后端：
+
+```bash
+export METAX_PATH=/opt/maca
+export PATH=/opt/maca/tools/cu-bridge/bin:/opt/maca/bin:/opt/maca/mxgpu_llvm/bin:$PATH
+export LD_LIBRARY_PATH=/opt/maca/tools/cu-bridge/lib:/opt/maca/lib:/opt/maca/mxgpu_llvm/lib:/opt/mxdriver/lib:$LD_LIBRARY_PATH
+export LD_PRELOAD=/opt/maca/lib/libsymbol_cu.so
+
+export FLAGOS_METAX_CUDART_SHIM=1
+export FLAGOS_METAX_COMPAT=1
+export GEMS_VENDOR=metax
+export FLAGOS_BACKEND_CONFIG=torch_fl/backends_metax_flagos_py.conf
+export FLAGGEMS_SOURCE_DIR=$(python -c "import os,flag_gems;print(os.path.dirname(flag_gems.__file__))")
+```
+
+#### MetaX 运行时说明
+
+- **PyTorch + Triton 栈**：官方 `maca-pytorch` 镜像自带 `torch+metax` 与 `triton+metax`（输出 `mcfatbin`）。通用 PyTorch wheel + PyPI Triton 走 NVIDIA 后端，在 MetaX 上会报 `PTX JIT compilation failed`，需将相关算子路由到 metax C++ kernel。
+- **`flash_attn`**：预编译 MetaX `flash_attn` wheel 可能与较新 PyTorch ABI 不兼容；加载 Qwen3/transformers 前需禁用或 patch。
+- **`relu` / `sigmoid`**：当前树中未通过 `m.impl` 注册，走 cpu_fallback；除非已在 `MetaxKernels.cmake` 中启用 GPU kernel，否则不要在配置里写 `metax`。
 
 ### C++ Stub-Only 模式
 
@@ -198,6 +232,28 @@ export FLAGOS_OP_mm=cuda
 export FLAGOS_OP_mm__out=cuda
 ```
 
+### MetaX 后端配置
+
+| 文件 | 用途 |
+|------|------|
+| `torch_fl/backends_metax.conf` | 所列算子全部 → `metax` C++ kernel。pytest 检测到 MetaX（`/dev/mxcd`）且未设置 `FLAGOS_BACKEND_CONFIG` 时自动选用。 |
+| `torch_fl/backends_metax_flagos_py.conf` | **集成测试推荐。** 混合路由：Triton 不兼容算子（如 `add`、`mm`、`cos`、`abs`）→ `metax`；少量算子仍走 `flagos_python`。 |
+
+示例（`backends_metax_flagos_py.conf`）：
+
+```ini
+# allclose 依赖链
+abs = metax
+le.Tensor = metax
+all = metax
+
+# 通用 Triton 在 MetaX 上会 PTX / autotune 失败
+add.Tensor = metax
+mm = metax
+cos = metax
+sin = metax
+```
+
 ### 调试 dispatch
 
 ```bash
@@ -245,6 +301,40 @@ pytest tests/integration/ops/ -v -m anyplatform
 FLAGOS_BACKEND_CONFIG=torch_fl/backends_flagos_py.conf \
   pytest tests/integration/ops/ -v
 ```
+
+### MetaX 平台
+
+```bash
+# 运行时环境（见上文「MetaX 运行时环境」）
+export METAX_PATH=/opt/maca
+export PATH=/opt/maca/tools/cu-bridge/bin:/opt/maca/bin:$PATH
+export LD_LIBRARY_PATH=/opt/maca/tools/cu-bridge/lib:/opt/maca/lib:$LD_LIBRARY_PATH
+export LD_PRELOAD=/opt/maca/lib/libsymbol_cu.so
+export FLAGOS_METAX_CUDART_SHIM=1
+export FLAGOS_METAX_COMPAT=1
+export GEMS_VENDOR=metax
+export FLAGOS_BACKEND_CONFIG=torch_fl/backends_metax_flagos_py.conf
+export FLAGGEMS_SOURCE_DIR=$(python -c "import os,flag_gems;print(os.path.dirname(flag_gems.__file__))")
+
+# 基础算子测试（含 Qwen3 推理路径：cos/sin/rsqrt/silu 等）
+pytest tests/integration/test_ops.py -v
+
+# 逐算子 dispatch 测试（混合配置）
+pytest tests/integration/ops/ -v -m "anyplatform"
+
+# Qwen3 推理
+pytest tests/integration/test_qwen3_infer.py -v -s --model /path/to/Qwen3-0.6B
+
+# Qwen3 训练（单卡）
+pytest tests/integration/test_qwen3_train.py -v -s --steps 10
+
+# 纯 metax C++ kernel 模式（不走 flagos_python）
+FLAGOS_BACKEND_CONFIG=torch_fl/backends_metax.conf \
+  FLAGOS_DISABLE_FLAGGEMS_PY=1 \
+  pytest tests/integration/test_ops.py -v
+```
+
+未设置 `FLAGOS_BACKEND_CONFIG` 时，`tests/integration/conftest.py` 会在 MetaX 硬件上自动选择 `torch_fl/backends_metax.conf`。
 
 ### Ascend 平台
 
@@ -310,8 +400,11 @@ PyTorch-Plugin-FL/
 │   ├── __init__.py           # 插件入口：注册设备、加载 FlagGems 算子
 │   ├── flagos/               # Python 设备模块（stream、event、RNG、AMP）
 │   ├── accelerator/          # Python accelerator 模块（MACA shim 加载器）
-│   ├── backends.conf         # 默认后端路由配置（CUDA/FlagGems）
-│   ├── backends_ascend.conf  # Ascend 后端路由配置（所有算子 → ascend）
+│   ├── backends.conf                  # 默认后端路由配置（CUDA/FlagGems）
+│   ├── backends_metax.conf            # MetaX：所列算子 → metax
+│   ├── backends_metax_flagos_py.conf  # MetaX 混合：metax + flagos_python
+│   ├── backends_flagos_py.conf        # FlagGems Python 封装路由
+│   ├── backends_ascend.conf           # Ascend 后端路由（所有算子 → ascend）
 │   ├── distributed.py        # 分布式训练支持（DDP patch）
 │   ├── integration.py        # FlagGems 算子注册逻辑
 │   ├── csrc/                 # C 扩展（module.cc、stub.c）
