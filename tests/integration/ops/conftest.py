@@ -21,7 +21,7 @@ def _detect_platform() -> str:
 
 # Markers to skip per platform (tests for other backends are not compiled/available).
 _PLATFORM_SKIP_MARKERS: dict[str, tuple[str, ...]] = {
-    "metax": ("cuda", "ascend", "flaggems_python"),
+    "metax": ("cuda", "ascend", "flaggems"),
     "ascend": ("cuda", "metax"),
     "default": ("metax", "ascend"),
 }
