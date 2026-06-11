@@ -321,9 +321,68 @@ class TestActivations:
         s = torch.softmax(x, dim=0)
         assert s.sum().item() == pytest.approx(1.0, abs=1e-5)
 
+    def test_silu(self, device):
+        x = torch.tensor([-1.0, 0.0, 1.0, 2.0], device=device)
+        assert torch.allclose(F.silu(x).cpu(), F.silu(x.cpu()), rtol=1e-4, atol=1e-4)
+
 
 # ---------------------------------------------------------------------------
-# 10. Device properties
+# 10. Unary / elementwise ops (Qwen3 inference path)
+# ---------------------------------------------------------------------------
+
+
+class TestInferencePathOps:
+    """Ops commonly hit in Qwen3 forward (RoPE, mask, activations)."""
+
+    def test_cos(self, device):
+        x = torch.tensor([0.0, 1.5708, 3.14159], device=device)
+        assert torch.allclose(
+            torch.cos(x).cpu(), torch.cos(x.cpu()), rtol=1e-4, atol=1e-4
+        )
+
+    def test_sin(self, device):
+        x = torch.tensor([0.0, 1.5708, 3.14159], device=device)
+        assert torch.allclose(
+            torch.sin(x).cpu(), torch.sin(x.cpu()), rtol=1e-4, atol=1e-4
+        )
+
+    def test_rsqrt(self, device):
+        x = torch.tensor([1.0, 4.0, 16.0], device=device)
+        assert torch.allclose(
+            torch.rsqrt(x).cpu(), torch.rsqrt(x.cpu()), rtol=1e-4, atol=1e-4
+        )
+
+    def test_pow_scalar(self, device):
+        x = torch.tensor([2.0, 3.0, 4.0], device=device)
+        assert torch.allclose(
+            torch.pow(x, 2).cpu(), torch.pow(x.cpu(), 2), rtol=1e-4, atol=1e-4
+        )
+
+    def test_mul_scalar(self, device):
+        x = torch.tensor([1.0, 2.0, 3.0], device=device)
+        assert torch.allclose((x * 2.0).cpu(), x.cpu() * 2.0, rtol=1e-4, atol=1e-4)
+
+    def test_bitwise_and(self, device):
+        a = torch.tensor([0b1010, 0b1100, 0b1111], dtype=torch.int32, device=device)
+        b = torch.tensor([0b1001, 0b0100, 0b1010], dtype=torch.int32, device=device)
+        assert torch.equal(a & b, torch.tensor([0b1000, 0b0100, 0b1010], device=device))
+
+    def test_where(self, device):
+        cond = torch.tensor([True, False, True, False], device=device)
+        a = torch.tensor([1.0, 2.0, 3.0, 4.0], device=device)
+        b = torch.tensor([5.0, 6.0, 7.0, 8.0], device=device)
+        out = torch.where(cond, a, b)
+        expected = torch.where(cond.cpu(), a.cpu(), b.cpu())
+        assert torch.allclose(out.cpu(), expected, rtol=1e-4, atol=1e-4)
+
+    def test_index_tensor(self, device):
+        x = torch.arange(10, device=device, dtype=torch.float32)
+        indices = torch.tensor([1, 3, 7], device=device)
+        assert torch.allclose(x[indices].cpu(), x.cpu()[indices.cpu()])
+
+
+# ---------------------------------------------------------------------------
+# 11. Device properties
 # ---------------------------------------------------------------------------
 
 
@@ -337,7 +396,7 @@ class TestDeviceProperties:
 
 
 # ---------------------------------------------------------------------------
-# 11. Autograd
+# 12. Autograd
 # ---------------------------------------------------------------------------
 
 
@@ -359,7 +418,7 @@ class TestAutograd:
 
 
 # ---------------------------------------------------------------------------
-# 12. Synchronization
+# 13. Synchronization
 # ---------------------------------------------------------------------------
 
 

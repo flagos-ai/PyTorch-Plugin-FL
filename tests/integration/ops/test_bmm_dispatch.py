@@ -238,7 +238,7 @@ class TestBmmDispatchLog:
             f"Expected flagos_python dispatch log, got:\n{result.stderr}"
         )
 
-    @pytest.mark.anyplatform
+    @pytest.mark.flaggems
     def test_dispatch_log_flagos_default(self):
         """Default config routes bmm to flagos."""
         result = _run_bmm_subprocess(

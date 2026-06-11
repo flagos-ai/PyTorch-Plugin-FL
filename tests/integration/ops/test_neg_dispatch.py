@@ -68,7 +68,7 @@ class TestNegCorrectness:
         ref = -a_view.cpu()
         torch.testing.assert_close(out.cpu(), ref, rtol=0, atol=0)
 
-    @pytest.mark.anyplatform
+    @pytest.mark.cuda
     def test_neg_matches_cuda(self):
         if not torch.cuda.is_available():
             pytest.skip("CUDA not available")
