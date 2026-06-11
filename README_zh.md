@@ -30,8 +30,9 @@
     - MetaX cu-bridge 库（仅在 MetaX 平台需要）
     - CANN toolkit（仅在 Ascend 平台需要）
 - PyTorch 2.11.0
-- FlagGems（5.0.2 版本以上，需要开启 DFLAGGEMS_BUILD_C_EXTENSIONS），源码安装参考文档：[FlagGems 安装](https://flagos-ai.github.io/FlagGems/getting-started/install/)
-  - 注意：Ascend 平台上 FlagGems 为可选依赖
+- FlagGems（5.0.2 版本以上）
+  - CUDA 平台：从 [FlagGems 官方仓库](https://github.com/FlagOpen/FlagGems) 安装，需开启 `FLAGGEMS_BUILD_C_EXTENSIONS`
+  - Ascend 平台：从 [Hchnr/FlagGems](https://github.com/Hchnr/FlagGems) 的 `torch_fl` 分支安装，需指定 `FLAGGEMS_BACKEND=FLAGOS`（详见下方 Ascend 安装步骤）
 
 ### 从源码安装（CUDA 平台）
 
@@ -61,16 +62,92 @@ ACCELERATOR=metax pip install -e . --no-build-isolation
 
 ### 从源码安装（Ascend 平台）
 
+#### 1. 安装 FlagGems（FLAGOS 后端）
+
+Ascend 平台上 FlagGems 需要使用我们 fork 的 `torch_fl` 分支，并以 `FLAGGEMS_BACKEND=FLAGOS` 编译。这样 FlagGems 不依赖 `torch_npu` / `libtorch_npu.so`，而是通过 `torch_fl` 提供的 `GetCurrentStream` C API 获取 ACL stream。
+
 ```bash
-# 确保 CANN toolkit 已安装并已 source 环境
-# （通常: source /usr/local/Ascend/ascend-toolkit/set_env.sh）
+# 克隆 FlagGems（torch_fl 分支）
+git clone -b torch_fl https://github.com/Hchnr/FlagGems.git
+cd FlagGems
+
+# 确保 CANN toolkit 环境已激活
+source /usr/local/Ascend/ascend-toolkit/set_env.sh
+
+# 安装 FlagGems（指定 FLAGOS 后端，跳过 C++ 扩展编译）
+pip install --no-build-isolation -e . \
+  --config-settings=cmake.define.FLAGGEMS_BACKEND=FLAGOS \
+  --config-settings=cmake.define.FLAGGEMS_BUILD_C_EXTENSIONS=OFF
+
+cd ..
+```
+
+> **为什么用 FLAGOS 后端？**
+> FlagGems 的 `ascend/npu` 后端会链接 `libtorch_npu.so`，而我们的环境没有 `torch_npu`（`torch_fl` 本身就是 PrivateUse1 后端）。
+> `FLAGOS` 后端通过 `extern "C" void* GetCurrentStream(int)` 获取 stream，由 `torch_fl` 的 `libstream_api.so` 提供实现，完全绕开 `torch_npu` 依赖。
+
+#### 2. 安装 torch_fl
+
+```bash
+git clone https://github.com/flagos-ai/PyTorch-Plugin-FL.git && cd PyTorch-Plugin-FL
+
+# 确保 CANN toolkit 环境已激活
+source /usr/local/Ascend/ascend-toolkit/set_env.sh
 
 ACCELERATOR=ascend FLAGGEMS_KERNEL=0 FLAGGEMS_PYTHON=1 \
   CUDA_KERNEL=0 ASCEND_KERNEL=1 \
   pip install --no-build-isolation -vvv -e .
 ```
 
-Ascend 平台上禁用 FlagGems C++ kernel 和 CUDA kernel，仅编译 Ascend kernel 后端（ACL NN API），同时启用 FlagGems Python 封装用于路由到 FlagGems 的算子。
+说明：
+- `FLAGGEMS_KERNEL=0`：禁用 FlagGems C++ kernel 封装（FLAGOS 后端暂不编译 `liboperators.so`）
+- `FLAGGEMS_PYTHON=1`：启用 FlagGems Python 封装，通过 `python_wrapper` 机制调用 FlagGems Triton kernel
+- `ASCEND_KERNEL=1`：编译 Ascend C++ 算子后端（ACL NN API）
+
+#### 3. Patch triton-ascend
+
+原版 triton-ascend 依赖 `torch_npu` / `libtorch_npu.so`。由于 `torch_fl` 替代了 `torch_npu` 作为 PrivateUse1 后端，需要 patch triton-ascend 使其使用 `flagos` 设备接口：
+
+```bash
+python scripts/patch_triton_ascend.py
+```
+
+脚本会自动检测 triton 安装路径并应用修改。脚本幂等，可重复执行。patch 后请清理 kernel 缓存：
+
+```bash
+rm -rf ~/.triton/cache/
+```
+
+#### 4. 验证安装
+
+```bash
+python -c "
+import torch_fl
+print('device count:', torch_fl.flagos.device_count())
+print('FlagGems enabled:', torch_fl.is_flaggems_enabled())
+print('registered ops:', len(torch_fl.get_registered_ops()))
+"
+```
+
+#### 5. 运行推理测试
+
+```bash
+pytest tests/integration/test_qwen3_infer.py -v -s --model /path/to/Qwen3-0.6B
+```
+
+#### 6. 运行训练测试
+
+```bash
+pytest tests/integration/test_qwen3_train.py -v -s --model /path/to/Qwen3-0.6B
+```
+
+> **常见问题：`libtorch_npu.so: cannot open shared object file`**
+>
+> 如果遇到此错误，说明 triton-ascend 仍在尝试加载 `torch_npu`。请确认：
+> 1. 安装 triton-ascend 后执行了 `python scripts/patch_triton_ascend.py`
+> 2. FlagGems 是从 `https://github.com/Hchnr/FlagGems` 的 `torch_fl` 分支安装的
+> 3. 安装时指定了 `FLAGGEMS_BACKEND=FLAGOS`
+> 4. 已清理 triton kernel 缓存（`rm -rf ~/.triton/cache/`）
 
 ### 构建环境变量
 

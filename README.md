@@ -52,16 +52,89 @@ ACCELERATOR=metax pip install -e . --no-build-isolation
 
 ### Build from Source (Ascend Platform)
 
+#### 1. Install FlagGems (FLAGOS Backend)
+
+On Ascend, FlagGems must be installed from our fork (`torch_fl` branch) with `FLAGGEMS_BACKEND=FLAGOS`. This avoids the `libtorch_npu.so` dependency — instead, FlagGems obtains the ACL stream via `torch_fl`'s `GetCurrentStream` C API.
+
 ```bash
-# Ensure CANN toolkit is installed and environment is sourced
-# (typically: source /usr/local/Ascend/ascend-toolkit/set_env.sh)
+# Clone FlagGems (torch_fl branch)
+git clone -b torch_fl https://github.com/Hchnr/FlagGems.git
+cd FlagGems
+
+# Ensure CANN toolkit environment is sourced
+source /usr/local/Ascend/ascend-toolkit/set_env.sh
+
+# Install FlagGems with FLAGOS backend (skip C++ extensions)
+pip install --no-build-isolation -e . \
+  --config-settings=cmake.define.FLAGGEMS_BACKEND=FLAGOS \
+  --config-settings=cmake.define.FLAGGEMS_BUILD_C_EXTENSIONS=OFF
+
+cd ..
+```
+
+> **Why FLAGOS backend?**
+> The default ascend/npu backend links against `libtorch_npu.so`, which doesn't exist in our environment (`torch_fl` is the PrivateUse1 backend, not `torch_npu`).
+> The `FLAGOS` backend resolves device streams via `extern "C" void* GetCurrentStream(int)`, provided by `torch_fl`'s `libstream_api.so`.
+
+#### 2. Install torch_fl
+
+```bash
+git clone https://github.com/flagos-ai/PyTorch-Plugin-FL.git && cd PyTorch-Plugin-FL
+
+source /usr/local/Ascend/ascend-toolkit/set_env.sh
 
 ACCELERATOR=ascend FLAGGEMS_KERNEL=0 FLAGGEMS_PYTHON=1 \
   CUDA_KERNEL=0 ASCEND_KERNEL=1 \
   pip install --no-build-isolation -vvv -e .
 ```
 
-On Ascend, FlagGems C++ kernels and CUDA kernels are disabled. Only the Ascend kernel backend (ACL NN API) is compiled, with FlagGems Python wrappers enabled for ops that route to FlagGems.
+Notes:
+- `FLAGGEMS_KERNEL=0`: Disable FlagGems C++ kernel wrappers (FLAGOS backend does not compile `liboperators.so`)
+- `FLAGGEMS_PYTHON=1`: Enable FlagGems Python wrappers to route ops to FlagGems Triton kernels
+- `ASCEND_KERNEL=1`: Compile the Ascend C++ operator backend (ACL NN API)
+
+#### 3. Patch triton-ascend
+
+The stock triton-ascend package depends on `torch_npu` / `libtorch_npu.so`. Since `torch_fl` replaces `torch_npu` as the PrivateUse1 backend, we need to patch triton-ascend to use the `flagos` device interface instead:
+
+```bash
+python scripts/patch_triton_ascend.py
+```
+
+The script auto-detects the triton install path and applies the necessary changes. It is idempotent — running it multiple times is safe. After patching, clear any stale kernel cache:
+
+```bash
+rm -rf ~/.triton/cache/
+```
+
+#### 4. Verify Installation
+
+```bash
+python -c "
+import torch_fl
+print('device count:', torch_fl.flagos.device_count())
+print('FlagGems enabled:', torch_fl.is_flaggems_enabled())
+print('registered ops:', len(torch_fl.get_registered_ops()))
+"
+```
+
+#### 5. Run Tests
+
+```bash
+# Inference test
+pytest tests/integration/test_qwen3_infer.py -v -s --model /path/to/Qwen3-0.6B
+
+# Training test
+pytest tests/integration/test_qwen3_train.py -v -s --model /path/to/Qwen3-0.6B
+```
+
+> **Troubleshooting: `libtorch_npu.so: cannot open shared object file`**
+>
+> This error means triton-ascend is still trying to load `torch_npu`. Verify that:
+> 1. You ran `python scripts/patch_triton_ascend.py` after installing triton-ascend
+> 2. FlagGems was installed from `https://github.com/Hchnr/FlagGems` branch `torch_fl`
+> 3. It was built with `FLAGGEMS_BACKEND=FLAGOS`
+> 4. The triton kernel cache was cleared (`rm -rf ~/.triton/cache/`)
 
 ### Build Environment Variables
 
