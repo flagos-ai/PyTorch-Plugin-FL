@@ -336,11 +336,15 @@ class TestInferencePathOps:
 
     def test_cos(self, device):
         x = torch.tensor([0.0, 1.5708, 3.14159], device=device)
-        assert torch.allclose(torch.cos(x).cpu(), torch.cos(x.cpu()), rtol=1e-4, atol=1e-4)
+        assert torch.allclose(
+            torch.cos(x).cpu(), torch.cos(x.cpu()), rtol=1e-4, atol=1e-4
+        )
 
     def test_sin(self, device):
         x = torch.tensor([0.0, 1.5708, 3.14159], device=device)
-        assert torch.allclose(torch.sin(x).cpu(), torch.sin(x.cpu()), rtol=1e-4, atol=1e-4)
+        assert torch.allclose(
+            torch.sin(x).cpu(), torch.sin(x.cpu()), rtol=1e-4, atol=1e-4
+        )
 
     def test_rsqrt(self, device):
         x = torch.tensor([1.0, 4.0, 16.0], device=device)
