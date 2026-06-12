@@ -226,6 +226,8 @@ at::Tensor _to_copy(
     int device_index = device.index() >= 0 ? device.index() : 0;
     at::Tensor self_contig = self.contiguous();
     if (dtype != self.scalar_type()) {
+#ifdef USE_ASCEND
+      // Ascend: no CUDA runtime, fall back to CPU round-trip for dtype cast.
       size_t nbytes = self_contig.numel() * self_contig.element_size();
       at::Tensor cpu_tensor = at::empty(self_contig.sizes(), self_contig.options().device(at::kCPU));
       if (nbytes > 0) {
@@ -237,6 +239,14 @@ at::Tensor _to_copy(
       if (result_nbytes > 0) {
         Memcpy(result.data_ptr(), cpu_tensor.data_ptr(), result_nbytes, MemcpyHostToDevice);
       }
+#else
+      // CUDA platform: use DeviceBoxingGuard + CUDA TensorIterator copy kernel
+      // for dtype cast on-device, avoiding costly CPU round-trip.
+      result = at::empty(self_contig.sizes(), self_contig.options()
+          .dtype(dtype).device(c10::Device(c10::kPrivateUse1, device_index)));
+      DeviceBoxingGuard guard(self_contig, result);
+      at::native::copy_(result, self_contig, false);
+#endif
     } else {
       result = at::empty(self_contig.sizes(), self_contig.options().device(c10::Device(c10::kPrivateUse1, device_index)));
       size_t nbytes = self_contig.numel() * self_contig.element_size();
