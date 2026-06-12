@@ -41,6 +41,9 @@
 #include "nll_loss.h"
 #include "abs.h"
 #include "acos.h"
+#include "sort.h"
+#include "topk.h"
+#include "multinomial.h"
 
 #include <ATen/native/CPUFallback.h>
 
@@ -376,6 +379,22 @@ at::Tensor WrapperAcos(const at::Tensor& self) {
   return at::native::flagos::acos_dispatcher(self);
 }
 
+std::tuple<at::Tensor, at::Tensor> WrapperSort(
+    const at::Tensor& self, int64_t dim, bool descending) {
+  return at::native::flagos::sort_dispatcher(self, dim, descending);
+}
+
+std::tuple<at::Tensor, at::Tensor> WrapperTopk(
+    const at::Tensor& self, int64_t k, int64_t dim, bool largest, bool sorted) {
+  return at::native::flagos::topk_dispatcher(self, k, dim, largest, sorted);
+}
+
+at::Tensor WrapperMultinomial(
+    const at::Tensor& self, int64_t num_samples, bool replacement,
+    ::std::optional<at::Generator> generator) {
+  return at::native::flagos::multinomial_dispatcher(self, num_samples, replacement, generator);
+}
+
 } // namespace
 
 // Register basic operators for PrivateUse1 dispatch key
@@ -433,6 +452,9 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("nll_loss_backward", WrapperNllLossBackward);
   m.impl("abs", WrapperAbs);
   m.impl("acos", WrapperAcos);
+  m.impl("sort", WrapperSort);
+  m.impl("topk", WrapperTopk);
+  m.impl("multinomial", WrapperMultinomial);
 }
 
 // Register fallback for all unimplemented operators
