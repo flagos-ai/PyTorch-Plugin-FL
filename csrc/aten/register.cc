@@ -52,6 +52,8 @@
 
 #include <torch/library.h>
 
+#include "runtime/allocator/caching_device_allocator.h"
+
 namespace at::flagos {
 
 namespace {
@@ -210,9 +212,15 @@ void WrapperCpuFallback(
 }
 
 void WrapperRecordStream(at::Tensor& self, at::Stream s) {
-  // No-op for flagos tensors.
-  // flagos uses cudaMalloc directly (not a caching allocator),
-  // so there is no need to track stream usage for memory management.
+  if (!c10::flagos::CachingDeviceAllocator::is_enabled()) {
+    // No-op when caching allocator is disabled.
+    return;
+  }
+  auto* alloc = c10::flagos::GetCachingAllocator();
+  // Convert at::Stream to flagos Stream_t.
+  // The stream id encodes the underlying device stream pointer.
+  Stream_t stream = reinterpret_cast<Stream_t>(s.id());
+  alloc->record_stream(self.storage().data_ptr(), stream);
 }
 
 at::Tensor WrapperMm(const at::Tensor& self, const at::Tensor& mat2) {
