@@ -40,7 +40,7 @@ class OpProfiler(TorchDispatchMode):
         return result
 
     def report(self):
-        print(f"\n=== Op Profile Summary (CUDA baseline) ===")
+        print("\n=== Op Profile Summary (CUDA baseline) ===")
         print(f"Total unique ops: {len(self.op_counts)}")
         print(f"Total op calls: {sum(self.op_counts.values())}")
         print(f"Total op time: {sum(self.op_times.values()):.3f}s")
@@ -89,7 +89,7 @@ def main():
     model = model.to(device)
     model.eval()
     model.model.layers[0].self_attn.config._attn_implementation = "eager"
-    print(f"Model loaded, attention: eager")
+    print("Model loaded, attention: eager")
 
     # Prepare input
     text = tokenizer.apply_chat_template(
@@ -135,7 +135,7 @@ def main():
 
     # Per-token breakdown
     total_op_time = sum(profiler.op_times.values())
-    print(f"\n=== Per-Token Breakdown ===")
+    print("\n=== Per-Token Breakdown ===")
     print(f"Wall-clock time:     {profiled_time:.3f}s")
     print(f"Op execution time:   {total_op_time:.3f}s")
     print(f"Unaccounted overhead: {profiled_time - total_op_time:.3f}s")

@@ -123,7 +123,7 @@ def main():
     # Force eager attention to match baseline
     model.model.layers[0].self_attn.config._attn_implementation = "eager"
     print(f"Model loaded in {time.time() - t0:.2f}s")
-    print(f"Attention: eager")
+    print("Attention: eager")
     print()
 
     # Prepare input
@@ -175,14 +175,16 @@ def main():
     total_op_time = sum(profiler.op_times.values())
     unaccounted = profiled_time - total_op_time
     print(f"Wall-clock time:     {profiled_time:.3f}s")
-    print(f"Op execution time:   {total_op_time:.3f}s ({total_op_time/profiled_time*100:.1f}%)")
-    print(f"Unaccounted overhead: {unaccounted:.3f}s ({unaccounted/profiled_time*100:.1f}%)")
     print(
-        f"  (dispatch, Python overhead, host-device sync, framework bookkeeping)"
+        f"Op execution time:   {total_op_time:.3f}s ({total_op_time / profiled_time * 100:.1f}%)"
     )
+    print(
+        f"Unaccounted overhead: {unaccounted:.3f}s ({unaccounted / profiled_time * 100:.1f}%)"
+    )
+    print("  (dispatch, Python overhead, host-device sync, framework bookkeeping)")
 
     # Per-token breakdown
-    print(f"\n=== Per-Token Breakdown ===")
+    print("\n=== Per-Token Breakdown ===")
     print(f"Time per token: {profiled_time / new_tokens * 1000:.1f}ms")
     print(f"Ops per token:  {sum(profiler.op_counts.values()) / new_tokens:.0f}")
     avg_op_time_us = (total_op_time / sum(profiler.op_counts.values())) * 1e6
