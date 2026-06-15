@@ -484,11 +484,10 @@ at::Tensor WrapperArange(
     std::optional<at::Device> device,
     std::optional<bool> pin_memory) {
   // arange creates a new tensor; dispatch to CUDA device
-  auto opts = at::TensorOptions()
-      .dtype(dtype).layout(layout).pin_memory(pin_memory);
-  // Get the device index from the flagos device
   auto dev_idx = device.has_value() ? device->index() : 0;
-  opts = opts.device(at::Device(at::kCUDA, dev_idx));
+  auto opts = at::TensorOptions()
+      .dtype(dtype).layout(layout).pinned_memory(pin_memory)
+      .device(at::Device(at::kCUDA, dev_idx));
   auto result = at::arange(end, opts);
   at::native::flagos::UnboxToFlagos(result);
   return result;
@@ -502,7 +501,7 @@ at::Tensor WrapperArangeStartStep(
     std::optional<bool> pin_memory) {
   auto dev_idx = device.has_value() ? device->index() : 0;
   auto opts = at::TensorOptions()
-      .dtype(dtype).layout(layout).pin_memory(pin_memory)
+      .dtype(dtype).layout(layout).pinned_memory(pin_memory)
       .device(at::Device(at::kCUDA, dev_idx));
   auto result = at::arange(start, end, step, opts);
   at::native::flagos::UnboxToFlagos(result);
