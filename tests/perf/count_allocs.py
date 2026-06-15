@@ -1,14 +1,20 @@
 """
-Count actual tensor allocations per token during Qwen3 inference.
+Count actual tensor allocations per token during inference.
 """
+import argparse
 import torch
-import time
-from unittest.mock import patch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
 def main():
-    model_name = "Qwen/Qwen3-0.6B"
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", default="Qwen/Qwen3-0.6B", help="HuggingFace model name or path")
+    parser.add_argument("--tokens", type=int, default=64, help="Number of tokens to generate")
+    args = parser.parse_args()
+
+    model_name = args.model
+    num_tokens = args.tokens
+
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForCausalLM.from_pretrained(
         model_name, dtype=torch.bfloat16
@@ -16,7 +22,6 @@ def main():
 
     prompt = "The future of artificial intelligence is"
     inputs = tokenizer(prompt, return_tensors="pt").to("cuda")
-    num_tokens = 64
 
     # Warmup
     with torch.no_grad():
@@ -27,7 +32,6 @@ def main():
     torch.cuda.synchronize()
 
     stats_before = torch.cuda.memory_stats()
-    alloc_before = stats_before["allocation.all.current"]
 
     with torch.no_grad():
         _ = model.generate(**inputs, max_new_tokens=num_tokens, do_sample=False)
@@ -35,12 +39,10 @@ def main():
     torch.cuda.synchronize()
     stats_after = torch.cuda.memory_stats()
 
-    # num_alloc_retries won't help, use segment info
-    # Better: use memory_stats "allocation.all.allocated" which counts total allocs
     total_allocs = stats_after["allocation.all.allocated"] - stats_before["allocation.all.allocated"]
     total_frees = stats_after["allocation.all.freed"] - stats_before["allocation.all.freed"]
 
-    print(f"=== Allocation count during {num_tokens}-token generation ===")
+    print(f"=== Allocation count during {num_tokens}-token generation ({model_name}) ===")
     print(f"Total allocations: {total_allocs}")
     print(f"Total frees:       {total_frees}")
     print(f"Allocs per token:  {total_allocs / num_tokens:.1f}")
