@@ -9,6 +9,7 @@ Usage:
 
 import pytest
 import torch
+import torch.nn.functional as F
 import torch_fl
 
 
@@ -73,6 +74,12 @@ class TestArithmetic:
         b = torch.tensor([2.0, 5.0], device=device)
         assert torch.allclose(a / b, torch.tensor([5.0, 4.0], device=device))
 
+    def test_neg(self, device):
+        a = torch.tensor([1.0, -2.0, 3.0], device=device)
+        assert torch.allclose(
+            torch.neg(a), torch.tensor([-1.0, 2.0, -3.0], device=device)
+        )
+
 
 # ---------------------------------------------------------------------------
 # 3. Matrix operations
@@ -81,9 +88,24 @@ class TestArithmetic:
 
 class TestMatrixOps:
     def test_mm(self, device):
+        torch.manual_seed(0)
         a = torch.randn(64, 128, device=device)
         b = torch.randn(128, 32, device=device)
-        assert torch.mm(a, b).shape == (64, 32)
+        out = torch.mm(a, b)
+        assert out.shape == (64, 32)
+        assert torch.allclose(
+            out.cpu(), torch.mm(a.cpu(), b.cpu()), rtol=1e-4, atol=1e-4
+        )
+
+    def test_mm_out(self, device):
+        torch.manual_seed(1)
+        a = torch.randn(32, 16, device=device)
+        b = torch.randn(16, 8, device=device)
+        out = torch.empty(32, 8, device=device)
+        torch.mm(a, b, out=out)
+        assert torch.allclose(
+            out.cpu(), torch.mm(a.cpu(), b.cpu()), rtol=1e-4, atol=1e-4
+        )
 
     def test_matmul(self, device):
         a = torch.randn(64, 128, device=device)
@@ -107,8 +129,25 @@ class TestReductions:
         assert x.sum().item() == 100.0
 
     def test_mean(self, device):
-        x = torch.ones(100, device=device) * 5.0
+        x = torch.empty(100, device=device)
+        x.fill_(5.0)
         assert x.mean().item() == pytest.approx(5.0)
+
+    def test_mean_dim(self, device):
+        torch.manual_seed(0)
+        x = torch.randn(16, 32, device=device)
+        out = torch.mean(x, dim=-1)
+        assert out.shape == (16,)
+        assert torch.allclose(out.cpu(), x.cpu().mean(dim=-1), rtol=1e-4, atol=1e-4)
+
+    def test_mean_dim_keepdim(self, device):
+        torch.manual_seed(1)
+        x = torch.randn(8, 12, device=device)
+        out = torch.mean(x, dim=0, keepdim=True)
+        assert out.shape == (1, 12)
+        assert torch.allclose(
+            out.cpu(), x.cpu().mean(dim=0, keepdim=True), rtol=1e-4, atol=1e-4
+        )
 
     def test_max(self, device):
         x = torch.tensor([1.0, 5.0, 3.0], device=device)
@@ -120,7 +159,34 @@ class TestReductions:
 
 
 # ---------------------------------------------------------------------------
-# 5. Shape operations
+# 5. Embedding
+# ---------------------------------------------------------------------------
+
+
+class TestEmbedding:
+    def test_embedding_basic(self, device):
+        torch.manual_seed(0)
+        weight = torch.randn(100, 64, device=device)
+        indices = torch.tensor([0, 5, 10, 99], device=device)
+        out = F.embedding(indices, weight)
+        assert out.shape == (4, 64)
+        assert out.device.type == "flagos"
+        expected = weight.index_select(0, indices)
+        assert torch.allclose(out.cpu(), expected.cpu(), rtol=1e-5, atol=1e-5)
+
+    def test_embedding_2d_indices(self, device):
+        torch.manual_seed(1)
+        weight = torch.randn(50, 32, device=device)
+        indices = torch.randint(0, 50, (4, 8), device=device)
+        out = F.embedding(indices, weight)
+        assert out.shape == (4, 8, 32)
+        assert torch.allclose(
+            out.cpu(), F.embedding(indices.cpu(), weight.cpu()), rtol=1e-5, atol=1e-5
+        )
+
+
+# ---------------------------------------------------------------------------
+# 6. Shape operations
 # ---------------------------------------------------------------------------
 
 
@@ -158,7 +224,7 @@ class TestShapeOps:
 
 
 # ---------------------------------------------------------------------------
-# 6. Copy and transfer
+# 7. Copy and transfer
 # ---------------------------------------------------------------------------
 
 
@@ -213,7 +279,7 @@ class TestCopyTransfer:
 
 
 # ---------------------------------------------------------------------------
-# 7. Indexing and slicing
+# 8. Indexing and slicing
 # ---------------------------------------------------------------------------
 
 
@@ -233,7 +299,7 @@ class TestIndexing:
 
 
 # ---------------------------------------------------------------------------
-# 8. Activation functions
+# 9. Activation functions
 # ---------------------------------------------------------------------------
 
 
@@ -257,7 +323,7 @@ class TestActivations:
 
 
 # ---------------------------------------------------------------------------
-# 9. Device properties
+# 10. Device properties
 # ---------------------------------------------------------------------------
 
 
@@ -271,7 +337,7 @@ class TestDeviceProperties:
 
 
 # ---------------------------------------------------------------------------
-# 10. Autograd
+# 11. Autograd
 # ---------------------------------------------------------------------------
 
 
@@ -293,7 +359,7 @@ class TestAutograd:
 
 
 # ---------------------------------------------------------------------------
-# 11. Synchronization
+# 12. Synchronization
 # ---------------------------------------------------------------------------
 
 

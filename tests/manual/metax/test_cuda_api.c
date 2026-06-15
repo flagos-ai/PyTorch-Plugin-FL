@@ -16,7 +16,7 @@ export LD_LIBRARY_PATH=/opt/maca-3.3.0/lib:$LD_LIBRARY_PATH
 #include <stdio.h>
 
 int main() {
-    // 1. Allocate Muxi NPU memory (cudaMalloc)
+    // 1. Allocate MetaX NPU memory (cudaMalloc)
     float* d_data;
     cudaError_t err = cudaMalloc(&d_data, 1024 * sizeof(float));
     if (err != cudaSuccess) {
@@ -24,7 +24,7 @@ int main() {
         return -1;
     }
 
-    // 2. Create Muxi NPU stream (cudaStreamCreate)
+    // 2. Create MetaX NPU stream (cudaStreamCreate)
     cudaStream_t stream;
     err = cudaStreamCreate(&stream);
     if (err != cudaSuccess) {
@@ -33,7 +33,7 @@ int main() {
         return -1;
     }
 
-    // 3. Host -> Muxi NPU data copy (cudaMemcpyAsync)
+    // 3. Host -> MetaX NPU data copy (cudaMemcpyAsync)
     float h_data[1024] = {1.0f};
     err = cudaMemcpyAsync(d_data, h_data, 1024 * sizeof(float), 
                           cudaMemcpyHostToDevice, stream);
@@ -49,6 +49,6 @@ int main() {
     cudaStreamDestroy(stream);
     cudaFree(d_data);
 
-    printf("All operations on Muxi NPU success!\n");
+    printf("All operations on MetaX NPU success!\n");
     return 0;
 }

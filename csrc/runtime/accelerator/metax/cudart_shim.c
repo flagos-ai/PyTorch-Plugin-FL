@@ -1,13 +1,13 @@
 /*
- * Complete CUDA Runtime API shim for MACA compatibility.
+ * Complete CUDA Runtime API shim for MetaX compatibility.
  *
  * PyTorch's libc10_cuda.so and libtorch_cuda.so require ~85 symbols from
- * libcudart.so.12 with @@libcudart.so.12 version tags.  MACA's
+ * libcudart.so.12 with @@libcudart.so.12 version tags.  MetaX's
  * libsymbol_cu.so provides 75 of these but without version tags.
  *
  * This file:
  *   1. Forwards 75 symbols to libsymbol_cu.so via dlsym (lazy init)
- *   2. Stubs 10 symbols that don't exist in MACA at all
+ *   2. Stubs 10 symbols that don't exist in MetaX at all
  *   3. Overrides cudaDriverGetVersion / cudaRuntimeGetVersion to report
  *      CUDA 12.8 (matching the PyTorch build)
  *
@@ -61,22 +61,24 @@ typedef struct cudaMemAccessDesc_st { char _[32]; } cudaMemAccessDesc;
 /* ------------------------------------------------------------------ */
 /* Lazy-init handle for libsymbol_cu.so                               */
 /* ------------------------------------------------------------------ */
-static void *_maca_lib = NULL;
+static void *_metax_lib = NULL;
 
-static void _ensure_maca_lib(void) {
-    if (_maca_lib) return;
-    _maca_lib = dlopen("libsymbol_cu.so", RTLD_LAZY | RTLD_GLOBAL);
-    if (!_maca_lib) {
-        const char *maca = getenv("MACA_PATH");
-        if (maca) {
+static void _ensure_metax_lib(void) {
+    if (_metax_lib) return;
+    _metax_lib = dlopen("libsymbol_cu.so", RTLD_LAZY | RTLD_GLOBAL);
+    if (!_metax_lib) {
+        const char *sdk_path = getenv("METAX_PATH");
+        if (!sdk_path)
+            sdk_path = getenv("MACA_PATH");
+        if (sdk_path) {
             char p[512];
-            snprintf(p, sizeof(p), "%s/lib/libsymbol_cu.so", maca);
-            _maca_lib = dlopen(p, RTLD_LAZY | RTLD_GLOBAL);
+            snprintf(p, sizeof(p), "%s/lib/libsymbol_cu.so", sdk_path);
+            _metax_lib = dlopen(p, RTLD_LAZY | RTLD_GLOBAL);
         }
     }
-    if (!_maca_lib)
-        _maca_lib = dlopen("/opt/maca-3.3.0/lib/libsymbol_cu.so", RTLD_LAZY | RTLD_GLOBAL);
-    if (!_maca_lib)
+    if (!_metax_lib)
+        _metax_lib = dlopen("/opt/maca-3.3.0/lib/libsymbol_cu.so", RTLD_LAZY | RTLD_GLOBAL);
+    if (!_metax_lib)
         fprintf(stderr, "cudart_shim: cannot open libsymbol_cu.so: %s\n", dlerror());
 }
 
@@ -93,8 +95,8 @@ static void _ensure_maca_lib(void) {
     ret name params {                                                  \
         static ret (*_fn) params = NULL;                               \
         if (!_fn) {                                                    \
-            _ensure_maca_lib();                                        \
-            if (_maca_lib) _fn = (ret (*) params) dlsym(_maca_lib, #name); \
+            _ensure_metax_lib();                                        \
+            if (_metax_lib) _fn = (ret (*) params) dlsym(_metax_lib, #name); \
             if (!_fn) {                                                \
                 fprintf(stderr, "cudart_shim: %s not found\n", #name); \
                 return (ret)0;                                         \
@@ -108,8 +110,8 @@ static void _ensure_maca_lib(void) {
     void name params {                                                 \
         static void (*_fn) params = NULL;                              \
         if (!_fn) {                                                    \
-            _ensure_maca_lib();                                        \
-            if (_maca_lib) _fn = (void (*) params) dlsym(_maca_lib, #name); \
+            _ensure_metax_lib();                                        \
+            if (_metax_lib) _fn = (void (*) params) dlsym(_metax_lib, #name); \
         }                                                              \
         if (_fn) _fn args;                                             \
     }
@@ -119,8 +121,8 @@ static void _ensure_maca_lib(void) {
     const char* name params {                                          \
         static const char* (*_fn) params = NULL;                       \
         if (!_fn) {                                                    \
-            _ensure_maca_lib();                                        \
-            if (_maca_lib) _fn = (const char* (*) params) dlsym(_maca_lib, #name); \
+            _ensure_metax_lib();                                        \
+            if (_metax_lib) _fn = (const char* (*) params) dlsym(_metax_lib, #name); \
             if (!_fn) return "unknown";                                \
         }                                                              \
         return _fn args;                                               \
@@ -459,7 +461,7 @@ FORWARD(cudaError_t, cudaStreamGetPriority,
 /* Part 2: Stub symbols (not in libsymbol_cu.so)                      */
 /* ================================================================== */
 
-/* --- CUDA Kernel Registration (no-op on MACA) --- */
+/* --- CUDA Kernel Registration (no-op on MetaX) --- */
 void** __cudaRegisterFatBinary(void *fatCubin) {
     static void* dummy = NULL;
     (void)fatCubin;
@@ -515,7 +517,7 @@ unsigned __cudaPopCallConfiguration(
 }
 
 /* --- cudaGetDeviceProperties_v2: return zeroed struct (Python-level
- *     patches in _maca_compat.py provide real values via MACA API) --- */
+ *     patches in _metax_compat.py provide real values via MetaX API) --- */
 cudaError_t cudaGetDeviceProperties_v2(cudaDeviceProp *prop, int device) {
     (void)device;
     if (prop) memset(prop, 0, sizeof(*prop));
@@ -523,7 +525,7 @@ cudaError_t cudaGetDeviceProperties_v2(cudaDeviceProp *prop, int device) {
 }
 
 /* --- cudaGetDriverEntryPointByVersion: CUDA 12 API, return success
- *     with NULL pointer (no driver entry points available on MACA) --- */
+ *     with NULL pointer (no driver entry points available on MetaX) --- */
 cudaError_t cudaGetDriverEntryPointByVersion(
     const char *symbol, void **funcPtr, unsigned int cudaVersion,
     unsigned long long flags, void *symbolStatus)

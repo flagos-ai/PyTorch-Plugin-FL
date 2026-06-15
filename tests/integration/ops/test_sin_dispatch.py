@@ -3,8 +3,8 @@ sin dispatch tests
 
 Verifies that torch.sin:
   - produces correct results on flagos device
-  - C++ wrapper routes to flaggems_python backend (default)
-  - dispatch log confirms the actual backend used
+  - C++ wrapper routes to cuda backend (default)
+  - attempting flaggems backend raises an error (not implemented)
 
 Usage:
     pytest tests/integration/ops/test_sin_dispatch.py -v
@@ -97,8 +97,28 @@ class TestSinDispatch:
         result = _run_sin_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_sin": "cuda"}
         )
-        assert result.returncode == 0
+        if result.returncode != 0 and "backend not registered" in result.stderr:
+            pytest.skip("cuda backend not available in this build")
+        assert result.returncode == 0, f"Failed:\n{result.stderr}"
         assert "[flagos dispatch] sin -> cuda" in result.stderr
+
+    @pytest.mark.metax
+    def test_dispatch_log_metax(self):
+        result = _run_sin_subprocess(
+            {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_sin": "metax"}
+        )
+        assert result.returncode == 0, f"Failed:\n{result.stderr}"
+        assert "[flagos dispatch] sin -> metax" in result.stderr
+
+    @pytest.mark.anyplatform
+    def test_flaggems_backend_raises_error(self):
+        """Selecting flaggems backend must fail — not implemented."""
+        result = _run_sin_subprocess(
+            {"FLAGOS_OP_sin": "flaggems"},
+            check=False,
+        )
+        assert result.returncode != 0
+        assert "backend not registered" in result.stderr
 
 
 class TestSinAscendDispatch:

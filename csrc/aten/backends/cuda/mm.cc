@@ -5,7 +5,6 @@
 #include <ATen/core/Tensor.h>
 #include <ATen/native/Resize.h>
 #include <ATen/ops/mm_native.h>
-#include <c10/util/Exception.h>
 
 namespace at::native::flagos {
 

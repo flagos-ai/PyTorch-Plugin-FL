@@ -52,6 +52,7 @@ class Dispatcher {
       case Backend::kFlagOsPython:  flagos_python_fn_ = fn;  break;
       case Backend::kAscend:        ascend_fn_ = fn;         break;
       case Backend::kMusa:          musa_fn_ = fn;           break;
+      case Backend::kMetax:         metax_fn_ = fn;          break;
     }
   }
 
@@ -77,6 +78,7 @@ class Dispatcher {
       case Backend::kFlagOsPython:  return flagos_python_fn_;
       case Backend::kAscend:        return ascend_fn_;
       case Backend::kMusa:          return musa_fn_;
+      case Backend::kMetax:         return metax_fn_;
     }
     return nullptr;
   }
@@ -94,6 +96,7 @@ class Dispatcher {
       case Backend::kFlagOsPython:  name = "flagos_python"; break;
       case Backend::kAscend:        name = "ascend"; break;
       case Backend::kMusa:          name = "musa"; break;
+      case Backend::kMetax:         name = "metax"; break;
       default:                           name = "unknown"; break;
     }
     fprintf(stderr, "[flagos dispatch] %s -> %s\n", op_name.c_str(), name);
@@ -105,6 +108,7 @@ class Dispatcher {
   FnPtr flagos_python_fn_  = nullptr;
   FnPtr ascend_fn_         = nullptr;
   FnPtr musa_fn_           = nullptr;
+  FnPtr metax_fn_          = nullptr;
 };
 
 namespace detail {

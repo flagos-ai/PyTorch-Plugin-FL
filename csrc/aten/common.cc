@@ -76,6 +76,8 @@ std::unordered_map<std::string, Backend> LoadBackendConfig() {
 
     if (val == "cuda") {
       table[op] = Backend::kCuda;
+    } else if (val == "metax") {
+      table[op] = Backend::kMetax;
     } else if (val == "ascend") {
       table[op] = Backend::kAscend;
     } else if (val == "flagos" || val == "flaggems") {
@@ -88,7 +90,7 @@ std::unordered_map<std::string, Backend> LoadBackendConfig() {
     }
   }
 
-  // Per-op env var overrides: FLAGOS_OP_<op_name>=cuda|flaggems
+  // Per-op env var overrides: FLAGOS_OP_<op_name>=cuda|metax|flaggems
   // e.g. FLAGOS_OP_mm=cuda  or  FLAGOS_OP_mm__out=cuda
   // Dots in op names are replaced with double underscores to avoid ambiguity
   // with ops that already contain underscores (e.g. mm_out vs mm.out).
@@ -104,6 +106,9 @@ std::unordered_map<std::string, Backend> LoadBackendConfig() {
     if (v == "cuda") {
       table[op] = Backend::kCuda;
       fprintf(stderr, "[flagos] env override: %s -> cuda\n", op.c_str());
+    } else if (v == "metax") {
+      table[op] = Backend::kMetax;
+      fprintf(stderr, "[flagos] env override: %s -> metax\n", op.c_str());
     } else if (v == "ascend") {
       table[op] = Backend::kAscend;
       fprintf(stderr, "[flagos] env override: %s -> ascend\n", op.c_str());

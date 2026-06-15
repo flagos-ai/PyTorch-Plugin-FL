@@ -1,9 +1,9 @@
-"""Load the MACA cudart shim before torch is imported.
+"""Load the MetaX cudart shim before torch is imported.
 
-On MetaX (MACA) hardware, PyTorch's .so files require CUDA runtime symbols
-with @@libcudart.so.12 version tags.  MACA's libsymbol_cu.so provides these
+On MetaX hardware, PyTorch's .so files require CUDA runtime symbols
+with @@libcudart.so.12 version tags.  MetaX's libsymbol_cu.so provides these
 symbols but without version tags.  We build and load a shim library
-(csrc/runtime/accelerator/maca/cudart_shim.c) that re-exports all needed symbols with the correct
+(csrc/runtime/accelerator/metax/cudart_shim.c) that re-exports all needed symbols with the correct
 version tags.
 """
 
@@ -20,21 +20,26 @@ def ensure_cudart_shim():
     if _loaded:
         return
 
-    # Detect MACA environment
-    maca_path = os.environ.get("MACA_PATH") or os.environ.get("MACA_HOME")
-    if not maca_path:
+    # Detect MetaX environment
+    metax_path = (
+        os.environ.get("METAX_PATH")
+        or os.environ.get("METAX_HOME")
+        or os.environ.get("MACA_PATH")
+        or os.environ.get("MACA_HOME")
+    )
+    if not metax_path:
         for candidate in ["/opt/maca", "/opt/maca-3.3.0"]:
             if os.path.isdir(candidate):
-                maca_path = candidate
+                metax_path = candidate
                 break
-    if not maca_path or not os.path.isdir(maca_path):
-        return  # Not a MACA environment
+    if not metax_path or not os.path.isdir(metax_path):
+        return  # Not a MetaX environment
 
     pkg_dir = os.path.dirname(os.path.abspath(__file__))
     base_dir = os.path.dirname(
         os.path.dirname(os.path.dirname(pkg_dir))
     )  # project root
-    csrc = os.path.join(base_dir, "csrc", "runtime", "accelerator", "maca")
+    csrc = os.path.join(base_dir, "csrc", "runtime", "accelerator", "metax")
     build_dir = os.path.join(base_dir, "build")
 
     shim_src = os.path.join(csrc, "cudart_shim.c")

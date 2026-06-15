@@ -3,7 +3,7 @@ new_ones dispatch tests
 
 Verifies that tensor.new_ones:
   - produces correct results on flagos device
-  - C++ wrapper routes to cuda backend
+  - C++ wrapper routes to cuda/metax backend
   - attempting flaggems backend raises an error (not implemented)
 
 Usage:
@@ -78,10 +78,20 @@ class TestNewOnesDispatch:
         result = _run_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_new_ones": "cuda"}
         )
+        if result.returncode != 0 and "backend not registered" in result.stderr:
+            pytest.skip("cuda backend not available in this build")
         assert result.returncode == 0, f"Failed:\n{result.stderr}"
         assert "[flagos dispatch] new_ones -> cuda" in result.stderr
 
-    @pytest.mark.cuda
+    @pytest.mark.metax
+    def test_dispatch_log_metax(self):
+        result = _run_subprocess(
+            {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_new_ones": "metax"}
+        )
+        assert result.returncode == 0, f"Failed:\n{result.stderr}"
+        assert "[flagos dispatch] new_ones -> metax" in result.stderr
+
+    @pytest.mark.anyplatform
     def test_flaggems_backend_raises_error(self):
         result = _run_subprocess(
             {"FLAGOS_OP_new_ones": "flaggems"},

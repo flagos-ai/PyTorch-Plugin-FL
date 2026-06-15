@@ -26,7 +26,6 @@ struct HooksInterface : public at::PrivateUse1HooksInterface {
   HooksInterface() {};
   ~HooksInterface() override = default;
 
-  // Required by dist.barrier() and other distributed operations
   bool isAvailable() const override {
     int count = 0;
     ::GetDeviceCount(&count);
