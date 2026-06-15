@@ -56,17 +56,22 @@ at::Tensor _copy_from(
 
   // Both flagos tensors: copy on-device.
   if (self.is_privateuseone() && dst.is_privateuseone()) {
-    // PrivateUse1 -> PrivateUse1 copy path for non-CUDA accelerators (e.g.
-    // MetaX/Ascend). Avoid boxing to CUDA here, otherwise higher-level ops like
-    // clone(memory_format=...) can trigger CUDA runtime initialization.
     if (self.is_contiguous() && dst.is_contiguous() &&
         self.sizes().equals(dst.sizes()) &&
         self.scalar_type() == dst.scalar_type()) {
+      // Fast path: both contiguous, same shape and dtype → direct memcpy.
       size_t nbytes = self.numel() * self.element_size();
       if (nbytes > 0) {
         Memcpy(dst.data_ptr(), self.data_ptr(), nbytes, MemcpyDeviceToDevice);
       }
     } else {
+#ifndef USE_ASCEND
+      // CUDA platform: use DeviceBoxingGuard to dispatch to native CUDA
+      // strided copy kernel (handles strides, dtype casts on-device).
+      DeviceBoxingGuard guard(self, dst);
+      at::native::copy_(const_cast<at::Tensor&>(dst), self, false);
+#else
+      // Ascend: no CUDA runtime, fall back to CPU round-trip.
       at::Tensor self_contig = self.is_contiguous()
           ? self
           : at::native::flagos::contiguous(self, c10::MemoryFormat::Contiguous);
@@ -110,6 +115,7 @@ at::Tensor _copy_from(
             dst_storage_nbytes,
             MemcpyHostToDevice);
       }
+#endif
     }
     return dst;
   }
