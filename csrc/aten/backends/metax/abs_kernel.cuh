@@ -69,9 +69,7 @@ inline at::Tensor AbsKernel(const at::Tensor& self) {
     return iter.output();
   }
 
-  TORCH_CHECK(
-      iter.is_contiguous(),
-      "MetaX abs requires contiguous flagos tensors");
+  TORCH_INTERNAL_ASSERT(iter.is_contiguous());
 
   AT_DISPATCH_FLOATING_TYPES_AND2(
       at::ScalarType::Half,
