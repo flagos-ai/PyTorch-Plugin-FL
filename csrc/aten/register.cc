@@ -45,6 +45,7 @@
 #include "sort.h"
 #include "topk.h"
 #include "multinomial.h"
+#include "argmax.h"
 
 #include <ATen/native/CPUFallback.h>
 #include <ATen/ops/_index_put_impl.h>
@@ -445,6 +446,16 @@ at::Tensor WrapperMultinomial(
   return at::native::flagos::multinomial_dispatcher(self, num_samples, replacement, generator);
 }
 
+at::Tensor WrapperArgmax(
+    const at::Tensor& self, std::optional<int64_t> dim, bool keepdim) {
+  return at::native::flagos::argmax_dispatcher(self, dim, keepdim);
+}
+
+at::Tensor WrapperArgmin(
+    const at::Tensor& self, std::optional<int64_t> dim, bool keepdim) {
+  return at::native::flagos::argmin_dispatcher(self, dim, keepdim);
+}
+
 } // namespace
 
 // Register basic operators for PrivateUse1 dispatch key
@@ -508,6 +519,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("sort", WrapperSort);
   m.impl("topk", WrapperTopk);
   m.impl("multinomial", WrapperMultinomial);
+  m.impl("argmax", WrapperArgmax);
+  m.impl("argmin", WrapperArgmin);
 }
 
 // Register fallback for all unimplemented operators
