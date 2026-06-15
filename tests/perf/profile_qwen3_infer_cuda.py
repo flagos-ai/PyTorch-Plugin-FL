@@ -156,7 +156,7 @@ def main():
         **inputs,
         max_new_tokens=args.tokens,
         min_new_tokens=args.tokens,  # force exact token count
-        do_sample=False,             # greedy decoding
+        do_sample=False,  # greedy decoding
         temperature=None,
         top_p=None,
         top_k=None,

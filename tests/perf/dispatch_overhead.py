@@ -54,49 +54,69 @@ def main():
     # --- 1. Metadata-only ops (no kernel launch) ---
     t_cuda = bench_op(lambda: fc.view(64, 64), rounds=N)
     t_flagos = bench_op(lambda: ff.view(64, 64), rounds=N)
-    print(f"{'view (no-op reshape)':<30s} {t_cuda:>8.2f}µs {t_flagos:>8.2f}µs {t_flagos-t_cuda:>+8.2f}µs")
+    print(
+        f"{'view (no-op reshape)':<30s} {t_cuda:>8.2f}µs {t_flagos:>8.2f}µs {t_flagos - t_cuda:>+8.2f}µs"
+    )
 
     t_cuda = bench_op(lambda: fc.t(), rounds=N)
     t_flagos = bench_op(lambda: ff.t(), rounds=N)
-    print(f"{'t (transpose)':<30s} {t_cuda:>8.2f}µs {t_flagos:>8.2f}µs {t_flagos-t_cuda:>+8.2f}µs")
+    print(
+        f"{'t (transpose)':<30s} {t_cuda:>8.2f}µs {t_flagos:>8.2f}µs {t_flagos - t_cuda:>+8.2f}µs"
+    )
 
     t_cuda = bench_op(lambda: fc.unsqueeze(0), rounds=N)
     t_flagos = bench_op(lambda: ff.unsqueeze(0), rounds=N)
-    print(f"{'unsqueeze':<30s} {t_cuda:>8.2f}µs {t_flagos:>8.2f}µs {t_flagos-t_cuda:>+8.2f}µs")
+    print(
+        f"{'unsqueeze':<30s} {t_cuda:>8.2f}µs {t_flagos:>8.2f}µs {t_flagos - t_cuda:>+8.2f}µs"
+    )
 
     t_cuda = bench_op(lambda: fc[0:32], rounds=N)
     t_flagos = bench_op(lambda: ff[0:32], rounds=N)
-    print(f"{'slice [0:32]':<30s} {t_cuda:>8.2f}µs {t_flagos:>8.2f}µs {t_flagos-t_cuda:>+8.2f}µs")
+    print(
+        f"{'slice [0:32]':<30s} {t_cuda:>8.2f}µs {t_flagos:>8.2f}µs {t_flagos - t_cuda:>+8.2f}µs"
+    )
 
     t_cuda = bench_op(lambda: fc.expand(64, 64), rounds=N)
     t_flagos = bench_op(lambda: ff.expand(64, 64), rounds=N)
-    print(f"{'expand':<30s} {t_cuda:>8.2f}µs {t_flagos:>8.2f}µs {t_flagos-t_cuda:>+8.2f}µs")
+    print(
+        f"{'expand':<30s} {t_cuda:>8.2f}µs {t_flagos:>8.2f}µs {t_flagos - t_cuda:>+8.2f}µs"
+    )
 
     print()
 
     # --- 2. Simple element-wise ops (lightweight kernel) ---
     t_cuda = bench_op(lambda: fc + fc, rounds=N)
     t_flagos = bench_op(lambda: ff + ff, rounds=N)
-    print(f"{'add (64x64)':<30s} {t_cuda:>8.2f}µs {t_flagos:>8.2f}µs {t_flagos-t_cuda:>+8.2f}µs")
+    print(
+        f"{'add (64x64)':<30s} {t_cuda:>8.2f}µs {t_flagos:>8.2f}µs {t_flagos - t_cuda:>+8.2f}µs"
+    )
 
     t_cuda = bench_op(lambda: fc * fc, rounds=N)
     t_flagos = bench_op(lambda: ff * ff, rounds=N)
-    print(f"{'mul (64x64)':<30s} {t_cuda:>8.2f}µs {t_flagos:>8.2f}µs {t_flagos-t_cuda:>+8.2f}µs")
+    print(
+        f"{'mul (64x64)':<30s} {t_cuda:>8.2f}µs {t_flagos:>8.2f}µs {t_flagos - t_cuda:>+8.2f}µs"
+    )
 
     t_cuda = bench_op(lambda: fc.neg(), rounds=N)
     t_flagos = bench_op(lambda: ff.neg(), rounds=N)
-    print(f"{'neg (64x64)':<30s} {t_cuda:>8.2f}µs {t_flagos:>8.2f}µs {t_flagos-t_cuda:>+8.2f}µs")
+    print(
+        f"{'neg (64x64)':<30s} {t_cuda:>8.2f}µs {t_flagos:>8.2f}µs {t_flagos - t_cuda:>+8.2f}µs"
+    )
 
     print()
 
     # --- 3. Matmul (heavier kernel) ---
     t_cuda = bench_op(lambda: torch.mm(fc, fc), rounds=N)
     t_flagos = bench_op(lambda: torch.mm(ff, ff), rounds=N)
-    print(f"{'mm (64x64)':<30s} {t_cuda:>8.2f}µs {t_flagos:>8.2f}µs {t_flagos-t_cuda:>+8.2f}µs")
+    print(
+        f"{'mm (64x64)':<30s} {t_cuda:>8.2f}µs {t_flagos:>8.2f}µs {t_flagos - t_cuda:>+8.2f}µs"
+    )
 
     t_cuda = bench_op(lambda: torch.mm(fc_big, fc_big), rounds=N)
     t_flagos = bench_op(lambda: torch.mm(ff_big, ff_big), rounds=N)
-    print(f"{'mm (256x256)':<30s} {t_cuda:>8.2f}µs {t_flagos:>8.2f}µs {t_flagos-t_cuda:>+8.2f}µs")
+    print(
+        f"{'mm (256x256)':<30s} {t_cuda:>8.2f}µs {t_flagos:>8.2f}µs {t_flagos - t_cuda:>+8.2f}µs"
+    )
 
     print()
 
@@ -109,7 +129,9 @@ def main():
         lambda: torch.empty(64, 64, device=device_flagos, dtype=torch.float16),
         rounds=N,
     )
-    print(f"{'empty (64x64, alloc only)':<30s} {t_cuda:>8.2f}µs {t_flagos:>8.2f}µs {t_flagos-t_cuda:>+8.2f}µs")
+    print(
+        f"{'empty (64x64, alloc only)':<30s} {t_cuda:>8.2f}µs {t_flagos:>8.2f}µs {t_flagos - t_cuda:>+8.2f}µs"
+    )
 
     t_cuda = bench_op(
         lambda: torch.empty(1024, 1024, device=device_cuda, dtype=torch.float16),
@@ -119,14 +141,18 @@ def main():
         lambda: torch.empty(1024, 1024, device=device_flagos, dtype=torch.float16),
         rounds=N,
     )
-    print(f"{'empty (1024x1024, alloc only)':<30s} {t_cuda:>8.2f}µs {t_flagos:>8.2f}µs {t_flagos-t_cuda:>+8.2f}µs")
+    print(
+        f"{'empty (1024x1024, alloc only)':<30s} {t_cuda:>8.2f}µs {t_flagos:>8.2f}µs {t_flagos - t_cuda:>+8.2f}µs"
+    )
 
     print()
 
     # --- 5. clone (involves alloc + kernel) ---
     t_cuda = bench_op(lambda: fc.clone(), rounds=N)
     t_flagos = bench_op(lambda: ff.clone(), rounds=N)
-    print(f"{'clone (64x64)':<30s} {t_cuda:>8.2f}µs {t_flagos:>8.2f}µs {t_flagos-t_cuda:>+8.2f}µs")
+    print(
+        f"{'clone (64x64)':<30s} {t_cuda:>8.2f}µs {t_flagos:>8.2f}µs {t_flagos - t_cuda:>+8.2f}µs"
+    )
 
     print()
 

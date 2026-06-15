@@ -62,20 +62,35 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(model_path)
 
     # Load two copies
-    model_cuda = AutoModelForCausalLM.from_pretrained(
-        model_path, torch_dtype=torch.float16, device_map="cpu"
-    ).to("cuda:0").eval()
+    model_cuda = (
+        AutoModelForCausalLM.from_pretrained(
+            model_path, torch_dtype=torch.float16, device_map="cpu"
+        )
+        .to("cuda:0")
+        .eval()
+    )
     model_cuda.model.layers[0].self_attn.config._attn_implementation = "eager"
 
-    model_fl = AutoModelForCausalLM.from_pretrained(
-        model_path, torch_dtype=torch.float16, device_map="cpu"
-    ).to("flagos:0").eval()
+    model_fl = (
+        AutoModelForCausalLM.from_pretrained(
+            model_path, torch_dtype=torch.float16, device_map="cpu"
+        )
+        .to("flagos:0")
+        .eval()
+    )
     model_fl.model.layers[0].self_attn.config._attn_implementation = "eager"
 
     # Prepare input
     text = tokenizer.apply_chat_template(
-        [{"role": "user", "content": "Give me a short introduction to large language model."}],
-        tokenize=False, add_generation_prompt=True, enable_thinking=False,
+        [
+            {
+                "role": "user",
+                "content": "Give me a short introduction to large language model.",
+            }
+        ],
+        tokenize=False,
+        add_generation_prompt=True,
+        enable_thinking=False,
     )
     input_ids_cuda = tokenizer([text], return_tensors="pt")["input_ids"].to("cuda:0")
     input_ids_fl = tokenizer([text], return_tensors="pt")["input_ids"].to("flagos:0")
@@ -99,7 +114,9 @@ def main():
 
     t_cuda = bench(fwd_cuda, "cuda", rounds=N)
     t_fl = bench(fwd_fl, "flagos", rounds=N)
-    print(f"{'1. Forward pass (prefill, no cache)':<45s} {t_cuda:>6.2f}ms {t_fl:>6.2f}ms {t_fl-t_cuda:>+8.2f}ms")
+    print(
+        f"{'1. Forward pass (prefill, no cache)':<45s} {t_cuda:>6.2f}ms {t_fl:>6.2f}ms {t_fl - t_cuda:>+8.2f}ms"
+    )
 
     # === Test 2: Forward with KV cache (decode step) ===
     # First do prefill to get cache
@@ -123,7 +140,9 @@ def main():
 
     t_cuda = bench(decode_cuda, "cuda", rounds=N)
     t_fl = bench(decode_fl, "flagos", rounds=N)
-    print(f"{'2. Decode step (1 token, with KV cache)':<45s} {t_cuda:>6.2f}ms {t_fl:>6.2f}ms {t_fl-t_cuda:>+8.2f}ms")
+    print(
+        f"{'2. Decode step (1 token, with KV cache)':<45s} {t_cuda:>6.2f}ms {t_fl:>6.2f}ms {t_fl - t_cuda:>+8.2f}ms"
+    )
 
     # === Test 3: argmax (greedy token selection) ===
     logits_cuda = out_cuda.logits[:, -1:]  # [1, 1, vocab_size]
@@ -137,18 +156,24 @@ def main():
 
     t_cuda = bench(argmax_cuda, "cuda", rounds=N * 5)
     t_fl = bench(argmax_fl, "flagos", rounds=N * 5)
-    print(f"{'3. argmax (greedy selection, vocab=151k)':<45s} {t_cuda:>6.2f}ms {t_fl:>6.2f}ms {t_fl-t_cuda:>+8.2f}ms")
+    print(
+        f"{'3. argmax (greedy selection, vocab=151k)':<45s} {t_cuda:>6.2f}ms {t_fl:>6.2f}ms {t_fl - t_cuda:>+8.2f}ms"
+    )
 
     # === Test 4: Stopping criteria (EOS check via isin) ===
     eos_token_id = tokenizer.eos_token_id
-    criteria_cuda = StoppingCriteriaList([
-        MaxLengthCriteria(max_length=seq_len + 64),
-        EosTokenCriteria(eos_token_id=eos_token_id),
-    ])
-    criteria_fl = StoppingCriteriaList([
-        MaxLengthCriteria(max_length=seq_len + 64),
-        EosTokenCriteria(eos_token_id=eos_token_id),
-    ])
+    criteria_cuda = StoppingCriteriaList(
+        [
+            MaxLengthCriteria(max_length=seq_len + 64),
+            EosTokenCriteria(eos_token_id=eos_token_id),
+        ]
+    )
+    criteria_fl = StoppingCriteriaList(
+        [
+            MaxLengthCriteria(max_length=seq_len + 64),
+            EosTokenCriteria(eos_token_id=eos_token_id),
+        ]
+    )
 
     # Simulate generated ids so far
     gen_ids_cuda = torch.cat([input_ids_cuda, next_tok_cuda], dim=1)
@@ -164,7 +189,9 @@ def main():
 
     t_cuda = bench(stopping_cuda, "cuda", rounds=N * 5)
     t_fl = bench(stopping_fl, "flagos", rounds=N * 5)
-    print(f"{'4. Stopping criteria (EOS + MaxLength)':<45s} {t_cuda:>6.2f}ms {t_fl:>6.2f}ms {t_fl-t_cuda:>+8.2f}ms")
+    print(
+        f"{'4. Stopping criteria (EOS + MaxLength)':<45s} {t_cuda:>6.2f}ms {t_fl:>6.2f}ms {t_fl - t_cuda:>+8.2f}ms"
+    )
 
     # === Test 5: isin alone ===
     eos_ids_cuda = torch.tensor([eos_token_id], device="cuda:0")
@@ -178,16 +205,28 @@ def main():
 
     t_cuda = bench(isin_cuda, "cuda", rounds=N * 5)
     t_fl = bench(isin_fl, "flagos", rounds=N * 5)
-    print(f"{'5. isin (EOS token check)':<45s} {t_cuda:>6.2f}ms {t_fl:>6.2f}ms {t_fl-t_cuda:>+8.2f}ms")
+    print(
+        f"{'5. isin (EOS token check)':<45s} {t_cuda:>6.2f}ms {t_fl:>6.2f}ms {t_fl - t_cuda:>+8.2f}ms"
+    )
 
     # === Test 6: Full generate (1 token) ===
     gen_kwargs_cuda = dict(
-        input_ids=input_ids_cuda, max_new_tokens=1, min_new_tokens=1,
-        do_sample=False, temperature=None, top_p=None, top_k=None,
+        input_ids=input_ids_cuda,
+        max_new_tokens=1,
+        min_new_tokens=1,
+        do_sample=False,
+        temperature=None,
+        top_p=None,
+        top_k=None,
     )
     gen_kwargs_fl = dict(
-        input_ids=input_ids_fl, max_new_tokens=1, min_new_tokens=1,
-        do_sample=False, temperature=None, top_p=None, top_k=None,
+        input_ids=input_ids_fl,
+        max_new_tokens=1,
+        min_new_tokens=1,
+        do_sample=False,
+        temperature=None,
+        top_p=None,
+        top_k=None,
     )
 
     def gen1_cuda():
@@ -200,16 +239,28 @@ def main():
 
     t_cuda = bench(gen1_cuda, "cuda", rounds=N // 2)
     t_fl = bench(gen1_fl, "flagos", rounds=N // 2)
-    print(f"{'6. Full generate(max_new_tokens=1)':<45s} {t_cuda:>6.2f}ms {t_fl:>6.2f}ms {t_fl-t_cuda:>+8.2f}ms")
+    print(
+        f"{'6. Full generate(max_new_tokens=1)':<45s} {t_cuda:>6.2f}ms {t_fl:>6.2f}ms {t_fl - t_cuda:>+8.2f}ms"
+    )
 
     # === Test 7: Full generate (4 tokens, measure per-decode-step) ===
     gen_kwargs_cuda_4 = dict(
-        input_ids=input_ids_cuda, max_new_tokens=4, min_new_tokens=4,
-        do_sample=False, temperature=None, top_p=None, top_k=None,
+        input_ids=input_ids_cuda,
+        max_new_tokens=4,
+        min_new_tokens=4,
+        do_sample=False,
+        temperature=None,
+        top_p=None,
+        top_k=None,
     )
     gen_kwargs_fl_4 = dict(
-        input_ids=input_ids_fl, max_new_tokens=4, min_new_tokens=4,
-        do_sample=False, temperature=None, top_p=None, top_k=None,
+        input_ids=input_ids_fl,
+        max_new_tokens=4,
+        min_new_tokens=4,
+        do_sample=False,
+        temperature=None,
+        top_p=None,
+        top_k=None,
     )
 
     def gen4_cuda():
@@ -222,12 +273,16 @@ def main():
 
     t_cuda_4 = bench(gen4_cuda, "cuda", rounds=N // 2)
     t_fl_4 = bench(gen4_fl, "flagos", rounds=N // 2)
-    print(f"{'7. Full generate(max_new_tokens=4)':<45s} {t_cuda_4:>6.2f}ms {t_fl_4:>6.2f}ms {t_fl_4-t_cuda_4:>+8.2f}ms")
+    print(
+        f"{'7. Full generate(max_new_tokens=4)':<45s} {t_cuda_4:>6.2f}ms {t_fl_4:>6.2f}ms {t_fl_4 - t_cuda_4:>+8.2f}ms"
+    )
 
     # Derived: per-decode-step overhead in generate loop
     per_step_cuda = (t_cuda_4 - t_cuda) / 3
     per_step_fl = (t_fl_4 - t_fl) / 3
-    print(f"{'   -> per decode step (derived)':<45s} {per_step_cuda:>6.2f}ms {per_step_fl:>6.2f}ms {per_step_fl-per_step_cuda:>+8.2f}ms")
+    print(
+        f"{'   -> per decode step (derived)':<45s} {per_step_cuda:>6.2f}ms {per_step_fl:>6.2f}ms {per_step_fl - per_step_cuda:>+8.2f}ms"
+    )
 
     print()
     print("=" * 75)

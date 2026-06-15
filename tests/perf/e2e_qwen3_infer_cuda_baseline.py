@@ -72,7 +72,7 @@ def main():
         **inputs,
         max_new_tokens=args.tokens,
         min_new_tokens=args.tokens,  # force exact token count
-        do_sample=False,             # greedy decoding
+        do_sample=False,  # greedy decoding
         temperature=None,
         top_p=None,
         top_k=None,
@@ -113,7 +113,7 @@ def main():
     max_time = round_times[-1]
     median_tps = args.tokens / median_time
 
-    print(f"\n=== E2E Benchmark Results (CUDA baseline) ===")
+    print("\n=== E2E Benchmark Results (CUDA baseline) ===")
     print(f"Tokens generated: {args.tokens} (greedy, fixed)")
     print(f"Median: {median_time:.3f}s ({median_tps:.2f} tok/s)")
     print(f"Min:    {min_time:.3f}s ({args.tokens / min_time:.2f} tok/s)")

@@ -3,14 +3,16 @@ Micro-benchmark: cudaGetDevice() driver call vs thread_local read.
 
 Measures the overhead of DeviceGuard in CUDA vs PrivateUse1 paths.
 """
+
 import torch
 import time
+
 
 def bench_device_guard_overhead():
     """Compare per-op overhead for metadata-only ops between CUDA and flagos."""
 
     # --- CUDA baseline: view op ---
-    x_cuda = torch.randn(64, 128, device='cuda')
+    x_cuda = torch.randn(64, 128, device="cuda")
 
     # Warmup
     for _ in range(1000):
@@ -27,8 +29,7 @@ def bench_device_guard_overhead():
     cuda_ns = (t1 - t0) / N
 
     # --- flagos: view op ---
-    import torch_fl
-    x_fl = torch.randn(64, 128, device='flagos')
+    x_fl = torch.randn(64, 128, device="flagos")
 
     # Warmup
     for _ in range(1000):
@@ -43,17 +44,23 @@ def bench_device_guard_overhead():
     t1 = time.perf_counter_ns()
     flagos_ns = (t1 - t0) / N
 
-    print(f"=== Metadata op (view) overhead ===")
-    print(f"CUDA:   {cuda_ns:.0f} ns/call ({cuda_ns/1000:.2f} µs)")
-    print(f"flagos: {flagos_ns:.0f} ns/call ({flagos_ns/1000:.2f} µs)")
-    print(f"Δ:      {cuda_ns - flagos_ns:.0f} ns ({(cuda_ns - flagos_ns)/1000:.2f} µs)")
+    print("=== Metadata op (view) overhead ===")
+    print(f"CUDA:   {cuda_ns:.0f} ns/call ({cuda_ns / 1000:.2f} µs)")
+    print(f"flagos: {flagos_ns:.0f} ns/call ({flagos_ns / 1000:.2f} µs)")
+    print(
+        f"Δ:      {cuda_ns - flagos_ns:.0f} ns ({(cuda_ns - flagos_ns) / 1000:.2f} µs)"
+    )
     print()
 
     # --- Also test t() and unsqueeze ---
     for op_name, cuda_op, fl_op in [
         ("t (2D transpose)", lambda: x_cuda.t(), lambda: x_fl.t()),
         ("unsqueeze(0)", lambda: x_cuda.unsqueeze(0), lambda: x_fl.unsqueeze(0)),
-        ("expand", lambda: x_cuda[:1].expand(64, 128), lambda: x_fl[:1].expand(64, 128)),
+        (
+            "expand",
+            lambda: x_cuda[:1].expand(64, 128),
+            lambda: x_fl[:1].expand(64, 128),
+        ),
     ]:
         # Warmup
         for _ in range(1000):
@@ -77,7 +84,9 @@ def bench_device_guard_overhead():
         t1 = time.perf_counter_ns()
         f_ns = (t1 - t0) / N
 
-        print(f"{op_name:20s}  CUDA: {c_ns:.0f} ns  flagos: {f_ns:.0f} ns  Δ: {c_ns - f_ns:.0f} ns ({(c_ns - f_ns)/1000:.2f} µs)")
+        print(
+            f"{op_name:20s}  CUDA: {c_ns:.0f} ns  flagos: {f_ns:.0f} ns  Δ: {c_ns - f_ns:.0f} ns ({(c_ns - f_ns) / 1000:.2f} µs)"
+        )
 
 
 def bench_cudagetdevice_direct():
@@ -94,8 +103,8 @@ def bench_cudagetdevice_direct():
         torch.cuda.current_device()
     t1 = time.perf_counter_ns()
     ns_per_call = (t1 - t0) / N
-    print(f"\n=== torch.cuda.current_device() (wraps cudaGetDevice) ===")
-    print(f"{ns_per_call:.0f} ns/call ({ns_per_call/1000:.2f} µs)")
+    print("\n=== torch.cuda.current_device() (wraps cudaGetDevice) ===")
+    print(f"{ns_per_call:.0f} ns/call ({ns_per_call / 1000:.2f} µs)")
 
 
 if __name__ == "__main__":

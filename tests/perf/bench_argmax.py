@@ -58,6 +58,7 @@ def main():
         print("=== CUDA Baseline ===")
     else:
         import torch_fl  # noqa: F401
+
         device = torch.device("flagos:0")
         print("=== torch_fl (flagos) ===")
 
