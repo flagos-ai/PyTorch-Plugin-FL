@@ -39,7 +39,7 @@ class OpProfiler(TorchDispatchMode):
 
         return result
 
-    def report(self):
+    def report(self, total_tokens):
         print("\n=== Op Profile Summary (CUDA baseline) ===")
         print(f"Total unique ops: {len(self.op_counts)}")
         print(f"Total op calls: {sum(self.op_counts.values())}")
@@ -71,7 +71,15 @@ def main():
     parser.add_argument(
         "--model", default="/nfs/hcr/models/Qwen/Qwen3-0.6B", help="Path to model"
     )
-    parser.add_argument("--tokens", type=int, default=64, help="Max new tokens")
+    parser.add_argument(
+        "--tokens", type=int, default=64, help="Exact number of new tokens to generate"
+    )
+    parser.add_argument(
+        "--rounds", type=int, default=3, help="Number of profiling rounds (take median)"
+    )
+    parser.add_argument(
+        "--warmup-rounds", type=int, default=2, help="Number of warmup rounds"
+    )
     parser.add_argument("--device", default="cuda:0", help="CUDA device")
     args = parser.parse_args()
     device = args.device
@@ -104,44 +112,94 @@ def main():
         enable_thinking=False,
     )
     inputs = tokenizer([text], return_tensors="pt").to(device)
-    print(f"Input tokens: {inputs['input_ids'].shape[1]}")
+    input_len = inputs["input_ids"].shape[1]
+    print(f"Input tokens: {input_len}")
+    print(f"Output tokens: {args.tokens} (fixed, greedy)")
+    print(f"Warmup rounds: {args.warmup_rounds}, Profiling rounds: {args.rounds}")
     print()
+
+    # Generation config: greedy, deterministic, fixed length
+    gen_kwargs = dict(
+        **inputs,
+        max_new_tokens=args.tokens,
+        min_new_tokens=args.tokens,  # force exact token count
+        do_sample=False,             # greedy decoding
+        temperature=None,
+        top_p=None,
+        top_k=None,
+    )
 
     # Warmup
     print("Warmup...")
-    torch.cuda.synchronize(device)
-    t0 = time.time()
-    with torch.no_grad():
-        _ = model.generate(**inputs, max_new_tokens=args.tokens)
-    torch.cuda.synchronize(device)
-    print(f"Warmup: {time.time() - t0:.2f}s\n")
-
-    # Profiled run
-    print("Profiling...")
-    profiler = OpProfiler(device)
-    torch.cuda.synchronize(device)
-    t0 = time.time()
-    with profiler:
+    for i in range(args.warmup_rounds):
+        torch.cuda.synchronize(device)
+        t0 = time.time()
         with torch.no_grad():
-            output = model.generate(**inputs, max_new_tokens=args.tokens)
-    torch.cuda.synchronize(device)
-    profiled_time = time.time() - t0
+            _ = model.generate(**gen_kwargs)
+        torch.cuda.synchronize(device)
+        print(f"  Round {i + 1}: {time.time() - t0:.2f}s")
+    print()
 
-    new_tokens = output.shape[1] - inputs["input_ids"].shape[1]
-    tps = new_tokens / profiled_time
-    print(f"\nProfiled run: {profiled_time:.2f}s, {new_tokens} tokens, {tps:.2f} tok/s")
+    # Profiled runs
+    print(f"Profiling ({args.rounds} rounds)...")
+    round_times = []
+    round_tps = []
 
-    profiler.report()
+    profiler = OpProfiler(device)
+    total_tokens_generated = 0
+
+    for i in range(args.rounds):
+        torch.cuda.synchronize(device)
+        t0 = time.time()
+        with profiler:
+            with torch.no_grad():
+                output = model.generate(**gen_kwargs)
+        torch.cuda.synchronize(device)
+        elapsed = time.time() - t0
+
+        new_tokens = output.shape[1] - input_len
+        total_tokens_generated += new_tokens
+        tps = new_tokens / elapsed
+        round_times.append(elapsed)
+        round_tps.append(tps)
+        print(f"  Round {i + 1}: {elapsed:.2f}s, {new_tokens} tokens, {tps:.2f} tok/s")
+
+    # Statistics
+    round_times.sort()
+    round_tps.sort()
+    median_time = round_times[len(round_times) // 2]
+    median_tps = round_tps[len(round_tps) // 2]
+    min_time = round_times[0]
+    max_time = round_times[-1]
+
+    print(f"\n=== Timing Summary ({args.rounds} rounds) ===")
+    print(f"Median: {median_time:.3f}s ({median_tps:.2f} tok/s)")
+    print(f"Min:    {min_time:.3f}s ({round_tps[-1]:.2f} tok/s)")
+    print(f"Max:    {max_time:.3f}s ({round_tps[0]:.2f} tok/s)")
+    print(f"Spread: {(max_time - min_time) / median_time * 100:.1f}%")
+
+    # Report
+    profiler.report(total_tokens_generated)
 
     # Per-token breakdown
+    print("\n=== Per-Token Breakdown (median round) ===")
     total_op_time = sum(profiler.op_times.values())
-    print("\n=== Per-Token Breakdown ===")
-    print(f"Wall-clock time:     {profiled_time:.3f}s")
-    print(f"Op execution time:   {total_op_time:.3f}s")
-    print(f"Unaccounted overhead: {profiled_time - total_op_time:.3f}s")
-    print(f"Time per token: {profiled_time / new_tokens * 1000:.1f}ms")
-    print(f"Ops per token:  {sum(profiler.op_counts.values()) / new_tokens:.0f}")
-    avg_op_time_us = (total_op_time / sum(profiler.op_counts.values())) * 1e6
+    total_wall = sum(round_times)
+    tokens_per_round = args.tokens
+    ops_per_round = sum(profiler.op_counts.values()) / args.rounds
+    op_time_per_round = total_op_time / args.rounds
+    unaccounted = total_wall - total_op_time
+
+    print(f"Total wall-clock:    {total_wall:.3f}s ({args.rounds} rounds)")
+    print(
+        f"Op execution time:   {total_op_time:.3f}s ({total_op_time / total_wall * 100:.1f}%)"
+    )
+    print(
+        f"Unaccounted overhead: {unaccounted:.3f}s ({unaccounted / total_wall * 100:.1f}%)"
+    )
+    print(f"Time per token: {median_time / tokens_per_round * 1000:.1f}ms")
+    print(f"Ops per token:  {ops_per_round / tokens_per_round:.0f}")
+    avg_op_time_us = (op_time_per_round / ops_per_round) * 1e6
     print(f"Avg op time:    {avg_op_time_us:.1f}µs")
 
 
