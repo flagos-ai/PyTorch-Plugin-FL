@@ -143,6 +143,71 @@ default_generators = _DefaultGenerators()
 
 
 # ---------------------------------------------------------------------------
+# Caching Allocator APIs
+# ---------------------------------------------------------------------------
+
+
+def empty_cache():
+    """Release all unoccupied cached memory held by the caching allocator.
+
+    This frees GPU memory that is reserved but not currently used by tensors,
+    making it available for other GPU applications or new allocations.
+    """
+    _C._empty_cache()
+
+
+def memory_stats(device=None):
+    """Return a dictionary of memory allocator statistics for the given device.
+
+    Args:
+        device: device index (int) or None for current device.
+
+    Returns:
+        dict with keys: allocated_bytes, reserved_bytes, peak_allocated_bytes,
+        peak_reserved_bytes, num_alloc_calls, num_free_calls,
+        num_device_malloc, num_device_free, num_alloc_retries.
+    """
+    if device is None:
+        device = current_device()
+    return _C._memory_stats(device)
+
+
+def memory_allocated(device=None):
+    """Return the current GPU memory occupied by tensors in bytes.
+
+    Args:
+        device: device index (int) or None for current device.
+    """
+    if device is None:
+        device = current_device()
+    return _C._memory_allocated(device)
+
+
+def memory_reserved(device=None):
+    """Return the current GPU memory managed by the caching allocator in bytes.
+
+    This includes both used and cached (free) memory.
+
+    Args:
+        device: device index (int) or None for current device.
+    """
+    if device is None:
+        device = current_device()
+    return _C._memory_reserved(device)
+
+
+def reset_peak_memory_stats(device=None):
+    """Reset the peak memory statistics tracked by the allocator.
+
+    Args:
+        device: device index (int) or None for current device.
+    """
+    if device is None:
+        device = current_device()
+    _C._reset_peak_memory_stats(device)
+
+
+# ---------------------------------------------------------------------------
 # Stream API required by FSDP
 # Since flagos shares the same GPU as CUDA, we proxy to torch.cuda streams.
 # ---------------------------------------------------------------------------
@@ -226,4 +291,9 @@ __all__ = [
     "current_stream",
     "stream",
     "default_generators",
+    "empty_cache",
+    "memory_stats",
+    "memory_allocated",
+    "memory_reserved",
+    "reset_peak_memory_stats",
 ]

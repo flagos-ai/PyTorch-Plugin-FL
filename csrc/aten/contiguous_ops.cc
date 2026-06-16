@@ -7,7 +7,9 @@
 #include "contiguous_ops.h"
 
 #include <ATen/native/Resize.h>
+#include <ATen/ops/copy_native.h>
 #include <include/flagos.h>
+#include "device_boxing.h"
 
 namespace at::native::flagos {
 
@@ -23,6 +25,13 @@ at::Tensor contiguous(
   if (self.is_privateuseone()) {
     int64_t numel = self.numel();
     if (numel > 0) {
+#ifndef USE_ASCEND
+      // CUDA platform: use DeviceBoxingGuard to invoke native CUDA strided copy
+      // kernel on-device, avoiding expensive CPU round-trip.
+      DeviceBoxingGuard guard(self, result);
+      at::native::copy_(result, self, false);
+#else
+      // Ascend: no CUDA runtime, fall back to CPU round-trip.
       size_t storage_size = self.storage().nbytes();
       at::Tensor storage_cpu = at::empty(
           {static_cast<int64_t>(storage_size)},
@@ -37,30 +46,11 @@ at::Tensor contiguous(
           self.strides());
 
       auto cpu_contig = at::empty(self.sizes(), self.options().device(at::kCPU).memory_format(memory_format));
-
-      if (self.dim() == 2) {
-        int64_t rows = self.size(0);
-        int64_t cols = self.size(1);
-        int64_t src_stride0 = self.stride(0);
-        int64_t src_stride1 = self.stride(1);
-        size_t elem_size = self.element_size();
-
-        char* src_base = static_cast<char*>(storage_cpu.data_ptr()) + self.storage_offset() * elem_size;
-        char* dst_base = static_cast<char*>(cpu_contig.data_ptr());
-
-        for (int64_t i = 0; i < rows; i++) {
-          for (int64_t j = 0; j < cols; j++) {
-            char* src = src_base + (i * src_stride0 + j * src_stride1) * elem_size;
-            char* dst = dst_base + (i * cols + j) * elem_size;
-            memcpy(dst, src, elem_size);
-          }
-        }
-      } else {
-        cpu_contig.copy_(cpu_view);
-      }
+      cpu_contig.copy_(cpu_view);
 
       size_t nbytes = cpu_contig.numel() * cpu_contig.element_size();
       Memcpy(result.data_ptr(), cpu_contig.data_ptr(), nbytes, MemcpyHostToDevice);
+#endif
     }
 
     return result;
@@ -91,6 +81,23 @@ at::Tensor clone(
     // contiguous is unregistered from PrivateUse1 (CompositeImplicitAutograd
     // contiguous calls clone, which would call contiguous again).
     memory_format = c10::MemoryFormat::Contiguous;
+  }
+
+  // Non-contiguous clone: use DeviceBoxingGuard to leverage CUDA's native
+  // strided copy kernel instead of expensive CPU round-trip.
+  if (self.is_privateuseone()) {
+#ifndef USE_ASCEND
+    auto result = at::empty(
+        self.sizes(), self.options().memory_format(memory_format));
+    DeviceBoxingGuard guard(self, result);
+    at::native::copy_(result, self, false);
+    return result;
+#else
+    auto result = at::empty(
+        self.sizes(), self.options().memory_format(memory_format));
+    result.copy_(self);
+    return result;
+#endif
   }
 
   auto result = at::empty(self.sizes(), self.options().memory_format(memory_format));

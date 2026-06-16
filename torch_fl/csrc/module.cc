@@ -18,6 +18,7 @@
 
 #include <runtime/functions.h>
 #include <include/macros.h>
+#include <runtime/allocator/caching_device_allocator.h>
 
 namespace {
 
@@ -258,6 +259,80 @@ PyObject* _cuda_to_flagos_view(PyObject* self, PyObject* args) {
   END_HANDLE_TH_ERRORS
 }
 
+// --- Caching Allocator APIs ---
+
+PyObject* _empty_cache(PyObject* self, PyObject* noargs) {
+  HANDLE_TH_ERRORS
+  if (c10::flagos::CachingDeviceAllocator::is_enabled()) {
+    c10::flagos::GetCachingAllocator()->empty_cache();
+  }
+  Py_RETURN_NONE;
+  END_HANDLE_TH_ERRORS
+}
+
+PyObject* _memory_stats(PyObject* self, PyObject* arg) {
+  HANDLE_TH_ERRORS
+  int device = THPUtils_unpackInt(arg);
+  PyObject* dict = PyDict_New();
+  if (c10::flagos::CachingDeviceAllocator::is_enabled()) {
+    auto stats = c10::flagos::GetCachingAllocator()->get_stats(device);
+    PyDict_SetItemString(dict, "allocated_bytes",
+        PyLong_FromSize_t(stats.bytes_allocated));
+    PyDict_SetItemString(dict, "reserved_bytes",
+        PyLong_FromSize_t(stats.bytes_reserved));
+    PyDict_SetItemString(dict, "peak_allocated_bytes",
+        PyLong_FromSize_t(stats.peak_allocated));
+    PyDict_SetItemString(dict, "peak_reserved_bytes",
+        PyLong_FromSize_t(stats.peak_reserved));
+    PyDict_SetItemString(dict, "num_alloc_calls",
+        PyLong_FromSize_t(stats.num_alloc_calls));
+    PyDict_SetItemString(dict, "num_free_calls",
+        PyLong_FromSize_t(stats.num_free_calls));
+    PyDict_SetItemString(dict, "num_device_malloc",
+        PyLong_FromSize_t(stats.num_device_malloc));
+    PyDict_SetItemString(dict, "num_device_free",
+        PyLong_FromSize_t(stats.num_device_free));
+    PyDict_SetItemString(dict, "num_alloc_retries",
+        PyLong_FromSize_t(stats.num_alloc_retries));
+  }
+  return dict;
+  END_HANDLE_TH_ERRORS
+}
+
+PyObject* _memory_allocated(PyObject* self, PyObject* arg) {
+  HANDLE_TH_ERRORS
+  int device = THPUtils_unpackInt(arg);
+  size_t result = 0;
+  if (c10::flagos::CachingDeviceAllocator::is_enabled()) {
+    auto stats = c10::flagos::GetCachingAllocator()->get_stats(device);
+    result = stats.bytes_allocated;
+  }
+  return PyLong_FromSize_t(result);
+  END_HANDLE_TH_ERRORS
+}
+
+PyObject* _memory_reserved(PyObject* self, PyObject* arg) {
+  HANDLE_TH_ERRORS
+  int device = THPUtils_unpackInt(arg);
+  size_t result = 0;
+  if (c10::flagos::CachingDeviceAllocator::is_enabled()) {
+    auto stats = c10::flagos::GetCachingAllocator()->get_stats(device);
+    result = stats.bytes_reserved;
+  }
+  return PyLong_FromSize_t(result);
+  END_HANDLE_TH_ERRORS
+}
+
+PyObject* _reset_peak_memory_stats(PyObject* self, PyObject* arg) {
+  HANDLE_TH_ERRORS
+  int device = THPUtils_unpackInt(arg);
+  if (c10::flagos::CachingDeviceAllocator::is_enabled()) {
+    c10::flagos::GetCachingAllocator()->reset_stats(device);
+  }
+  Py_RETURN_NONE;
+  END_HANDLE_TH_ERRORS
+}
+
 static PyMethodDef methods[] = {
     {"_init", _initExtension, METH_NOARGS, nullptr},
     {"_get_default_generator", _getDefaultGenerator, METH_O, nullptr},
@@ -268,6 +343,11 @@ static PyMethodDef methods[] = {
     {"_synchronize", _synchronize, METH_NOARGS, nullptr},
     {"_flagos_to_cuda_view", _flagos_to_cuda_view, METH_O, nullptr},
     {"_cuda_to_flagos_view", _cuda_to_flagos_view, METH_VARARGS, nullptr},
+    {"_empty_cache", _empty_cache, METH_NOARGS, nullptr},
+    {"_memory_stats", _memory_stats, METH_O, nullptr},
+    {"_memory_allocated", _memory_allocated, METH_O, nullptr},
+    {"_memory_reserved", _memory_reserved, METH_O, nullptr},
+    {"_reset_peak_memory_stats", _reset_peak_memory_stats, METH_O, nullptr},
     {nullptr, nullptr, 0, nullptr}};
 
 extern "C" FLAGOS_EXPORT PyObject* initFlagosModule(void) {
