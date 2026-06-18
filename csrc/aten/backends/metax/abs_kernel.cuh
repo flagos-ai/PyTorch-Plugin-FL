@@ -56,10 +56,10 @@ inline at::Tensor AbsKernel(const at::Tensor& self) {
 
   if (!iter.can_use_32bit_indexing()) {
     for (auto& sub_iter : iter.with_32bit_indexing()) {
-      AT_DISPATCH_FLOATING_TYPES_AND2(
+      AT_DISPATCH_ALL_TYPES_AND2(
           at::ScalarType::Half,
           at::ScalarType::BFloat16,
-          sub_iter.dtype(),
+          sub_iter.common_dtype(),
           "abs_metax",
           [&]() {
             using opmath_t = at::opmath_type<scalar_t>;
