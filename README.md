@@ -234,22 +234,23 @@ export FLAGOS_OP_mm__out=cuda
 | File | Purpose |
 |------|---------|
 | `torch_fl/backends_metax.conf` | All listed ops → `metax` C++ kernels. Default when pytest detects MetaX (`/dev/mxcd`) and `FLAGOS_BACKEND_CONFIG` is unset. |
-| `torch_fl/backends_metax_flagos_py.conf` | **Recommended for integration tests.** Hybrid routing: Triton-incompatible ops (e.g. `add`, `mm`, `cos`, `abs`) → `metax`; a few ops remain on `flagos_python`. |
+| `torch_fl/backends_metax_flagos_py.conf` | **Recommended for integration tests.** Hybrid routing: most compute ops → `flagos_python`; keep Triton-incompatible ops (`mm`/`bmm`/`mean.dim`) and factory/allocation ops (`zeros`, `scalar_tensor`, `embedding`, …) on `metax`. |
 
 Example (`backends_metax_flagos_py.conf`):
 
-```ini
-# allclose chain
-abs = metax
-le.Tensor = metax
-all = metax
+     # elementwise / inference-path ops
+     abs = flagos_python
+     add.Tensor = flagos_python
+     cos = flagos_python
+     sin = flagos_python
 
-# PTX / autotune failures on generic Triton
-add.Tensor = metax
-mm = metax
-cos = metax
-sin = metax
-```
+     # Triton-incompatible
+     mm = metax
+     bmm = metax
+     mean.dim = metax
+     # factory/allocation
+     zeros = metax
+     scalar_tensor = metax
 
 ### Debug Dispatch
 
@@ -317,7 +318,7 @@ export FLAGGEMS_SOURCE_DIR=$(python -c "import os,flag_gems;print(os.path.dirnam
 pytest tests/integration/test_ops.py -v
 
 # Per-op dispatch tests (hybrid config)
-pytest tests/integration/ops/ -v -m "anyplatform"
+pytest tests/integration/ops/ -v
 
 # Qwen3 inference
 pytest tests/integration/test_qwen3_infer.py -v -s --model /path/to/Qwen3-0.6B

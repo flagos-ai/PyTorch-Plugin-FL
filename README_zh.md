@@ -237,22 +237,23 @@ export FLAGOS_OP_mm__out=cuda
 | 文件 | 用途 |
 |------|------|
 | `torch_fl/backends_metax.conf` | 所列算子全部 → `metax` C++ kernel。pytest 检测到 MetaX（`/dev/mxcd`）且未设置 `FLAGOS_BACKEND_CONFIG` 时自动选用。 |
-| `torch_fl/backends_metax_flagos_py.conf` | **集成测试推荐。** 混合路由：Triton 不兼容算子（如 `add`、`mm`、`cos`、`abs`）→ `metax`；少量算子仍走 `flagos_python`。 |
+| `torch_fl/backends_metax_flagos_py.conf` | **集成测试推荐。** 混合路由：多数计算算子 → `flagos_python`；将 Triton 不兼容算子（`mm`/`bmm`/`mean.dim`）以及分配/工厂算子（`zeros`、`scalar_tensor`、`embedding` 等）保留在 `metax`。 |
 
 示例（`backends_metax_flagos_py.conf`）：
 
-```ini
-# allclose 依赖链
-abs = metax
-le.Tensor = metax
-all = metax
-
-# 通用 Triton 在 MetaX 上会 PTX / autotune 失败
-add.Tensor = metax
-mm = metax
-cos = metax
-sin = metax
-```
+     # elementwise / inference-path ops
+     abs = flagos_python
+     add.Tensor = flagos_python
+     cos = flagos_python
+     sin = flagos_python     
+     
+     # Triton 不兼容
+     mm = metax
+     bmm = metax
+     mean.dim = metax
+     # 分配/工厂算子
+     zeros = metax
+     scalar_tensor = metax
 
 ### 调试 dispatch
 
@@ -320,7 +321,7 @@ export FLAGGEMS_SOURCE_DIR=$(python -c "import os,flag_gems;print(os.path.dirnam
 pytest tests/integration/test_ops.py -v
 
 # 逐算子 dispatch 测试（混合配置）
-pytest tests/integration/ops/ -v -m "anyplatform"
+pytest tests/integration/ops/ -v
 
 # Qwen3 推理
 pytest tests/integration/test_qwen3_infer.py -v -s --model /path/to/Qwen3-0.6B

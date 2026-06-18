@@ -71,10 +71,10 @@ inline at::Tensor AbsKernel(const at::Tensor& self) {
 
   TORCH_INTERNAL_ASSERT(iter.is_contiguous());
 
-  AT_DISPATCH_FLOATING_TYPES_AND2(
+  AT_DISPATCH_ALL_TYPES_AND2(
       at::ScalarType::Half,
       at::ScalarType::BFloat16,
-      iter.dtype(),
+      iter.common_dtype(),
       "abs_metax",
       [&]() {
         using opmath_t = at::opmath_type<scalar_t>;
