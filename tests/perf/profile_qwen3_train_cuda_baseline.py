@@ -29,6 +29,7 @@ class OpProfiler(TorchDispatchMode):
         self.device = device
         self.op_counts = defaultdict(int)
         self.op_times = defaultdict(float)
+        self.cpu_fallbacks = defaultdict(int)
 
     def __torch_dispatch__(self, func, types, args=(), kwargs=None):
         kwargs = kwargs or {}
@@ -42,6 +43,15 @@ class OpProfiler(TorchDispatchMode):
         elapsed = time.perf_counter() - t0
         self.op_times[op_name] += elapsed
 
+        # Detect CPU fallback
+        if isinstance(result, torch.Tensor) and result.device.type == "cpu":
+            self.cpu_fallbacks[op_name] += 1
+        elif isinstance(result, (list, tuple)):
+            for r in result:
+                if isinstance(r, torch.Tensor) and r.device.type == "cpu":
+                    self.cpu_fallbacks[op_name] += 1
+                    break
+
         return result
 
     def report(self, total_steps):
@@ -49,6 +59,14 @@ class OpProfiler(TorchDispatchMode):
         print(f"Total unique ops: {len(self.op_counts)}")
         print(f"Total op calls: {sum(self.op_counts.values())}")
         print(f"Total op time: {sum(self.op_times.values()):.3f}s")
+
+        if self.cpu_fallbacks:
+            print(f"\n⚠️  CPU fallbacks detected: {len(self.cpu_fallbacks)} ops")
+            print("\nTop CPU fallback ops:")
+            for op, count in sorted(
+                self.cpu_fallbacks.items(), key=lambda x: x[1], reverse=True
+            )[:10]:
+                print(f"  {op:60s} {count:5d} calls")
 
         print("\n=== Top 20 slowest ops (by total time) ===")
         total_op_time = sum(self.op_times.values())
@@ -141,6 +159,8 @@ def main():
         dataset, batch_size=args.batch_size, shuffle=True, drop_last=True
     )
 
+    tokens_per_step = args.batch_size * args.seq_len
+
     def run_step(batch):
         input_ids = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
@@ -171,7 +191,9 @@ def main():
         t0 = time.time()
         loss = run_step(batch)
         torch.cuda.synchronize(device)
-        print(f"    Step {i + 1}: loss={loss:.4f}, time={time.time() - t0:.2f}s")
+        elapsed = time.time() - t0
+        tps = tokens_per_step / elapsed
+        print(f"    Step {i + 1}: loss={loss:.4f}, time={elapsed:.2f}s, {tps:.1f} tok/s")
     print()
 
     # Profiled training
@@ -196,21 +218,22 @@ def main():
 
         step_times.append(elapsed)
         step_losses.append(loss)
-        print(f"    Step {i + 1}: loss={loss:.4f}, time={elapsed:.2f}s")
+        tps = tokens_per_step / elapsed
+        print(f"    Step {i + 1}: loss={loss:.4f}, time={elapsed:.2f}s, {tps:.1f} tok/s")
 
     # Statistics
-    step_times.sort()
-    median_time = step_times[len(step_times) // 2]
-    min_time = step_times[0]
-    max_time = step_times[-1]
-    tokens_per_step = args.batch_size * args.seq_len
+    step_times_sorted = sorted(step_times)
+    median_time = step_times_sorted[len(step_times_sorted) // 2]
+    min_time = step_times_sorted[0]
+    max_time = step_times_sorted[-1]
+    median_tps = tokens_per_step / median_time
 
     print(f"\n=== Timing Summary ({args.steps} steps) ===")
-    print(f"Median step time: {median_time:.3f}s")
-    print(f"Min:              {min_time:.3f}s")
-    print(f"Max:              {max_time:.3f}s")
-    print(f"Spread:           {(max_time - min_time) / median_time * 100:.1f}%")
-    print(f"Median throughput: {tokens_per_step / median_time:.1f} tok/s")
+    print(f"Median step time: {median_time:.3f}s ({median_tps:.1f} tok/s)")
+    print(f"Min:   {min_time:.3f}s")
+    print(f"Max:   {max_time:.3f}s")
+    print(f"Spread: {(max_time - min_time) / median_time * 100:.1f}%")
+    print(f"Avg loss: {sum(step_losses) / len(step_losses):.4f}")
 
     # Report
     profiler.report(args.steps)
@@ -222,14 +245,17 @@ def main():
     unaccounted = total_wall - total_op_time
     print(f"Total wall-clock:     {total_wall:.3f}s ({args.steps} steps)")
     print(
-        f"Op execution time:    {total_op_time:.3f}s ({total_op_time / total_wall * 100:.1f}%)"
+        f"Op execution time:    {total_op_time:.3f}s "
+        f"({total_op_time / total_wall * 100:.1f}%)"
     )
     print(
-        f"Unaccounted overhead: {unaccounted:.3f}s ({unaccounted / total_wall * 100:.1f}%)"
+        f"Unaccounted overhead: {unaccounted:.3f}s "
+        f"({unaccounted / total_wall * 100:.1f}%)"
     )
+    print("  (dispatch, Python overhead, host-device sync, framework bookkeeping)")
 
     # Per-step breakdown
-    print("\n=== Per-Step Breakdown (median) ===")
+    print("\n=== Per-Step Breakdown (median step) ===")
     ops_per_step = sum(profiler.op_counts.values()) / args.steps
     op_time_per_step = total_op_time / args.steps
     avg_op_time_us = (op_time_per_step / ops_per_step) * 1e6
@@ -237,6 +263,7 @@ def main():
     print(f"Tokens per step: {tokens_per_step}")
     print(f"Ops per step:    {ops_per_step:.0f}")
     print(f"Avg op time:     {avg_op_time_us:.1f}µs")
+    print(f"Time per token:  {median_time / tokens_per_step * 1000:.2f}ms")
 
     # Loss convergence check
     print("\n=== Loss Trend ===")

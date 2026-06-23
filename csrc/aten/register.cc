@@ -62,6 +62,18 @@
 #include <ATen/ops/lt.h>
 #include <ATen/ops/cumsum.h>
 
+// For _foreach_* ops (optimizer kernels).
+// These are generated headers; they resolve on the build machine with PyTorch installed.
+#include <ATen/ops/_foreach_mul.h>
+#include <ATen/ops/_foreach_add.h>
+#include <ATen/ops/_foreach_addcdiv.h>
+#include <ATen/ops/_foreach_addcmul.h>
+#include <ATen/ops/_foreach_lerp.h>
+#include <ATen/ops/_foreach_sqrt.h>
+#include <ATen/ops/_foreach_div.h>
+#include <ATen/ops/_foreach_neg.h>
+#include <ATen/ops/_foreach_reciprocal.h>
+
 #include <torch/library.h>
 
 #include "device_boxing.h"
@@ -608,6 +620,108 @@ at::Tensor WrapperCumsum(
   return result;
 }
 
+// ============================================================
+// _foreach_* wrappers for optimizer ops (AdamW, etc.)
+//
+// These ops operate on TensorLists (all model params / optimizer states).
+// Without explicit registration they hit cpu_fallback, causing catastrophic
+// GPU->CPU->GPU round-trips for every optimizer step.
+// ============================================================
+
+// --- Inplace ops (return void) ---
+
+void WrapperForeachMul_Scalar(at::TensorList self, const at::Scalar& scalar) {
+  at::native::flagos::TensorListBoxingGuard guard;
+  guard.box(self);
+  at::_foreach_mul_(self, scalar);
+}
+
+void WrapperForeachAdd_Scalar(
+    at::TensorList self, const at::Scalar& scalar) {
+  at::native::flagos::TensorListBoxingGuard guard;
+  guard.box(self);
+  at::_foreach_add_(self, scalar);
+}
+
+void WrapperForeachAddcdiv_ScalarList(
+    at::TensorList self, at::TensorList tensor1, at::TensorList tensor2,
+    at::ArrayRef<at::Scalar> scalars) {
+  at::native::flagos::TensorListBoxingGuard guard;
+  guard.box(self);
+  guard.box(tensor1);
+  guard.box(tensor2);
+  at::_foreach_addcdiv_(self, tensor1, tensor2, scalars);
+}
+
+void WrapperForeachAddcmul_Scalar(
+    at::TensorList self, at::TensorList tensor1, at::TensorList tensor2,
+    const at::Scalar& scalar) {
+  at::native::flagos::TensorListBoxingGuard guard;
+  guard.box(self);
+  guard.box(tensor1);
+  guard.box(tensor2);
+  at::_foreach_addcmul_(self, tensor1, tensor2, scalar);
+}
+
+void WrapperForeachLerp_Scalar(
+    at::TensorList self, at::TensorList tensors1, const at::Scalar& weight) {
+  at::native::flagos::TensorListBoxingGuard guard;
+  guard.box(self);
+  guard.box(tensors1);
+  at::_foreach_lerp_(self, tensors1, weight);
+}
+
+void WrapperForeachDiv_ScalarList(
+    at::TensorList self, at::ArrayRef<at::Scalar> scalars) {
+  at::native::flagos::TensorListBoxingGuard guard;
+  guard.box(self);
+  at::_foreach_div_(self, scalars);
+}
+
+// --- Non-inplace ops (return vector<Tensor>) ---
+
+::std::vector<at::Tensor> WrapperForeachSqrt(at::TensorList self) {
+  at::native::flagos::TensorListBoxingGuard guard;
+  guard.box(self);
+  auto result = at::_foreach_sqrt(self);
+  at::native::flagos::UnboxTensorVecToFlagos(result);
+  return result;
+}
+
+// --- Additional foreach ops used by various optimizers ---
+
+void WrapperForeachAdd_TensorList(
+    at::TensorList self, at::TensorList other, const at::Scalar& alpha) {
+  at::native::flagos::TensorListBoxingGuard guard;
+  guard.box(self);
+  guard.box(other);
+  at::_foreach_add_(self, other, alpha);
+}
+
+void WrapperForeachMul_TensorList(
+    at::TensorList self, at::TensorList other) {
+  at::native::flagos::TensorListBoxingGuard guard;
+  guard.box(self);
+  guard.box(other);
+  at::_foreach_mul_(self, other);
+}
+
+::std::vector<at::Tensor> WrapperForeachNeg(at::TensorList self) {
+  at::native::flagos::TensorListBoxingGuard guard;
+  guard.box(self);
+  auto result = at::_foreach_neg(self);
+  at::native::flagos::UnboxTensorVecToFlagos(result);
+  return result;
+}
+
+::std::vector<at::Tensor> WrapperForeachReciprocal(at::TensorList self) {
+  at::native::flagos::TensorListBoxingGuard guard;
+  guard.box(self);
+  auto result = at::_foreach_reciprocal(self);
+  at::native::flagos::UnboxTensorVecToFlagos(result);
+  return result;
+}
+
 } // namespace
 
 // Register basic operators for PrivateUse1 dispatch key
@@ -689,6 +803,19 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("lt.Tensor", WrapperLtTensor);
   m.impl("lt.Scalar", WrapperLtScalar);
   m.impl("cumsum", WrapperCumsum);
+
+  // _foreach_* ops (optimizer kernels)
+  m.impl("_foreach_mul_.Scalar", WrapperForeachMul_Scalar);
+  m.impl("_foreach_add_.Scalar", WrapperForeachAdd_Scalar);
+  m.impl("_foreach_addcdiv_.ScalarList", WrapperForeachAddcdiv_ScalarList);
+  m.impl("_foreach_addcmul_.Scalar", WrapperForeachAddcmul_Scalar);
+  m.impl("_foreach_lerp_.Scalar", WrapperForeachLerp_Scalar);
+  m.impl("_foreach_sqrt.default", WrapperForeachSqrt);
+  m.impl("_foreach_div_.ScalarList", WrapperForeachDiv_ScalarList);
+  m.impl("_foreach_add_.List", WrapperForeachAdd_TensorList);
+  m.impl("_foreach_mul_.List", WrapperForeachMul_TensorList);
+  m.impl("_foreach_neg.default", WrapperForeachNeg);
+  m.impl("_foreach_reciprocal.default", WrapperForeachReciprocal);
 }
 
 // Register fallback for all unimplemented operators

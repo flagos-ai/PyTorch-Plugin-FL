@@ -163,6 +163,8 @@ def main():
         dataset, batch_size=args.batch_size, shuffle=True, drop_last=True
     )
 
+    tokens_per_step = args.batch_size * args.seq_len
+
     def sync():
         torch_fl.flagos.synchronize()
 
@@ -196,7 +198,9 @@ def main():
         t0 = time.time()
         loss = run_step(batch)
         sync()
-        print(f"    Step {i + 1}: loss={loss:.4f}, time={time.time() - t0:.2f}s")
+        elapsed = time.time() - t0
+        tps = tokens_per_step / elapsed
+        print(f"    Step {i + 1}: loss={loss:.4f}, time={elapsed:.2f}s, {tps:.1f} tok/s")
     print()
 
     # Profiled training
@@ -221,24 +225,22 @@ def main():
 
         step_times.append(elapsed)
         step_losses.append(loss)
-        tokens = args.batch_size * args.seq_len
-        tps = tokens / elapsed
-        print(
-            f"    Step {i + 1}: loss={loss:.4f}, "
-            f"time={elapsed:.2f}s, {tps:.1f} tok/s"
-        )
+        tps = tokens_per_step / elapsed
+        print(f"    Step {i + 1}: loss={loss:.4f}, time={elapsed:.2f}s, {tps:.1f} tok/s")
 
     # Statistics
     step_times_sorted = sorted(step_times)
     median_time = step_times_sorted[len(step_times_sorted) // 2]
-    tokens_per_step = args.batch_size * args.seq_len
+    min_time = step_times_sorted[0]
+    max_time = step_times_sorted[-1]
     median_tps = tokens_per_step / median_time
 
     print(f"\n=== Timing Summary ({args.steps} steps) ===")
-    print(f"Median step time: {median_time:.3f}s ({median_tps:.1f} tok/s)")
-    print(f"Min:   {step_times_sorted[0]:.3f}s")
-    print(f"Max:   {step_times_sorted[-1]:.3f}s")
-    print(f"Avg loss: {sum(step_losses) / len(step_losses):.4f}")
+    print(f"Median step time: {median_time:.3f}s")
+    print(f"Min:              {min_time:.3f}s")
+    print(f"Max:              {max_time:.3f}s")
+    print(f"Spread:           {(max_time - min_time) / median_time * 100:.1f}%")
+    print(f"Median throughput: {median_tps:.1f} tok/s")
 
     # Report
     profiler.report(args.steps)
@@ -264,10 +266,17 @@ def main():
     ops_per_step = sum(profiler.op_counts.values()) / args.steps
     op_time_per_step = total_op_time / args.steps
     avg_op_time_us = (op_time_per_step / ops_per_step) * 1e6
+    print(f"Time per step:   {median_time * 1000:.1f}ms")
     print(f"Tokens per step: {tokens_per_step}")
     print(f"Ops per step:    {ops_per_step:.0f}")
     print(f"Avg op time:     {avg_op_time_us:.1f}µs")
     print(f"Time per token:  {median_time / tokens_per_step * 1000:.2f}ms")
+
+    # Loss convergence check
+    print("\n=== Loss Trend ===")
+    print(f"First loss: {step_losses[0]:.4f}")
+    print(f"Last loss:  {step_losses[-1]:.4f}")
+    print(f"Avg loss:   {sum(step_losses) / len(step_losses):.4f}")
 
 
 if __name__ == "__main__":
