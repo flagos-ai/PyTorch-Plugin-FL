@@ -62,17 +62,7 @@
 #include <ATen/ops/lt.h>
 #include <ATen/ops/cumsum.h>
 
-// For _foreach_* ops (optimizer kernels).
-// These are generated headers; they resolve on the build machine with PyTorch installed.
-#include <ATen/ops/_foreach_mul.h>
-#include <ATen/ops/_foreach_add.h>
-#include <ATen/ops/_foreach_addcdiv.h>
-#include <ATen/ops/_foreach_addcmul.h>
-#include <ATen/ops/_foreach_lerp.h>
-#include <ATen/ops/_foreach_sqrt.h>
-#include <ATen/ops/_foreach_div.h>
-#include <ATen/ops/_foreach_neg.h>
-#include <ATen/ops/_foreach_reciprocal.h>
+#include "foreach_ops.h"
 
 #include <torch/library.h>
 
@@ -626,100 +616,68 @@ at::Tensor WrapperCumsum(
 // These ops operate on TensorLists (all model params / optimizer states).
 // Without explicit registration they hit cpu_fallback, causing catastrophic
 // GPU->CPU->GPU round-trips for every optimizer step.
+//
+// Each wrapper dispatches through the torch_fl Dispatcher layer so that
+// backend selection respects GetBackendForOp() and backends_*.conf.
 // ============================================================
 
 // --- Inplace ops (return void) ---
 
 void WrapperForeachMul_Scalar(at::TensorList self, const at::Scalar& scalar) {
-  at::native::flagos::TensorListBoxingGuard guard;
-  guard.box(self);
-  at::_foreach_mul_(self, scalar);
+  at::native::flagos::foreach_mul_scalar_dispatcher(self, scalar);
 }
 
 void WrapperForeachAdd_Scalar(
     at::TensorList self, const at::Scalar& scalar) {
-  at::native::flagos::TensorListBoxingGuard guard;
-  guard.box(self);
-  at::_foreach_add_(self, scalar);
+  at::native::flagos::foreach_add_scalar_dispatcher(self, scalar);
 }
 
 void WrapperForeachAddcdiv_ScalarList(
     at::TensorList self, at::TensorList tensor1, at::TensorList tensor2,
     at::ArrayRef<at::Scalar> scalars) {
-  at::native::flagos::TensorListBoxingGuard guard;
-  guard.box(self);
-  guard.box(tensor1);
-  guard.box(tensor2);
-  at::_foreach_addcdiv_(self, tensor1, tensor2, scalars);
+  at::native::flagos::foreach_addcdiv_scalarlist_dispatcher(self, tensor1, tensor2, scalars);
 }
 
 void WrapperForeachAddcmul_Scalar(
     at::TensorList self, at::TensorList tensor1, at::TensorList tensor2,
     const at::Scalar& scalar) {
-  at::native::flagos::TensorListBoxingGuard guard;
-  guard.box(self);
-  guard.box(tensor1);
-  guard.box(tensor2);
-  at::_foreach_addcmul_(self, tensor1, tensor2, scalar);
+  at::native::flagos::foreach_addcmul_scalar_dispatcher(self, tensor1, tensor2, scalar);
 }
 
 void WrapperForeachLerp_Scalar(
     at::TensorList self, at::TensorList tensors1, const at::Scalar& weight) {
-  at::native::flagos::TensorListBoxingGuard guard;
-  guard.box(self);
-  guard.box(tensors1);
-  at::_foreach_lerp_(self, tensors1, weight);
+  at::native::flagos::foreach_lerp_scalar_dispatcher(self, tensors1, weight);
 }
 
 void WrapperForeachDiv_ScalarList(
     at::TensorList self, at::ArrayRef<at::Scalar> scalars) {
-  at::native::flagos::TensorListBoxingGuard guard;
-  guard.box(self);
-  at::_foreach_div_(self, scalars);
+  at::native::flagos::foreach_div_scalarlist_dispatcher(self, scalars);
 }
 
 // --- Non-inplace ops (return vector<Tensor>) ---
 
 ::std::vector<at::Tensor> WrapperForeachSqrt(at::TensorList self) {
-  at::native::flagos::TensorListBoxingGuard guard;
-  guard.box(self);
-  auto result = at::_foreach_sqrt(self);
-  at::native::flagos::UnboxTensorVecToFlagos(result);
-  return result;
+  return at::native::flagos::foreach_sqrt_dispatcher(self);
 }
 
 // --- Additional foreach ops used by various optimizers ---
 
 void WrapperForeachAdd_TensorList(
     at::TensorList self, at::TensorList other, const at::Scalar& alpha) {
-  at::native::flagos::TensorListBoxingGuard guard;
-  guard.box(self);
-  guard.box(other);
-  at::_foreach_add_(self, other, alpha);
+  at::native::flagos::foreach_add_tensorlist_dispatcher(self, other, alpha);
 }
 
 void WrapperForeachMul_TensorList(
     at::TensorList self, at::TensorList other) {
-  at::native::flagos::TensorListBoxingGuard guard;
-  guard.box(self);
-  guard.box(other);
-  at::_foreach_mul_(self, other);
+  at::native::flagos::foreach_mul_tensorlist_dispatcher(self, other);
 }
 
 ::std::vector<at::Tensor> WrapperForeachNeg(at::TensorList self) {
-  at::native::flagos::TensorListBoxingGuard guard;
-  guard.box(self);
-  auto result = at::_foreach_neg(self);
-  at::native::flagos::UnboxTensorVecToFlagos(result);
-  return result;
+  return at::native::flagos::foreach_neg_dispatcher(self);
 }
 
 ::std::vector<at::Tensor> WrapperForeachReciprocal(at::TensorList self) {
-  at::native::flagos::TensorListBoxingGuard guard;
-  guard.box(self);
-  auto result = at::_foreach_reciprocal(self);
-  at::native::flagos::UnboxTensorVecToFlagos(result);
-  return result;
+  return at::native::flagos::foreach_reciprocal_dispatcher(self);
 }
 
 } // namespace
