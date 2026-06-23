@@ -810,12 +810,12 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("_foreach_addcdiv_.ScalarList", WrapperForeachAddcdiv_ScalarList);
   m.impl("_foreach_addcmul_.Scalar", WrapperForeachAddcmul_Scalar);
   m.impl("_foreach_lerp_.Scalar", WrapperForeachLerp_Scalar);
-  m.impl("_foreach_sqrt.default", WrapperForeachSqrt);
+  m.impl("_foreach_sqrt", WrapperForeachSqrt);
   m.impl("_foreach_div_.ScalarList", WrapperForeachDiv_ScalarList);
   m.impl("_foreach_add_.List", WrapperForeachAdd_TensorList);
   m.impl("_foreach_mul_.List", WrapperForeachMul_TensorList);
-  m.impl("_foreach_neg.default", WrapperForeachNeg);
-  m.impl("_foreach_reciprocal.default", WrapperForeachReciprocal);
+  m.impl("_foreach_neg", WrapperForeachNeg);
+  m.impl("_foreach_reciprocal", WrapperForeachReciprocal);
 }
 
 // Register fallback for all unimplemented operators
