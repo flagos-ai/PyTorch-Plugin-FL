@@ -23,7 +23,7 @@ _ensure_backend_config()
 
 def pytest_addoption(parser):
     parser.addoption(
-        "--model", default="/nfs/hcr/models/Qwen/Qwen3-0.6B", help="Path to Qwen3 model"
+        "--model", default="Qwen/Qwen3-0.6B", help="Path to Qwen3 model"
     )
     parser.addoption(
         "--max-new-tokens",

@@ -42,12 +42,30 @@
 #include "nll_loss.h"
 #include "abs.h"
 #include "acos.h"
+#include "sort.h"
+#include "topk.h"
+#include "multinomial.h"
+#include "argmax.h"
 
 #include <ATen/native/CPUFallback.h>
 #include <ATen/ops/_index_put_impl.h>
 #include <ATen/ops/index_put.h>
+#include <ATen/ops/fill.h>
+#include <ATen/ops/arange.h>
+#include <ATen/ops/sub.h>
+#include <ATen/ops/eq.h>
+#include <ATen/ops/max.h>
+#include <ATen/ops/bitwise_not.h>
+#include <ATen/ops/bitwise_or.h>
+#include <ATen/ops/any.h>
+#include <ATen/ops/isin.h>
+#include <ATen/ops/lt.h>
+#include <ATen/ops/cumsum.h>
 
 #include <torch/library.h>
+
+#include "device_boxing.h"
+#include "runtime/allocator/caching_device_allocator.h"
 
 namespace at::flagos {
 
@@ -207,9 +225,15 @@ void WrapperCpuFallback(
 }
 
 void WrapperRecordStream(at::Tensor& self, at::Stream s) {
-  // No-op for flagos tensors.
-  // flagos uses cudaMalloc directly (not a caching allocator),
-  // so there is no need to track stream usage for memory management.
+  if (!c10::flagos::CachingDeviceAllocator::is_enabled()) {
+    // No-op when caching allocator is disabled.
+    return;
+  }
+  auto* alloc = c10::flagos::GetCachingAllocator();
+  // Convert at::Stream to flagos Stream_t.
+  // The stream id encodes the underlying device stream pointer.
+  Stream_t stream = reinterpret_cast<Stream_t>(s.id());
+  alloc->record_stream(self.storage().data_ptr(), stream);
 }
 
 at::Tensor WrapperMm(const at::Tensor& self, const at::Tensor& mat2) {
@@ -418,6 +442,172 @@ at::Tensor WrapperAcos(const at::Tensor& self) {
   return at::native::flagos::acos_dispatcher(self);
 }
 
+std::tuple<at::Tensor, at::Tensor> WrapperSort(
+    const at::Tensor& self, int64_t dim, bool descending) {
+  return at::native::flagos::sort_dispatcher(self, dim, descending);
+}
+
+std::tuple<at::Tensor, at::Tensor> WrapperTopk(
+    const at::Tensor& self, int64_t k, int64_t dim, bool largest, bool sorted) {
+  return at::native::flagos::topk_dispatcher(self, k, dim, largest, sorted);
+}
+
+at::Tensor WrapperMultinomial(
+    const at::Tensor& self, int64_t num_samples, bool replacement,
+    ::std::optional<at::Generator> generator) {
+  return at::native::flagos::multinomial_dispatcher(self, num_samples, replacement, generator);
+}
+
+at::Tensor WrapperArgmax(
+    const at::Tensor& self, std::optional<int64_t> dim, bool keepdim) {
+  return at::native::flagos::argmax_dispatcher(self, dim, keepdim);
+}
+
+at::Tensor WrapperArgmin(
+    const at::Tensor& self, std::optional<int64_t> dim, bool keepdim) {
+  return at::native::flagos::argmin_dispatcher(self, dim, keepdim);
+}
+
+// --- DeviceBoxingGuard-based wrappers for ops hitting CPU fallback ---
+
+at::Tensor& WrapperFill_Scalar(at::Tensor& self, const at::Scalar& value) {
+  at::native::flagos::BoxToCuda(self);
+  self.fill_(value);
+  at::native::flagos::UnboxToFlagos(self);
+  return self;
+}
+
+at::Tensor WrapperArange(
+    const at::Scalar& end,
+    std::optional<at::ScalarType> dtype,
+    std::optional<at::Layout> layout,
+    std::optional<at::Device> device,
+    std::optional<bool> pin_memory) {
+  // arange creates a new tensor; dispatch to CUDA device
+  auto dev_idx = device.has_value() ? device->index() : 0;
+  auto opts = at::TensorOptions()
+      .dtype(dtype).layout(layout).pinned_memory(pin_memory)
+      .device(at::Device(at::kCUDA, dev_idx));
+  auto result = at::arange(end, opts);
+  at::native::flagos::UnboxToFlagos(result);
+  return result;
+}
+
+at::Tensor WrapperArangeStartStep(
+    const at::Scalar& start, const at::Scalar& end, const at::Scalar& step,
+    std::optional<at::ScalarType> dtype,
+    std::optional<at::Layout> layout,
+    std::optional<at::Device> device,
+    std::optional<bool> pin_memory) {
+  auto dev_idx = device.has_value() ? device->index() : 0;
+  auto opts = at::TensorOptions()
+      .dtype(dtype).layout(layout).pinned_memory(pin_memory)
+      .device(at::Device(at::kCUDA, dev_idx));
+  auto result = at::arange(start, end, step, opts);
+  at::native::flagos::UnboxToFlagos(result);
+  return result;
+}
+
+at::Tensor WrapperSubTensor(
+    const at::Tensor& self, const at::Tensor& other, const at::Scalar& alpha) {
+  at::native::flagos::DeviceBoxingGuard guard(self, other);
+  auto result = at::sub(self, other, alpha);
+  at::native::flagos::UnboxToFlagos(result);
+  return result;
+}
+
+at::Tensor WrapperEqTensor(const at::Tensor& self, const at::Tensor& other) {
+  at::native::flagos::DeviceBoxingGuard guard(self, other);
+  auto result = at::eq(self, other);
+  at::native::flagos::UnboxToFlagos(result);
+  return result;
+}
+
+at::Tensor WrapperEqScalar(const at::Tensor& self, const at::Scalar& other) {
+  at::native::flagos::DeviceBoxingGuard guard(self);
+  auto result = at::eq(self, other);
+  at::native::flagos::UnboxToFlagos(result);
+  return result;
+}
+
+at::Tensor WrapperMax(const at::Tensor& self) {
+  at::native::flagos::DeviceBoxingGuard guard(self);
+  auto result = at::max(self);
+  at::native::flagos::UnboxToFlagos(result);
+  return result;
+}
+
+at::Tensor WrapperBitwiseNot(const at::Tensor& self) {
+  at::native::flagos::DeviceBoxingGuard guard(self);
+  auto result = at::bitwise_not(self);
+  at::native::flagos::UnboxToFlagos(result);
+  return result;
+}
+
+at::Tensor WrapperBitwiseOrTensor(
+    const at::Tensor& self, const at::Tensor& other) {
+  at::native::flagos::DeviceBoxingGuard guard(self, other);
+  auto result = at::bitwise_or(self, other);
+  at::native::flagos::UnboxToFlagos(result);
+  return result;
+}
+
+at::Tensor WrapperAnyOp(const at::Tensor& self) {
+  at::native::flagos::DeviceBoxingGuard guard(self);
+  auto result = at::any(self);
+  at::native::flagos::UnboxToFlagos(result);
+  return result;
+}
+
+at::Tensor WrapperAnyDim(const at::Tensor& self, int64_t dim, bool keepdim) {
+  at::native::flagos::DeviceBoxingGuard guard(self);
+  auto result = at::any(self, dim, keepdim);
+  at::native::flagos::UnboxToFlagos(result);
+  return result;
+}
+
+at::Tensor WrapperIsinTensorTensor(
+    const at::Tensor& elements, const at::Tensor& test_elements,
+    bool assume_unique, bool invert) {
+  at::native::flagos::DeviceBoxingGuard guard(elements, test_elements);
+  auto result = at::isin(elements, test_elements, assume_unique, invert);
+  at::native::flagos::UnboxToFlagos(result);
+  return result;
+}
+
+at::Tensor& WrapperMaskedFill_Scalar(
+    at::Tensor& self, const at::Tensor& mask, const at::Scalar& value) {
+  at::native::flagos::BoxToCuda(self);
+  at::native::flagos::BoxToCuda(mask);
+  self.masked_fill_(mask, value);
+  at::native::flagos::UnboxToFlagos(self);
+  at::native::flagos::UnboxToFlagos(mask);
+  return self;
+}
+
+at::Tensor WrapperLtTensor(const at::Tensor& self, const at::Tensor& other) {
+  at::native::flagos::DeviceBoxingGuard guard(self, other);
+  auto result = at::lt(self, other);
+  at::native::flagos::UnboxToFlagos(result);
+  return result;
+}
+
+at::Tensor WrapperLtScalar(const at::Tensor& self, const at::Scalar& other) {
+  at::native::flagos::DeviceBoxingGuard guard(self);
+  auto result = at::lt(self, other);
+  at::native::flagos::UnboxToFlagos(result);
+  return result;
+}
+
+at::Tensor WrapperCumsum(
+    const at::Tensor& self, int64_t dim,
+    std::optional<at::ScalarType> dtype) {
+  at::native::flagos::DeviceBoxingGuard guard(self);
+  auto result = at::cumsum(self, dim, dtype);
+  at::native::flagos::UnboxToFlagos(result);
+  return result;
+}
+
 } // namespace
 
 // Register basic operators for PrivateUse1 dispatch key
@@ -478,6 +668,27 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("nll_loss_backward", WrapperNllLossBackward);
   m.impl("abs", WrapperAbs);
   m.impl("acos", WrapperAcos);
+  m.impl("sort", WrapperSort);
+  m.impl("topk", WrapperTopk);
+  m.impl("multinomial", WrapperMultinomial);
+  m.impl("argmax", WrapperArgmax);
+  m.impl("argmin", WrapperArgmin);
+  m.impl("fill_.Scalar", WrapperFill_Scalar);
+  m.impl("arange", WrapperArange);
+  m.impl("arange.start_step", WrapperArangeStartStep);
+  m.impl("sub.Tensor", WrapperSubTensor);
+  m.impl("eq.Tensor", WrapperEqTensor);
+  m.impl("eq.Scalar", WrapperEqScalar);
+  m.impl("max", WrapperMax);
+  m.impl("bitwise_not", WrapperBitwiseNot);
+  m.impl("bitwise_or.Tensor", WrapperBitwiseOrTensor);
+  m.impl("any", WrapperAnyOp);
+  m.impl("any.dim", WrapperAnyDim);
+  m.impl("isin.Tensor_Tensor", WrapperIsinTensorTensor);
+  m.impl("masked_fill_.Scalar", WrapperMaskedFill_Scalar);
+  m.impl("lt.Tensor", WrapperLtTensor);
+  m.impl("lt.Scalar", WrapperLtScalar);
+  m.impl("cumsum", WrapperCumsum);
 }
 
 // Register fallback for all unimplemented operators

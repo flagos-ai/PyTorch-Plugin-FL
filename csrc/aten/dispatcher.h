@@ -135,4 +135,3 @@ struct DispatchRegistrar {
   REGISTER_IMPL_TO_DISPATCHER_UID2(fn_type, name, device, fn, uid)
 #define REGISTER_IMPL_TO_DISPATCHER(fn_type, name, device, fn) \
   REGISTER_IMPL_TO_DISPATCHER_UID(fn_type, name, device, fn, __COUNTER__)
-
