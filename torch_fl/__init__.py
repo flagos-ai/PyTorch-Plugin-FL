@@ -53,6 +53,13 @@ torch.utils.rename_privateuse1_backend("flagos")
 torch._register_device_module("flagos", flagos)
 torch.utils.generate_methods_for_privateuse1_backend(for_storage=True)
 
+# Enable swap_tensors in Module._apply so that .to("flagos") preserves weight
+# tying.  Without this, _apply creates new Parameter objects for PrivateUse1
+# tensors (since _has_compatible_shallow_copy_type returns False for cross-device),
+# breaking shared-storage relationships like lm_head.weight ↔ embed_tokens.weight.
+# swap_tensors modifies the Parameter in-place, keeping object identity intact.
+torch.__future__.set_swap_module_params_on_conversion(True)
+
 
 # Global library instance to keep registrations alive
 _flaggems_lib = None
