@@ -13,6 +13,7 @@
 #include "fallback.h"
 #include "mm.h"
 #include "add.h"
+#include "add_inplace.h"
 #include "silu.h"
 #include "neg.h"
 #include "bmm.h"
@@ -274,14 +275,7 @@ at::Tensor WrapperAddScalar(
 
 at::Tensor& WrapperAdd_Tensor(
     at::Tensor& self, const at::Tensor& other, const at::Scalar& alpha) {
-  // In-place add: box to CUDA, call native add_, unbox.
-  // Critical for gradient accumulation during backward.
-  at::native::flagos::BoxToCuda(self);
-  at::native::flagos::BoxToCuda(other);
-  self.add_(other, alpha);
-  at::native::flagos::UnboxToFlagos(self);
-  at::native::flagos::UnboxToFlagos(other);
-  return self;
+  return at::native::flagos::add_inplace_tensor_dispatcher(self, other, alpha);
 }
 
 at::Tensor WrapperSilu(const at::Tensor& self) {
