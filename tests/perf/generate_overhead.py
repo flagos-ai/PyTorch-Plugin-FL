@@ -51,9 +51,7 @@ def bench(fn, device_type, warmup=50, rounds=200):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--model", default="Qwen/Qwen3-0.6B", help="Model path"
-    )
+    parser.add_argument("--model", default="Qwen/Qwen3-0.6B", help="Model path")
     parser.add_argument("-n", type=int, default=200, help="Rounds per test")
     args = parser.parse_args()
     N = args.n

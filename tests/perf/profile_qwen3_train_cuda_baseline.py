@@ -193,7 +193,9 @@ def main():
         torch.cuda.synchronize(device)
         elapsed = time.time() - t0
         tps = tokens_per_step / elapsed
-        print(f"    Step {i + 1}: loss={loss:.4f}, time={elapsed:.2f}s, {tps:.1f} tok/s")
+        print(
+            f"    Step {i + 1}: loss={loss:.4f}, time={elapsed:.2f}s, {tps:.1f} tok/s"
+        )
     print()
 
     # Profiled training
@@ -219,7 +221,9 @@ def main():
         step_times.append(elapsed)
         step_losses.append(loss)
         tps = tokens_per_step / elapsed
-        print(f"    Step {i + 1}: loss={loss:.4f}, time={elapsed:.2f}s, {tps:.1f} tok/s")
+        print(
+            f"    Step {i + 1}: loss={loss:.4f}, time={elapsed:.2f}s, {tps:.1f} tok/s"
+        )
 
     # Statistics
     step_times_sorted = sorted(step_times)

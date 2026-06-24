@@ -130,7 +130,9 @@ def main():
         torch_fl.flagos.synchronize()
         elapsed = time.perf_counter() - t0
         tps = tokens_per_step / elapsed
-        print(f"    Step {i + 1}: loss={loss:.4f}, time={elapsed:.2f}s, {tps:.1f} tok/s")
+        print(
+            f"    Step {i + 1}: loss={loss:.4f}, time={elapsed:.2f}s, {tps:.1f} tok/s"
+        )
     print()
 
     # Benchmark
@@ -154,7 +156,9 @@ def main():
         step_times.append(elapsed)
         step_losses.append(loss)
         tps = tokens_per_step / elapsed
-        print(f"    Step {i + 1}: loss={loss:.4f}, time={elapsed:.3f}s, {tps:.1f} tok/s")
+        print(
+            f"    Step {i + 1}: loss={loss:.4f}, time={elapsed:.3f}s, {tps:.1f} tok/s"
+        )
 
     # Statistics
     step_times_sorted = sorted(step_times)
@@ -163,7 +167,7 @@ def main():
     max_time = step_times_sorted[-1]
     median_tps = tokens_per_step / median_time
 
-    print(f"\n=== E2E Training Benchmark Results (torch_fl) ===")
+    print("\n=== E2E Training Benchmark Results (torch_fl) ===")
     print(f"Model: {args.model}")
     print(f"Batch size: {args.batch_size}, Seq len: {args.seq_len}")
     print(f"Tokens per step: {tokens_per_step}")
@@ -174,7 +178,7 @@ def main():
     print(f"Spread: {(max_time - min_time) / median_time * 100:.1f}%")
     print(f"Time per token: {median_time / tokens_per_step * 1000:.2f}ms")
     print()
-    print(f"=== Loss Trend ===")
+    print("=== Loss Trend ===")
     print(f"First loss: {step_losses[0]:.4f}")
     print(f"Last loss:  {step_losses[-1]:.4f}")
     print(f"Avg loss:   {sum(step_losses) / len(step_losses):.4f}")

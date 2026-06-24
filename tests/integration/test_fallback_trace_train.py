@@ -237,7 +237,7 @@ def test_trace_fallback_train(train_ctx):
     print(tracer.report(title="CPU FALLBACK TRACE — TRAINING (forward + backward)"))
 
     # Assert: all losses finite
-    assert all(torch.isfinite(torch.tensor(l)) for l in losses), (
+    assert all(torch.isfinite(torch.tensor(val)) for val in losses), (
         "Some losses are not finite"
     )
 
