@@ -272,6 +272,18 @@ at::Tensor WrapperAddScalar(
   return at::native::flagos::add_tensor_dispatcher(self, other_tensor, at::Scalar(1));
 }
 
+at::Tensor& WrapperAdd_Tensor(
+    at::Tensor& self, const at::Tensor& other, const at::Scalar& alpha) {
+  // In-place add: box to CUDA, call native add_, unbox.
+  // Critical for gradient accumulation during backward.
+  at::native::flagos::BoxToCuda(self);
+  at::native::flagos::BoxToCuda(other);
+  self.add_(other, alpha);
+  at::native::flagos::UnboxToFlagos(self);
+  at::native::flagos::UnboxToFlagos(other);
+  return self;
+}
+
 at::Tensor WrapperSilu(const at::Tensor& self) {
   return at::native::flagos::silu_dispatcher(self);
 }
@@ -738,6 +750,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("mm", WrapperMm);
   m.impl("mm.out", WrapperMmOut);
   m.impl("add.Tensor", WrapperAddTensor);
+  m.impl("add_.Tensor", WrapperAdd_Tensor);
   m.impl("add.Scalar", WrapperAddScalar);
   m.impl("silu", WrapperSilu);
   m.impl("neg", WrapperNeg);
