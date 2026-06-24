@@ -63,6 +63,8 @@
 #include <ATen/ops/cumsum.h>
 
 #include "foreach_ops.h"
+#include "log_softmax.h"
+#include "div_scalar.h"
 
 #include <torch/library.h>
 
@@ -680,6 +682,34 @@ void WrapperForeachMul_TensorList(
   return at::native::flagos::foreach_reciprocal_dispatcher(self);
 }
 
+// ============================================================
+// _log_softmax, _log_softmax_backward_data, _softmax_backward_data
+// ============================================================
+
+at::Tensor WrapperLogSoftmax(const at::Tensor& self, int64_t dim, bool half_to_float) {
+  return at::native::flagos::log_softmax_dispatcher(self, dim, half_to_float);
+}
+
+at::Tensor WrapperLogSoftmaxBackwardData(
+    const at::Tensor& grad_output, const at::Tensor& output,
+    int64_t dim, at::ScalarType input_dtype) {
+  return at::native::flagos::log_softmax_backward_dispatcher(grad_output, output, dim, input_dtype);
+}
+
+at::Tensor WrapperSoftmaxBackwardData(
+    const at::Tensor& grad_output, const at::Tensor& output,
+    int64_t dim, at::ScalarType input_dtype) {
+  return at::native::flagos::softmax_backward_dispatcher(grad_output, output, dim, input_dtype);
+}
+
+// ============================================================
+// div.Scalar
+// ============================================================
+
+at::Tensor WrapperDivScalar(const at::Tensor& self, const at::Scalar& other) {
+  return at::native::flagos::div_scalar_dispatcher(self, other);
+}
+
 } // namespace
 
 // Register basic operators for PrivateUse1 dispatch key
@@ -761,6 +791,14 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("lt.Tensor", WrapperLtTensor);
   m.impl("lt.Scalar", WrapperLtScalar);
   m.impl("cumsum", WrapperCumsum);
+
+  // log_softmax and softmax backward ops
+  m.impl("_log_softmax", WrapperLogSoftmax);
+  m.impl("_log_softmax_backward_data", WrapperLogSoftmaxBackwardData);
+  m.impl("_softmax_backward_data", WrapperSoftmaxBackwardData);
+
+  // div.Scalar
+  m.impl("div.Scalar", WrapperDivScalar);
 
   // _foreach_* ops (optimizer kernels)
   m.impl("_foreach_mul_.Scalar", WrapperForeachMul_Scalar);
