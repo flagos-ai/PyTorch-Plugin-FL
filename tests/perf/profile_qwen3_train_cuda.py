@@ -131,6 +131,9 @@ def main():
         attn_implementation="eager",
     )
     model = model.to(device)
+    # Re-tie weights after .to() — PrivateUse1 _to_copy breaks shared storage
+    # because each parameter gets an independent allocation on the new device.
+    model.tie_weights()
     model.train()
     print(f"    Load time: {time.time() - t0:.2f}s")
 
