@@ -1,6 +1,7 @@
 // Copyright (c) 2026, BAAI. All rights reserved.
 
 #include "../../add_inplace.h"
+#include "../../device_boxing.h"
 
 #include <ATen/Dispatch.h>
 #include <ATen/native/TensorIterator.h>
@@ -33,8 +34,11 @@ struct AddInplaceCudaFunctor {
   }
 };
 
-at::Tensor& AddInplaceKernelCuda(
+void AddInplaceKernelCuda(
     at::Tensor& self, const at::Tensor& other, const at::Scalar& alpha) {
+  BoxToCuda(self);
+  BoxToCuda(other);
+
   auto iter = at::TensorIteratorConfig()
     .add_output(self)
     .add_input(self)
@@ -61,7 +65,8 @@ at::Tensor& AddInplaceKernelCuda(
     }
   );
 
-  return self;
+  UnboxToFlagos(self);
+  UnboxToFlagos(other);
 }
 
 } // namespace

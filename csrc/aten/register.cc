@@ -275,7 +275,8 @@ at::Tensor WrapperAddScalar(
 
 at::Tensor& WrapperAdd_Tensor(
     at::Tensor& self, const at::Tensor& other, const at::Scalar& alpha) {
-  return at::native::flagos::add_inplace_tensor_dispatcher(self, other, alpha);
+  at::native::flagos::add_inplace_tensor_dispatcher(self, other, alpha);
+  return self;
 }
 
 at::Tensor WrapperSilu(const at::Tensor& self) {
