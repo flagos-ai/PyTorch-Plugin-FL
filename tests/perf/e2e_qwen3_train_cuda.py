@@ -22,6 +22,9 @@ import torch_fl
 from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "common"))
+from dummy_dataset import DummyTextDataset  # noqa: E402
+
 
 def set_seed(seed: int = 42):
     """Fix all random seeds for reproducibility."""
@@ -31,9 +34,6 @@ def set_seed(seed: int = 42):
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "common"))
-from dummy_dataset import DummyTextDataset
 
 
 def main():
