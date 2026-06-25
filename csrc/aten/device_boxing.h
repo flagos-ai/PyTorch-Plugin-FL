@@ -93,18 +93,24 @@ inline void UnboxTensorVecToFlagos(std::vector<at::Tensor>& tensors) {
 }
 
 // RAII guard for TensorList boxing (multiple lists).
+// Only unboxes tensors that were actually boxed (originally PrivateUse1),
+// leaving genuine CUDA tensors untouched.
 class TensorListBoxingGuard {
  public:
   TensorListBoxingGuard() = default;
 
   void box(at::TensorList tensors) {
-    BoxTensorListToCuda(tensors);
-    lists_.push_back(tensors);
+    for (const auto& t : tensors) {
+      if (t.defined() && t.is_privateuseone()) {
+        BoxToCuda(t);
+        boxed_.push_back(t);
+      }
+    }
   }
 
   ~TensorListBoxingGuard() {
-    for (auto& list : lists_) {
-      UnboxTensorListToFlagos(list);
+    for (auto& t : boxed_) {
+      if (t.defined()) UnboxToFlagos(t);
     }
   }
 
@@ -112,7 +118,7 @@ class TensorListBoxingGuard {
   TensorListBoxingGuard& operator=(const TensorListBoxingGuard&) = delete;
 
  private:
-  std::vector<at::TensorList> lists_;
+  std::vector<at::Tensor> boxed_;
 };
 
 } // namespace at::native::flagos
