@@ -11,12 +11,24 @@ Usage:
 
 import argparse
 import os
+import random
 import sys
 import time
 
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+
+def set_seed(seed: int = 42):
+    """Fix all random seeds for reproducibility."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "common"))
 from dummy_dataset import DummyTextDataset
@@ -43,6 +55,8 @@ def main():
 
     device = args.device
     assert torch.cuda.is_available(), "CUDA not available"
+
+    set_seed(42)
 
     print(f"CUDA device: {torch.cuda.get_device_name(device)}")
     print(f"PyTorch version: {torch.__version__}")
@@ -91,7 +105,7 @@ def main():
     )
     dataset = DummyTextDataset(tokenizer, num_samples=100, max_length=args.seq_len)
     dataloader = DataLoader(
-        dataset, batch_size=args.batch_size, shuffle=True, drop_last=True
+        dataset, batch_size=args.batch_size, shuffle=False, drop_last=True
     )
 
     tokens_per_step = args.batch_size * args.seq_len
