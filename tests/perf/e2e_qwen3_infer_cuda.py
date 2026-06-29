@@ -119,9 +119,7 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="E2E Qwen3 inference benchmark on torch_fl"
     )
-    parser.add_argument(
-        "--model", default="Qwen/Qwen3-0.6B", help="Path to model"
-    )
+    parser.add_argument("--model", default="Qwen/Qwen3-0.6B", help="Path to model")
     parser.add_argument(
         "--tokens", type=int, default=64, help="Exact number of new tokens to generate"
     )

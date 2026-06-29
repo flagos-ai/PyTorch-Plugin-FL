@@ -100,7 +100,7 @@ def train_steps(ctx, n):
     data_iter = iter(ctx["dataloader"])
 
     step_times, losses = [], []
-    for _ in range(n):
+    for i in range(n):
         try:
             batch = next(data_iter)
         except StopIteration:
@@ -125,8 +125,10 @@ def train_steps(ctx, n):
         optimizer.zero_grad()
         sync()
 
-        step_times.append(time.time() - t0)
+        elapsed = time.time() - t0
+        step_times.append(elapsed)
         losses.append(loss.item())
+        print(f"    [Step {i + 1}/{n}] loss={loss.item():.4f}, time={elapsed:.2f}s")
 
     return step_times, losses
 

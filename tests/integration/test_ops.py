@@ -366,8 +366,8 @@ class TestInferencePathOps:
         a = torch.tensor([0b1010, 0b1100, 0b1111], dtype=torch.int32, device=device)
         b = torch.tensor([0b1001, 0b0100, 0b1010], dtype=torch.int32, device=device)
         assert torch.equal(
-             a & b,
-             torch.tensor([0b1000, 0b0100, 0b1010], dtype=torch.int32, device=device),
+            a & b,
+            torch.tensor([0b1000, 0b0100, 0b1010], dtype=torch.int32, device=device),
         )
 
     def test_where(self, device):

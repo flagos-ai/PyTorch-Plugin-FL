@@ -66,4 +66,59 @@ class DeviceBoxingGuard {
   std::vector<at::Tensor> boxed_;
 };
 
+// Box/unbox all tensors in a TensorList (for _foreach_* ops).
+inline void BoxTensorListToCuda(at::TensorList tensors) {
+  for (const auto& t : tensors) {
+    if (t.defined() && t.is_privateuseone()) {
+      BoxToCuda(t);
+    }
+  }
+}
+
+inline void UnboxTensorListToFlagos(at::TensorList tensors) {
+  for (const auto& t : tensors) {
+    if (t.defined() && t.device().type() == c10::DeviceType::CUDA) {
+      UnboxToFlagos(t);
+    }
+  }
+}
+
+// Box/unbox a vector of Tensors returned by non-inplace _foreach ops.
+inline void UnboxTensorVecToFlagos(std::vector<at::Tensor>& tensors) {
+  for (auto& t : tensors) {
+    if (t.defined() && t.device().type() == c10::DeviceType::CUDA) {
+      UnboxToFlagos(t);
+    }
+  }
+}
+
+// RAII guard for TensorList boxing (multiple lists).
+// Only unboxes tensors that were actually boxed (originally PrivateUse1),
+// leaving genuine CUDA tensors untouched.
+class TensorListBoxingGuard {
+ public:
+  TensorListBoxingGuard() = default;
+
+  void box(at::TensorList tensors) {
+    for (const auto& t : tensors) {
+      if (t.defined() && t.is_privateuseone()) {
+        BoxToCuda(t);
+        boxed_.push_back(t);
+      }
+    }
+  }
+
+  ~TensorListBoxingGuard() {
+    for (auto& t : boxed_) {
+      if (t.defined()) UnboxToFlagos(t);
+    }
+  }
+
+  TensorListBoxingGuard(const TensorListBoxingGuard&) = delete;
+  TensorListBoxingGuard& operator=(const TensorListBoxingGuard&) = delete;
+
+ private:
+  std::vector<at::Tensor> boxed_;
+};
+
 } // namespace at::native::flagos

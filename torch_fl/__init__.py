@@ -53,6 +53,13 @@ torch.utils.rename_privateuse1_backend("flagos")
 torch._register_device_module("flagos", flagos)
 torch.utils.generate_methods_for_privateuse1_backend(for_storage=True)
 
+# Enable swap_tensors in Module._apply so that .to("flagos") preserves weight
+# tying.  Without this, _apply creates new Parameter objects for PrivateUse1
+# tensors (since _has_compatible_shallow_copy_type returns False for cross-device),
+# breaking shared-storage relationships like lm_head.weight ↔ embed_tokens.weight.
+# swap_tensors modifies the Parameter in-place, keeping object identity intact.
+torch.__future__.set_swap_module_params_on_conversion(True)
+
 
 # Global library instance to keep registrations alive
 _flaggems_lib = None
@@ -190,10 +197,11 @@ _EXCLUDED_OPS = {
     "_to_copy",
     "contiguous",
     "clone",
-    # log_softmax - FlagGems Triton kernel exceeds MetaX's 4KB/thread private memory
-    # limit on large vocab (e.g. Qwen3 151k). Use Python decomposition instead.
+    # log_softmax - registered in C++ with CUDA structured kernels
     "_log_softmax",
     "_log_softmax_backward_data",
+    "_softmax_backward_data",
+    "div.Scalar",
     # Ops dispatched by C++ stub (DispatchStub) which reads backends.conf
     # at load time to route to flaggems or cuda per-op.
     "mm",
@@ -295,24 +303,13 @@ def _register_composite_ops():
     meaning they don't auto-decompose for PrivateUse1. They fall through to
     cpu_fallback which segfaults when handling privateuseone tensors.
 
-    We register these manually by implementing them in terms of ops that are
-    already registered (like slice_scatter).
+    Previously _log_softmax and _log_softmax_backward_data were registered here
+    as Python decompositions. They are now registered in C++ with proper CUDA
+    structured kernels for full performance.
     """
     lib = torch.library.Library("aten", "IMPL")
 
-    def log_softmax_impl(self, dim, half_to_float=False):
-        dtype = torch.float32 if half_to_float else self.dtype
-        out = torch.softmax(self.to(torch.float32), dim=dim)
-        out = torch.log(out)
-        return out.to(dtype)
-
-    def log_softmax_backward_impl(grad_output, output, dim, input_dtype):
-        exp_output = torch.exp(output)
-        grad_input = grad_output - exp_output * grad_output.sum(dim=dim, keepdim=True)
-        return grad_input.to(input_dtype)
-
-    lib.impl("_log_softmax", log_softmax_impl, "PrivateUse1")
-    lib.impl("_log_softmax_backward_data", log_softmax_backward_impl, "PrivateUse1")
+    # No Python-registered ops remaining; keep the library alive for future use.
 
     return lib  # prevent GC
 

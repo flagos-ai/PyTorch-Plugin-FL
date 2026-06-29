@@ -13,6 +13,7 @@
 #include "fallback.h"
 #include "mm.h"
 #include "add.h"
+#include "add_inplace.h"
 #include "silu.h"
 #include "neg.h"
 #include "bmm.h"
@@ -61,6 +62,10 @@
 #include <ATen/ops/isin.h>
 #include <ATen/ops/lt.h>
 #include <ATen/ops/cumsum.h>
+
+#include "foreach_ops.h"
+#include "log_softmax.h"
+#include "div_scalar.h"
 
 #include <torch/library.h>
 
@@ -266,6 +271,12 @@ at::Tensor WrapperAddScalar(
     other_tensor = other_tensor * alpha;
   }
   return at::native::flagos::add_tensor_dispatcher(self, other_tensor, at::Scalar(1));
+}
+
+at::Tensor& WrapperAdd_Tensor(
+    at::Tensor& self, const at::Tensor& other, const at::Scalar& alpha) {
+  at::native::flagos::add_inplace_tensor_dispatcher(self, other, alpha);
+  return self;
 }
 
 at::Tensor WrapperSilu(const at::Tensor& self) {
@@ -608,6 +619,104 @@ at::Tensor WrapperCumsum(
   return result;
 }
 
+// ============================================================
+// _foreach_* wrappers for optimizer ops (AdamW, etc.)
+//
+// These ops operate on TensorLists (all model params / optimizer states).
+// Without explicit registration they hit cpu_fallback, causing catastrophic
+// GPU->CPU->GPU round-trips for every optimizer step.
+//
+// Each wrapper dispatches through the torch_fl Dispatcher layer so that
+// backend selection respects GetBackendForOp() and backends_*.conf.
+// ============================================================
+
+// --- Inplace ops (return void) ---
+
+void WrapperForeachMul_Scalar(at::TensorList self, const at::Scalar& scalar) {
+  at::native::flagos::foreach_mul_scalar_dispatcher(self, scalar);
+}
+
+void WrapperForeachAdd_Scalar(
+    at::TensorList self, const at::Scalar& scalar) {
+  at::native::flagos::foreach_add_scalar_dispatcher(self, scalar);
+}
+
+void WrapperForeachAddcdiv_ScalarList(
+    at::TensorList self, at::TensorList tensor1, at::TensorList tensor2,
+    at::ArrayRef<at::Scalar> scalars) {
+  at::native::flagos::foreach_addcdiv_scalarlist_dispatcher(self, tensor1, tensor2, scalars);
+}
+
+void WrapperForeachAddcmul_Scalar(
+    at::TensorList self, at::TensorList tensor1, at::TensorList tensor2,
+    const at::Scalar& scalar) {
+  at::native::flagos::foreach_addcmul_scalar_dispatcher(self, tensor1, tensor2, scalar);
+}
+
+void WrapperForeachLerp_Scalar(
+    at::TensorList self, at::TensorList tensors1, const at::Scalar& weight) {
+  at::native::flagos::foreach_lerp_scalar_dispatcher(self, tensors1, weight);
+}
+
+void WrapperForeachDiv_ScalarList(
+    at::TensorList self, at::ArrayRef<at::Scalar> scalars) {
+  at::native::flagos::foreach_div_scalarlist_dispatcher(self, scalars);
+}
+
+// --- Non-inplace ops (return vector<Tensor>) ---
+
+::std::vector<at::Tensor> WrapperForeachSqrt(at::TensorList self) {
+  return at::native::flagos::foreach_sqrt_dispatcher(self);
+}
+
+// --- Additional foreach ops used by various optimizers ---
+
+void WrapperForeachAdd_TensorList(
+    at::TensorList self, at::TensorList other, const at::Scalar& alpha) {
+  at::native::flagos::foreach_add_tensorlist_dispatcher(self, other, alpha);
+}
+
+void WrapperForeachMul_TensorList(
+    at::TensorList self, at::TensorList other) {
+  at::native::flagos::foreach_mul_tensorlist_dispatcher(self, other);
+}
+
+::std::vector<at::Tensor> WrapperForeachNeg(at::TensorList self) {
+  return at::native::flagos::foreach_neg_dispatcher(self);
+}
+
+::std::vector<at::Tensor> WrapperForeachReciprocal(at::TensorList self) {
+  return at::native::flagos::foreach_reciprocal_dispatcher(self);
+}
+
+// ============================================================
+// _log_softmax, _log_softmax_backward_data, _softmax_backward_data
+// ============================================================
+
+at::Tensor WrapperLogSoftmax(const at::Tensor& self, int64_t dim, bool half_to_float) {
+  return at::native::flagos::log_softmax_dispatcher(self, dim, half_to_float);
+}
+
+at::Tensor WrapperLogSoftmaxBackwardData(
+    const at::Tensor& grad_output, const at::Tensor& output,
+    int64_t dim, at::ScalarType input_dtype) {
+  return at::native::flagos::log_softmax_backward_dispatcher(grad_output, output, dim, input_dtype);
+}
+
+at::Tensor WrapperSoftmaxBackwardData(
+    const at::Tensor& grad_output, const at::Tensor& output,
+    int64_t dim, at::ScalarType input_dtype) {
+  return at::native::flagos::softmax_backward_dispatcher(grad_output, output, dim, input_dtype);
+}
+
+// ============================================================
+// div.Scalar
+// ============================================================
+
+at::Tensor WrapperDivScalar(const at::Tensor& self, const at::Scalar& other) {
+  return at::native::flagos::div_scalar_dispatcher(self, other);
+}
+
 } // namespace
 
 // Register basic operators for PrivateUse1 dispatch key
@@ -636,6 +745,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("mm", WrapperMm);
   m.impl("mm.out", WrapperMmOut);
   m.impl("add.Tensor", WrapperAddTensor);
+  m.impl("add_.Tensor", WrapperAdd_Tensor);
   m.impl("add.Scalar", WrapperAddScalar);
   m.impl("silu", WrapperSilu);
   m.impl("neg", WrapperNeg);
@@ -689,6 +799,27 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("lt.Tensor", WrapperLtTensor);
   m.impl("lt.Scalar", WrapperLtScalar);
   m.impl("cumsum", WrapperCumsum);
+
+  // log_softmax and softmax backward ops
+  m.impl("_log_softmax", WrapperLogSoftmax);
+  m.impl("_log_softmax_backward_data", WrapperLogSoftmaxBackwardData);
+  m.impl("_softmax_backward_data", WrapperSoftmaxBackwardData);
+
+  // div.Scalar
+  m.impl("div.Scalar", WrapperDivScalar);
+
+  // _foreach_* ops (optimizer kernels)
+  m.impl("_foreach_mul_.Scalar", WrapperForeachMul_Scalar);
+  m.impl("_foreach_add_.Scalar", WrapperForeachAdd_Scalar);
+  m.impl("_foreach_addcdiv_.ScalarList", WrapperForeachAddcdiv_ScalarList);
+  m.impl("_foreach_addcmul_.Scalar", WrapperForeachAddcmul_Scalar);
+  m.impl("_foreach_lerp_.Scalar", WrapperForeachLerp_Scalar);
+  m.impl("_foreach_sqrt", WrapperForeachSqrt);
+  m.impl("_foreach_div_.ScalarList", WrapperForeachDiv_ScalarList);
+  m.impl("_foreach_add_.List", WrapperForeachAdd_TensorList);
+  m.impl("_foreach_mul_.List", WrapperForeachMul_TensorList);
+  m.impl("_foreach_neg", WrapperForeachNeg);
+  m.impl("_foreach_reciprocal", WrapperForeachReciprocal);
 }
 
 // Register fallback for all unimplemented operators
