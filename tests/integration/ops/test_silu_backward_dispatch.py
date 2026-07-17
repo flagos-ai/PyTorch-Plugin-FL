@@ -61,8 +61,11 @@ class TestSiluBackwardCorrectness:
         y_cpu = torch.nn.functional.silu(x_cpu)
         y_cpu.sum().backward()
 
-        torch.manual_seed(1)
-        x_flagos = torch.randn(64, 64, device=DEVICE, requires_grad=True)
+        # Use the SAME input values on flagos (copy from CPU) rather than
+        # re-seeding randn: flagos randn now uses the CUDA RNG, which does not
+        # match the CPU RNG for the same seed, so re-seeding would compare
+        # gradients of different inputs.
+        x_flagos = x_cpu.detach().to(DEVICE).requires_grad_(True)
         y_flagos = torch.nn.functional.silu(x_flagos)
         y_flagos.sum().backward()
 

@@ -32,43 +32,137 @@ Categories (detected from torchgen metadata):
   special_optlist    box self + each optional<Tensor> in the list + call + unbox
 """
 
+import os
 import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
 from collections import defaultdict
 
-# Operators requiring ArrayRef instead of IListRef (empirically determined from PyTorch 2.13 dispatcher)
-# These operators have CompositeExplicitAutograd kernels registered with ArrayRef signatures.
-# General pattern: ALL _foreach_* ops use ArrayRef (CompositeExplicitAutograd dispatch key)
-# Only aten::cat uses IListRef (Batched dispatch key)
-ARRAYREF_OPS = {
-    "_foreach_add_.List",
-    "_foreach_add_.Scalar",
-    "_foreach_add_.ScalarList",
-    "_foreach_sub_.List",
-    "_foreach_mul_.List",
-    "_foreach_mul_.Scalar",
-    "_foreach_mul_.ScalarList",
-    "_foreach_div_.List",
-    "_foreach_div_.ScalarList",
-    "_foreach_abs_",
-    "_foreach_neg_",
-    "_foreach_neg",
-    "_foreach_sqrt_",
-    "_foreach_sqrt",
-    "_foreach_reciprocal_",
-    "_foreach_reciprocal",
-    "_foreach_zero_",
-    "_foreach_add.List",
-    "_foreach_mul.List",
-    "_foreach_addcdiv_.ScalarList",
-    "_foreach_addcmul_.Scalar",
-    "_foreach_lerp_.Scalar",
+# TensorList C++ spelling (IListRef vs ArrayRef) must match what PyTorch itself
+# registered for the op, or dispatcher registration crashes at import with
+# "Mismatch in kernel C++ signatures".
+#
+# The authoritative rule is torchgen's own (torchgen/context.py):
+#     use_ilistref_for_tensor_lists = f.part_of_structured_group
+# i.e. an op that is part of a structured group uses IListRef (e.g. aten::cat);
+# everything else (all _foreach_*, stack, _amp_foreach_*, ...) uses ArrayRef.
+# Using this predicate instead of a hand-maintained set classifies ALL TensorList
+# ops correctly in one shot, across every torch version.
+def should_use_arrayref(func):
+    """True -> emit ArrayRef; False -> emit IListRef. Mirrors torchgen's rule
+    use_ilistref_for_tensor_lists = func.part_of_structured_group."""
+    return not func.part_of_structured_group
+
+
+# ============================================================================
+# Full-CUDA enumeration mode (--all-cuda)
+# ============================================================================
+#
+# Instead of reading a hand-maintained op list from backends_cuda.conf, the
+# full mode enumerates EVERY leaf CUDA operator from native_functions.yaml and
+# generates a boxing kernel for each. Ops the current templates cannot safely
+# express are skipped and fall through to the existing cpu_fallback (functional,
+# just slower), so coverage strictly grows and nothing regresses.
+#
+# Ops already registered by hand in csrc/aten/register.cc. Generating these
+# would collide at registration (duplicate m.impl) -> MUST be excluded.
+MANUAL_REGISTERED_OPS = {
+    "empty.memory_format",
+    "empty_strided",
+    "as_strided",
+    "resize_",
+    "_reshape_alias",
+    "_copy_from",
+    "_copy_from_and_resize",
+    "copy_",
+    "_local_scalar_dense",
+    "set_.source_Tensor",
+    "set_.source_Storage",
+    "set_.source_Storage_storage_offset",
+    "view",
+    "contiguous",
+    "clone",
+    "_to_copy",
+    "index_put_",
+    "_index_put_impl_",
+    "record_stream",
 }
 
-def should_use_arrayref(func_name):
-    """Check if operator needs ArrayRef instead of IListRef to match PyTorch 2.13 dispatcher."""
-    return func_name in ARRAYREF_OPS
+
+def _delegate_target_has_cuda(func, funcs, cuda_index):
+    """A structured_delegate op routes its CUDA kernel through the named target
+    (e.g. add.Tensor -> add.out). Return True if that target has a CUDA kernel."""
+    deleg = getattr(func, "structured_delegate", None)
+    if deleg is None:
+        return False
+    target = funcs.get(str(deleg))
+    return target is not None and cuda_index.has_kernel(target)
+
+
+def cuda_supported(func, funcs, cuda_index):
+    """
+    True if this op can be executed on CUDA (directly or by decomposition),
+    matching the union that makes the enumeration a superset of the existing
+    hand-written 71-op conf:
+      1. direct CUDA kernel (functional/out leaf), OR
+      2. structured_delegate whose target has a CUDA kernel (add/mm/silu_backward
+         route their kernel through the .out / .grad_input variant), OR
+      3. CompositeExplicitAutograd kernel (sort/abs/div.Scalar decompose into
+         CUDA sub-ops).
+    structured_delegate is checked BEFORE the composite_implicit exclusion so
+    ops that carry both flags (e.g. silu_backward) are not dropped.
+    """
+    if cuda_index.has_kernel(func):
+        return True
+    if _delegate_target_has_cuda(func, funcs, cuda_index):
+        return True
+    if func.has_composite_explicit_autograd_kernel:
+        return True
+    return False
+
+
+def enumerate_all_cuda_ops(nf, funcs, cuda_index):
+    """
+    Returns (kept_ops, skipped) where kept_ops is the list of op-name strings to
+    generate and skipped is {reason: [op, ...]}.
+
+    Skip reasons:
+      manual      already registered by hand in register.cc
+      multi_out   out-variant with >1 mutable Tensor& out (template picks wrong out)
+    composite_implicit ops are excluded up front: PyTorch decomposes them ABOVE
+    our dispatch key into leaf ops we already box, so registering them is both
+    unnecessary and risky. structured_delegate ops survive that exclusion.
+    """
+    kept = []
+    skipped = defaultdict(list)
+    for func in nf.native_functions:
+        op = str(func.func.name)
+
+        if not cuda_supported(func, funcs, cuda_index):
+            continue
+
+        # composite_implicit (and NOT structured_delegate) -> decomposed above us
+        if (func.has_composite_implicit_autograd_kernel
+                and getattr(func, "structured_delegate", None) is None
+                and not func.has_composite_explicit_autograd_kernel):
+            continue
+
+        if op in MANUAL_REGISTERED_OPS:
+            skipped["manual"].append(op)
+            continue
+
+        # multi-out: gen_out_variant assumes exactly one mutable Tensor& out
+        if func.func.is_out_fn():
+            n_out = sum(
+                1 for a in func.func.arguments.flat_all
+                if "Tensor" in str(a.type) and a.is_write
+            )
+            if n_out > 1:
+                skipped["multi_out"].append(op)
+                continue
+
+        kept.append(op)
+    return kept, skipped
 
 try:
     import torchgen
@@ -99,10 +193,18 @@ def schema_to_cpp_name(op_name: str) -> Tuple[str, str]:
     variant = parts[1] if len(parts) > 1 else None
 
     is_foreach = base.startswith('_foreach_')
-    base_clean = base.lstrip('_')
-    is_inplace = base_clean.endswith('_')
-    if is_inplace:
-        base_clean = base_clean.rstrip('_')
+    stripped = base.lstrip('_')
+    n_lead = len(base) - len(stripped)  # leading underscores: _conv vs conv
+    is_inplace = stripped.endswith('_')
+    base_clean = stripped.rstrip('_') if is_inplace else stripped
+
+    # Disambiguation token for leading underscores (private/internal ops).
+    # foreach ops keep the conventional single leading '_' implicit (unique via
+    # the "Foreach" prefix / "foreach_" core), so they are exempt to keep the
+    # 71-op names stable. Every other leading underscore is preserved so
+    # `_convolution` and `convolution` (both leaf CUDA ops) do not collide.
+    priv_pascal = "" if is_foreach else "Priv" * n_lead
+    priv_snake = "" if is_foreach else "priv_" * n_lead
 
     # --- PascalCase type name ---
     if is_foreach:
@@ -112,16 +214,24 @@ def schema_to_cpp_name(op_name: str) -> Tuple[str, str]:
         type_base = ''.join(w.capitalize() for w in base_clean.split('_') if w)
     if is_inplace:
         type_base += 'Inplace'
+    # A trailing underscore on the variant (e.g. "out_") marks a mutating variant
+    # distinct from the non-mutating one ("out"); preserve it so range.out and
+    # range.out_ do not collapse to the same name.
+    variant_mut = variant.endswith('_') if variant else False
     if variant:
         type_base += ''.join(w.capitalize() for w in variant.split('_') if w)
-    fn_type = type_base + 'Fn'
+    if variant_mut:
+        type_base += 'Mut'
+    fn_type = priv_pascal + type_base + 'Fn'
 
     # --- snake_case dispatcher name ---
-    disp = base_clean  # foreach already normalized (leading _ stripped)
+    disp = priv_snake + base_clean  # foreach already normalized (leading _ stripped)
     if is_inplace:
         disp += '_inplace'
     if variant:
-        disp += '_' + variant.lower()
+        disp += '_' + variant.lower().rstrip('_')
+    if variant_mut:
+        disp += '_mut'
     dispatcher_name = disp + '_dispatcher'
 
     return fn_type, dispatcher_name
@@ -383,33 +493,50 @@ def gen_factory(op, fn_type, ret_type, args):
     )
 
     base = at_api_base(op)
-    if base == "zeros":
-        make = f"  auto result = at::empty({names[0]}, options);\n  result.zero_();"
+    size_arg = names[1] if has_self else (names[0] if names else "{}")
+
+    # --- fill-allocators: our own at::empty allocator + a fill. No CUDA compute
+    #     kernel, no recursion (at::empty is hand-registered as the real allocator). ---
+    if base in ("zeros", "new_zeros"):
+        make = f"  auto result = at::empty({size_arg}, options);\n  result.zero_();"
+    elif base in ("ones", "new_ones"):
+        make = f"  auto result = at::empty({size_arg}, options);\n  result.fill_(1);"
+    elif base in ("full", "new_full"):
+        # fill value is the lone by-value Scalar arg (not Scalar[] / optional<Scalar>)
+        fill_val = next(
+            (n for t, n in args
+             if "Scalar" in t and "ArrayRef" not in t and "optional" not in t),
+            "0",
+        )
+        make = f"  auto result = at::empty({size_arg}, options);\n  result.fill_({fill_val});"
     elif base == "scalar_tensor":
         make = f"  auto result = at::empty({{}}, options);\n  result.fill_({names[0]});"
-    elif base == "new_ones":
-        # new_ones is not in public at:: API; use at::empty + fill_ like hand-written code
-        size_arg = names[1]  # (self, size, dtype, layout, device, pin_memory)
-        make = f"  auto result = at::empty({size_arg}, options);\n  result.fill_(1);"
-    elif base == "arange":
-        # arange computes a sequence, so we must call the real at::arange kernel.
-        # If we call it with a PrivateUse1 device, it dispatches back to THIS kernel
-        # -> infinite recursion -> stack overflow. Instead, build on CUDA (hits the
-        # external libtorch_cuda.so kernel), then unbox the result back to flagos.
-        scalar_args = [n for t, n in args if t == "const at::Scalar &"]
-        cuda_options = (
-            "  auto cuda_options = options.device(\n"
-            "      options.device().type() == at::kPrivateUse1\n"
-            "          ? at::Device(at::kCUDA, options.device().index())\n"
-            "          : options.device());"
-        )
-        make = (
-            f"{cuda_options}\n"
-            f"  auto result = at::arange({', '.join(scalar_args)}, cuda_options);\n"
-            f"  if (result.device().type() == at::kCUDA) UnboxToFlagos(result);"
-        )
     else:
-        make = f"  auto result = at::empty({names[0] if has_self else '{}'}, options);"
+        # --- compute factories (arange/rand/randn/randint/randperm/normal/eye/
+        #     linspace/logspace/*_window/fft_*freq/tril_indices/...): must run the
+        #     real kernel. Calling it with a PrivateUse1 device re-dispatches into
+        #     THIS kernel -> infinite recursion -> stack overflow. Redirect the
+        #     device arg to CUDA (hits the external libtorch_cuda.so kernel), then
+        #     unbox the result back to flagos. Generalizes the old arange special-case. ---
+        device_arg = next(
+            (n for t, n in args if "optional<at::Device>" in t), None
+        )
+        if device_arg is not None:
+            call_names = [
+                "::std::optional<at::Device>(_cuda_dev)" if n == device_arg else n
+                for _, n in args
+            ]
+            make = (
+                f"  at::Device _req_dev = {device_arg}.has_value() ? *{device_arg} "
+                f": at::Device(at::kPrivateUse1, 0);\n"
+                "  at::Device _cuda_dev = _req_dev.type() == at::kPrivateUse1\n"
+                "      ? at::Device(at::kCUDA, _req_dev.index()) : _req_dev;\n"
+                f"  auto result = at::{base}({', '.join(call_names)});\n"
+                "  if (result.device().type() == at::kCUDA) UnboxToFlagos(result);"
+            )
+        else:
+            # no device knob -> best-effort empty allocation
+            make = f"  auto result = at::empty({size_arg}, options);"
 
     return f"""{ret_type} {kn}({args_decl(args)}) {{
 {options}
@@ -475,18 +602,15 @@ def gen_wrapper(op, fn_type, dispatcher, ret_type, args):
 # at:: header includes needed by cuda_kernels.cc
 # ============================================================================
 
-def api_headers(ops: List[str]) -> List[str]:
+def api_headers(op_info: Dict) -> List[str]:
+    """Header file names come from torchgen's authoritative func.root_name.
+    (e.g. schema '__ilshift__.Scalar' -> root_name 'lshift' -> ATen/ops/lshift.h;
+    'add.out' and 'add.Tensor' both -> 'add'.) Never derive the header from the
+    schema base by stripping underscores -- that mangles dunder operators."""
     bases = set()
-    for op in ops:
-        base = at_api_base(op).rstrip('_')  # add_ -> add ; _foreach_add_ -> _foreach_add
-        # keep leading underscore form for foreach/softmax etc.
-        raw = at_api_base(op).rstrip('_')
-        bases.add(raw)
-        # out variants need the _out header too (same file)
-    hdrs = []
-    for b in sorted(bases):
-        hdrs.append(f"#include <ATen/ops/{b}.h>")
-    return hdrs
+    for op in op_info.values():
+        bases.add(op["func"].root_name)
+    return [f"#include <ATen/ops/{b}.h>" for b in sorted(bases)]
 
 
 # ============================================================================
@@ -500,14 +624,6 @@ def main():
     out_dir.mkdir(exist_ok=True)
 
     print("Loading configuration and schemas...")
-    ops = []
-    for line in conf_path.read_text().splitlines():
-        line = line.split('#')[0].strip()
-        if not line or '=' not in line:
-            continue
-        op, backend = line.split('=', 1)
-        if backend.strip() == "cuda":
-            ops.append(op.strip())
 
     root = Path(torchgen.__file__).parent
     nf = parse_native_yaml(
@@ -516,7 +632,38 @@ def main():
     )
     funcs = {str(f.func.name): f for f in nf.native_functions}
 
-    print(f"Found {len(ops)} ops in backends_cuda.conf")
+    # Ops the templates cannot compile yet; skipped -> fall through to cpu_fallback.
+    # Grown empirically during the compile/import fix loop.
+    skip_ops_path = repo_root / "torch_fl/codegen_skip_ops.txt"
+    manual_skip = set()
+    if skip_ops_path.exists():
+        for line in skip_ops_path.read_text().splitlines():
+            line = line.split('#')[0].strip()
+            if line:
+                manual_skip.add(line)
+
+    all_cuda = os.environ.get("FLAGOS_CODEGEN_ALL", "").strip() not in ("", "0", "false")
+
+    if all_cuda:
+        from torchgen.model import DispatchKey
+        cuda_index = nf.backend_indices[DispatchKey.CUDA]
+        ops, skipped = enumerate_all_cuda_ops(nf, funcs, cuda_index)
+        ops = [o for o in ops if o not in manual_skip]
+        n_manual_skip = len(manual_skip)
+        print(f"[FULL CUDA MODE] enumerated {len(ops)} ops to generate")
+        for reason in sorted(skipped):
+            print(f"   skipped[{reason}]: {len(skipped[reason])}")
+        print(f"   skipped[template_skip_list]: {n_manual_skip}")
+    else:
+        ops = []
+        for line in conf_path.read_text().splitlines():
+            line = line.split('#')[0].strip()
+            if not line or '=' not in line:
+                continue
+            op, backend = line.split('=', 1)
+            if backend.strip() == "cuda":
+                ops.append(op.strip())
+        print(f"Found {len(ops)} ops in backends_cuda.conf")
 
     op_info = {}
     categories = defaultdict(list)
@@ -527,26 +674,34 @@ def main():
             print(f"  WARNING: {op} not in native_functions.yaml", file=sys.stderr)
             continue
         func = funcs[op]
-        cat = detect_category(func)
-        fn_type, dispatcher = schema_to_cpp_name(op)
+        try:
+            cat = detect_category(func)
+            fn_type, dispatcher = schema_to_cpp_name(op)
 
-        # Determine if this op needs ArrayRef (vs IListRef default)
-        use_arrayref = should_use_arrayref(op)
+            # Determine if this op needs ArrayRef (vs IListRef default)
+            use_arrayref = should_use_arrayref(func)
 
-        # Generate signature with operator-specific IListRef/ArrayRef setting
-        with local.parametrize(
-            use_const_ref_for_mutable_tensors=False,
-            use_ilistref_for_tensor_lists=not use_arrayref,  # False=ArrayRef, True=IListRef
-        ):
-            # Use unified CppSignature (faithful) for typedef, kernel, AND wrapper
-            ptr_type, ret_type, args = unified_sig(func)
+            # Generate signature with operator-specific IListRef/ArrayRef and
+            # const-ref-for-mutable-tensors settings, both taken from torchgen's
+            # authoritative per-op flags (matches PyTorch's own registration).
+            with local.parametrize(
+                use_const_ref_for_mutable_tensors=func.use_const_ref_for_mutable_tensors,
+                use_ilistref_for_tensor_lists=not use_arrayref,  # False=ArrayRef, True=IListRef
+            ):
+                # Use unified CppSignature (faithful) for typedef, kernel, AND wrapper
+                ptr_type, ret_type, args = unified_sig(func)
+        except Exception as e:
+            if all_cuda:
+                print(f"  SKIP {op}: {type(e).__name__}: {str(e)[:80]}", file=sys.stderr)
+                continue
+            raise
 
-            categories[cat].append(op)
-            op_info[op] = dict(
-                fn_type=fn_type, dispatcher=dispatcher, category=cat,
-                ptr_type=ptr_type, ret_type=ret_type, args=args,
-                func=func,
-            )
+        categories[cat].append(op)
+        op_info[op] = dict(
+            fn_type=fn_type, dispatcher=dispatcher, category=cat,
+            ptr_type=ptr_type, ret_type=ret_type, args=args,
+            func=func,
+        )
 
     print("\nCategory breakdown:")
     for cat in sorted(categories):
@@ -607,7 +762,7 @@ def main():
         "#include <tuple>",
         "",
     ]
-    lines += api_headers(list(op_info.keys()))
+    lines += api_headers(op_info)
     lines += [
         "",
         "namespace at::native::flagos {",
@@ -654,6 +809,24 @@ def main():
     lines.append("#endif  // FLAGOS_GEN_IMPLS")
     (out_dir / "register.inc").write_text("\n".join(lines) + "\n")
     print(f"   generated {len(op_info)} wrappers + impls")
+
+    # In full mode, regenerate backends_cuda.conf so GetBackendForOp routes every
+    # generated op to cuda. Ops NOT in op_info (skipped) are absent -> they hit
+    # the PrivateUse1 cpu_fallback, exactly as before this change.
+    if all_cuda:
+        conf_lines = [
+            "# flagos op backend config -- AUTO-GENERATED (full CUDA mode)",
+            "# Regenerated by scripts/codegen_ops.py with FLAGOS_CODEGEN_ALL=1.",
+            "# Every generated boxing kernel is routed to the cuda backend; ops not",
+            "# listed here are not registered and fall through to cpu_fallback.",
+            "#",
+            "# Format: op_name = backend   (backend: flaggems | flagos_python | cuda)",
+            "",
+        ]
+        for op in sorted(op_info):
+            conf_lines.append(f"{op} = cuda")
+        conf_path.write_text("\n".join(conf_lines) + "\n")
+        print(f"   regenerated {conf_path.name} with {len(op_info)} cuda routes")
 
     print("\nDone. Files in:", out_dir)
 

@@ -137,8 +137,11 @@ class TestNllLossBackwardCorrectness:
         loss_cpu = F.nll_loss(log_inp_cpu, target_cpu)
         loss_cpu.backward()
 
-        torch.manual_seed(1)
-        inp_fl = torch.randn(16, 5, device=DEVICE, requires_grad=True)
+        # Use the SAME input values on flagos (copy from CPU) rather than
+        # re-seeding randn: flagos randn now uses the CUDA RNG, which does not
+        # match the CPU RNG for the same seed, so re-seeding would compare
+        # gradients of different inputs.
+        inp_fl = inp_cpu.detach().to(DEVICE).requires_grad_(True)
         log_inp_fl = inp_fl.log_softmax(dim=1)
         target_fl = target_cpu.to(DEVICE)
         loss_fl = F.nll_loss(log_inp_fl, target_fl)
