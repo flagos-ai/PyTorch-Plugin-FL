@@ -57,12 +57,12 @@ class Dispatcher {
   }
 
   template <typename... Args>
-  auto operator()(Args&&... args) const {
+  decltype(auto) operator()(Args&&... args) const {
     return DispatchAs(op_name_, std::forward<Args>(args)...);
   }
 
   template <typename... Args>
-  auto DispatchAs(const std::string& op_name, Args&&... args) const {
+  decltype(auto) DispatchAs(const std::string& op_name, Args&&... args) const {
     auto backend = GetBackendForOp(op_name);
     LogDispatch(op_name, backend);
     auto fn = GetFn(backend);

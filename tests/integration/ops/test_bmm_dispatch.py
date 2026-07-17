@@ -258,7 +258,7 @@ class TestBmmDispatchLog:
             f"Expected cuda dispatch log, got:\n{result.stderr}"
         )
 
-    @pytest.mark.cuda
+    @pytest.mark.flaggems
     def test_dispatch_log_bmm_out_flagos_default(self):
         """Default config routes bmm.out to flagos."""
         result = _run_bmm_subprocess(

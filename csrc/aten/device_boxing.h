@@ -83,6 +83,21 @@ inline void UnboxTensorListToFlagos(at::TensorList tensors) {
   }
 }
 
+// Materialize an ITensorListRef into a std::vector<at::Tensor>.
+// The Tensor handles share the same TensorImpl as the originals, so boxing
+// them (device metadata rewrite) affects the underlying tensors in place.
+// The returned vector converts implicitly to at::TensorList (ArrayRef) for
+// passing to PyTorch's public at:: API, which expects TensorList not IListRef.
+inline std::vector<at::Tensor> MaterializeToTensorVec(
+    const at::ITensorListRef& list) {
+  std::vector<at::Tensor> out;
+  out.reserve(list.size());
+  for (const auto& t : list) {
+    out.push_back(t);
+  }
+  return out;
+}
+
 // Box/unbox a vector of Tensors returned by non-inplace _foreach ops.
 inline void UnboxTensorVecToFlagos(std::vector<at::Tensor>& tensors) {
   for (auto& t : tensors) {
@@ -106,6 +121,11 @@ class TensorListBoxingGuard {
         boxed_.push_back(t);
       }
     }
+  }
+
+  // Track a tensor that was already boxed (for ITensorListRef iteration)
+  void track(const at::Tensor& t) {
+    boxed_.push_back(t);
   }
 
   ~TensorListBoxingGuard() {

@@ -11,65 +11,15 @@
 #include "set_ops.h"
 #include "contiguous_ops.h"
 #include "fallback.h"
-#include "mm.h"
-#include "add.h"
-#include "add_inplace.h"
-#include "silu.h"
-#include "neg.h"
-#include "bmm.h"
-#include "cat.h"
-#include "embedding.h"
-#include "mul.h"
-#include "rsqrt.h"
-#include "mean.h"
-#include "cos.h"
-#include "sin.h"
-#include "pow.h"
-#include "all.h"
-#include "softmax.h"
-#include "bitwise_and.h"
-#include "le.h"
-#include "where.h"
-#include "index.h"
-#include "new_ones.h"
-#include "scalar_tensor.h"
-#include "ones_like.h"
-#include "zeros.h"
-#include "silu_backward.h"
-#include "sum.h"
-#include "slice_backward.h"
-#include "constant_pad_nd.h"
-#include "embedding_dense_backward.h"
-#include "nll_loss.h"
-#include "abs.h"
-#include "acos.h"
-#include "sort.h"
-#include "topk.h"
-#include "multinomial.h"
-#include "argmax.h"
 
-#include <ATen/native/CPUFallback.h>
-#include <ATen/ops/_index_put_impl.h>
-#include <ATen/ops/index_put.h>
-#include <ATen/ops/fill.h>
-#include <ATen/ops/arange.h>
-#include <ATen/ops/sub.h>
-#include <ATen/ops/eq.h>
-#include <ATen/ops/max.h>
-#include <ATen/ops/bitwise_not.h>
-#include <ATen/ops/bitwise_or.h>
-#include <ATen/ops/any.h>
-#include <ATen/ops/isin.h>
-#include <ATen/ops/lt.h>
-#include <ATen/ops/cumsum.h>
+// Generated dispatcher headers
+#include "generated/ops.h"
 
-#include "foreach_ops.h"
-#include "log_softmax.h"
-#include "div_scalar.h"
-
+#include <ATen/core/LegacyTypeDispatch.h>
 #include <torch/library.h>
-
-#include "device_boxing.h"
+#include <c10/core/ScalarType.h>
+#include <c10/util/Optional.h>
+#include "common.h"
 #include "runtime/allocator/caching_device_allocator.h"
 
 namespace at::flagos {
@@ -78,11 +28,11 @@ namespace {
 
 at::Tensor WrapperEmptyMemoryFormat(
     c10::IntArrayRef size,
-    std::optional<c10::ScalarType> dtype_opt,
-    std::optional<c10::Layout> layout_opt,
-    std::optional<c10::Device> device_opt,
-    std::optional<bool> pin_memory_opt,
-    std::optional<c10::MemoryFormat> memory_format_opt) {
+    ::std::optional<at::ScalarType> dtype_opt,
+    ::std::optional<at::Layout> layout_opt,
+    ::std::optional<at::Device> device_opt,
+    ::std::optional<bool> pin_memory_opt,
+    ::std::optional<at::MemoryFormat> memory_format_opt) {
   return at::native::flagos::empty_memory_format(
       size, dtype_opt, layout_opt, device_opt, pin_memory_opt, memory_format_opt);
 }
@@ -90,10 +40,10 @@ at::Tensor WrapperEmptyMemoryFormat(
 at::Tensor WrapperEmptyStrided(
     c10::IntArrayRef size,
     c10::IntArrayRef stride,
-    std::optional<c10::ScalarType> dtype_opt,
-    std::optional<c10::Layout> layout_opt,
-    std::optional<c10::Device> device_opt,
-    std::optional<bool> pin_memory_opt) {
+    ::std::optional<at::ScalarType> dtype_opt,
+    ::std::optional<at::Layout> layout_opt,
+    ::std::optional<at::Device> device_opt,
+    ::std::optional<bool> pin_memory_opt) {
   return at::native::flagos::empty_strided(
       size, stride, dtype_opt, layout_opt, device_opt, pin_memory_opt);
 }
@@ -102,7 +52,7 @@ at::Tensor WrapperAsStrided(
     const at::Tensor& self,
     c10::SymIntArrayRef size,
     c10::SymIntArrayRef stride,
-    std::optional<c10::SymInt> storage_offset) {
+    ::std::optional<c10::SymInt> storage_offset) {
   return at::native::flagos::as_strided(self, size, stride, storage_offset);
 }
 
@@ -121,33 +71,27 @@ at::Tensor WrapperReshapeAlias(
 }
 
 at::Tensor WrapperCopyFrom(
-    const at::Tensor& self,
-    const at::Tensor& dst,
-    bool non_blocking) {
-  return at::native::flagos::_copy_from(self, dst, non_blocking);
+    const at::Tensor& self, const at::Tensor& src, bool non_blocking) {
+  return at::native::flagos::_copy_from(self, src, non_blocking);
 }
 
 at::Tensor WrapperCopyFromAndResize(
-    const at::Tensor& self,
-    const at::Tensor& dst) {
+    const at::Tensor& self, const at::Tensor& dst) {
   return at::native::flagos::_copy_from_and_resize(self, dst);
 }
 
 at::Tensor& WrapperCopy_(
-    at::Tensor& self,
-    const at::Tensor& src,
-    bool non_blocking) {
+    at::Tensor& self, const at::Tensor& src, bool non_blocking) {
   at::native::flagos::_copy_from(src, self, non_blocking);
   return self;
 }
 
 at::Scalar WrapperLocalScalarDense(const at::Tensor& self) {
-  return at::native::flagos::local_scalar_dense_dispatcher(self);
+  return at::native::flagos::_local_scalar_dense(self);
 }
 
 at::Tensor& WrapperSetSourceTensor(
-    at::Tensor& self,
-    const at::Tensor& source) {
+    at::Tensor& self, const at::Tensor& source) {
   return at::native::flagos::set_source_Tensor_(self, source);
 }
 
@@ -156,13 +100,13 @@ at::Tensor& WrapperSetSourceStorage(at::Tensor& self, at::Storage source) {
 }
 
 at::Tensor& WrapperSetSourceStorageOffset(
-    at::Tensor& result,
-    at::Storage storage,
+    at::Tensor& self,
+    at::Storage source,
     int64_t storage_offset,
     c10::IntArrayRef size,
     c10::IntArrayRef stride) {
   return at::native::flagos::set_source_Storage_storage_offset_(
-      result, storage, storage_offset, size, stride);
+      self, source, storage_offset, size, stride);
 }
 
 at::Tensor WrapperView(const at::Tensor& self, c10::SymIntArrayRef size) {
@@ -170,26 +114,25 @@ at::Tensor WrapperView(const at::Tensor& self, c10::SymIntArrayRef size) {
 }
 
 at::Tensor WrapperContiguous(
-    const at::Tensor& self,
-    c10::MemoryFormat memory_format) {
+    const at::Tensor& self, at::MemoryFormat memory_format) {
   return at::native::flagos::contiguous(self, memory_format);
 }
 
 at::Tensor WrapperClone(
     const at::Tensor& self,
-    std::optional<c10::MemoryFormat> memory_format) {
+    ::std::optional<at::MemoryFormat> memory_format) {
   return at::native::flagos::clone(self, memory_format);
 }
 
 at::Tensor WrapperToCopy(
     const at::Tensor& self,
-    std::optional<c10::ScalarType> dtype,
-    std::optional<c10::Layout> layout,
-    std::optional<c10::Device> device,
-    std::optional<bool> pin_memory,
+    ::std::optional<at::ScalarType> dtype,
+    ::std::optional<at::Layout> layout,
+    ::std::optional<at::Device> device,
+    ::std::optional<bool> pin_memory,
     bool non_blocking,
-    std::optional<c10::MemoryFormat> memory_format) {
-  return at::native::flagos::to_copy_dispatcher(
+    ::std::optional<at::MemoryFormat> memory_format) {
+  return at::native::flagos::_to_copy(
       self, dtype, layout, device, pin_memory, non_blocking, memory_format);
 }
 
@@ -223,12 +166,6 @@ at::Tensor& WrapperIndexPutImpl_(
   return WrapperIndexPut_(self, indices, values, accumulate);
 }
 
-void WrapperCpuFallback(
-    const c10::OperatorHandle& op,
-    torch::jit::Stack* stack) {
-  at::native::flagos::cpu_fallback(op, stack);
-}
-
 void WrapperRecordStream(at::Tensor& self, at::Stream s) {
   if (!c10::flagos::CachingDeviceAllocator::is_enabled()) {
     // No-op when caching allocator is disabled.
@@ -241,481 +178,12 @@ void WrapperRecordStream(at::Tensor& self, at::Stream s) {
   alloc->record_stream(self.storage().data_ptr(), stream);
 }
 
-at::Tensor WrapperMm(const at::Tensor& self, const at::Tensor& mat2) {
-  auto out = at::empty({self.size(0), mat2.size(1)}, self.options());
-  at::native::flagos::StructuredMmOut op(out);
-  op.meta(self, mat2);
-  op.impl(self, mat2, "mm");
-  return out;
-}
-
-at::Tensor& WrapperMmOut(const at::Tensor& self, const at::Tensor& mat2, at::Tensor& out) {
-  at::native::flagos::StructuredMmOut op(out);
-  op.meta(self, mat2);
-  op.impl(self, mat2, "mm.out");
-  return out;
-}
-
-
-
-at::Tensor WrapperAddTensor(
-    const at::Tensor& self, const at::Tensor& other, const at::Scalar& alpha) {
-  return at::native::flagos::add_tensor_dispatcher(self, other, alpha);
-}
-
-at::Tensor WrapperAddScalar(
-    const at::Tensor& self, const at::Scalar& other, const at::Scalar& alpha) {
-  auto other_tensor = at::scalar_tensor(other, self.options());
-  auto alpha_val = alpha.toDouble();
-  if (alpha_val != 1.0) {
-    other_tensor = other_tensor * alpha;
-  }
-  return at::native::flagos::add_tensor_dispatcher(self, other_tensor, at::Scalar(1));
-}
-
-at::Tensor& WrapperAdd_Tensor(
-    at::Tensor& self, const at::Tensor& other, const at::Scalar& alpha) {
-  at::native::flagos::add_inplace_tensor_dispatcher(self, other, alpha);
-  return self;
-}
-
-at::Tensor WrapperSilu(const at::Tensor& self) {
-  return at::native::flagos::silu_dispatcher(self);
-}
-
-at::Tensor WrapperNeg(const at::Tensor& self) {
-  return at::native::flagos::neg_dispatcher(self);
-}
-
-at::Tensor WrapperBmm(const at::Tensor& self, const at::Tensor& mat2) {
-  auto out = at::empty({self.size(0), self.size(1), mat2.size(2)}, self.options());
-  at::native::flagos::StructuredBmmOut op(out);
-  op.meta(self, mat2);
-  op.impl(self, mat2, "bmm");
-  return out;
-}
-
-at::Tensor& WrapperBmmOut(const at::Tensor& self, const at::Tensor& mat2, at::Tensor& out) {
-  at::native::flagos::StructuredBmmOut op(out);
-  op.meta(self, mat2);
-  op.impl(self, mat2, "bmm.out");
-  return out;
-}
-
-at::Tensor WrapperCat(const at::ITensorListRef& tensors, int64_t dim) {
-  return at::native::flagos::cat_dispatcher(tensors, dim);
-}
-
-at::Tensor WrapperEmbedding(
-    const at::Tensor& weight, const at::Tensor& indices,
-    c10::SymInt padding_idx, bool scale_grad_by_freq, bool sparse) {
-  return at::native::flagos::embedding_dispatcher(
-      weight, indices, padding_idx.expect_int(), scale_grad_by_freq, sparse);
-}
-
-at::Tensor WrapperMulTensor(
-    const at::Tensor& self, const at::Tensor& other) {
-  return at::native::flagos::mul_tensor_dispatcher(self, other);
-}
-
-at::Tensor WrapperRsqrt(const at::Tensor& self) {
-  return at::native::flagos::rsqrt_dispatcher(self);
-}
-
-at::Tensor WrapperMeanDim(
-    const at::Tensor& self, at::OptionalIntArrayRef dim,
-    bool keepdim, std::optional<at::ScalarType> dtype) {
-  return at::native::flagos::mean_dim_dispatcher(self, dim, keepdim, dtype);
-}
-
-at::Tensor WrapperCos(const at::Tensor& self) {
-  return at::native::flagos::cos_dispatcher(self);
-}
-
-at::Tensor WrapperSin(const at::Tensor& self) {
-  return at::native::flagos::sin_dispatcher(self);
-}
-
-at::Tensor WrapperPowTensorScalar(const at::Tensor& self, const at::Scalar& exp) {
-  return at::native::flagos::pow_tensor_scalar_dispatcher(self, exp);
-}
-
-at::Tensor WrapperAll(const at::Tensor& self) {
-  return at::native::flagos::all_dispatcher(self);
-}
-
-at::Tensor WrapperSoftmax(const at::Tensor& self, int64_t dim, bool half_to_float) {
-  return at::native::flagos::softmax_dispatcher(self, dim, half_to_float);
-}
-
-at::Tensor WrapperBitwiseAndTensor(const at::Tensor& self, const at::Tensor& other) {
-  return at::native::flagos::bitwise_and_tensor_dispatcher(self, other);
-}
-
-at::Tensor WrapperLeTensor(const at::Tensor& self, const at::Tensor& other) {
-  return at::native::flagos::le_tensor_dispatcher(self, other);
-}
-
-at::Tensor WrapperWhereSelf(
-    const at::Tensor& condition, const at::Tensor& self, const at::Tensor& other) {
-  return at::native::flagos::where_self_dispatcher(condition, self, other);
-}
-
-at::Tensor WrapperIndexTensor(
-    const at::Tensor& self, const c10::List<::std::optional<at::Tensor>>& indices) {
-  return at::native::flagos::index_tensor_dispatcher(self, indices);
-}
-
-at::Tensor WrapperNewOnes(
-    const at::Tensor& self, at::IntArrayRef size,
-    std::optional<at::ScalarType> dtype,
-    std::optional<at::Layout> layout,
-    std::optional<at::Device> device,
-    std::optional<bool> pin_memory) {
-  return at::native::flagos::new_ones_dispatcher(self, size, dtype, layout, device, pin_memory);
-}
-
-at::Tensor WrapperScalarTensor(
-    const at::Scalar& s,
-    std::optional<at::ScalarType> dtype,
-    std::optional<at::Layout> layout,
-    std::optional<at::Device> device,
-    std::optional<bool> pin_memory) {
-  return at::native::flagos::scalar_tensor_dispatcher(s, dtype, layout, device, pin_memory);
-}
-
-at::Tensor WrapperOnesLike(
-    const at::Tensor& self,
-    std::optional<at::ScalarType> dtype,
-    std::optional<at::Layout> layout,
-    std::optional<at::Device> device,
-    std::optional<bool> pin_memory,
-    std::optional<at::MemoryFormat> memory_format) {
-  return at::native::flagos::ones_like_dispatcher(self, dtype, layout, device, pin_memory, memory_format);
-}
-
-at::Tensor WrapperZeros(
-    at::IntArrayRef size,
-    std::optional<at::ScalarType> dtype,
-    std::optional<at::Layout> layout,
-    std::optional<at::Device> device,
-    std::optional<bool> pin_memory) {
-  return at::native::flagos::zeros_dispatcher(size, dtype, layout, device, pin_memory);
-}
-
-at::Tensor WrapperSiluBackward(const at::Tensor& grad_output, const at::Tensor& self) {
-  return at::native::flagos::silu_backward_dispatcher(grad_output, self);
-}
-
-at::Tensor WrapperSumDimIntList(
-    const at::Tensor& self, at::OptionalIntArrayRef dim,
-    bool keepdim, std::optional<at::ScalarType> dtype) {
-  return at::native::flagos::sum_dim_dispatcher(self, dim, keepdim, dtype);
-}
-
-at::Tensor WrapperSliceBackward(
-    const at::Tensor& grad_output, at::IntArrayRef input_sizes,
-    int64_t dim, int64_t start, int64_t end, int64_t step) {
-  return at::native::flagos::slice_backward_dispatcher(grad_output, input_sizes, dim, start, end, step);
-}
-
-at::Tensor WrapperConstantPadNd(
-    const at::Tensor& self, at::IntArrayRef pad, const at::Scalar& value) {
-  return at::native::flagos::constant_pad_nd_dispatcher(self, pad, value);
-}
-
-at::Tensor WrapperEmbeddingDenseBackward(
-    const at::Tensor& grad_output, const at::Tensor& indices,
-    int64_t num_weights, int64_t padding_idx, bool scale_grad_by_freq) {
-  return at::native::flagos::embedding_dense_backward_dispatcher(
-      grad_output, indices, num_weights, padding_idx, scale_grad_by_freq);
-}
-
-std::tuple<at::Tensor, at::Tensor> WrapperNllLossForward(
-    const at::Tensor& self, const at::Tensor& target,
-    const std::optional<at::Tensor>& weight, int64_t reduction, int64_t ignore_index) {
-  return at::native::flagos::nll_loss_forward_dispatcher(self, target, weight, reduction, ignore_index);
-}
-
-at::Tensor WrapperNllLossBackward(
-    const at::Tensor& grad_output, const at::Tensor& self, const at::Tensor& target,
-    const std::optional<at::Tensor>& weight, int64_t reduction,
-    int64_t ignore_index, const at::Tensor& total_weight) {
-  return at::native::flagos::nll_loss_backward_dispatcher(
-      grad_output, self, target, weight, reduction, ignore_index, total_weight);
-}
-
-at::Tensor WrapperAbs(const at::Tensor& self) {
-  return at::native::flagos::abs_dispatcher(self);
-}
-
-at::Tensor WrapperAcos(const at::Tensor& self) {
-  return at::native::flagos::acos_dispatcher(self);
-}
-
-std::tuple<at::Tensor, at::Tensor> WrapperSort(
-    const at::Tensor& self, int64_t dim, bool descending) {
-  return at::native::flagos::sort_dispatcher(self, dim, descending);
-}
-
-std::tuple<at::Tensor, at::Tensor> WrapperTopk(
-    const at::Tensor& self, int64_t k, int64_t dim, bool largest, bool sorted) {
-  return at::native::flagos::topk_dispatcher(self, k, dim, largest, sorted);
-}
-
-at::Tensor WrapperMultinomial(
-    const at::Tensor& self, int64_t num_samples, bool replacement,
-    ::std::optional<at::Generator> generator) {
-  return at::native::flagos::multinomial_dispatcher(self, num_samples, replacement, generator);
-}
-
-at::Tensor WrapperArgmax(
-    const at::Tensor& self, std::optional<int64_t> dim, bool keepdim) {
-  return at::native::flagos::argmax_dispatcher(self, dim, keepdim);
-}
-
-at::Tensor WrapperArgmin(
-    const at::Tensor& self, std::optional<int64_t> dim, bool keepdim) {
-  return at::native::flagos::argmin_dispatcher(self, dim, keepdim);
-}
-
-// --- DeviceBoxingGuard-based wrappers for ops hitting CPU fallback ---
-
-at::Tensor& WrapperFill_Scalar(at::Tensor& self, const at::Scalar& value) {
-  at::native::flagos::BoxToCuda(self);
-  self.fill_(value);
-  at::native::flagos::UnboxToFlagos(self);
-  return self;
-}
-
-at::Tensor WrapperArange(
-    const at::Scalar& end,
-    std::optional<at::ScalarType> dtype,
-    std::optional<at::Layout> layout,
-    std::optional<at::Device> device,
-    std::optional<bool> pin_memory) {
-  // arange creates a new tensor; dispatch to CUDA device
-  auto dev_idx = device.has_value() ? device->index() : 0;
-  auto opts = at::TensorOptions()
-      .dtype(dtype).layout(layout).pinned_memory(pin_memory)
-      .device(at::Device(at::kCUDA, dev_idx));
-  auto result = at::arange(end, opts);
-  at::native::flagos::UnboxToFlagos(result);
-  return result;
-}
-
-at::Tensor WrapperArangeStartStep(
-    const at::Scalar& start, const at::Scalar& end, const at::Scalar& step,
-    std::optional<at::ScalarType> dtype,
-    std::optional<at::Layout> layout,
-    std::optional<at::Device> device,
-    std::optional<bool> pin_memory) {
-  auto dev_idx = device.has_value() ? device->index() : 0;
-  auto opts = at::TensorOptions()
-      .dtype(dtype).layout(layout).pinned_memory(pin_memory)
-      .device(at::Device(at::kCUDA, dev_idx));
-  auto result = at::arange(start, end, step, opts);
-  at::native::flagos::UnboxToFlagos(result);
-  return result;
-}
-
-at::Tensor WrapperSubTensor(
-    const at::Tensor& self, const at::Tensor& other, const at::Scalar& alpha) {
-  at::native::flagos::DeviceBoxingGuard guard(self, other);
-  auto result = at::sub(self, other, alpha);
-  at::native::flagos::UnboxToFlagos(result);
-  return result;
-}
-
-at::Tensor WrapperEqTensor(const at::Tensor& self, const at::Tensor& other) {
-  at::native::flagos::DeviceBoxingGuard guard(self, other);
-  auto result = at::eq(self, other);
-  at::native::flagos::UnboxToFlagos(result);
-  return result;
-}
-
-at::Tensor WrapperEqScalar(const at::Tensor& self, const at::Scalar& other) {
-  at::native::flagos::DeviceBoxingGuard guard(self);
-  auto result = at::eq(self, other);
-  at::native::flagos::UnboxToFlagos(result);
-  return result;
-}
-
-at::Tensor WrapperMax(const at::Tensor& self) {
-  at::native::flagos::DeviceBoxingGuard guard(self);
-  auto result = at::max(self);
-  at::native::flagos::UnboxToFlagos(result);
-  return result;
-}
-
-at::Tensor WrapperBitwiseNot(const at::Tensor& self) {
-  at::native::flagos::DeviceBoxingGuard guard(self);
-  auto result = at::bitwise_not(self);
-  at::native::flagos::UnboxToFlagos(result);
-  return result;
-}
-
-at::Tensor WrapperBitwiseOrTensor(
-    const at::Tensor& self, const at::Tensor& other) {
-  at::native::flagos::DeviceBoxingGuard guard(self, other);
-  auto result = at::bitwise_or(self, other);
-  at::native::flagos::UnboxToFlagos(result);
-  return result;
-}
-
-at::Tensor WrapperAnyOp(const at::Tensor& self) {
-  at::native::flagos::DeviceBoxingGuard guard(self);
-  auto result = at::any(self);
-  at::native::flagos::UnboxToFlagos(result);
-  return result;
-}
-
-at::Tensor WrapperAnyDim(const at::Tensor& self, int64_t dim, bool keepdim) {
-  at::native::flagos::DeviceBoxingGuard guard(self);
-  auto result = at::any(self, dim, keepdim);
-  at::native::flagos::UnboxToFlagos(result);
-  return result;
-}
-
-at::Tensor WrapperIsinTensorTensor(
-    const at::Tensor& elements, const at::Tensor& test_elements,
-    bool assume_unique, bool invert) {
-  at::native::flagos::DeviceBoxingGuard guard(elements, test_elements);
-  auto result = at::isin(elements, test_elements, assume_unique, invert);
-  at::native::flagos::UnboxToFlagos(result);
-  return result;
-}
-
-at::Tensor& WrapperMaskedFill_Scalar(
-    at::Tensor& self, const at::Tensor& mask, const at::Scalar& value) {
-  at::native::flagos::BoxToCuda(self);
-  at::native::flagos::BoxToCuda(mask);
-  self.masked_fill_(mask, value);
-  at::native::flagos::UnboxToFlagos(self);
-  at::native::flagos::UnboxToFlagos(mask);
-  return self;
-}
-
-at::Tensor WrapperLtTensor(const at::Tensor& self, const at::Tensor& other) {
-  at::native::flagos::DeviceBoxingGuard guard(self, other);
-  auto result = at::lt(self, other);
-  at::native::flagos::UnboxToFlagos(result);
-  return result;
-}
-
-at::Tensor WrapperLtScalar(const at::Tensor& self, const at::Scalar& other) {
-  at::native::flagos::DeviceBoxingGuard guard(self);
-  auto result = at::lt(self, other);
-  at::native::flagos::UnboxToFlagos(result);
-  return result;
-}
-
-at::Tensor WrapperCumsum(
-    const at::Tensor& self, int64_t dim,
-    std::optional<at::ScalarType> dtype) {
-  at::native::flagos::DeviceBoxingGuard guard(self);
-  auto result = at::cumsum(self, dim, dtype);
-  at::native::flagos::UnboxToFlagos(result);
-  return result;
-}
-
 // ============================================================
-// _foreach_* wrappers for optimizer ops (AdamW, etc.)
-//
-// These ops operate on TensorLists (all model params / optimizer states).
-// Without explicit registration they hit cpu_fallback, causing catastrophic
-// GPU->CPU->GPU round-trips for every optimizer step.
-//
-// Each wrapper dispatches through the torch_fl Dispatcher layer so that
-// backend selection respects GetBackendForOp() and backends_*.conf.
+// Generated wrappers for 71 CUDA operators
 // ============================================================
-
-// --- Inplace ops (return void) ---
-
-void WrapperForeachMul_Scalar(at::TensorList self, const at::Scalar& scalar) {
-  at::native::flagos::foreach_mul_scalar_dispatcher(self, scalar);
-}
-
-void WrapperForeachAdd_Scalar(
-    at::TensorList self, const at::Scalar& scalar) {
-  at::native::flagos::foreach_add_scalar_dispatcher(self, scalar);
-}
-
-void WrapperForeachAddcdiv_ScalarList(
-    at::TensorList self, at::TensorList tensor1, at::TensorList tensor2,
-    at::ArrayRef<at::Scalar> scalars) {
-  at::native::flagos::foreach_addcdiv_scalarlist_dispatcher(self, tensor1, tensor2, scalars);
-}
-
-void WrapperForeachAddcmul_Scalar(
-    at::TensorList self, at::TensorList tensor1, at::TensorList tensor2,
-    const at::Scalar& scalar) {
-  at::native::flagos::foreach_addcmul_scalar_dispatcher(self, tensor1, tensor2, scalar);
-}
-
-void WrapperForeachLerp_Scalar(
-    at::TensorList self, at::TensorList tensors1, const at::Scalar& weight) {
-  at::native::flagos::foreach_lerp_scalar_dispatcher(self, tensors1, weight);
-}
-
-void WrapperForeachDiv_ScalarList(
-    at::TensorList self, at::ArrayRef<at::Scalar> scalars) {
-  at::native::flagos::foreach_div_scalarlist_dispatcher(self, scalars);
-}
-
-// --- Non-inplace ops (return vector<Tensor>) ---
-
-::std::vector<at::Tensor> WrapperForeachSqrt(at::TensorList self) {
-  return at::native::flagos::foreach_sqrt_dispatcher(self);
-}
-
-// --- Additional foreach ops used by various optimizers ---
-
-void WrapperForeachAdd_TensorList(
-    at::TensorList self, at::TensorList other, const at::Scalar& alpha) {
-  at::native::flagos::foreach_add_tensorlist_dispatcher(self, other, alpha);
-}
-
-void WrapperForeachMul_TensorList(
-    at::TensorList self, at::TensorList other) {
-  at::native::flagos::foreach_mul_tensorlist_dispatcher(self, other);
-}
-
-::std::vector<at::Tensor> WrapperForeachNeg(at::TensorList self) {
-  return at::native::flagos::foreach_neg_dispatcher(self);
-}
-
-::std::vector<at::Tensor> WrapperForeachReciprocal(at::TensorList self) {
-  return at::native::flagos::foreach_reciprocal_dispatcher(self);
-}
-
-// ============================================================
-// _log_softmax, _log_softmax_backward_data, _softmax_backward_data
-// ============================================================
-
-at::Tensor WrapperLogSoftmax(const at::Tensor& self, int64_t dim, bool half_to_float) {
-  return at::native::flagos::log_softmax_dispatcher(self, dim, half_to_float);
-}
-
-at::Tensor WrapperLogSoftmaxBackwardData(
-    const at::Tensor& grad_output, const at::Tensor& output,
-    int64_t dim, at::ScalarType input_dtype) {
-  return at::native::flagos::log_softmax_backward_dispatcher(grad_output, output, dim, input_dtype);
-}
-
-at::Tensor WrapperSoftmaxBackwardData(
-    const at::Tensor& grad_output, const at::Tensor& output,
-    int64_t dim, at::ScalarType input_dtype) {
-  return at::native::flagos::softmax_backward_dispatcher(grad_output, output, dim, input_dtype);
-}
-
-// ============================================================
-// div.Scalar
-// ============================================================
-
-at::Tensor WrapperDivScalar(const at::Tensor& self, const at::Scalar& other) {
-  return at::native::flagos::div_scalar_dispatcher(self, other);
-}
+#define FLAGOS_GEN_WRAPPERS
+#include "generated/register.inc"
+#undef FLAGOS_GEN_WRAPPERS
 
 } // namespace
 
@@ -733,8 +201,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("set_.source_Tensor", WrapperSetSourceTensor);
   m.impl("set_.source_Storage", WrapperSetSourceStorage);
   m.impl(
-      "set_.source_Storage_storage_offset",
-      WrapperSetSourceStorageOffset);
+      "set_.source_Storage_storage_offset", WrapperSetSourceStorageOffset);
   m.impl("view", WrapperView);
   m.impl("contiguous", WrapperContiguous);
   m.impl("clone", WrapperClone);
@@ -742,90 +209,20 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("index_put_", WrapperIndexPut_);
   m.impl("_index_put_impl_", WrapperIndexPutImpl_);
   m.impl("record_stream", WrapperRecordStream);
-  m.impl("mm", WrapperMm);
-  m.impl("mm.out", WrapperMmOut);
-  m.impl("add.Tensor", WrapperAddTensor);
-  m.impl("add_.Tensor", WrapperAdd_Tensor);
-  m.impl("add.Scalar", WrapperAddScalar);
-  m.impl("silu", WrapperSilu);
-  m.impl("neg", WrapperNeg);
-  m.impl("bmm", WrapperBmm);
-  m.impl("bmm.out", WrapperBmmOut);
-  m.impl("cat", WrapperCat);
-  m.impl("embedding", WrapperEmbedding);
-  m.impl("mul.Tensor", WrapperMulTensor);
-  m.impl("rsqrt", WrapperRsqrt);
-  m.impl("mean.dim", WrapperMeanDim);
-  m.impl("cos", WrapperCos);
-  m.impl("sin", WrapperSin);
-  m.impl("pow.Tensor_Scalar", WrapperPowTensorScalar);
-  m.impl("all", WrapperAll);
-  m.impl("_softmax", WrapperSoftmax);
-  m.impl("bitwise_and.Tensor", WrapperBitwiseAndTensor);
-  m.impl("le.Tensor", WrapperLeTensor);
-  m.impl("where.self", WrapperWhereSelf);
-  m.impl("index.Tensor", WrapperIndexTensor);
-  m.impl("new_ones", WrapperNewOnes);
-  m.impl("scalar_tensor", WrapperScalarTensor);
-  m.impl("ones_like", WrapperOnesLike);
-  m.impl("zeros", WrapperZeros);
-  m.impl("silu_backward", WrapperSiluBackward);
-  m.impl("sum.dim_IntList", WrapperSumDimIntList);
-  m.impl("slice_backward", WrapperSliceBackward);
-  m.impl("constant_pad_nd", WrapperConstantPadNd);
-  m.impl("embedding_dense_backward", WrapperEmbeddingDenseBackward);
-  m.impl("nll_loss_forward", WrapperNllLossForward);
-  m.impl("nll_loss_backward", WrapperNllLossBackward);
-  m.impl("abs", WrapperAbs);
-  m.impl("acos", WrapperAcos);
-  m.impl("sort", WrapperSort);
-  m.impl("topk", WrapperTopk);
-  m.impl("multinomial", WrapperMultinomial);
-  m.impl("argmax", WrapperArgmax);
-  m.impl("argmin", WrapperArgmin);
-  m.impl("fill_.Scalar", WrapperFill_Scalar);
-  m.impl("arange", WrapperArange);
-  m.impl("arange.start_step", WrapperArangeStartStep);
-  m.impl("sub.Tensor", WrapperSubTensor);
-  m.impl("eq.Tensor", WrapperEqTensor);
-  m.impl("eq.Scalar", WrapperEqScalar);
-  m.impl("max", WrapperMax);
-  m.impl("bitwise_not", WrapperBitwiseNot);
-  m.impl("bitwise_or.Tensor", WrapperBitwiseOrTensor);
-  m.impl("any", WrapperAnyOp);
-  m.impl("any.dim", WrapperAnyDim);
-  m.impl("isin.Tensor_Tensor", WrapperIsinTensorTensor);
-  m.impl("masked_fill_.Scalar", WrapperMaskedFill_Scalar);
-  m.impl("lt.Tensor", WrapperLtTensor);
-  m.impl("lt.Scalar", WrapperLtScalar);
-  m.impl("cumsum", WrapperCumsum);
 
-  // log_softmax and softmax backward ops
-  m.impl("_log_softmax", WrapperLogSoftmax);
-  m.impl("_log_softmax_backward_data", WrapperLogSoftmaxBackwardData);
-  m.impl("_softmax_backward_data", WrapperSoftmaxBackwardData);
+  // ============================================================
+  // Generated m.impl registrations for 71 CUDA operators
+  // ============================================================
+  #define FLAGOS_GEN_IMPLS
+  #include "generated/register.inc"
+  #undef FLAGOS_GEN_IMPLS
 
-  // div.Scalar
-  m.impl("div.Scalar", WrapperDivScalar);
-
-  // _foreach_* ops (optimizer kernels)
-  m.impl("_foreach_mul_.Scalar", WrapperForeachMul_Scalar);
-  m.impl("_foreach_add_.Scalar", WrapperForeachAdd_Scalar);
-  m.impl("_foreach_addcdiv_.ScalarList", WrapperForeachAddcdiv_ScalarList);
-  m.impl("_foreach_addcmul_.Scalar", WrapperForeachAddcmul_Scalar);
-  m.impl("_foreach_lerp_.Scalar", WrapperForeachLerp_Scalar);
-  m.impl("_foreach_sqrt", WrapperForeachSqrt);
-  m.impl("_foreach_div_.ScalarList", WrapperForeachDiv_ScalarList);
-  m.impl("_foreach_add_.List", WrapperForeachAdd_TensorList);
-  m.impl("_foreach_mul_.List", WrapperForeachMul_TensorList);
-  m.impl("_foreach_neg", WrapperForeachNeg);
-  m.impl("_foreach_reciprocal", WrapperForeachReciprocal);
 }
 
 // Register fallback for all unimplemented operators
 TORCH_LIBRARY_IMPL(_, PrivateUse1, m) {
   m.fallback(
-      torch::CppFunction::makeFromBoxedFunction<&WrapperCpuFallback>());
+      torch::CppFunction::makeFromBoxedFunction<&at::native::flagos::cpu_fallback>());
 }
 
 // Register AutogradPrivateUse1 fallback to dispatch to PrivateUse1
