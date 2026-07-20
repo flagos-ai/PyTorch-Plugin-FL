@@ -11,6 +11,8 @@
 #include <ATen/core/Tensor.h>
 #include <ATen/ExpandUtils.h>
 #include <c10/core/Scalar.h>
+#include <algorithm>
+#include <vector>
 #include "../op_preparation.h"
 #include "../op_api_common.h"
 
@@ -860,5 +862,101 @@ at::Tensor LeScalarKernelAscend(const at::Tensor& self, const at::Scalar& other)
 }
 
 REGISTER_IMPL_TO_DISPATCHER(LeScalarFn, le_scalar_dispatcher, Backend::kAscend, LeScalarKernelAscend)
+
+at::Tensor AmaxKernelAscend(const at::Tensor& self, at::IntArrayRef dim, bool keepdim) {
+  namespace ascend = at::native::flagos::ascend;
+  int64_t ndim = self.dim();
+  std::vector<int64_t> norm_dims;
+  if (!dim.empty()) {
+    for (int64_t d : dim) norm_dims.push_back(d < 0 ? d + ndim : d);
+  } else {
+    for (int64_t d = 0; d < ndim; ++d) norm_dims.push_back(d);
+  }
+  auto out_shape = self.sizes().vec();
+  std::vector<int64_t> sorted_dims(norm_dims);
+  std::sort(sorted_dims.rbegin(), sorted_dims.rend());
+  for (int64_t d : sorted_dims) {
+    if (keepdim) out_shape[d] = 1;
+    else out_shape.erase(out_shape.begin() + d);
+  }
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      out_shape, self.options());
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_out(out);
+  ascend::AclIntArrayWrapper acl_dim(norm_dims);
+
+  EXEC_ASCEND_CMD(aclnnAmax, acl_self.get(), acl_dim.get(), keepdim, acl_out.get());
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(AmaxFn, amax_dispatcher, Backend::kAscend, AmaxKernelAscend)
+
+at::Tensor AminKernelAscend(const at::Tensor& self, at::IntArrayRef dim, bool keepdim) {
+  namespace ascend = at::native::flagos::ascend;
+  int64_t ndim = self.dim();
+  std::vector<int64_t> norm_dims;
+  if (!dim.empty()) {
+    for (int64_t d : dim) norm_dims.push_back(d < 0 ? d + ndim : d);
+  } else {
+    for (int64_t d = 0; d < ndim; ++d) norm_dims.push_back(d);
+  }
+  auto out_shape = self.sizes().vec();
+  std::vector<int64_t> sorted_dims(norm_dims);
+  std::sort(sorted_dims.rbegin(), sorted_dims.rend());
+  for (int64_t d : sorted_dims) {
+    if (keepdim) out_shape[d] = 1;
+    else out_shape.erase(out_shape.begin() + d);
+  }
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      out_shape, self.options());
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_out(out);
+  ascend::AclIntArrayWrapper acl_dim(norm_dims);
+
+  EXEC_ASCEND_CMD(aclnnAmin, acl_self.get(), acl_dim.get(), keepdim, acl_out.get());
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(AminFn, amin_dispatcher, Backend::kAscend, AminKernelAscend)
+
+at::Tensor AnyDimKernelAscend(const at::Tensor& self, int64_t dim, bool keepdim) {
+  namespace ascend = at::native::flagos::ascend;
+  int64_t d = dim < 0 ? dim + self.dim() : dim;
+  std::vector<int64_t> dims{d};
+  auto out_shape = self.sizes().vec();
+  if (keepdim) out_shape[d] = 1;
+  else out_shape.erase(out_shape.begin() + d);
+
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      out_shape, self.options().dtype(at::kBool));
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_out(out);
+  ascend::AclIntArrayWrapper acl_dim(dims);
+
+  EXEC_ASCEND_CMD(aclnnAny, acl_self.get(), acl_dim.get(), keepdim, acl_out.get());
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(AnyDimFn, any_dim_dispatcher, Backend::kAscend, AnyDimKernelAscend)
+
+at::Tensor CumsumKernelAscend(const at::Tensor& self, int64_t dim, ::std::optional<at::ScalarType> dtype) {
+  namespace ascend = at::native::flagos::ascend;
+  int64_t d = dim < 0 ? dim + self.dim() : dim;
+  auto out_dtype = dtype.value_or(self.scalar_type());
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options().dtype(out_dtype));
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_out(out);
+  aclDataType acl_dtype = ascend::ToAclDataType(out_dtype);
+
+  EXEC_ASCEND_CMD(aclnnCumsum, acl_self.get(), d, acl_dtype, acl_out.get());
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(CumsumFn, cumsum_dispatcher, Backend::kAscend, CumsumKernelAscend)
 
 } // namespace at::native::flagos

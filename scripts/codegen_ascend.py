@@ -135,6 +135,16 @@ OPS = {
     "lt.Scalar":          ("binary_scalar_cmp", "LtScalar"),
     "ge.Scalar":          ("binary_scalar_cmp", "GeScalar"),
     "le.Scalar":          ("binary_scalar_cmp", "LeScalar"),
+
+    # ---- reduce_dims: (Tensor, IntArrayRef dim, bool keepdim), same dtype ----
+    "amax":               ("reduce_dims", None),
+    "amin":               ("reduce_dims", None),
+
+    # ---- reduce_dim_bool: (Tensor, int64_t dim, bool keepdim), bool out ----
+    "any.dim":            ("reduce_dim_bool", "Any"),
+
+    # ---- cumsum: (Tensor, int64_t dim, optional<ScalarType> dtype) ----
+    "cumsum":             ("cumsum", None),
 }
 
 # Ops with a handwritten kAscend kernel — never regenerate (double-register).
@@ -273,6 +283,95 @@ at::Tensor {kernel}(const at::Tensor& self, const at::Scalar& other) {{
 REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
 """
 
+# Shared dim-normalization + reduced-shape prologue for reduce categories.
+# Mirrors the handwritten sum.cc: negative dims are wrapped to [0,ndim); an
+# empty dim list means "reduce all"; the output shape drops (or, with keepdim,
+# sets to 1) each reduced dim. Dims are erased high-to-low so earlier erases do
+# not shift later indices.
+_REDUCE_DIMS_PROLOGUE = """\
+  namespace ascend = at::native::flagos::ascend;
+  int64_t ndim = self.dim();
+  std::vector<int64_t> norm_dims;
+  if (!dim.empty()) {{
+    for (int64_t d : dim) norm_dims.push_back(d < 0 ? d + ndim : d);
+  }} else {{
+    for (int64_t d = 0; d < ndim; ++d) norm_dims.push_back(d);
+  }}
+  auto out_shape = self.sizes().vec();
+  std::vector<int64_t> sorted_dims(norm_dims);
+  std::sort(sorted_dims.rbegin(), sorted_dims.rend());
+  for (int64_t d : sorted_dims) {{
+    if (keepdim) out_shape[d] = 1;
+    else out_shape.erase(out_shape.begin() + d);
+  }}
+"""
+
+# reduce_dims: (Tensor, IntArrayRef dim, bool keepdim) -> reduced, same dtype.
+#   aclnn<Name>(self, dim, keepdim, out)   e.g. amax/amin
+T_REDUCE_DIMS = """\
+at::Tensor {kernel}(const at::Tensor& self, at::IntArrayRef dim, bool keepdim) {{
+""" + _REDUCE_DIMS_PROLOGUE + """\
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      out_shape, self.options());
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_out(out);
+  ascend::AclIntArrayWrapper acl_dim(norm_dims);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_dim.get(), keepdim, acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# reduce_dim_bool: (Tensor, int64_t dim, bool keepdim) -> bool out.
+#   aclnn<Name>(self, dim_list, keepdim, out)   e.g. any.dim
+# aclnn takes a dim *list*, so the single dim is wrapped into a one-element vec.
+T_REDUCE_DIM_BOOL = """\
+at::Tensor {kernel}(const at::Tensor& self, int64_t dim, bool keepdim) {{
+  namespace ascend = at::native::flagos::ascend;
+  int64_t d = dim < 0 ? dim + self.dim() : dim;
+  std::vector<int64_t> dims{{d}};
+  auto out_shape = self.sizes().vec();
+  if (keepdim) out_shape[d] = 1;
+  else out_shape.erase(out_shape.begin() + d);
+
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      out_shape, self.options().dtype(at::kBool));
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_out(out);
+  ascend::AclIntArrayWrapper acl_dim(dims);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_dim.get(), keepdim, acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# cumsum: (Tensor, int64_t dim, optional<ScalarType> dtype) -> same shape.
+#   aclnn<Name>(self, dim, dtype, out)
+T_CUMSUM = """\
+at::Tensor {kernel}(const at::Tensor& self, int64_t dim, ::std::optional<at::ScalarType> dtype) {{
+  namespace ascend = at::native::flagos::ascend;
+  int64_t d = dim < 0 ? dim + self.dim() : dim;
+  auto out_dtype = dtype.value_or(self.scalar_type());
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options().dtype(out_dtype));
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_out(out);
+  aclDataType acl_dtype = ascend::ToAclDataType(out_dtype);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), d, acl_dtype, acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
 CATEGORIES = {
     "unary":               T_UNARY,
     "binary":              T_BINARY,
@@ -280,6 +379,9 @@ CATEGORIES = {
     "binary_cmp":          T_BINARY_CMP,
     "binary_scalar_alpha": T_BINARY_SCALAR_ALPHA,
     "binary_scalar_cmp":   T_BINARY_SCALAR_CMP,
+    "reduce_dims":         T_REDUCE_DIMS,
+    "reduce_dim_bool":     T_REDUCE_DIM_BOOL,
+    "cumsum":              T_CUMSUM,
 }
 
 FILE_HEADER = """\
@@ -296,6 +398,8 @@ FILE_HEADER = """\
 #include <ATen/core/Tensor.h>
 #include <ATen/ExpandUtils.h>
 #include <c10/core/Scalar.h>
+#include <algorithm>
+#include <vector>
 #include "../op_preparation.h"
 #include "../op_api_common.h"
 
