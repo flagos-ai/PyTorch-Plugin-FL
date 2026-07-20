@@ -69,20 +69,43 @@ _registered_ops = []
 
 def _patch_flaggems_codegen_config():
     """
-    Configure FlagGems to use ASCEND codegen config on the flagos device.
+    Configure FlagGems' vendor + torch.cuda shim for the flagos device.
 
-    FlagGems uses GEMS_VENDOR env var to detect the hardware vendor. On Ascend
-    hardware without torch_npu, FlagGems can't auto-detect the vendor and falls
-    back to NVIDIA config (prefer_block_pointer=True). This triggers a
-    triton-ascend compiler bug with tl.make_block_ptr.
+    FlagGems uses GEMS_VENDOR env var to detect the hardware vendor.
 
-    Fix: set GEMS_VENDOR=ascend so FlagGems uses the ASCEND codegen config
-    (prefer_block_pointer=False), and register torch.flagos as torch.npu shim
-    so FlagGems' gen_torch_device_object('ascend') resolves correctly.
+    - Generic NVIDIA CUDA (default when a real NVIDIA GPU is reachable via
+      libcuda.so and MetaX compat is not requested): set GEMS_VENDOR=nvidia and
+      shim torch.cuda so FlagGems' Triton kernels can compile/run under CPU
+      torch + external libtorch_cuda.so. GEMS_VENDOR=nvidia is REQUIRED so
+      FlagGems' tl_extra_shim resolves triton.language.extra.cuda.libdevice
+      (which has `pow`); otherwise it falls back to tl.math (no `pow`).
+      Disable with FLAGOS_DISABLE_CUDA_SHIM=1.
+
+    - Ascend (fallback): set GEMS_VENDOR=ascend so FlagGems uses the ASCEND
+      codegen config (prefer_block_pointer=False, avoiding a triton-ascend
+      tl.make_block_ptr bug), and register torch.flagos as a torch.npu shim so
+      FlagGems' gen_torch_device_object('ascend') resolves correctly.
     """
     import os
     import sys
 
+    # --- Generic NVIDIA CUDA branch (default) ---
+    if (
+        os.environ.get("FLAGOS_DISABLE_CUDA_SHIM", "0") != "1"
+        and os.environ.get("FLAGOS_METAX_COMPAT", "0") != "1"
+        and os.environ.get("GEMS_VENDOR") != "ascend"
+    ):
+        from torch_fl.accelerator.cuda._cuda_compat import (
+            is_nvidia_cuda_available,
+            patch_torch_cuda_for_flagos,
+        )
+
+        if is_nvidia_cuda_available():
+            os.environ.setdefault("GEMS_VENDOR", "nvidia")
+            patch_torch_cuda_for_flagos()
+            return
+
+    # --- Ascend fallback branch ---
     # Set vendor before FlagGems runtime initializes
     if "GEMS_VENDOR" not in os.environ:
         os.environ["GEMS_VENDOR"] = "ascend"

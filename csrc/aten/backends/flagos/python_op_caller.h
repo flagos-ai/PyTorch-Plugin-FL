@@ -47,9 +47,25 @@ at::Tensor CallPythonOp_TTT(const char* func_name, const at::Tensor& a, const at
 at::Tensor CallPythonOp_TD(const char* func_name, const at::Tensor& self,
                             std::optional<at::ScalarType> dtype);
 
+// (TensorList, int64_t) -> Tensor   [e.g. cat(tensors, dim)]
+at::Tensor CallPythonOp_ListI(const char* func_name,
+                              const at::ITensorListRef& tensors, int64_t dim);
+
+// (Tensor, Tensor, int64_t, bool, bool) -> Tensor
+// [embedding(weight, indices, padding_idx, scale_grad_by_freq, sparse)]
+at::Tensor CallPythonOp_Embedding(const char* func_name, const at::Tensor& weight,
+                                  const at::Tensor& indices, int64_t padding_idx,
+                                  bool scale_grad_by_freq, bool sparse);
+
 // Generic variadic caller using Python *args/**kwargs.
 // For ops with complex signatures not covered above.
 // Arguments are passed as a vector of IValues.
 at::Tensor CallPythonOp_Generic(const char* func_name, const std::vector<c10::IValue>& args);
+
+// Like CallPythonOp_Generic, but the Python op returns a tuple/list of N tensors
+// (e.g. sort -> (values, indices), var_mean -> (var, mean)). Returns the N
+// tensors in order. Used by the codegen tuple_return kernels.
+std::vector<at::Tensor> CallPythonOp_GenericTuple(
+    const char* func_name, const std::vector<c10::IValue>& args, int64_t n);
 
 } // namespace at::native::flagos

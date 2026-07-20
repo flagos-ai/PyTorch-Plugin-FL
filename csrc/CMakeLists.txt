@@ -22,11 +22,14 @@ if(NOT CUDA_KERNEL)
 endif()
 if(NOT FLAGGEMS_KERNEL AND NOT FLAGGEMS_PYTHON)
   # Neither C++ nor Python wrappers: exclude entire flagos backend
+  # (only python_op_caller.{h,cc} lives here now). The generated
+  # flaggems_python_kernels.cc stays but is a no-op without FLAGOS_FLAGGEMS_PYTHON.
   list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/flagos/.*")
-elseif(FLAGGEMS_PYTHON AND NOT FLAGGEMS_KERNEL)
-  # Python wrappers only: exclude C++ wrappers (bmm.cc, cat.cc, etc.) but keep python_op_caller and python_wrapper/
-  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/flagos/(bmm|cat|embedding|mm|softmax)\\.cc")
 endif()
+# FLAGGEMS_PYTHON path: keep csrc/aten/backends/flagos/python_op_caller.cc and
+# build csrc/aten/generated/flaggems_python_kernels.cc with FLAGOS_FLAGGEMS_PYTHON
+# defined (below). The stale C++/python_wrapper files were removed; nothing to
+# exclude here.
 if(NOT METAX_KERNEL)
   list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/metax/.*")
 endif()
@@ -69,6 +72,12 @@ endif()
 target_compile_definitions(${LIBRARY_NAME} PRIVATE
     FLAGOS_SOURCE_ROOT="${CMAKE_SOURCE_DIR}"
 )
+
+# Compile the generated FlagGems Python-path kernels (guarded by this macro) and
+# python_op_caller only when the Python FlagGems path is requested.
+if(FLAGGEMS_PYTHON)
+  target_compile_definitions(${LIBRARY_NAME} PRIVATE FLAGOS_FLAGGEMS_PYTHON)
+endif()
 
 # The CPU-only torch wheel ships c10/cuda headers but not the CUDA-build-only
 # c10/cuda/impl/cuda_cmake_macros.h. cuda_memory.h includes CUDACachingAllocator.h

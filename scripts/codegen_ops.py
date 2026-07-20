@@ -235,6 +235,224 @@ def kernel_name(fn_type: str) -> str:
     return fn_type[:-2] + 'KernelCuda'
 
 
+def python_kernel_name(fn_type: str) -> str:
+    """AddTensorFn -> AddTensorKernelPython"""
+    return fn_type[:-2] + 'KernelPython'
+
+
+# ============================================================================
+# FlagGems Python-path kernels (auto-discovered)
+# ============================================================================
+# Ops routed to the FlagGems Triton implementation via the embedded-Python
+# caller (csrc/aten/backends/flagos/python_op_caller.{h,cc}). Rather than a
+# hand-maintained map, discover_flaggems_ops() walks flag_gems._FULL_CONFIG and
+# keeps only ops that can be wired SAFELY (see the arity/type gates below).
+#
+# Key facts (verified):
+#   - flag_gems op names ARE aten schema names ("add.Tensor", "addmm.out",
+#     "_softmax"), so no name mapping is needed.
+#   - flag_gems functions take args by POSITION in aten faithful order (the
+#     parameter *names* differ -- A/inp/self -- but positions align).
+#   - Every generated kernel body packs the aten args (in faithful order) into a
+#     std::vector<c10::IValue> and calls the generic caller; the func is located
+#     by its "<module>.<name>" qualname.
+
+# Types the generic IValue caller (python_op_caller.cc IValueToPython) can carry.
+# ScalarType is deliberately EXCLUDED: an IValue stores it as a plain int, so it
+# is indistinguishable from an ordinary int at runtime -> ops passing a dtype to
+# the FlagGems function are dropped from the safe set (would silently mis-call).
+_FLAGGEMS_GENERIC_OK = {
+    "Tensor", "Tensor?", "Scalar", "Scalar?", "int", "int?",
+    "float", "float?", "bool", "bool?", "SymInt", "SymInt?", "str", "str?",
+}
+
+
+def _flaggems_type_ok(t: str) -> bool:
+    import re
+    t = t.strip()
+    if t in _FLAGGEMS_GENERIC_OK:
+        return True
+    if re.fullmatch(r"(int|SymInt|bool|float)\[\d*\]\??", t):
+        return True
+    if re.fullmatch(r"(int|SymInt|bool|float)\[\]\??", t):
+        return True
+    if t in ("Tensor[]", "Tensor?[]"):
+        return True
+    return False
+
+
+def _flaggems_gems_npos(fn):
+    """Number of positional params of a flag_gems function, or None if it has
+    *args/**kwargs (uninspectable arity -> unsafe)."""
+    import inspect
+    try:
+        sig = inspect.signature(fn)
+    except (ValueError, TypeError):
+        return None
+    n = 0
+    for p in sig.parameters.values():
+        if p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD):
+            return None
+        if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD):
+            n += 1
+    return n
+
+
+# Categories the FlagGems Python path knows how to generate kernels for.
+_FLAGGEMS_PY_CATEGORIES = {"functional_pure", "inplace", "tuple_return", "out_variant"}
+
+# Ops manually held out of the FlagGems Python path (populated during the
+# compile/import/numerical convergence loop with the reason as a comment).
+FLAGGEMS_PYTHON_SKIP = {
+    # Required `out=` kwarg with no default: flag_gems `mm_out(a, b, *, out)`
+    # forces out, but the generic positional caller cannot supply it, so the
+    # kernel would raise. (7 other out-variants take out=None and are fine.)
+    "mm.out",
+    # Unconditional `assert X.device.type == device` where device == "cuda":
+    # flagos tensors are genuinely PrivateUse1 ("privateuseone"), so the assert
+    # can never pass without abandoning the boxing scheme. Op-specific to these.
+    "maximum",
+    "minimum",
+    "upsample_linear1d",
+    "upsample_nearest1d",
+    "upsample_nearest2d",
+    "upsample_nearest3d",
+    "_upsample_bicubic2d_aa",
+}
+
+
+def discover_flaggems_ops(codegen_ops, funcs):
+    """Discover ops that can be safely routed to the FlagGems Python path.
+
+    Returns {op_name: (gems_func_qualname, category)}.
+
+    Safety gates (see plan; validated in scratch analysis):
+      - op must have a generated dispatcher (op in codegen_ops) and a schema.
+      - flag_gems function arity must be inspectable (no *args/**kwargs).
+      - category in {functional_pure, inplace, tuple_return, out_variant}.
+      - ARITY gate (guards the silent "dropped trailing scalar" trap):
+          functional_pure/inplace/tuple_return: gems npos == #aten args.
+          out_variant: gems npos == #aten NON-out args (gems doesn't take `out`).
+      - every arg passed to the gems function has a generic-caller-covered type.
+    """
+    try:
+        # torch_fl activates the torch.cuda shim (CPU-torch reports no CUDA
+        # otherwise), which flag_gems needs at import (get_device_name()). Must
+        # run codegen through scripts/with_cuda_libtorch.sh so torch_fl imports.
+        import torch_fl  # noqa: F401
+        import flag_gems
+    except Exception as e:
+        print(f"  [flaggems] import failed ({e}); no python ops discovered",
+              file=sys.stderr)
+        return {}
+
+    result = {}
+    for item in flag_gems._FULL_CONFIG:
+        if len(item) < 2:
+            continue
+        op, fn = item[0], item[1]
+        if op in FLAGGEMS_PYTHON_SKIP:
+            continue
+        if op not in codegen_ops or op not in funcs:
+            continue
+        # Respect version-condition (item[2]) if present.
+        if len(item) > 2 and callable(item[2]) and not item[2]():
+            continue
+        npos = _flaggems_gems_npos(fn)
+        if npos is None:
+            continue
+        func = funcs[op]
+        cat = detect_category(func)
+        if cat not in _FLAGGEMS_PY_CATEGORIES:
+            continue
+        s = func.func
+        aten_args = list(s.arguments.flat_all)
+        out_args = list(s.arguments.out) if hasattr(s.arguments, "out") else []
+        if cat == "out_variant":
+            passed = [(str(a.type), a.name) for a in aten_args if a not in out_args]
+        else:
+            passed = [(str(a.type), a.name) for a in aten_args]
+        if npos != len(passed):
+            continue
+        if not all(_flaggems_type_ok(t) for t, _ in passed):
+            continue
+        qualname = f"{fn.__module__}.{fn.__name__}"
+        result[op] = (qualname, cat)
+    return result
+
+
+def gen_flaggems_python_kernel(op, fn_type, ret_type, args, gems_func, category, func):
+    """Generate a <Name>KernelPython forwarding to the FlagGems Python op.
+
+    Signature matches the generated `*Fn` typedef exactly. The body packs the
+    aten args (faithful order) into a std::vector<c10::IValue> and calls the
+    generic caller by qualname, then adapts the result to the category's return
+    convention:
+      functional_pure -> UnboxToFlagos(result); return result;
+      inplace         -> self.copy_(result); return self;  (or void)
+      tuple_return    -> GenericTuple(...); unbox each; return make_tuple(...)
+      out_variant     -> Generic/GenericTuple over NON-out args; out_i.copy_(res_i)
+    """
+    kn = python_kernel_name(fn_type)
+    s = func.func
+    aten_args = list(s.arguments.flat_all)
+    out_args = list(s.arguments.out) if hasattr(s.arguments, "out") else []
+
+    # arg names as they appear in the generated C++ signature
+    if category == "out_variant":
+        passed_names = [a.name for a in aten_args if a not in out_args]
+    else:
+        passed_names = [a.name for a in aten_args]
+    ivalues = "{" + ", ".join(passed_names) + "}"
+
+    if category == "functional_pure":
+        body = (
+            f'  auto result = CallPythonOp_Generic("{gems_func}", {ivalues});\n'
+            f"  UnboxToFlagos(result);\n"
+            f"  return result;"
+        )
+    elif category == "inplace":
+        self_name = passed_names[0]
+        ret_line = "" if ret_type == "void" else f"\n  return {self_name};"
+        body = (
+            f'  auto result = CallPythonOp_Generic("{gems_func}", {ivalues});\n'
+            f"  {self_name}.copy_(result);{ret_line}"
+        )
+    elif category == "tuple_return":
+        n = ret_type.count(",") + 1  # ::std::tuple<a,b> -> 2
+        unbox = "\n".join(f"  UnboxToFlagos(result[{i}]);" for i in range(n))
+        make = ", ".join(f"result[{i}]" for i in range(n))
+        body = (
+            f'  auto result = CallPythonOp_GenericTuple("{gems_func}", {ivalues}, {n});\n'
+            f"{unbox}\n"
+            f"  return {{{make}}};"
+        )
+    elif category == "out_variant":
+        out_names = [a.name for a in out_args]
+        if ret_type.startswith("::std::tuple"):
+            n = len(out_names)
+            copies = "\n".join(
+                f"  {out_names[i]}.copy_(result[{i}]);" for i in range(n)
+            )
+            make = ", ".join(out_names)
+            body = (
+                f'  auto result = CallPythonOp_GenericTuple("{gems_func}", {ivalues}, {n});\n'
+                f"{copies}\n"
+                f"  return {{{make}}};"
+            )
+        else:
+            out_name = out_names[0]
+            body = (
+                f'  auto result = CallPythonOp_Generic("{gems_func}", {ivalues});\n'
+                f"  {out_name}.copy_(result);\n"
+                f"  return {out_name};"
+            )
+    else:
+        raise ValueError(f"unsupported flaggems-python category {category} for {op}")
+
+    return f"{ret_type} {kn}({args_decl(args)}) {{\n{body}\n}}"
+
+
 # ============================================================================
 # Category detection (torchgen metadata)
 # ============================================================================
@@ -817,6 +1035,19 @@ def main():
     for cat in sorted(categories):
         print(f"  {cat:20s} {len(categories[cat]):3d} ops")
 
+    # ---- discover FlagGems Python-path ops ----
+    # Only meaningful in full-CUDA mode (all generated ops have dispatchers).
+    # discover_flaggems_ops returns {op: (gems_func_qualname, category)}; keep
+    # only ops that are actually in op_info (have a generated dispatcher slot).
+    flaggems_py = discover_flaggems_ops(set(op_info), funcs)
+    flaggems_py = {op: v for op, v in flaggems_py.items() if op in op_info}
+    py_cat_counts = defaultdict(int)
+    for _op, (_q, _c) in flaggems_py.items():
+        py_cat_counts[_c] += 1
+    print(f"\nFlagGems Python-path ops discovered: {len(flaggems_py)}")
+    for cat in sorted(py_cat_counts):
+        print(f"  {cat:20s} {py_cat_counts[cat]:3d} ops")
+
     # ---- ops.h ----
     print("\nGenerating ops.h...")
     lines = [
@@ -895,6 +1126,50 @@ def main():
     (out_dir / "cuda_kernels.cc").write_text("\n".join(lines) + "\n")
     print(f"   generated {len(op_info)} kernels")
 
+    # ---- flaggems_python_kernels.cc ----
+    # FlagGems Python-path kernels (Backend::kFlagOsPython slot) for the ops
+    # auto-discovered by discover_flaggems_ops(). The whole file body is
+    # guarded by FLAGOS_FLAGGEMS_PYTHON so it is a no-op unless the build sets
+    # -DFLAGOS_FLAGGEMS_PYTHON (FLAGGEMS_PYTHON=ON), keeping non-flaggems builds
+    # from pulling in python_op_caller / pybind.
+    print("Generating flaggems_python_kernels.cc...")
+    py_ops = [op for op in sorted(op_info) if op in flaggems_py]
+    lines = [
+        "// Copyright (c) 2026, BAAI. All rights reserved.",
+        "// AUTO-GENERATED by scripts/codegen_ops.py - DO NOT EDIT",
+        "",
+        "#ifdef FLAGOS_FLAGGEMS_PYTHON",
+        "",
+        "#include \"ops.h\"",
+        "#include \"../device_boxing.h\"",
+        "#include \"../backends/flagos/python_op_caller.h\"",
+        "",
+        "namespace at::native::flagos {",
+        "namespace {",
+        "",
+    ]
+    for op in py_ops:
+        i = op_info[op]
+        gems_func, category = flaggems_py[op]
+        lines.append(gen_flaggems_python_kernel(
+            op, i["fn_type"], i["ret_type"], i["args"], gems_func, category, i["func"]))
+        lines.append("")
+    lines.append("} // namespace")
+    lines.append("")
+    for op in py_ops:
+        i = op_info[op]
+        pkn = python_kernel_name(i["fn_type"])
+        lines.append(
+            f'REGISTER_IMPL_TO_DISPATCHER({i["fn_type"]}, {i["dispatcher"]}, '
+            f'Backend::kFlagOsPython, {pkn})'
+        )
+    lines.append("")
+    lines.append("} // namespace at::native::flagos")
+    lines.append("")
+    lines.append("#endif  // FLAGOS_FLAGGEMS_PYTHON")
+    (out_dir / "flaggems_python_kernels.cc").write_text("\n".join(lines) + "\n")
+    print(f"   generated {len(py_ops)} flaggems-python kernels")
+
     # ---- register.inc ----
     print("Generating register.inc...")
     lines = [
@@ -937,6 +1212,25 @@ def main():
             conf_lines.append(f"{op} = cuda")
         conf_path.write_text("\n".join(conf_lines) + "\n")
         print(f"   regenerated {conf_path.name} with {len(op_info)} cuda routes")
+
+        # backends_flaggems.conf: same cuda routes, but the auto-discovered
+        # FlagGems Python-path ops are flipped to flagos_python. Used for testing
+        # / running the FlagGems path (FLAGOS_BACKEND_CONFIG=...backends_flaggems.conf).
+        fg_conf_path = repo_root / "torch_fl/backends_flaggems.conf"
+        fg_lines = [
+            "# flagos op backend config -- AUTO-GENERATED (flaggems python mode)",
+            "# Regenerated by scripts/codegen_ops.py with FLAGOS_CODEGEN_ALL=1.",
+            "# Same as backends_cuda.conf, but the auto-discovered FlagGems ops are",
+            "# routed to the flagos_python (kFlagOsPython) slot; all others to cuda.",
+            "#",
+            "# Format: op_name = backend   (backend: flaggems | flagos_python | cuda)",
+            "",
+        ]
+        for op in sorted(op_info):
+            backend = "flagos_python" if op in flaggems_py else "cuda"
+            fg_lines.append(f"{op} = {backend}")
+        fg_conf_path.write_text("\n".join(fg_lines) + "\n")
+        print(f"   regenerated {fg_conf_path.name} with {len(flaggems_py)} flagos_python routes")
 
     print("\nDone. Files in:", out_dir)
 
