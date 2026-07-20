@@ -6,6 +6,8 @@
 
 #include <include/flagos.h>
 
+#include "allocator_stats.h"
+
 namespace c10::flagos {
 
 // Abstract interface for device memory operations.
@@ -39,6 +41,39 @@ struct DeviceMemoryInterface {
       const void* src,
       size_t count,
       MemcpyKind kind) = 0;
+
+  // --- Optional caching-allocator delegation ---
+  //
+  // A backend whose platform already ships a mature caching allocator (e.g.
+  // CUDA's c10::cuda::CUDACachingAllocator) can return true from
+  // provides_caching(). CachingDeviceAllocator then delegates ALL allocation,
+  // caching, stats and empty_cache to it, bypassing its own block pool. This
+  // keeps flagos `empty` and boxed-kernel outputs in a single shared pool so
+  // memory stats reflect the true device footprint.
+  //
+  // Backends without such a facility (default) return false and get the
+  // built-in block-pool caching. Ascend/others keep the self-managed path.
+  virtual bool provides_caching() const { return false; }
+
+  // Allocate/free through the platform caching allocator. stream may be null
+  // for the default stream.
+  virtual void* caching_alloc(size_t /*nbytes*/, Stream_t /*stream*/) {
+    return nullptr;
+  }
+  virtual void caching_free(void* /*ptr*/) {}
+
+  // Release cached-but-unused memory back to the device.
+  virtual void caching_empty_cache() {}
+
+  // Mark that a pointer is used on the given stream (deferred-free safety).
+  virtual void caching_record_stream(void* /*ptr*/, Stream_t /*stream*/) {}
+
+  // Fill *out with the platform allocator's per-device stats. Returns false if
+  // unsupported (caller then falls back to its own stats).
+  virtual bool caching_get_stats(int /*device*/, AllocatorStats* /*out*/) {
+    return false;
+  }
+  virtual void caching_reset_peak_stats(int /*device*/) {}
 };
 
 } // namespace c10::flagos

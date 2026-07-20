@@ -70,6 +70,15 @@ target_compile_definitions(${LIBRARY_NAME} PRIVATE
     FLAGOS_SOURCE_ROOT="${CMAKE_SOURCE_DIR}"
 )
 
+# The CPU-only torch wheel ships c10/cuda headers but not the CUDA-build-only
+# c10/cuda/impl/cuda_cmake_macros.h. cuda_memory.h includes CUDACachingAllocator.h
+# to delegate flagos allocation to the CUDA caching allocator; this macro tells
+# CUDAMacros.h to skip that generated configure file. Not needed for Ascend
+# (which does not include c10/cuda headers).
+if(NOT ACCELERATOR STREQUAL "ascend")
+  target_compile_definitions(${LIBRARY_NAME} PRIVATE C10_CUDA_NO_CMAKE_CONFIGURE_FILE)
+endif()
+
 set(_torch_fl_link_libs torch_cpu_library torch_python_library flagos ${CUDA_RUNTIME_LIB})
 if(FLAGGEMS_KERNEL)
   if(TARGET FlagGems::operators)

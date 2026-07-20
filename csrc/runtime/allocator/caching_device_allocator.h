@@ -7,6 +7,7 @@
 
 #include <include/macros.h>
 
+#include "allocator_stats.h"
 #include "block.h"
 #include "device_memory_interface.h"
 
@@ -20,18 +21,8 @@
 
 namespace c10::flagos {
 
-// Statistics for memory usage on a single device.
-struct AllocatorStats {
-  size_t bytes_allocated = 0;    // currently allocated by user
-  size_t bytes_reserved = 0;     // total held by allocator (allocated + cached)
-  size_t peak_allocated = 0;
-  size_t peak_reserved = 0;
-  size_t num_alloc_calls = 0;
-  size_t num_free_calls = 0;
-  size_t num_device_malloc = 0;  // actual calls to device_malloc
-  size_t num_device_free = 0;    // actual calls to device_free
-  size_t num_alloc_retries = 0;  // OOM retries
-};
+// AllocatorStats is defined in allocator_stats.h (shared with
+// DeviceMemoryInterface's caching-delegation API without a circular include).
 
 // The caching device allocator for PrivateUse1 devices.
 // Maintains per-device free block pools and reuses memory to avoid
@@ -112,6 +103,9 @@ class FLAGOS_EXPORT CachingDeviceAllocator final : public at::Allocator {
 
   // Static deleter function for DataPtr.
   static void block_deleter(void* ptr);
+
+  // Static deleter for the delegation path (frees via backend caching allocator).
+  static void delegated_deleter(void* ptr);
 
   // Get or create per-device state.
   DeviceState& get_device_state(int device);

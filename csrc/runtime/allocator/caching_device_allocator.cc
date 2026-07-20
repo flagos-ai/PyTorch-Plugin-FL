@@ -66,6 +66,22 @@ at::DataPtr CachingDeviceAllocator::allocate(size_t nbytes) {
   backend_->get_device_index(&device);
   TORCH_CHECK(device >= 0, "CachingDeviceAllocator: invalid device index");
 
+  // Delegation path: the backend ships its own caching allocator (e.g. CUDA).
+  // Route the allocation through it so flagos `empty` and boxed-kernel outputs
+  // share one pool. We skip the built-in block pool entirely.
+  if (backend_->provides_caching()) {
+    void* ptr = backend_->caching_alloc(nbytes, /*stream=*/nullptr);
+    TORCH_CHECK(
+        ptr != nullptr,
+        "CachingDeviceAllocator (delegated): failed to allocate ",
+        nbytes,
+        " bytes on device ",
+        device);
+    return {ptr, ptr, &delegated_deleter,
+            c10::Device(c10::DeviceType::PrivateUse1,
+                        static_cast<c10::DeviceIndex>(device))};
+  }
+
   // Use nullptr as stream for default stream allocations.
   // In a more complete implementation, we would get the current stream.
   Stream_t stream = nullptr;
@@ -377,6 +393,10 @@ void CachingDeviceAllocator::process_events(DeviceState& state) {
 // --- Public API ---
 
 void CachingDeviceAllocator::empty_cache() {
+  if (backend_->provides_caching()) {
+    backend_->caching_empty_cache();
+    return;
+  }
   std::lock_guard<std::recursive_mutex> lock(device_states_mutex_);
   for (auto& state_ptr : device_states_) {
     if (state_ptr) {
@@ -391,6 +411,11 @@ void CachingDeviceAllocator::record_stream(
     const at::DataPtr& ptr,
     Stream_t stream) {
   if (!ptr.get()) {
+    return;
+  }
+
+  if (backend_->provides_caching()) {
+    backend_->caching_record_stream(ptr.get(), stream);
     return;
   }
 
@@ -421,12 +446,23 @@ void CachingDeviceAllocator::record_stream(
 }
 
 AllocatorStats CachingDeviceAllocator::get_stats(int device) {
+  if (backend_->provides_caching()) {
+    AllocatorStats stats;
+    if (backend_->caching_get_stats(device, &stats)) {
+      return stats;
+    }
+    return stats;  // empty stats if backend reports unsupported
+  }
   auto& state = get_device_state(device);
   std::lock_guard<std::recursive_mutex> lock(state.mutex);
   return state.stats;
 }
 
 void CachingDeviceAllocator::reset_stats(int device) {
+  if (backend_->provides_caching()) {
+    backend_->caching_reset_peak_stats(device);
+    return;
+  }
   auto& state = get_device_state(device);
   std::lock_guard<std::recursive_mutex> lock(state.mutex);
   state.stats = AllocatorStats{};
@@ -450,6 +486,15 @@ void CachingDeviceAllocator::block_deleter(void* ptr) {
   if (block) {
     instance_->free_block(block);
   }
+}
+
+// Deleter for the delegation path: free straight back to the backend's caching
+// allocator (no flagos block pool involved).
+void CachingDeviceAllocator::delegated_deleter(void* ptr) {
+  if (!ptr || !instance_) {
+    return;
+  }
+  instance_->backend_->caching_free(ptr);
 }
 
 // --- Global accessor ---
