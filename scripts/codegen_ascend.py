@@ -145,6 +145,52 @@ OPS = {
 
     # ---- cumsum: (Tensor, int64_t dim, optional<ScalarType> dtype) ----
     "cumsum":             ("cumsum", None),
+
+    # ---- cumprod: like cumsum but aclnn takes dim as aclScalar*, not int64_t ----
+    "cumprod":            ("cumprod", None),
+
+    # ---- unary_bool: (Tensor) -> bool out ----
+    "isinf":              ("unary_bool", "IsInf"),
+
+    # ---- unary_scalar: (Tensor, Scalar) -> same shape ----
+    "leaky_relu":         ("unary_scalar", None),
+    "clamp_min":          ("unary_scalar", None),
+    "clamp_max":          ("unary_scalar", None),
+    "fmod.Scalar":        ("unary_scalar", "FmodScalar"),
+
+    # ---- unary_two_scalar: (Tensor, Scalar, Scalar) -> same shape ----
+    "softplus":           ("unary_two_scalar", None),
+    "threshold":          ("unary_two_scalar", None),
+
+    # ---- unary_int: (Tensor, int64_t) -> same shape ----
+    "tril":               ("unary_int", None),
+    "triu":               ("unary_int", None),
+
+    # ---- unary_dims: (Tensor, IntArrayRef) -> same shape ----
+    "flip":               ("unary_dims", None),
+
+    # ---- addcmul: (self, t1, t2, Scalar value) -> broadcast ----
+    "addcmul":            ("addcmul", None),
+    "addcdiv":            ("addcmul", None),
+
+    # ---- binary (tensor-tensor, preserve dtype) additions ----
+    "fmod.Tensor":        ("binary", "FmodTensor"),
+    "floor_divide":       ("binary", None),
+    "logical_xor":        ("binary_cmp", None),
+
+    # ---- act_backward: (grad_output, output) -> grad_input ----
+    "tanh_backward":      ("act_backward", None),
+    "sigmoid_backward":   ("act_backward", None),
+
+    # ---- threshold_backward: (grad_output, self, Scalar threshold) ----
+    "threshold_backward": ("threshold_backward", None),
+
+    # ---- pow_scalar_tensor: (Scalar self, Tensor exponent) ----
+    "pow.Scalar":         ("pow_scalar_tensor", "PowScalarTensor"),
+
+    # ---- reduce_max_dim: (Tensor, int64_t dim, bool keepdim) -> (values, indices) ----
+    "max.dim":            ("reduce_max_dim", "MaxDim"),
+    "min.dim":            ("reduce_max_dim", "MinDim"),
 }
 
 # Ops with a handwritten kAscend kernel — never regenerate (double-register).
@@ -372,6 +418,238 @@ at::Tensor {kernel}(const at::Tensor& self, int64_t dim, ::std::optional<at::Sca
 REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
 """
 
+# cumprod: like cumsum, but aclnnCumprod takes dim as an aclScalar* (int64), not
+# a plain int64_t. Otherwise identical: (Tensor, int64 dim, optional dtype).
+T_CUMPROD = """\
+at::Tensor {kernel}(const at::Tensor& self, int64_t dim, ::std::optional<at::ScalarType> dtype) {{
+  namespace ascend = at::native::flagos::ascend;
+  int64_t d = dim < 0 ? dim + self.dim() : dim;
+  auto out_dtype = dtype.value_or(self.scalar_type());
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options().dtype(out_dtype));
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclScalarWrapper acl_dim(at::Scalar(d), at::kLong);
+  ascend::AclTensorWrapper acl_out(out);
+  aclDataType acl_dtype = ascend::ToAclDataType(out_dtype);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_dim.get(), acl_dtype, acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# unary_bool: (Tensor) -> bool out, same shape.  aclnn<Name>(self, out)
+#   e.g. isinf (always bool regardless of input dtype)
+T_UNARY_BOOL = """\
+at::Tensor {kernel}(const at::Tensor& self) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options().dtype(at::kBool));
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# unary_scalar: (Tensor, Scalar) -> same shape/dtype.
+#   aclnn<Name>(self, scalar, out)   e.g. leaky_relu/clamp_min/clamp_max/fmod.Scalar
+# The scalar is packed at self's dtype so aclnn sees matching operand types.
+T_UNARY_SCALAR = """\
+at::Tensor {kernel}(const at::Tensor& self, const at::Scalar& s) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options());
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclScalarWrapper acl_s(s, self.scalar_type());
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_s.get(), acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# unary_two_scalar: (Tensor, Scalar, Scalar) -> same shape/dtype.
+#   aclnn<Name>(self, s1, s2, out)   e.g. softplus(beta,threshold)/threshold(threshold,value)
+T_UNARY_TWO_SCALAR = """\
+at::Tensor {kernel}(const at::Tensor& self, const at::Scalar& s1, const at::Scalar& s2) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options());
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclScalarWrapper acl_s1(s1, self.scalar_type());
+  ascend::AclScalarWrapper acl_s2(s2, self.scalar_type());
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_s1.get(), acl_s2.get(), acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# unary_int: (Tensor, int64_t) -> same shape/dtype.  aclnn<Name>(self, i, out)
+#   e.g. tril/triu (diagonal offset)
+T_UNARY_INT = """\
+at::Tensor {kernel}(const at::Tensor& self, int64_t i) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options());
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), i, acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# unary_dims: (Tensor, IntArrayRef dims) -> same shape/dtype.
+#   aclnn<Name>(self, dims, out)   e.g. flip
+T_UNARY_DIMS = """\
+at::Tensor {kernel}(const at::Tensor& self, at::IntArrayRef dims) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options());
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_out(out);
+  std::vector<int64_t> dims_v(dims.begin(), dims.end());
+  ascend::AclIntArrayWrapper acl_dims(dims_v);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_dims.get(), acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# addcmul/addcdiv: (self, t1, t2, Scalar value) -> broadcast(self,t1,t2), self dtype.
+#   aclnn<Name>(self, t1, t2, value, out)
+# t1/t2 are migrated to self's device+dtype (same rationale as _BINARY_PROLOGUE:
+# a CPU-resident operand read as NPU storage would produce garbage).
+T_ADDCMUL = """\
+at::Tensor {kernel}(const at::Tensor& self, const at::Tensor& tensor1, const at::Tensor& tensor2, const at::Scalar& value) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto opts = self.options();
+  auto t1 = tensor1.is_privateuseone() ? tensor1.to(opts.dtype(tensor1.scalar_type())) : tensor1.to(opts);
+  auto t2 = tensor2.is_privateuseone() ? tensor2.to(opts.dtype(tensor2.scalar_type())) : tensor2.to(opts);
+  auto out_shape = at::infer_size(at::infer_size(self.sizes(), t1.sizes()), t2.sizes());
+  auto self_b = self.expand(out_shape).contiguous();
+  auto t1_b = t1.expand(out_shape).contiguous();
+  auto t2_b = t2.expand(out_shape).contiguous();
+  auto out = ascend::OpPreparation::apply_tensor_without_format(out_shape, opts);
+
+  ascend::AclTensorWrapper acl_self(self_b);
+  ascend::AclTensorWrapper acl_t1(t1_b);
+  ascend::AclTensorWrapper acl_t2(t2_b);
+  ascend::AclScalarWrapper acl_value(value, self.scalar_type());
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_t1.get(), acl_t2.get(), acl_value.get(), acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# act_backward: (grad_output, output) -> grad_input, output shape/dtype.
+#   aclnn<Name>(gradOutput, output, gradInput)   e.g. tanh_backward/sigmoid_backward
+T_ACT_BACKWARD = """\
+at::Tensor {kernel}(const at::Tensor& grad_output, const at::Tensor& output) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      output.sizes(), output.options());
+
+  ascend::AclTensorWrapper acl_grad(grad_output);
+  ascend::AclTensorWrapper acl_output(output);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_grad.get(), acl_output.get(), acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# threshold_backward: (grad_output, self, Scalar threshold) -> grad_input.
+#   aclnn<Name>(gradOutput, self, threshold, gradInput)
+T_THRESHOLD_BACKWARD = """\
+at::Tensor {kernel}(const at::Tensor& grad_output, const at::Tensor& self, const at::Scalar& threshold) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options());
+
+  ascend::AclTensorWrapper acl_grad(grad_output);
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclScalarWrapper acl_threshold(threshold, self.scalar_type());
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_grad.get(), acl_self.get(), acl_threshold.get(), acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# pow_scalar_tensor: (Scalar self, Tensor exponent) -> exponent shape.
+#   aclnn<Name>(selfScalar, exponent, out)   e.g. pow.Scalar
+T_POW_SCALAR_TENSOR = """\
+at::Tensor {kernel}(const at::Scalar& self, const at::Tensor& exponent) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      exponent.sizes(), exponent.options());
+
+  ascend::AclScalarWrapper acl_self(self, exponent.scalar_type());
+  ascend::AclTensorWrapper acl_exp(exponent);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_exp.get(), acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# reduce_max_dim: (Tensor, int64_t dim, bool keepdim) -> tuple(values, indices).
+#   aclnn<Name>(self, dim, keepdim, valuesOut, indicesOut)   e.g. max.dim/min.dim
+# values keep self dtype; indices are int64.
+T_REDUCE_MAX_DIM = """\
+::std::tuple<at::Tensor, at::Tensor> {kernel}(const at::Tensor& self, int64_t dim, bool keepdim) {{
+  namespace ascend = at::native::flagos::ascend;
+  int64_t d = dim < 0 ? dim + self.dim() : dim;
+  auto out_shape = self.sizes().vec();
+  if (keepdim) out_shape[d] = 1;
+  else out_shape.erase(out_shape.begin() + d);
+
+  auto values = ascend::OpPreparation::apply_tensor_without_format(
+      out_shape, self.options());
+  auto indices = ascend::OpPreparation::apply_tensor_without_format(
+      out_shape, self.options().dtype(at::kLong));
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_values(values);
+  ascend::AclTensorWrapper acl_indices(indices);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), d, keepdim, acl_values.get(), acl_indices.get());
+  return std::make_tuple(values, indices);
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
 CATEGORIES = {
     "unary":               T_UNARY,
     "binary":              T_BINARY,
@@ -382,6 +660,17 @@ CATEGORIES = {
     "reduce_dims":         T_REDUCE_DIMS,
     "reduce_dim_bool":     T_REDUCE_DIM_BOOL,
     "cumsum":              T_CUMSUM,
+    "cumprod":             T_CUMPROD,
+    "unary_bool":          T_UNARY_BOOL,
+    "unary_scalar":        T_UNARY_SCALAR,
+    "unary_two_scalar":    T_UNARY_TWO_SCALAR,
+    "unary_int":           T_UNARY_INT,
+    "unary_dims":          T_UNARY_DIMS,
+    "addcmul":             T_ADDCMUL,
+    "act_backward":        T_ACT_BACKWARD,
+    "threshold_backward":  T_THRESHOLD_BACKWARD,
+    "pow_scalar_tensor":   T_POW_SCALAR_TENSOR,
+    "reduce_max_dim":      T_REDUCE_MAX_DIM,
 }
 
 FILE_HEADER = """\

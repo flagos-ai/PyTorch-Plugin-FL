@@ -56,35 +56,57 @@ CUDA 侧 `scripts/codegen_ops.py` 生成 `generated/cuda_kernels.cc`，内核体
 
 ## 4. 类别体系（逐类扩）
 
-已实现 9 个类别，共 55 个算子（真机全部与 CPU 对拍通过）：
+已实现 20 个类别，共 77 个算子（真机全部与 CPU 对拍通过）：
 
 | category | 判据 | 输出形状 / dtype | 内核体模板 |
 |---|---|---|---|
 | `unary` | 1 个 Tensor 入、Tensor 出 | = 输入 | `aclnn<Name>(self, out)` |
+| `unary_bool` | 1 个 Tensor 入、判定 | = 输入 shape，**bool 出** | `aclnn<Name>(self, out)` |
+| `unary_scalar` | Tensor + Scalar | = 输入 | `aclnn<Name>(self, s, out)` |
+| `unary_two_scalar` | Tensor + Scalar×2 | = 输入 | `aclnn<Name>(self, s1, s2, out)` |
+| `unary_int` | Tensor + `int64_t` | = 输入 | `aclnn<Name>(self, i, out)` |
+| `unary_dims` | Tensor + `IntArrayRef` | = 输入 | `aclnn<Name>(self, dims, out)` |
 | `binary` | 2 个 Tensor 入 | broadcast(self, other)，= self dtype | `aclnn<Name>(self, other, out)` |
 | `binary_alpha` | 2 个 Tensor + Scalar alpha | broadcast | `aclnn<Name>(self, other, alpha, out)` |
 | `binary_cmp` | 2 个 Tensor 入、比较 | broadcast，**bool 出** | `aclnn<Name>(self, other, out)` |
 | `binary_scalar_alpha` | Tensor + Scalar other + Scalar alpha | = 输入 | `aclnn<Name>s(self, other, alpha, out)` |
 | `binary_scalar_cmp` | Tensor + Scalar、比较 | = 输入 shape，**bool 出** | `aclnn<Name>(self, other, out)` |
+| `addcmul` | self + t1 + t2 + Scalar value | broadcast(3) | `aclnn<Name>(self, t1, t2, value, out)` |
+| `pow_scalar_tensor` | Scalar self + Tensor exponent | = exponent | `aclnn<Name>(self, exp, out)` |
 | `reduce_dims` | Tensor + `IntArrayRef dim` + keepdim | 按 dim 缩 | `aclnn<Name>(self, dim, keepdim, out)` |
 | `reduce_dim_bool` | Tensor + `int64_t dim` + keepdim | 按单 dim 缩，**bool 出** | `aclnn<Name>(self, dim_list, keepdim, out)` |
+| `reduce_max_dim` | Tensor + `int64_t dim` + keepdim | **tuple(values, indices)** | `aclnn<Name>(self, dim, keepdim, val, idx)` |
 | `cumsum` | Tensor + `int64_t dim` + optional dtype | = 输入 shape（扫描） | `aclnn<Name>(self, dim, dtype, out)` |
-| `matmul` / tuple-return / var/std/norm 等 | 手写保留 / 长尾 | — | 后续 P2/P3 |
+| `cumprod` | 同 cumsum，但 dim 以 `aclScalar*` 传 | = 输入 shape（扫描） | `aclnn<Name>(self, &dim, dtype, out)` |
+| `act_backward` | grad_output + output | = output | `aclnn<Name>(grad, output, grad_in)` |
+| `threshold_backward` | grad_output + self + Scalar threshold | = self | `aclnn<Name>(grad, self, thr, grad_in)` |
 
 - **unary（28）**：sqrt/exp/tanh/sigmoid/reciprocal/log/floor/ceil/erf/erfc/expm1/
   log2/log10/log1p/round/trunc/frac/sign/relu/cosh/sinh/asin/atan/asinh/acosh/atanh/
   logical_not/bitwise_not
-- **binary（7）**：div.Tensor/pow.Tensor_Tensor/atan2/maximum/minimum/bitwise_or/bitwise_xor
+- **unary_bool（1）**：isinf
+- **unary_scalar（4）**：leaky_relu/clamp_min/clamp_max/fmod.Scalar
+- **unary_two_scalar（2）**：softplus(beta,threshold)/threshold(threshold,value)
+- **unary_int（2）**：tril/triu（diagonal 偏移）
+- **unary_dims（1）**：flip
+- **binary（9）**：div.Tensor/pow.Tensor_Tensor/atan2/maximum/minimum/bitwise_or/bitwise_xor/
+  fmod.Tensor/floor_divide
 - **binary_alpha（1）**：sub.Tensor
-- **binary_cmp（7）**：eq/ne/gt/lt/ge.Tensor + logical_and/logical_or
+- **binary_cmp（8）**：eq/ne/gt/lt/ge.Tensor + logical_and/logical_or/logical_xor
 - **binary_scalar_alpha（2）**：add.Scalar/sub.Scalar
 - **binary_scalar_cmp（6）**：eq/ne/gt/lt/ge/le.Scalar
+- **addcmul（2）**：addcmul/addcdiv
+- **pow_scalar_tensor（1）**：pow.Scalar
 - **reduce_dims（2）**：amax/amin（复用 `sum.cc` 的 dim 归一化 + 缩形状逻辑）
 - **reduce_dim_bool（1）**：any.dim（单 dim 包成一元 list 传给 aclnn）
-- **cumsum（1）**：cumsum
+- **reduce_max_dim（2）**：max.dim/min.dim（tuple 返回 values+int64 indices）
+- **cumsum（1）**：cumsum；**cumprod（1）**：cumprod
+- **act_backward（2）**：tanh_backward/sigmoid_backward（训练用）
+- **threshold_backward（1）**：threshold_backward（relu 反向，训练用）
 
-长尾未接（进 P2/P3 或手写）：max.dim/min.dim（tuple 返回）、var/std.correction、
-norm.ScalarOpt_dim（correction/p 参数）、argmax/argmin/prod/logsumexp（无 aclnn 符号或需特殊派生）。
+长尾未接（进后续或手写）：var/std.correction、norm.ScalarOpt_dim（correction/p 参数）、
+argmax/argmin/prod/logsumexp/isnan/masked_fill/remainder/relu6（无 aclnn 符号或需特殊派生）、
+addmm/baddbmm（cube_math_type，归 matmul 家族）、gelu（`approximate` string_view 参数）。
 
 ### 二元类别的共享 prologue（关键坑）
 
