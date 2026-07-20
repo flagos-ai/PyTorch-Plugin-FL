@@ -1,7 +1,7 @@
 // Copyright (c) 2026, BAAI. All rights reserved.
 
 #include "../python_op_caller.h"
-#include "../../../cat.h"
+#include "../../../generated/ops.h"
 
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>

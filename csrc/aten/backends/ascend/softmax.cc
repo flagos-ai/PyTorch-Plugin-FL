@@ -1,6 +1,6 @@
 // Copyright (c) 2026, BAAI. All rights reserved.
 
-#include "../../softmax.h"
+#include "../../generated/ops.h"
 #include <ATen/core/Tensor.h>
 #include "op_preparation.h"
 #include "op_api_common.h"
@@ -21,6 +21,6 @@ at::Tensor SoftmaxKernelAscend(const at::Tensor& self, int64_t dim, bool half_to
   return out;
 }
 
-REGISTER_IMPL_TO_DISPATCHER(SoftmaxFn, softmax_dispatcher, Backend::kAscend, SoftmaxKernelAscend)
+REGISTER_IMPL_TO_DISPATCHER(PrivSoftmaxFn, priv_softmax_dispatcher, Backend::kAscend, SoftmaxKernelAscend)
 
 } // namespace at::native::flagos

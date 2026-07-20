@@ -1,7 +1,7 @@
 // Copyright (c) 2026, BAAI. All rights reserved.
 
 #include "../python_op_caller.h"
-#include "../../../softmax.h"
+#include "../../../generated/ops.h"
 
 namespace at::native::flagos {
 
@@ -13,6 +13,6 @@ at::Tensor SoftmaxKernelPython(const at::Tensor& self, int64_t dim, bool half_to
 
 } // namespace
 
-REGISTER_IMPL_TO_DISPATCHER(SoftmaxFn, softmax_dispatcher, Backend::kFlagOsPython, SoftmaxKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(PrivSoftmaxFn, priv_softmax_dispatcher, Backend::kFlagOsPython, SoftmaxKernelPython)
 
 } // namespace at::native::flagos

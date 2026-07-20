@@ -1,7 +1,7 @@
 // Copyright (c) 2026, BAAI. All rights reserved.
 
 #include "../python_op_caller.h"
-#include "../../../slice_backward.h"
+#include "../../../generated/ops.h"
 
 #include <ATen/core/ivalue.h>
 

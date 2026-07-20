@@ -1,6 +1,6 @@
 // Copyright (c) 2026, BAAI. All rights reserved.
 
-#include "../../sum.h"
+#include "../../generated/ops.h"
 #include <ATen/core/Tensor.h>
 #include "op_preparation.h"
 #include "op_api_common.h"
@@ -54,6 +54,6 @@ at::Tensor SumDimKernelAscend(const at::Tensor& self, at::OptionalIntArrayRef di
   return out;
 }
 
-REGISTER_IMPL_TO_DISPATCHER(SumDimFn, sum_dim_dispatcher, Backend::kAscend, SumDimKernelAscend)
+REGISTER_IMPL_TO_DISPATCHER(SumDimIntlistFn, sum_dim_intlist_dispatcher, Backend::kAscend, SumDimKernelAscend)
 
 } // namespace at::native::flagos

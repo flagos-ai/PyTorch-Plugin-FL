@@ -1,6 +1,6 @@
 // Copyright (c) 2026, BAAI. All rights reserved.
 
-#include "../../ones_like.h"
+#include "../../generated/ops.h"
 
 #include <ATen/ops/empty.h>
 

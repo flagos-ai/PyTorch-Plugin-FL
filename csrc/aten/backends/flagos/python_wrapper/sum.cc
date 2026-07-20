@@ -1,7 +1,7 @@
 // Copyright (c) 2026, BAAI. All rights reserved.
 
 #include "../python_op_caller.h"
-#include "../../../sum.h"
+#include "../../../generated/ops.h"
 
 namespace at::native::flagos {
 
@@ -27,6 +27,6 @@ at::Tensor SumDimKernelPython(const at::Tensor& self, at::OptionalIntArrayRef di
 
 } // namespace
 
-REGISTER_IMPL_TO_DISPATCHER(SumDimFn, sum_dim_dispatcher, Backend::kFlagOsPython, SumDimKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(SumDimIntlistFn, sum_dim_intlist_dispatcher, Backend::kFlagOsPython, SumDimKernelPython)
 
 } // namespace at::native::flagos

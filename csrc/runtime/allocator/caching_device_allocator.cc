@@ -2,7 +2,9 @@
 
 #include "caching_device_allocator.h"
 
-#if !defined(USE_ASCEND)
+#if defined(USE_ASCEND)
+#include "backends/ascend_memory.h"
+#else
 #include "backends/cuda_memory.h"
 #endif
 
@@ -507,8 +509,8 @@ CachingDeviceAllocator* GetCachingAllocator() {
     // For now, we always create the CUDA backend when this code is compiled.
     // Metax and Ascend backends will be added later.
 #if defined(USE_ASCEND)
-    // TODO: create AscendDeviceMemory
-    TORCH_CHECK(false, "Caching allocator not yet implemented for Ascend");
+    auto backend = std::make_unique<AscendDeviceMemory>();
+    alloc = std::make_unique<CachingDeviceAllocator>(std::move(backend));
 #else
     // CUDA (and Metax, which uses CUDA-compatible API)
     auto backend = std::make_unique<CudaDeviceMemory>();

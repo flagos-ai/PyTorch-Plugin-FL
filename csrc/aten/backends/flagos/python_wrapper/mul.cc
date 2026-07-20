@@ -1,7 +1,7 @@
 // Copyright (c) 2026, BAAI. All rights reserved.
 
 #include "../python_op_caller.h"
-#include "../../../mul.h"
+#include "../../../generated/ops.h"
 
 namespace at::native::flagos {
 

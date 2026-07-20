@@ -1,6 +1,6 @@
 // Copyright (c) 2026, BAAI. All rights reserved.
 
-#include "../../embedding_dense_backward.h"
+#include "../../generated/ops.h"
 #include <ATen/core/Tensor.h>
 #include "op_preparation.h"
 #include "op_api_common.h"

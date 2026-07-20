@@ -1,6 +1,6 @@
 // Copyright (c) 2026, BAAI. All rights reserved.
 
-#include "../../scalar_tensor.h"
+#include "../../generated/ops.h"
 
 #include <ATen/ops/empty.h>
 

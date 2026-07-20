@@ -4,7 +4,7 @@
 // These register kFlagOsPython kernels that call into flag_gems.ops via pybind11.
 
 #include "../python_op_caller.h"
-#include "../../../neg.h"
+#include "../../../generated/ops.h"
 
 namespace at::native::flagos {
 

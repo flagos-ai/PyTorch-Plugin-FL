@@ -1,6 +1,6 @@
 // Copyright (c) 2026, BAAI. All rights reserved.
 
-#include "../../div_scalar.h"
+#include "../../generated/ops.h"
 #include <ATen/core/Tensor.h>
 #include <c10/core/Scalar.h>
 #include "op_preparation.h"

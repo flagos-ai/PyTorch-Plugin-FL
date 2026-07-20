@@ -1,6 +1,6 @@
 // Copyright (c) 2026, BAAI. All rights reserved.
 
-#include "../../silu.h"
+#include "../../generated/ops.h"
 
 #include <ATen/core/Tensor.h>
 #include "op_preparation.h"
