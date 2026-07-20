@@ -29,10 +29,12 @@ for _so in libc10_cuda.so libtorch_cuda.so; do
   fi
 done
 
-# 1) nvidia runtime 库路径 + pip torch 的 lib 目录（libc10_cuda.so 依赖 libc10.so）。
+# 1) nvidia runtime 库路径 + pip torch 的 lib 目录（libc10_cuda.so 依赖 libc10.so）
+#    + CUDA_ASSETS 本身（linalg 等算子会按裸名 dlopen libtorch_cuda_linalg.so，
+#      该 .so 就放在 CUDA_ASSETS 里，必须在 LD_LIBRARY_PATH 上才能被找到）。
 SP=$(python -c 'import site; print(site.getsitepackages()[0])')
 TORCH_LIB=$(python -c 'import torch, os; print(os.path.join(os.path.dirname(torch.__file__), "lib"))')
-export LD_LIBRARY_PATH="$(ls -d "$SP"/nvidia/*/lib 2>/dev/null | tr '\n' ':')${TORCH_LIB}:${LD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH="${CUDA_ASSETS}:$(ls -d "$SP"/nvidia/*/lib 2>/dev/null | tr '\n' ':')${TORCH_LIB}:${LD_LIBRARY_PATH}"
 
 # 2) 硬约束：在 import torch 之前把 CUDA .so 载入进程 -> LD_PRELOAD。
 export LD_PRELOAD="${CUDA_ASSETS}/libc10_cuda.so:${CUDA_ASSETS}/libtorch_cuda.so${LD_PRELOAD:+:${LD_PRELOAD}}"

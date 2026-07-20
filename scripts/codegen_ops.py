@@ -128,7 +128,6 @@ def enumerate_all_cuda_ops(nf, funcs, cuda_index):
 
     Skip reasons:
       manual      already registered by hand in register.cc
-      multi_out   out-variant with >1 mutable Tensor& out (template picks wrong out)
     composite_implicit ops are excluded up front: PyTorch decomposes them ABOVE
     our dispatch key into leaf ops we already box, so registering them is both
     unnecessary and risky. structured_delegate ops survive that exclusion.
@@ -151,15 +150,9 @@ def enumerate_all_cuda_ops(nf, funcs, cuda_index):
             skipped["manual"].append(op)
             continue
 
-        # multi-out: gen_out_variant assumes exactly one mutable Tensor& out
-        if func.func.is_out_fn():
-            n_out = sum(
-                1 for a in func.func.arguments.flat_all
-                if "Tensor" in str(a.type) and a.is_write
-            )
-            if n_out > 1:
-                skipped["multi_out"].append(op)
-                continue
+        # Multi-output out-variants are now handled: gen_out_variant calls
+        # at::<base>_outf(<all args faithful order>) and unboxes each mutable
+        # Tensor& out, so no per-out-count skip is needed.
 
         kept.append(op)
     return kept, skipped
@@ -264,6 +257,9 @@ def detect_category(func) -> str:
     if not has_tensor_in and not has_tensorlist:
         return "factory"
     if has_tensorlist:
+        # _foreach_*.out: TensorList out arg, call at::<base>_outf, void return.
+        if s.is_out_fn():
+            return "foreach_out"
         return "foreach_tensorlist"
     if s.is_out_fn():
         return "out_variant"
@@ -271,6 +267,9 @@ def detect_category(func) -> str:
         return "inplace"
     if len(s.returns) > 1:
         return "tuple_return"
+    # split.Tensor / unbind.int: single Tensor[] return, no TensorList input.
+    if len(s.returns) == 1 and str(s.returns[0].type) == "Tensor[]":
+        return "vector_return"
     return "functional_pure"
 
 
@@ -347,6 +346,21 @@ def gen_functional_pure(op, fn_type, ret_type, args):
 }}"""
 
 
+def gen_vector_return(op, fn_type, ret_type, args):
+    """split.Tensor / unbind.int: single Tensor input, std::vector<Tensor> return
+    (each element aliases the input storage). Box inputs, call the API, unbox
+    every returned view."""
+    kn = kernel_name(fn_type)
+    guard = ", ".join(tensor_arg_names(args))
+    api = f"at::{at_api_base(op)}"
+    return f"""{ret_type} {kn}({args_decl(args)}) {{
+  DeviceBoxingGuard guard({guard});
+  auto result = {api}({call_args(args)});
+  UnboxTensorVecToFlagos(result);
+  return result;
+}}"""
+
+
 def gen_inplace(op, fn_type, ret_type, args):
     """add_.Tensor / fill_.Scalar / masked_fill_.Scalar: mutate first tensor, return it (or void)."""
     kn = kernel_name(fn_type)
@@ -369,23 +383,48 @@ def gen_inplace(op, fn_type, ret_type, args):
 
 
 def gen_out_variant(op, fn_type, ret_type, args):
-    """mm.out / bmm.out: faithful arg order is (self, mat2, out); call at::op_out(out, self, mat2)."""
+    """Single- and multi-output out-variants (mm.out, sort.values, svd.U,
+    native_batch_norm.out): call at::<base>_outf(<all args in faithful order>),
+    which places the out args last -- exactly matching our generated arg order,
+    so no reordering is needed. Then unbox each mutable Tensor& out.
+
+    optional<Tensor> inputs must be materialized into a holder to be boxed by
+    DeviceBoxingGuard (same pattern as gen_tuple_return)."""
     kn = kernel_name(fn_type)
-    guard = ", ".join(tensor_arg_names(args))
     base = at_api_base(op)
-    api = f"at::{base}_out"
-    # out is the mutable Tensor& arg; find it, put it first
-    out_name = None
-    other = []
-    for t, n in args:
-        if "Tensor &" in t and "const" not in t:
-            out_name = n
-        else:
-            other.append(n)
-    ordered = ", ".join([out_name] + other)
+    api = f"at::{base}_outf"
+
+    # Mutable (non-const) Tensor& args are the outputs.
+    out_names = [n for t, n in args if "at::Tensor &" in t and "const" not in t]
+
+    # Box plain tensor inputs + optional<Tensor> inputs (via holders).
+    plain = tensor_arg_names(args)
+    opt_names = optional_tensor_names(args)
+    holder_lines = ""
+    guard_names = list(plain)
+    for on in opt_names:
+        holder_lines += f"  at::Tensor {on}_t = {on}.has_value() ? *{on} : at::Tensor();\n"
+        guard_names.append(f"{on}_t")
+    guard = ", ".join(guard_names)
+
+    unbox_lines = "\n".join(f"  UnboxToFlagos({n});" for n in out_names)
+
+    if ret_type.startswith("::std::tuple"):
+        # tuple<Tensor&,...>: _ret references the out tensors; unbox out names.
+        # (local is _ret, not result, because some ops have an out arg literally
+        #  named `result`, e.g. _linalg_det.result.)
+        return f"""{ret_type} {kn}({args_decl(args)}) {{
+{holder_lines}  DeviceBoxingGuard guard({guard});
+  auto _ret = {api}({call_args(args)});
+{unbox_lines}
+  return _ret;
+}}"""
+    # single mutable Tensor& out.
+    out_name = out_names[0]
     return f"""{ret_type} {kn}({args_decl(args)}) {{
-  DeviceBoxingGuard guard({guard});
-  {api}({ordered});
+{holder_lines}  DeviceBoxingGuard guard({guard});
+  {api}({call_args(args)});
+{unbox_lines}
   return {out_name};
 }}"""
 
@@ -463,6 +502,32 @@ def gen_foreach(op, fn_type, ret_type, args):
 {box_lines}  auto result = {api}({call_args_str});
   UnboxToFlagos(result);
   return result;
+}}"""
+
+
+def gen_foreach_out(op, fn_type, ret_type, args):
+    """_foreach_*.out: every TensorList arg (inputs AND the out list) is
+    materialized + boxed, then at::<base>_outf(<materialized args in faithful
+    order>) is called. Void return."""
+    kn = kernel_name(fn_type)
+    api = f"at::{at_api_base(op)}_outf"
+
+    materialize_lines = ""
+    box_lines = ""
+    call_arg_names = []
+    for t, n in args:
+        if "ITensorListRef" in t or "TensorList" in t:
+            mat_name = f"{n}_vec"
+            materialize_lines += f"  auto {mat_name} = MaterializeToTensorVec({n});\n"
+            box_lines += f"  guard.box({mat_name});\n"
+            call_arg_names.append(mat_name)
+        else:
+            call_arg_names.append(n)
+    call_args_str = ", ".join(call_arg_names)
+
+    return f"""{ret_type} {kn}({args_decl(args)}) {{
+{materialize_lines}  TensorListBoxingGuard guard;
+{box_lines}  {api}({call_args_str});
 }}"""
 
 
@@ -573,10 +638,12 @@ def gen_optlist(op, fn_type, ret_type, args):
 
 CATEGORY_GENERATORS = {
     "functional_pure": gen_functional_pure,
+    "vector_return": gen_vector_return,
     "inplace": gen_inplace,
     "out_variant": gen_out_variant,
     "tuple_return": gen_tuple_return,
     "foreach_tensorlist": gen_foreach,
+    "foreach_out": gen_foreach_out,
     "factory": gen_factory,
     "special_optlist": gen_optlist,
 }
