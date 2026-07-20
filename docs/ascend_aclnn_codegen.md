@@ -56,39 +56,79 @@ CUDA 侧 `scripts/codegen_ops.py` 生成 `generated/cuda_kernels.cc`，内核体
 
 ## 4. 类别体系（逐类扩）
 
+已实现 6 个类别，共 51 个算子（真机全部与 CPU 对拍通过）：
+
 | category | 判据 | 输出形状 / dtype | 内核体模板 |
 |---|---|---|---|
-| `unary` | 1 个 Tensor 入、Tensor 出、无其它张量/标量 | = 输入 | `aclnn<Name>(self, out)` |
-| `binary` | 2 个 Tensor 入 | broadcast(self, other) | `aclnn<Name>(self, other, out)`（可选 alpha） |
-| `binary_scalar` | Tensor + Scalar | = 输入 | `aclnn<Name>s(self, scalar, out)` |
-| `reduce` | Tensor + dim + keepdim | 按 dim 缩 | 需 `AclIntArrayWrapper`，长尾 |
-| `matmul` 等 | 手写保留 | — | — |
+| `unary` | 1 个 Tensor 入、Tensor 出 | = 输入 | `aclnn<Name>(self, out)` |
+| `binary` | 2 个 Tensor 入 | broadcast(self, other)，= self dtype | `aclnn<Name>(self, other, out)` |
+| `binary_alpha` | 2 个 Tensor + Scalar alpha | broadcast | `aclnn<Name>(self, other, alpha, out)` |
+| `binary_cmp` | 2 个 Tensor 入、比较 | broadcast，**bool 出** | `aclnn<Name>(self, other, out)` |
+| `binary_scalar_alpha` | Tensor + Scalar other + Scalar alpha | = 输入 | `aclnn<Name>s(self, other, alpha, out)` |
+| `binary_scalar_cmp` | Tensor + Scalar、比较 | = 输入 shape，**bool 出** | `aclnn<Name>(self, other, out)` |
+| `reduce` / `matmul` 等 | 手写保留 | — | 后续 P2/P3 |
 
-本轮原型只实现 **unary**，把 sqrt/exp/tanh/sigmoid/reciprocal/log/floor/ceil 等
-尚未手写的一元算子一次性接入，证明 codegen 净增覆盖。
+- **unary（28）**：sqrt/exp/tanh/sigmoid/reciprocal/log/floor/ceil/erf/erfc/expm1/
+  log2/log10/log1p/round/trunc/frac/sign/relu/cosh/sinh/asin/atan/asinh/acosh/atanh/
+  logical_not/bitwise_not
+- **binary（7）**：div.Tensor/pow.Tensor_Tensor/atan2/maximum/minimum/bitwise_or/bitwise_xor
+- **binary_alpha（1）**：sub.Tensor
+- **binary_cmp（7）**：eq/ne/gt/lt/ge.Tensor + logical_and/logical_or
+- **binary_scalar_alpha（2）**：add.Scalar/sub.Scalar
+- **binary_scalar_cmp（6）**：eq/ne/gt/lt/ge/le.Scalar
+
+### 二元类别的共享 prologue（关键坑）
+
+所有 tensor-tensor 类别共用一段 prologue，做三件事：
+
+```cpp
+auto result_dtype = self.scalar_type();
+// ① other 必须同时对齐 device 和 dtype——不只是 dtype！
+auto other_c = other.is_privateuseone()
+    ? (other.scalar_type() == result_dtype ? other : other.to(result_dtype))
+    : other.to(self.options());           // CPU other → 搬到 flagos(NPU)
+auto out_shape = at::infer_size(self.sizes(), other_c.sizes());
+auto self_b  = self.expand(out_shape).contiguous();   // aclnn 不总是自己 broadcast
+auto other_b = other_c.expand(out_shape).contiguous();
+```
+
+**踩过的坑**：`torch.sub(x, 3.0)` 这类"张量 + python 标量"在 PyTorch 里会把标量包成
+**CPU 标量张量**并派发到 `aten::sub.Tensor`（不是 sub.Scalar）。若 prologue 只对齐 dtype
+不对齐 device，CPU 存储会被 `AclTensorWrapper` 当成 NPU 显存地址读取 → 全 nan。
+修复即上面 `other.to(self.options())`（与手写 `add.cc` 一致）。这一处同时修好了
+sub/div/pow 等所有"标量走 Tensor overload"的路径。
 
 ## 5. aclnn 命名派生
 
 - 默认：`op_name` snake_case → `aclnn` + PascalCase（`sqrt`→`aclnnSqrt`，`floor`→`aclnnFloor`）。
-- 不规则：显式覆盖表（`bmm`→`BatchMatMul`、`sum`→`ReduceSum`、`where`→`SWhere`、
-  `bitwise_and`→`BitwiseAndTensor` 等）。实测 unary 候选中 33/38 可直接派生。
-- 生成前用 `nm libopapi.so` / aclnn 头存在性校验，派生不出或库里没有的 op 直接跳过并告警。
+- 不规则：`OPS` dict 里逐 op 显式覆盖 stem（`eq.Tensor`→`EqTensor`、`div.Tensor`→`Div`、
+  `pow.Tensor_Tensor`→`PowTensorTensor`、`add.Scalar`→`Adds` 等）。
+- 生成前用 `nm -D libopapi.so` 校验 `aclnn<Name>` 与 `aclnn<Name>GetWorkspaceSize` 两个符号，
+  缺任一即跳过并告警（例如 `square`/`isnan`/`isfinite` 因无 dispatcher 或无符号被自动排除）。
 
 ## 6. 生成器 `scripts/codegen_ascend.py`
 
-输入：
-- `torch_fl/backends_ascend.conf`（哪些 op 要 ascend 后端）或 `--category unary` 枚举模式
-- torchgen 的 `native_functions.yaml`（取 schema、复用 `schema_to_cpp_name`）
-- aclnn 覆盖表（内嵌 dict）+ `libopapi.so` 符号校验
+结构：
+- `OPS` dict：`schema op 名 → (category, aclnn-name override)`，是唯一的手工维护点。
+- `SKIP` set：已手写 kAscend 的 op（abs/cos/add.Tensor/mul.Tensor/le.Tensor…），
+  绝不重发（重复注册 kAscend 会在 import 时崩）。
+- `CATEGORIES` dict：`category → 内核体模板字符串`，加新类别 = 加一个模板 + 一批 OPS 条目。
+- 复用 `codegen_ops.py:schema_to_cpp_name` 保证 `XxxFn`/`xxx_dispatcher` 与 `ops.h` 完全对齐。
+
+用法：`python scripts/codegen_ascend.py [--category unary] [--no-conf]`（默认 all）。
 
 输出：
 - `csrc/aten/backends/ascend/generated/ascend_kernels.cc`
-- 顺带把新覆盖的 op 追加到 `backends_ascend.conf`
+- 幂等重写 `backends_ascend.conf` 末尾的 `# --- generated ---` 块（追加新覆盖的 op）
 
 ## 7. 验证闭环
 
-`ACCELERATOR=ascend ASCEND_KERNEL=1 FLAGGEMS_PYTHON=1 ...` 构建，
-`FLAGOS_BACKEND_CONFIG=torch_fl/backends_ascend.conf`，逐 op 与 CPU 对拍。
+`ACCELERATOR=ascend ASCEND_KERNEL=1 FLAGGEMS_PYTHON=1 CUDA_KERNEL=0 FLAGGEMS_KERNEL=0`
+构建，`FLAGOS_BACKEND_CONFIG=torch_fl/backends_ascend.conf`，逐 op 与 CPU 对拍。
+51/51 通过（unary max_err≤4.4e-5，binary≤4.7e-6，比较类精确匹配）。
+
+**注意**：编译时必须显式传全套 env（`ACCELERATOR=ascend …`），否则 setup.py 默认
+`ACCELERATOR=cuda`，cmake 配置阶段就会失败。
 
 ## 8. 相关
 
