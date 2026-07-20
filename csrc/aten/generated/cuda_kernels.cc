@@ -42,7 +42,6 @@
 #include <ATen/ops/_cudnn_attention_backward.h>
 #include <ATen/ops/_cudnn_ctc_loss.h>
 #include <ATen/ops/_cudnn_init_dropout_state.h>
-#include <ATen/ops/_cudnn_rnn.h>
 #include <ATen/ops/_cudnn_rnn_backward.h>
 #include <ATen/ops/_cudnn_rnn_flatten_weight.h>
 #include <ATen/ops/_dirichlet_grad.h>
@@ -143,7 +142,6 @@
 #include <ATen/ops/_log_softmax.h>
 #include <ATen/ops/_log_softmax_backward_data.h>
 #include <ATen/ops/_logcumsumexp.h>
-#include <ATen/ops/_lstm_mps.h>
 #include <ATen/ops/_make_dual.h>
 #include <ATen/ops/_make_dual_copy.h>
 #include <ATen/ops/_make_per_channel_quantized_tensor.h>
@@ -567,7 +565,6 @@
 #include <ATen/ops/miopen_convolution_transpose.h>
 #include <ATen/ops/miopen_ctc_loss.h>
 #include <ATen/ops/miopen_depthwise_convolution.h>
-#include <ATen/ops/miopen_rnn.h>
 #include <ATen/ops/miopen_rnn_backward.h>
 #include <ATen/ops/mish.h>
 #include <ATen/ops/mkldnn_adaptive_avg_pool2d_backward.h>
@@ -761,7 +758,9 @@
 #include <ATen/ops/special_xlog1py.h>
 #include <ATen/ops/special_zeta.h>
 #include <ATen/ops/split.h>
+#include <ATen/ops/split_copy.h>
 #include <ATen/ops/split_with_sizes.h>
+#include <ATen/ops/split_with_sizes_copy.h>
 #include <ATen/ops/sqrt.h>
 #include <ATen/ops/squeeze.h>
 #include <ATen/ops/squeeze_copy.h>
@@ -792,6 +791,7 @@
 #include <ATen/ops/triu_indices.h>
 #include <ATen/ops/trunc.h>
 #include <ATen/ops/unbind.h>
+#include <ATen/ops/unbind_copy.h>
 #include <ATen/ops/unfold_backward.h>
 #include <ATen/ops/unfold_copy.h>
 #include <ATen/ops/uniform.h>
@@ -948,6 +948,7 @@ void PrivAmpForeachNonFiniteCheckAndUnscaleOutKernelCuda(at::TensorList self, at
   auto out_vec = MaterializeToTensorVec(out);
   TensorListBoxingGuard guard;
   guard.box(self_vec);
+  guard.box({found_inf});
   guard.box(out_vec);
   at::_amp_foreach_non_finite_check_and_unscale_outf(self_vec, found_inf, inv_scale, out_vec);
 }
@@ -1092,6 +1093,15 @@ at::Tensor PrivChunkCatKernelCuda(at::TensorList tensors, int64_t dim, int64_t n
   auto result = at::_chunk_cat(tensors_vec, dim, num_chunks);
   UnboxToFlagos(result);
   return result;
+}
+
+at::Tensor & PrivChunkCatOutKernelCuda(at::TensorList tensors, int64_t dim, int64_t num_chunks, at::Tensor & out) {
+  auto tensors_vec = MaterializeToTensorVec(tensors);
+  TensorListBoxingGuard guard;
+  guard.box(tensors_vec);
+  guard.box({out});
+  at::_chunk_cat_outf(tensors_vec, dim, num_chunks, out);
+  return out;
 }
 
 at::Tensor & PrivCoalesceOutKernelCuda(const at::Tensor & self, at::Tensor & out) {
@@ -1357,18 +1367,14 @@ at::Tensor & PrivCudnnInitDropoutStateOutKernelCuda(double dropout, bool train, 
   return out;
 }
 
-::std::tuple<at::Tensor &,at::Tensor &,at::Tensor &,at::Tensor &,at::Tensor &> PrivCudnnRnnOutKernelCuda(const at::Tensor & input, at::TensorList weight, int64_t weight_stride0, const ::std::optional<at::Tensor> & weight_buf, const at::Tensor & hx, const ::std::optional<at::Tensor> & cx, int64_t mode, int64_t hidden_size, int64_t proj_size, int64_t num_layers, bool batch_first, double dropout, bool train, bool bidirectional, at::IntArrayRef batch_sizes, const ::std::optional<at::Tensor> & dropout_state, at::Tensor & out0, at::Tensor & out1, at::Tensor & out2, at::Tensor & out3, at::Tensor & out4) {
-  auto weight_vec = MaterializeToTensorVec(weight);
-  TensorListBoxingGuard guard;
-  guard.box(weight_vec);
-  at::_cudnn_rnn_outf(input, weight_vec, weight_stride0, weight_buf, hx, cx, mode, hidden_size, proj_size, num_layers, batch_first, dropout, train, bidirectional, batch_sizes, dropout_state, out0, out1, out2, out3, out4);
-}
-
 void PrivCudnnRnnBackwardOutKernelCuda(const at::Tensor & input, at::TensorList weight, int64_t weight_stride0, const at::Tensor & weight_buf, const at::Tensor & hx, const ::std::optional<at::Tensor> & cx, const at::Tensor & output, const ::std::optional<at::Tensor> & grad_output, const ::std::optional<at::Tensor> & grad_hy, const ::std::optional<at::Tensor> & grad_cy, int64_t mode, int64_t hidden_size, int64_t proj_size, int64_t num_layers, bool batch_first, double dropout, bool train, bool bidirectional, at::IntArrayRef batch_sizes, const ::std::optional<at::Tensor> & dropout_state, const at::Tensor & reserve, ::std::array<bool,4> output_mask, at::Tensor & out0, at::Tensor & out1, at::Tensor & out2, at::TensorList out3) {
   auto weight_vec = MaterializeToTensorVec(weight);
   auto out3_vec = MaterializeToTensorVec(out3);
   TensorListBoxingGuard guard;
   guard.box(weight_vec);
+  guard.box({out0});
+  guard.box({out1});
+  guard.box({out2});
   guard.box(out3_vec);
   at::_cudnn_rnn_backward_outf(input, weight_vec, weight_stride0, weight_buf, hx, cx, output, grad_output, grad_hy, grad_cy, mode, hidden_size, proj_size, num_layers, batch_first, dropout, train, bidirectional, batch_sizes, dropout_state, reserve, output_mask, out0, out1, out2, out3_vec);
 }
@@ -4239,15 +4245,6 @@ at::Tensor & PrivLogcumsumexpOutKernelCuda(const at::Tensor & self, int64_t dim,
   return out;
 }
 
-::std::tuple<at::Tensor &,at::Tensor &,at::Tensor &,at::Tensor &,at::Tensor &,at::Tensor &> PrivLstmMpsOutKernelCuda(const at::Tensor & input, at::TensorList hx, at::TensorList params, bool has_biases, int64_t num_layers, double dropout, bool train, bool bidirectional, bool batch_first, at::Tensor & out0, at::Tensor & out1, at::Tensor & out2, at::Tensor & out3, at::Tensor & out4, at::Tensor & out5) {
-  auto hx_vec = MaterializeToTensorVec(hx);
-  auto params_vec = MaterializeToTensorVec(params);
-  TensorListBoxingGuard guard;
-  guard.box(hx_vec);
-  guard.box(params_vec);
-  at::_lstm_mps_outf(input, hx_vec, params_vec, has_biases, num_layers, dropout, train, bidirectional, batch_first, out0, out1, out2, out3, out4, out5);
-}
-
 at::Tensor PrivMakeDualKernelCuda(const at::Tensor & primal, const at::Tensor & tangent, int64_t level) {
   DeviceBoxingGuard guard(primal, tangent);
   auto result = at::_make_dual(primal, tangent, level);
@@ -5105,6 +5102,15 @@ at::Tensor PrivStackKernelCuda(at::TensorList tensors, int64_t dim) {
   auto result = at::_stack(tensors_vec, dim);
   UnboxToFlagos(result);
   return result;
+}
+
+at::Tensor & PrivStackOutKernelCuda(at::TensorList tensors, int64_t dim, at::Tensor & out) {
+  auto tensors_vec = MaterializeToTensorVec(tensors);
+  TensorListBoxingGuard guard;
+  guard.box(tensors_vec);
+  guard.box({out});
+  at::_stack_outf(tensors_vec, dim, out);
+  return out;
 }
 
 at::Tensor PrivStandardGammaKernelCuda(const at::Tensor & self, ::std::optional<at::Generator> generator) {
@@ -7125,6 +7131,15 @@ at::Tensor BlockDiagKernelCuda(at::TensorList tensors) {
   return result;
 }
 
+at::Tensor & BlockDiagOutKernelCuda(at::TensorList tensors, at::Tensor & out) {
+  auto tensors_vec = MaterializeToTensorVec(tensors);
+  TensorListBoxingGuard guard;
+  guard.box(tensors_vec);
+  guard.box({out});
+  at::block_diag_outf(tensors_vec, out);
+  return out;
+}
+
 at::Tensor BmmKernelCuda(const at::Tensor & self, const at::Tensor & mat2) {
   DeviceBoxingGuard guard(self, mat2);
   auto result = at::bmm(self, mat2);
@@ -7190,6 +7205,15 @@ at::Tensor CatKernelCuda(const at::ITensorListRef & tensors, int64_t dim) {
   return result;
 }
 
+at::Tensor & CatOutKernelCuda(const at::ITensorListRef & tensors, int64_t dim, at::Tensor & out) {
+  auto tensors_vec = MaterializeToTensorVec(tensors);
+  TensorListBoxingGuard guard;
+  guard.box(tensors_vec);
+  guard.box({out});
+  at::cat_outf(tensors_vec, dim, out);
+  return out;
+}
+
 at::Tensor CauchyKernelCuda(const at::Tensor & self, double median, double sigma, ::std::optional<at::Generator> generator) {
   DeviceBoxingGuard guard(self);
   auto result = at::cauchy(self, median, sigma, generator);
@@ -7249,6 +7273,12 @@ at::Tensor & CeluOutKernelCuda(const at::Tensor & self, const at::Scalar & alpha
   at::celu_outf(self, alpha, out);
   UnboxToFlagos(out);
   return out;
+}
+
+at::Tensor & CeluInplaceKernelCuda(at::Tensor & self, const at::Scalar & alpha) {
+  DeviceBoxingGuard guard(self);
+  at::celu_(self, alpha);
+  return self;
 }
 
 at::Tensor ChannelShuffleKernelCuda(const at::Tensor & self, int64_t groups) {
@@ -8207,6 +8237,12 @@ at::Tensor & EluOutKernelCuda(const at::Tensor & self, const at::Scalar & alpha,
   return out;
 }
 
+at::Tensor & EluInplaceKernelCuda(at::Tensor & self, const at::Scalar & alpha, const at::Scalar & scale, const at::Scalar & input_scale) {
+  DeviceBoxingGuard guard(self);
+  at::elu_(self, alpha, scale, input_scale);
+  return self;
+}
+
 at::Tensor EluBackwardKernelCuda(const at::Tensor & grad_output, const at::Scalar & alpha, const at::Scalar & scale, const at::Scalar & input_scale, bool is_result, const at::Tensor & self_or_result) {
   DeviceBoxingGuard guard(grad_output, self_or_result);
   auto result = at::elu_backward(grad_output, alpha, scale, input_scale, is_result, self_or_result);
@@ -8261,6 +8297,12 @@ at::Tensor & EmbeddingRenormOutKernelCuda(const at::Tensor & self, const at::Ten
   at::embedding_renorm_outf(self, indices, max_norm, norm_type, out);
   UnboxToFlagos(out);
   return out;
+}
+
+at::Tensor & EmbeddingRenormInplaceKernelCuda(at::Tensor & self, const at::Tensor & indices, double max_norm, double norm_type) {
+  DeviceBoxingGuard guard(self, indices);
+  at::embedding_renorm_(self, indices, max_norm, norm_type);
+  return self;
 }
 
 at::Tensor EmptyNamesKernelCuda(at::IntArrayRef size, ::std::optional<at::DimnameList> names, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory, ::std::optional<at::MemoryFormat> memory_format) {
@@ -9059,6 +9101,12 @@ at::Tensor & GeluOutKernelCuda(const at::Tensor & self, c10::string_view approxi
   return out;
 }
 
+at::Tensor & GeluInplaceKernelCuda(at::Tensor & self, c10::string_view approximate) {
+  DeviceBoxingGuard guard(self);
+  at::gelu_(self, approximate);
+  return self;
+}
+
 at::Tensor GeluBackwardKernelCuda(const at::Tensor & grad_output, const at::Tensor & self, c10::string_view approximate) {
   DeviceBoxingGuard guard(grad_output, self);
   auto result = at::gelu_backward(grad_output, self, approximate);
@@ -9433,6 +9481,12 @@ at::Tensor & HardsigmoidOutKernelCuda(const at::Tensor & self, at::Tensor & out)
   return out;
 }
 
+at::Tensor & HardsigmoidInplaceKernelCuda(at::Tensor & self) {
+  DeviceBoxingGuard guard(self);
+  at::hardsigmoid_(self);
+  return self;
+}
+
 at::Tensor HardsigmoidBackwardKernelCuda(const at::Tensor & grad_output, const at::Tensor & self) {
   DeviceBoxingGuard guard(grad_output, self);
   auto result = at::hardsigmoid_backward(grad_output, self);
@@ -9461,6 +9515,12 @@ at::Tensor & HardswishOutKernelCuda(const at::Tensor & self, at::Tensor & out) {
   return out;
 }
 
+at::Tensor & HardswishInplaceKernelCuda(at::Tensor & self) {
+  DeviceBoxingGuard guard(self);
+  at::hardswish_(self);
+  return self;
+}
+
 at::Tensor HardswishBackwardKernelCuda(const at::Tensor & grad_output, const at::Tensor & self) {
   DeviceBoxingGuard guard(grad_output, self);
   auto result = at::hardswish_backward(grad_output, self);
@@ -9487,6 +9547,12 @@ at::Tensor & HardtanhOutKernelCuda(const at::Tensor & self, const at::Scalar & m
   at::hardtanh_outf(self, min_val, max_val, out);
   UnboxToFlagos(out);
   return out;
+}
+
+at::Tensor & HardtanhInplaceKernelCuda(at::Tensor & self, const at::Scalar & min_val, const at::Scalar & max_val) {
+  DeviceBoxingGuard guard(self);
+  at::hardtanh_(self, min_val, max_val);
+  return self;
 }
 
 at::Tensor HardtanhBackwardKernelCuda(const at::Tensor & grad_output, const at::Tensor & self, const at::Scalar & min_val, const at::Scalar & max_val) {
@@ -10089,6 +10155,12 @@ at::Tensor & LeakyReluOutKernelCuda(const at::Tensor & self, const at::Scalar & 
   at::leaky_relu_outf(self, negative_slope, out);
   UnboxToFlagos(out);
   return out;
+}
+
+at::Tensor & LeakyReluInplaceKernelCuda(at::Tensor & self, const at::Scalar & negative_slope) {
+  DeviceBoxingGuard guard(self);
+  at::leaky_relu_(self, negative_slope);
+  return self;
 }
 
 at::Tensor LeakyReluBackwardKernelCuda(const at::Tensor & grad_output, const at::Tensor & self, const at::Scalar & negative_slope, bool self_is_result) {
@@ -10903,6 +10975,7 @@ void LstmMpsBackwardOutKernelCuda(const ::std::optional<at::Tensor> & grad_y, co
   TensorListBoxingGuard guard;
   guard.box(hx_vec);
   guard.box(params_vec);
+  guard.box({out0});
   guard.box(out1_vec);
   guard.box(out2_vec);
   at::lstm_mps_backward_outf(grad_y, grad_hy, grad_cy, z_state, cell_state_fwd, input, layersOutputs, hx_vec, params_vec, has_biases, num_layers, dropout, train, bidirectional, batch_first, out0, out1_vec, out2_vec);
@@ -11429,18 +11502,14 @@ at::Tensor & MiopenDepthwiseConvolutionOutKernelCuda(const at::Tensor & self, co
   return out;
 }
 
-::std::tuple<at::Tensor &,at::Tensor &,at::Tensor &,at::Tensor &,at::Tensor &> MiopenRnnOutKernelCuda(const at::Tensor & input, at::TensorList weight, int64_t weight_stride0, const at::Tensor & hx, const ::std::optional<at::Tensor> & cx, int64_t mode, int64_t hidden_size, int64_t num_layers, bool batch_first, double dropout, bool train, bool bidirectional, at::IntArrayRef batch_sizes, const ::std::optional<at::Tensor> & dropout_state, at::Tensor & out0, at::Tensor & out1, at::Tensor & out2, at::Tensor & out3, at::Tensor & out4) {
-  auto weight_vec = MaterializeToTensorVec(weight);
-  TensorListBoxingGuard guard;
-  guard.box(weight_vec);
-  at::miopen_rnn_outf(input, weight_vec, weight_stride0, hx, cx, mode, hidden_size, num_layers, batch_first, dropout, train, bidirectional, batch_sizes, dropout_state, out0, out1, out2, out3, out4);
-}
-
 void MiopenRnnBackwardOutKernelCuda(const at::Tensor & input, at::TensorList weight, int64_t weight_stride0, const at::Tensor & weight_buf, const at::Tensor & hx, const ::std::optional<at::Tensor> & cx, const at::Tensor & output, const ::std::optional<at::Tensor> & grad_output, const ::std::optional<at::Tensor> & grad_hy, const ::std::optional<at::Tensor> & grad_cy, int64_t mode, int64_t hidden_size, int64_t num_layers, bool batch_first, double dropout, bool train, bool bidirectional, at::IntArrayRef batch_sizes, const ::std::optional<at::Tensor> & dropout_state, const at::Tensor & reserve, ::std::array<bool,4> output_mask, at::Tensor & out0, at::Tensor & out1, at::Tensor & out2, at::TensorList out3) {
   auto weight_vec = MaterializeToTensorVec(weight);
   auto out3_vec = MaterializeToTensorVec(out3);
   TensorListBoxingGuard guard;
   guard.box(weight_vec);
+  guard.box({out0});
+  guard.box({out1});
+  guard.box({out2});
   guard.box(out3_vec);
   at::miopen_rnn_backward_outf(input, weight_vec, weight_stride0, weight_buf, hx, cx, output, grad_output, grad_hy, grad_cy, mode, hidden_size, num_layers, batch_first, dropout, train, bidirectional, batch_sizes, dropout_state, reserve, output_mask, out0, out1, out2, out3_vec);
 }
@@ -11457,6 +11526,12 @@ at::Tensor & MishOutKernelCuda(const at::Tensor & self, at::Tensor & out) {
   at::mish_outf(self, out);
   UnboxToFlagos(out);
   return out;
+}
+
+at::Tensor & MishInplaceKernelCuda(at::Tensor & self) {
+  DeviceBoxingGuard guard(self);
+  at::mish_(self);
+  return self;
 }
 
 at::Tensor & MkldnnAdaptiveAvgPool2dBackwardOutKernelCuda(const at::Tensor & grad_output, const at::Tensor & self, at::Tensor & out) {
@@ -13680,6 +13755,12 @@ at::Tensor & RreluWithNoiseOutKernelCuda(const at::Tensor & self, at::Tensor & n
   return noise;
 }
 
+at::Tensor & RreluWithNoiseInplaceKernelCuda(at::Tensor & self, at::Tensor & noise, const at::Scalar & lower, const at::Scalar & upper, bool training, ::std::optional<at::Generator> generator) {
+  DeviceBoxingGuard guard(self, noise);
+  at::rrelu_with_noise_(self, noise, lower, upper, training, generator);
+  return self;
+}
+
 at::Tensor RreluWithNoiseBackwardKernelCuda(const at::Tensor & grad_output, const at::Tensor & self, const at::Tensor & noise, const at::Scalar & lower, const at::Scalar & upper, bool training, bool self_is_result) {
   DeviceBoxingGuard guard(grad_output, self, noise);
   auto result = at::rrelu_with_noise_backward(grad_output, self, noise, lower, upper, training, self_is_result);
@@ -14111,6 +14192,12 @@ at::Tensor & SiluOutKernelCuda(const at::Tensor & self, at::Tensor & out) {
   at::silu_outf(self, out);
   UnboxToFlagos(out);
   return out;
+}
+
+at::Tensor & SiluInplaceKernelCuda(at::Tensor & self) {
+  DeviceBoxingGuard guard(self);
+  at::silu_(self);
+  return self;
 }
 
 at::Tensor SiluBackwardKernelCuda(const at::Tensor & grad_output, const at::Tensor & self) {
@@ -15357,11 +15444,25 @@ at::Tensor & SpecialZetaSelfScalarOutKernelCuda(const at::Scalar & self, const a
   return result;
 }
 
+void SplitCopyTensorOutKernelCuda(const at::Tensor & self, int64_t split_size, int64_t dim, at::TensorList out) {
+  auto out_vec = MaterializeToTensorVec(out);
+  TensorListBoxingGuard guard;
+  guard.box(out_vec);
+  at::split_copy_outf(self, split_size, dim, out_vec);
+}
+
 ::std::vector<at::Tensor> SplitWithSizesKernelCuda(const at::Tensor & self, at::IntArrayRef split_sizes, int64_t dim) {
   DeviceBoxingGuard guard(self);
   auto result = at::split_with_sizes(self, split_sizes, dim);
   UnboxTensorVecToFlagos(result);
   return result;
+}
+
+void SplitWithSizesCopyOutKernelCuda(const at::Tensor & self, at::IntArrayRef split_sizes, int64_t dim, at::TensorList out) {
+  auto out_vec = MaterializeToTensorVec(out);
+  TensorListBoxingGuard guard;
+  guard.box(out_vec);
+  at::split_with_sizes_copy_outf(self, split_sizes, dim, out_vec);
 }
 
 at::Tensor SqrtKernelCuda(const at::Tensor & self) {
@@ -15458,6 +15559,15 @@ at::Tensor StackKernelCuda(at::TensorList tensors, int64_t dim) {
   auto result = at::stack(tensors_vec, dim);
   UnboxToFlagos(result);
   return result;
+}
+
+at::Tensor & StackOutKernelCuda(at::TensorList tensors, int64_t dim, at::Tensor & out) {
+  auto tensors_vec = MaterializeToTensorVec(tensors);
+  TensorListBoxingGuard guard;
+  guard.box(tensors_vec);
+  guard.box({out});
+  at::stack_outf(tensors_vec, dim, out);
+  return out;
 }
 
 at::Tensor StdCorrectionKernelCuda(const at::Tensor & self, at::OptionalIntArrayRef dim, const ::std::optional<at::Scalar> & correction, bool keepdim) {
@@ -15658,6 +15768,12 @@ at::Tensor & ThresholdOutKernelCuda(const at::Tensor & self, const at::Scalar & 
   at::threshold_outf(self, threshold, value, out);
   UnboxToFlagos(out);
   return out;
+}
+
+at::Tensor & ThresholdInplaceKernelCuda(at::Tensor & self, const at::Scalar & threshold, const at::Scalar & value) {
+  DeviceBoxingGuard guard(self);
+  at::threshold_(self, threshold, value);
+  return self;
 }
 
 at::Tensor ThresholdBackwardKernelCuda(const at::Tensor & grad_output, const at::Tensor & self, const at::Scalar & threshold) {
@@ -15863,6 +15979,13 @@ at::Tensor & TruncInplaceKernelCuda(at::Tensor & self) {
   return result;
 }
 
+void UnbindCopyIntOutKernelCuda(const at::Tensor & self, int64_t dim, at::TensorList out) {
+  auto out_vec = MaterializeToTensorVec(out);
+  TensorListBoxingGuard guard;
+  guard.box(out_vec);
+  at::unbind_copy_outf(self, dim, out_vec);
+}
+
 at::Tensor UnfoldBackwardKernelCuda(const at::Tensor & grad_in, at::IntArrayRef input_sizes, int64_t dim, int64_t size, int64_t step) {
   DeviceBoxingGuard guard(grad_in);
   auto result = at::unfold_backward(grad_in, input_sizes, dim, size, step);
@@ -15965,11 +16088,25 @@ at::Tensor & UniformInplaceKernelCuda(at::Tensor & self, double from, double to,
   return result;
 }
 
+void UnsafeSplitTensorOutKernelCuda(const at::Tensor & self, int64_t split_size, int64_t dim, at::TensorList out) {
+  auto out_vec = MaterializeToTensorVec(out);
+  TensorListBoxingGuard guard;
+  guard.box(out_vec);
+  at::unsafe_split_outf(self, split_size, dim, out_vec);
+}
+
 ::std::vector<at::Tensor> UnsafeSplitWithSizesKernelCuda(const at::Tensor & self, at::IntArrayRef split_sizes, int64_t dim) {
   DeviceBoxingGuard guard(self);
   auto result = at::unsafe_split_with_sizes(self, split_sizes, dim);
   UnboxTensorVecToFlagos(result);
   return result;
+}
+
+void UnsafeSplitWithSizesOutKernelCuda(const at::Tensor & self, at::IntArrayRef split_sizes, int64_t dim, at::TensorList out) {
+  auto out_vec = MaterializeToTensorVec(out);
+  TensorListBoxingGuard guard;
+  guard.box(out_vec);
+  at::unsafe_split_with_sizes_outf(self, split_sizes, dim, out_vec);
 }
 
 at::Tensor UnsqueezeKernelCuda(const at::Tensor & self, int64_t dim) {
@@ -16466,6 +16603,7 @@ REGISTER_IMPL_TO_DISPATCHER(PrivCdistForwardOutFn, priv_cdist_forward_out_dispat
 REGISTER_IMPL_TO_DISPATCHER(PrivCholeskySolveHelperFn, priv_cholesky_solve_helper_dispatcher, Backend::kCuda, PrivCholeskySolveHelperKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivCholeskySolveHelperOutFn, priv_cholesky_solve_helper_out_dispatcher, Backend::kCuda, PrivCholeskySolveHelperOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivChunkCatFn, priv_chunk_cat_dispatcher, Backend::kCuda, PrivChunkCatKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(PrivChunkCatOutFn, priv_chunk_cat_out_dispatcher, Backend::kCuda, PrivChunkCatOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivCoalesceOutFn, priv_coalesce_out_dispatcher, Backend::kCuda, PrivCoalesceOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivCoalescedFn, priv_coalesced_dispatcher, Backend::kCuda, PrivCoalescedKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivCoalescedOutFn, priv_coalesced_out_dispatcher, Backend::kCuda, PrivCoalescedOutKernelCuda)
@@ -16501,7 +16639,6 @@ REGISTER_IMPL_TO_DISPATCHER(PrivCudnnCtcLossTensorFn, priv_cudnn_ctc_loss_tensor
 REGISTER_IMPL_TO_DISPATCHER(PrivCudnnCtcLossOutFn, priv_cudnn_ctc_loss_out_dispatcher, Backend::kCuda, PrivCudnnCtcLossOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivCudnnInitDropoutStateFn, priv_cudnn_init_dropout_state_dispatcher, Backend::kCuda, PrivCudnnInitDropoutStateKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivCudnnInitDropoutStateOutFn, priv_cudnn_init_dropout_state_out_dispatcher, Backend::kCuda, PrivCudnnInitDropoutStateOutKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(PrivCudnnRnnOutFn, priv_cudnn_rnn_out_dispatcher, Backend::kCuda, PrivCudnnRnnOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivCudnnRnnBackwardOutFn, priv_cudnn_rnn_backward_out_dispatcher, Backend::kCuda, PrivCudnnRnnBackwardOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivCudnnRnnFlattenWeightFn, priv_cudnn_rnn_flatten_weight_dispatcher, Backend::kCuda, PrivCudnnRnnFlattenWeightKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivDirichletGradFn, priv_dirichlet_grad_dispatcher, Backend::kCuda, PrivDirichletGradKernelCuda)
@@ -16814,7 +16951,6 @@ REGISTER_IMPL_TO_DISPATCHER(PrivLogSoftmaxBackwardDataFn, priv_log_softmax_backw
 REGISTER_IMPL_TO_DISPATCHER(PrivLogSoftmaxBackwardDataOutFn, priv_log_softmax_backward_data_out_dispatcher, Backend::kCuda, PrivLogSoftmaxBackwardDataOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivLogcumsumexpFn, priv_logcumsumexp_dispatcher, Backend::kCuda, PrivLogcumsumexpKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivLogcumsumexpOutFn, priv_logcumsumexp_out_dispatcher, Backend::kCuda, PrivLogcumsumexpOutKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(PrivLstmMpsOutFn, priv_lstm_mps_out_dispatcher, Backend::kCuda, PrivLstmMpsOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivMakeDualFn, priv_make_dual_dispatcher, Backend::kCuda, PrivMakeDualKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivMakeDualCopyOutFn, priv_make_dual_copy_out_dispatcher, Backend::kCuda, PrivMakeDualCopyOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivMakePerChannelQuantizedTensorFn, priv_make_per_channel_quantized_tensor_dispatcher, Backend::kCuda, PrivMakePerChannelQuantizedTensorKernelCuda)
@@ -16924,6 +17060,7 @@ REGISTER_IMPL_TO_DISPATCHER(PrivSparseSumDimOutFn, priv_sparse_sum_dim_out_dispa
 REGISTER_IMPL_TO_DISPATCHER(PrivSparseSumBackwardOutFn, priv_sparse_sum_backward_out_dispatcher, Backend::kCuda, PrivSparseSumBackwardOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivSpdiagsOutFn, priv_spdiags_out_dispatcher, Backend::kCuda, PrivSpdiagsOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivStackFn, priv_stack_dispatcher, Backend::kCuda, PrivStackKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(PrivStackOutFn, priv_stack_out_dispatcher, Backend::kCuda, PrivStackOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivStandardGammaFn, priv_standard_gamma_dispatcher, Backend::kCuda, PrivStandardGammaKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivStandardGammaOutFn, priv_standard_gamma_out_dispatcher, Backend::kCuda, PrivStandardGammaOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivStandardGammaGradFn, priv_standard_gamma_grad_dispatcher, Backend::kCuda, PrivStandardGammaGradKernelCuda)
@@ -17194,6 +17331,7 @@ REGISTER_IMPL_TO_DISPATCHER(BlackmanWindowOutFn, blackman_window_out_dispatcher,
 REGISTER_IMPL_TO_DISPATCHER(BlackmanWindowPeriodicFn, blackman_window_periodic_dispatcher, Backend::kCuda, BlackmanWindowPeriodicKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(BlackmanWindowPeriodicOutFn, blackman_window_periodic_out_dispatcher, Backend::kCuda, BlackmanWindowPeriodicOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(BlockDiagFn, block_diag_dispatcher, Backend::kCuda, BlockDiagKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(BlockDiagOutFn, block_diag_out_dispatcher, Backend::kCuda, BlockDiagOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(BmmFn, bmm_dispatcher, Backend::kCuda, BmmKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(BmmDtypeFn, bmm_dtype_dispatcher, Backend::kCuda, BmmDtypeKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(BmmDtypeOutFn, bmm_dtype_out_dispatcher, Backend::kCuda, BmmDtypeOutKernelCuda)
@@ -17203,6 +17341,7 @@ REGISTER_IMPL_TO_DISPATCHER(BucketizeScalarOutFn, bucketize_scalar_out_dispatche
 REGISTER_IMPL_TO_DISPATCHER(BucketizeTensorFn, bucketize_tensor_dispatcher, Backend::kCuda, BucketizeTensorKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(BucketizeTensorOutFn, bucketize_tensor_out_dispatcher, Backend::kCuda, BucketizeTensorOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(CatFn, cat_dispatcher, Backend::kCuda, CatKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(CatOutFn, cat_out_dispatcher, Backend::kCuda, CatOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(CauchyFn, cauchy_dispatcher, Backend::kCuda, CauchyKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(CauchyOutFn, cauchy_out_dispatcher, Backend::kCuda, CauchyOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(CauchyInplaceFn, cauchy_inplace_dispatcher, Backend::kCuda, CauchyInplaceKernelCuda)
@@ -17212,6 +17351,7 @@ REGISTER_IMPL_TO_DISPATCHER(CeilOutFn, ceil_out_dispatcher, Backend::kCuda, Ceil
 REGISTER_IMPL_TO_DISPATCHER(CeilInplaceFn, ceil_inplace_dispatcher, Backend::kCuda, CeilInplaceKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(CeluFn, celu_dispatcher, Backend::kCuda, CeluKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(CeluOutFn, celu_out_dispatcher, Backend::kCuda, CeluOutKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(CeluInplaceFn, celu_inplace_dispatcher, Backend::kCuda, CeluInplaceKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(ChannelShuffleFn, channel_shuffle_dispatcher, Backend::kCuda, ChannelShuffleKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(ChannelShuffleOutFn, channel_shuffle_out_dispatcher, Backend::kCuda, ChannelShuffleOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(CholeskyFn, cholesky_dispatcher, Backend::kCuda, CholeskyKernelCuda)
@@ -17345,6 +17485,7 @@ REGISTER_IMPL_TO_DISPATCHER(DotFn, dot_dispatcher, Backend::kCuda, DotKernelCuda
 REGISTER_IMPL_TO_DISPATCHER(DotOutFn, dot_out_dispatcher, Backend::kCuda, DotOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(EluFn, elu_dispatcher, Backend::kCuda, EluKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(EluOutFn, elu_out_dispatcher, Backend::kCuda, EluOutKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(EluInplaceFn, elu_inplace_dispatcher, Backend::kCuda, EluInplaceKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(EluBackwardFn, elu_backward_dispatcher, Backend::kCuda, EluBackwardKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(EluBackwardGradInputFn, elu_backward_grad_input_dispatcher, Backend::kCuda, EluBackwardGradInputKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(EmbeddingFn, embedding_dispatcher, Backend::kCuda, EmbeddingKernelCuda)
@@ -17353,6 +17494,7 @@ REGISTER_IMPL_TO_DISPATCHER(EmbeddingDenseBackwardFn, embedding_dense_backward_d
 REGISTER_IMPL_TO_DISPATCHER(EmbeddingDenseBackwardOutFn, embedding_dense_backward_out_dispatcher, Backend::kCuda, EmbeddingDenseBackwardOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(EmbeddingRenormFn, embedding_renorm_dispatcher, Backend::kCuda, EmbeddingRenormKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(EmbeddingRenormOutFn, embedding_renorm_out_dispatcher, Backend::kCuda, EmbeddingRenormOutKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(EmbeddingRenormInplaceFn, embedding_renorm_inplace_dispatcher, Backend::kCuda, EmbeddingRenormInplaceKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(EmptyNamesFn, empty_names_dispatcher, Backend::kCuda, EmptyNamesKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(EmptyNamesOutFn, empty_names_out_dispatcher, Backend::kCuda, EmptyNamesOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(EmptyLikeFn, empty_like_dispatcher, Backend::kCuda, EmptyLikeKernelCuda)
@@ -17461,6 +17603,7 @@ REGISTER_IMPL_TO_DISPATCHER(GeInplaceScalarFn, ge_inplace_scalar_dispatcher, Bac
 REGISTER_IMPL_TO_DISPATCHER(GeInplaceTensorFn, ge_inplace_tensor_dispatcher, Backend::kCuda, GeInplaceTensorKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(GeluFn, gelu_dispatcher, Backend::kCuda, GeluKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(GeluOutFn, gelu_out_dispatcher, Backend::kCuda, GeluOutKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(GeluInplaceFn, gelu_inplace_dispatcher, Backend::kCuda, GeluInplaceKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(GeluBackwardFn, gelu_backward_dispatcher, Backend::kCuda, GeluBackwardKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(GeluBackwardGradInputFn, gelu_backward_grad_input_dispatcher, Backend::kCuda, GeluBackwardGradInputKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(GeometricFn, geometric_dispatcher, Backend::kCuda, GeometricKernelCuda)
@@ -17508,14 +17651,17 @@ REGISTER_IMPL_TO_DISPATCHER(HardshrinkBackwardFn, hardshrink_backward_dispatcher
 REGISTER_IMPL_TO_DISPATCHER(HardshrinkBackwardGradInputFn, hardshrink_backward_grad_input_dispatcher, Backend::kCuda, HardshrinkBackwardGradInputKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(HardsigmoidFn, hardsigmoid_dispatcher, Backend::kCuda, HardsigmoidKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(HardsigmoidOutFn, hardsigmoid_out_dispatcher, Backend::kCuda, HardsigmoidOutKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(HardsigmoidInplaceFn, hardsigmoid_inplace_dispatcher, Backend::kCuda, HardsigmoidInplaceKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(HardsigmoidBackwardFn, hardsigmoid_backward_dispatcher, Backend::kCuda, HardsigmoidBackwardKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(HardsigmoidBackwardGradInputFn, hardsigmoid_backward_grad_input_dispatcher, Backend::kCuda, HardsigmoidBackwardGradInputKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(HardswishFn, hardswish_dispatcher, Backend::kCuda, HardswishKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(HardswishOutFn, hardswish_out_dispatcher, Backend::kCuda, HardswishOutKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(HardswishInplaceFn, hardswish_inplace_dispatcher, Backend::kCuda, HardswishInplaceKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(HardswishBackwardFn, hardswish_backward_dispatcher, Backend::kCuda, HardswishBackwardKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(HardswishBackwardOutFn, hardswish_backward_out_dispatcher, Backend::kCuda, HardswishBackwardOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(HardtanhFn, hardtanh_dispatcher, Backend::kCuda, HardtanhKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(HardtanhOutFn, hardtanh_out_dispatcher, Backend::kCuda, HardtanhOutKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(HardtanhInplaceFn, hardtanh_inplace_dispatcher, Backend::kCuda, HardtanhInplaceKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(HardtanhBackwardFn, hardtanh_backward_dispatcher, Backend::kCuda, HardtanhBackwardKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(HardtanhBackwardGradInputFn, hardtanh_backward_grad_input_dispatcher, Backend::kCuda, HardtanhBackwardGradInputKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(HashTensorFn, hash_tensor_dispatcher, Backend::kCuda, HashTensorKernelCuda)
@@ -17599,6 +17745,7 @@ REGISTER_IMPL_TO_DISPATCHER(LeInplaceScalarFn, le_inplace_scalar_dispatcher, Bac
 REGISTER_IMPL_TO_DISPATCHER(LeInplaceTensorFn, le_inplace_tensor_dispatcher, Backend::kCuda, LeInplaceTensorKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(LeakyReluFn, leaky_relu_dispatcher, Backend::kCuda, LeakyReluKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(LeakyReluOutFn, leaky_relu_out_dispatcher, Backend::kCuda, LeakyReluOutKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(LeakyReluInplaceFn, leaky_relu_inplace_dispatcher, Backend::kCuda, LeakyReluInplaceKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(LeakyReluBackwardFn, leaky_relu_backward_dispatcher, Backend::kCuda, LeakyReluBackwardKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(LeakyReluBackwardGradInputFn, leaky_relu_backward_grad_input_dispatcher, Backend::kCuda, LeakyReluBackwardGradInputKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(LerpScalarFn, lerp_scalar_dispatcher, Backend::kCuda, LerpScalarKernelCuda)
@@ -17779,10 +17926,10 @@ REGISTER_IMPL_TO_DISPATCHER(MiopenCtcLossTensorFn, miopen_ctc_loss_tensor_dispat
 REGISTER_IMPL_TO_DISPATCHER(MiopenCtcLossOutFn, miopen_ctc_loss_out_dispatcher, Backend::kCuda, MiopenCtcLossOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(MiopenDepthwiseConvolutionFn, miopen_depthwise_convolution_dispatcher, Backend::kCuda, MiopenDepthwiseConvolutionKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(MiopenDepthwiseConvolutionOutFn, miopen_depthwise_convolution_out_dispatcher, Backend::kCuda, MiopenDepthwiseConvolutionOutKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(MiopenRnnOutFn, miopen_rnn_out_dispatcher, Backend::kCuda, MiopenRnnOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(MiopenRnnBackwardOutFn, miopen_rnn_backward_out_dispatcher, Backend::kCuda, MiopenRnnBackwardOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(MishFn, mish_dispatcher, Backend::kCuda, MishKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(MishOutFn, mish_out_dispatcher, Backend::kCuda, MishOutKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(MishInplaceFn, mish_inplace_dispatcher, Backend::kCuda, MishInplaceKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(MkldnnAdaptiveAvgPool2dBackwardOutFn, mkldnn_adaptive_avg_pool2d_backward_out_dispatcher, Backend::kCuda, MkldnnAdaptiveAvgPool2dBackwardOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(MkldnnConvolutionFn, mkldnn_convolution_dispatcher, Backend::kCuda, MkldnnConvolutionKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(MkldnnConvolutionOutFn, mkldnn_convolution_out_dispatcher, Backend::kCuda, MkldnnConvolutionOutKernelCuda)
@@ -18071,6 +18218,7 @@ REGISTER_IMPL_TO_DISPATCHER(RoundInplaceDecimalsFn, round_inplace_decimals_dispa
 REGISTER_IMPL_TO_DISPATCHER(RowIndicesCopyOutFn, row_indices_copy_out_dispatcher, Backend::kCuda, RowIndicesCopyOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(RreluWithNoiseFn, rrelu_with_noise_dispatcher, Backend::kCuda, RreluWithNoiseKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(RreluWithNoiseOutFn, rrelu_with_noise_out_dispatcher, Backend::kCuda, RreluWithNoiseOutKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(RreluWithNoiseInplaceFn, rrelu_with_noise_inplace_dispatcher, Backend::kCuda, RreluWithNoiseInplaceKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(RreluWithNoiseBackwardFn, rrelu_with_noise_backward_dispatcher, Backend::kCuda, RreluWithNoiseBackwardKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(RreluWithNoiseBackwardOutFn, rrelu_with_noise_backward_out_dispatcher, Backend::kCuda, RreluWithNoiseBackwardOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(RreluWithNoiseFunctionalFn, rrelu_with_noise_functional_dispatcher, Backend::kCuda, RreluWithNoiseFunctionalKernelCuda)
@@ -18133,6 +18281,7 @@ REGISTER_IMPL_TO_DISPATCHER(SignbitFn, signbit_dispatcher, Backend::kCuda, Signb
 REGISTER_IMPL_TO_DISPATCHER(SignbitOutFn, signbit_out_dispatcher, Backend::kCuda, SignbitOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(SiluFn, silu_dispatcher, Backend::kCuda, SiluKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(SiluOutFn, silu_out_dispatcher, Backend::kCuda, SiluOutKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(SiluInplaceFn, silu_inplace_dispatcher, Backend::kCuda, SiluInplaceKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(SiluBackwardFn, silu_backward_dispatcher, Backend::kCuda, SiluBackwardKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(SiluBackwardGradInputFn, silu_backward_grad_input_dispatcher, Backend::kCuda, SiluBackwardGradInputKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(SinFn, sin_dispatcher, Backend::kCuda, SinKernelCuda)
@@ -18309,7 +18458,9 @@ REGISTER_IMPL_TO_DISPATCHER(SpecialZetaOutFn, special_zeta_out_dispatcher, Backe
 REGISTER_IMPL_TO_DISPATCHER(SpecialZetaSelfScalarFn, special_zeta_self_scalar_dispatcher, Backend::kCuda, SpecialZetaSelfScalarKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(SpecialZetaSelfScalarOutFn, special_zeta_self_scalar_out_dispatcher, Backend::kCuda, SpecialZetaSelfScalarOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(SplitTensorFn, split_tensor_dispatcher, Backend::kCuda, SplitTensorKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(SplitCopyTensorOutFn, split_copy_tensor_out_dispatcher, Backend::kCuda, SplitCopyTensorOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(SplitWithSizesFn, split_with_sizes_dispatcher, Backend::kCuda, SplitWithSizesKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(SplitWithSizesCopyOutFn, split_with_sizes_copy_out_dispatcher, Backend::kCuda, SplitWithSizesCopyOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(SqrtFn, sqrt_dispatcher, Backend::kCuda, SqrtKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(SqrtOutFn, sqrt_out_dispatcher, Backend::kCuda, SqrtOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(SqrtInplaceFn, sqrt_inplace_dispatcher, Backend::kCuda, SqrtInplaceKernelCuda)
@@ -18324,6 +18475,7 @@ REGISTER_IMPL_TO_DISPATCHER(SqueezeCopyDimsOutFn, squeeze_copy_dims_out_dispatch
 REGISTER_IMPL_TO_DISPATCHER(SqueezeCopyOutFn, squeeze_copy_out_dispatcher, Backend::kCuda, SqueezeCopyOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(SspaddmmOutFn, sspaddmm_out_dispatcher, Backend::kCuda, SspaddmmOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(StackFn, stack_dispatcher, Backend::kCuda, StackKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(StackOutFn, stack_out_dispatcher, Backend::kCuda, StackOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(StdCorrectionFn, std_correction_dispatcher, Backend::kCuda, StdCorrectionKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(StdCorrectionOutFn, std_correction_out_dispatcher, Backend::kCuda, StdCorrectionOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(StdMeanCorrectionFn, std_mean_correction_dispatcher, Backend::kCuda, StdMeanCorrectionKernelCuda)
@@ -18353,6 +18505,7 @@ REGISTER_IMPL_TO_DISPATCHER(TanhBackwardFn, tanh_backward_dispatcher, Backend::k
 REGISTER_IMPL_TO_DISPATCHER(TanhBackwardGradInputFn, tanh_backward_grad_input_dispatcher, Backend::kCuda, TanhBackwardGradInputKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(ThresholdFn, threshold_dispatcher, Backend::kCuda, ThresholdKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(ThresholdOutFn, threshold_out_dispatcher, Backend::kCuda, ThresholdOutKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(ThresholdInplaceFn, threshold_inplace_dispatcher, Backend::kCuda, ThresholdInplaceKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(ThresholdBackwardFn, threshold_backward_dispatcher, Backend::kCuda, ThresholdBackwardKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(ThresholdBackwardGradInputFn, threshold_backward_grad_input_dispatcher, Backend::kCuda, ThresholdBackwardGradInputKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(ToMkldnnOutFn, to_mkldnn_out_dispatcher, Backend::kCuda, ToMkldnnOutKernelCuda)
@@ -18380,6 +18533,7 @@ REGISTER_IMPL_TO_DISPATCHER(TruncFn, trunc_dispatcher, Backend::kCuda, TruncKern
 REGISTER_IMPL_TO_DISPATCHER(TruncOutFn, trunc_out_dispatcher, Backend::kCuda, TruncOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(TruncInplaceFn, trunc_inplace_dispatcher, Backend::kCuda, TruncInplaceKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(UnbindIntFn, unbind_int_dispatcher, Backend::kCuda, UnbindIntKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(UnbindCopyIntOutFn, unbind_copy_int_out_dispatcher, Backend::kCuda, UnbindCopyIntOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(UnfoldBackwardFn, unfold_backward_dispatcher, Backend::kCuda, UnfoldBackwardKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(UnfoldBackwardOutFn, unfold_backward_out_dispatcher, Backend::kCuda, UnfoldBackwardOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(UnfoldCopyOutFn, unfold_copy_out_dispatcher, Backend::kCuda, UnfoldCopyOutKernelCuda)
@@ -18393,7 +18547,9 @@ REGISTER_IMPL_TO_DISPATCHER(UniqueDimOutFn, unique_dim_out_dispatcher, Backend::
 REGISTER_IMPL_TO_DISPATCHER(UniqueDimConsecutiveFn, unique_dim_consecutive_dispatcher, Backend::kCuda, UniqueDimConsecutiveKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(UniqueDimConsecutiveOutFn, unique_dim_consecutive_out_dispatcher, Backend::kCuda, UniqueDimConsecutiveOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(UnsafeSplitTensorFn, unsafe_split_tensor_dispatcher, Backend::kCuda, UnsafeSplitTensorKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(UnsafeSplitTensorOutFn, unsafe_split_tensor_out_dispatcher, Backend::kCuda, UnsafeSplitTensorOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(UnsafeSplitWithSizesFn, unsafe_split_with_sizes_dispatcher, Backend::kCuda, UnsafeSplitWithSizesKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(UnsafeSplitWithSizesOutFn, unsafe_split_with_sizes_out_dispatcher, Backend::kCuda, UnsafeSplitWithSizesOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(UnsqueezeFn, unsqueeze_dispatcher, Backend::kCuda, UnsqueezeKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(UnsqueezeInplaceFn, unsqueeze_inplace_dispatcher, Backend::kCuda, UnsqueezeInplaceKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(UnsqueezeCopyOutFn, unsqueeze_copy_out_dispatcher, Backend::kCuda, UnsqueezeCopyOutKernelCuda)

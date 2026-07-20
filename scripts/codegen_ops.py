@@ -334,7 +334,7 @@ def optional_tensor_names(args: List[Tuple[str, str]]) -> List[str]:
     return [n for t, n in args if "optional<at::Tensor>" in t]
 
 
-def gen_functional_pure(op, fn_type, ret_type, args):
+def gen_functional_pure(op, fn_type, ret_type, args, func=None):
     kn = kernel_name(fn_type)
     guard = ", ".join(tensor_arg_names(args))
     api = f"at::{at_api_base(op)}"
@@ -346,7 +346,7 @@ def gen_functional_pure(op, fn_type, ret_type, args):
 }}"""
 
 
-def gen_vector_return(op, fn_type, ret_type, args):
+def gen_vector_return(op, fn_type, ret_type, args, func=None):
     """split.Tensor / unbind.int: single Tensor input, std::vector<Tensor> return
     (each element aliases the input storage). Box inputs, call the API, unbox
     every returned view."""
@@ -361,17 +361,36 @@ def gen_vector_return(op, fn_type, ret_type, args):
 }}"""
 
 
-def gen_inplace(op, fn_type, ret_type, args):
-    """add_.Tensor / fill_.Scalar / masked_fill_.Scalar: mutate first tensor, return it (or void)."""
+def gen_inplace(op, fn_type, ret_type, args, func=None):
+    """add_.Tensor / fill_.Scalar / masked_fill_.Scalar: mutate first tensor, return it (or void).
+
+    Two calling conventions, selected by the op's torchgen `variants`:
+      - method  (add_/masked_fill_): `self.add_(other, alpha)` -- these ops have
+        NO free function, only a Tensor method.
+      - function-only (silu_/gelu_/celu_/leaky_relu_/...activations): call the free
+        function `at::silu_(self, ...)` -- these have NO Tensor method, so the
+        method syntax fails to compile.
+    Ops with both (fill_/zero_/relu_) work either way; we default to method."""
     kn = kernel_name(fn_type)
     tensors = tensor_arg_names(args)
     guard = ", ".join(tensors)
-    # Inplace ops use method syntax: self.add_(other, alpha), NOT at::add_(...)
-    base = at_api_base(op)  # e.g. "add_" already has underscore for add_.Tensor
-    method = base  # keep trailing underscore
+    base = at_api_base(op)  # e.g. "add_" already has trailing underscore
     self_name = args[0][1]
     other_args = ", ".join(n for _, n in args[1:])
-    body_call = f"{self_name}.{method}({other_args});" if other_args else f"{self_name}.{method}();"
+
+    variants = [str(v).split('.')[-1] for v in func.variants] if func else []
+    has_method = "method" in variants
+
+    if has_method:
+        # Method syntax: self.add_(other, alpha)
+        body_call = (
+            f"{self_name}.{base}({other_args});" if other_args
+            else f"{self_name}.{base}();"
+        )
+    else:
+        # Function-only syntax: at::silu_(self, ...)
+        body_call = f"at::{base}({call_args(args)});"
+
     if ret_type == "void":
         ret_line = ""
     else:
@@ -382,7 +401,7 @@ def gen_inplace(op, fn_type, ret_type, args):
 }}"""
 
 
-def gen_out_variant(op, fn_type, ret_type, args):
+def gen_out_variant(op, fn_type, ret_type, args, func=None):
     """Single- and multi-output out-variants (mm.out, sort.values, svd.U,
     native_batch_norm.out): call at::<base>_outf(<all args in faithful order>),
     which places the out args last -- exactly matching our generated arg order,
@@ -429,7 +448,7 @@ def gen_out_variant(op, fn_type, ret_type, args):
 }}"""
 
 
-def gen_tuple_return(op, fn_type, ret_type, args):
+def gen_tuple_return(op, fn_type, ret_type, args, func=None):
     """nll_loss_forward / sort / topk: unbox each tuple element."""
     kn = kernel_name(fn_type)
     # optional<Tensor> weight needs a holder to be boxed by DeviceBoxingGuard
@@ -454,7 +473,7 @@ def gen_tuple_return(op, fn_type, ret_type, args):
 }}"""
 
 
-def gen_foreach(op, fn_type, ret_type, args):
+def gen_foreach(op, fn_type, ret_type, args, func=None):
     """cat + _foreach_*: materialize ITensorListRef, box, call API, unbox result."""
     kn = kernel_name(fn_type)
     api = f"at::{at_api_base(op)}"
@@ -505,12 +524,28 @@ def gen_foreach(op, fn_type, ret_type, args):
 }}"""
 
 
-def gen_foreach_out(op, fn_type, ret_type, args):
-    """_foreach_*.out: every TensorList arg (inputs AND the out list) is
-    materialized + boxed, then at::<base>_outf(<materialized args in faithful
-    order>) is called. Void return."""
+def gen_foreach_out(op, fn_type, ret_type, args, func=None):
+    """out-variants whose inputs include a TensorList. Two shapes:
+
+      1. _foreach_*.out / split_copy.Tensor_out: the out is itself a
+         `Tensor(a!)[]` list, return is void. Materialize + box every
+         TensorList (inputs AND out list), call at::<base>_outf(...).
+      2. cat.out / stack.out / block_diag.out / _chunk_cat.out: TensorList
+         input(s) + a single mutable `Tensor(a!) out`, returning `Tensor&`.
+         Box the input lists and the single out, call _outf, return the out.
+
+    Args are already in faithful order (outs last), matching at::<base>_outf."""
     kn = kernel_name(fn_type)
     api = f"at::{at_api_base(op)}_outf"
+
+    # Every mutable single Tensor& arg (non-list, non-const) must be boxed. For
+    # void ops this includes an in-out like found_inf; for single-return ops it
+    # is the lone `out`. Tuple-returning multi-Tensor& out RNN ops are skip-listed.
+    mutable_tensors = [
+        n for t, n in args
+        if "at::Tensor &" in t and "const" not in t
+        and "TensorList" not in t and "ITensorListRef" not in t
+    ]
 
     materialize_lines = ""
     box_lines = ""
@@ -522,16 +557,24 @@ def gen_foreach_out(op, fn_type, ret_type, args):
             box_lines += f"  guard.box({mat_name});\n"
             call_arg_names.append(mat_name)
         else:
+            if n in mutable_tensors:
+                box_lines += f"  guard.box({{{n}}});\n"
             call_arg_names.append(n)
     call_args_str = ", ".join(call_arg_names)
 
+    # Return shape follows ret_type: void (no return) or single `Tensor&`
+    # (return the lone out). tuple<Tensor&,...> is not produced here (skipped).
+    ret_line = ""
+    if ret_type != "void":
+        ret_line = f"\n  return {mutable_tensors[-1]};"
+
     return f"""{ret_type} {kn}({args_decl(args)}) {{
 {materialize_lines}  TensorListBoxingGuard guard;
-{box_lines}  {api}({call_args_str});
+{box_lines}  {api}({call_args_str});{ret_line}
 }}"""
 
 
-def gen_factory(op, fn_type, ret_type, args):
+def gen_factory(op, fn_type, ret_type, args, func=None):
     """
     zeros / scalar_tensor / arange / arange.start_step / new_ones: build device tensor directly.
     Faithful args end with dtype/layout/device/pin_memory. Create via at::empty on
@@ -610,7 +653,7 @@ def gen_factory(op, fn_type, ret_type, args):
 }}"""
 
 
-def gen_optlist(op, fn_type, ret_type, args):
+def gen_optlist(op, fn_type, ret_type, args, func=None):
     """index.Tensor: box self + each defined optional<Tensor> in the list."""
     kn = kernel_name(fn_type)
     self_name = args[0][1]
@@ -839,7 +882,7 @@ def main():
     for op in sorted(op_info):
         i = op_info[op]
         gen = CATEGORY_GENERATORS[i["category"]]
-        lines.append(gen(op, i["fn_type"], i["ret_type"], i["args"]))
+        lines.append(gen(op, i["fn_type"], i["ret_type"], i["args"], i["func"]))
         lines.append("")
     lines.append("} // namespace")
     lines.append("")

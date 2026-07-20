@@ -24,22 +24,28 @@ __lshift__.Tensor_out
 __rshift__.Scalar_out
 __rshift__.Tensor_out
 
-# --- round 1: templates cannot express these signatures (compile errors) ---
+# --- templates cannot express these signatures (compile errors) ---
 # attention/rnn/cudnn, fused optimizers, void asserts/helpers, sparse/quantize, etc.
-# (_foreach_*.out and split/unbind vector returns were recovered in round 3 via
-#  gen_foreach_out / gen_vector_return; multi-out out-variants via gen_out_variant.)
+# Recovered in later rounds:
+#   - _foreach_*.out + split/unbind vector returns via gen_foreach_out / gen_vector_return
+#   - multi-out out-variants via gen_out_variant
+#   - function-only inplace activations (silu_/gelu_/...) via gen_inplace free-fn branch
+#   - cat.out/stack.out/block_diag.out/_chunk_cat.out (TensorList in + single Tensor& out)
+#     via gen_foreach_out single-out branch
 _amp_foreach_non_finite_check_and_unscale
 _amp_update_scale_
 _assert_async
 _assert_async.msg
 _assert_scalar
 _assert_tensor_metadata
-_chunk_cat.out
 _cslt_sparse_mm_search
 _cudnn_attention_forward
 _cudnn_rnn
+_cudnn_rnn.out
 _cudnn_rnn_backward
 _cudnn_rnn_flatten_weight.out
+_lstm_mps.out
+miopen_rnn.out
 _cummax_helper
 _cummin_helper
 _efficient_attention_forward
@@ -68,7 +74,6 @@ _scaled_dot_product_flash_attention
 _scaled_dot_product_flash_attention.quantized
 _scaled_dot_product_fused_attention_overrideable
 _scaled_mm_v2.out
-_stack.out
 _to_sparse
 _to_sparse.sparse_dim
 _to_sparse_bsc
@@ -84,22 +89,13 @@ _use_miopen_ctc_loss
 _use_miopen_ctc_loss.Tensor
 _validate_compressed_sparse_indices
 allclose
-block_diag.out
-cat.out
 ccol_indices
-celu_
 col_indices
 crow_indices
 dense_dim
 dequantize.tensors_out
-elu_
-embedding_renorm_
 equal
 expand
-gelu_
-hardsigmoid_
-hardswish_
-hardtanh_
 index.Tensor_out
 index_put
 index_put.out
@@ -108,10 +104,8 @@ is_coalesced
 is_pinned
 is_same_size
 is_set_to
-leaky_relu_
 miopen_rnn
 miopen_rnn_backward
-mish_
 new_empty
 new_empty.out
 new_empty_strided.out
@@ -123,28 +117,19 @@ new_zeros.out
 quantize_per_tensor.tensors_out
 repeat
 row_indices
-rrelu_with_noise_
-silu_
 sparse_dim
-split_copy.Tensor_out
-split_with_sizes_copy.out
-stack.out
 sym_constrain_range
 sym_constrain_range_for_size
-threshold_
-unbind_copy.int_out
 unfold
-unsafe_split.Tensor_out
-unsafe_split_with_sizes.out
 values
 view.dtype
 
-# --- round 2: functional variant wrapper-name collides with hand-written inplace wrapper ---
+# --- functional variant wrapper-name collides with hand-written inplace wrapper ---
 resize
 set.source_Storage
 set.source_Tensor
 
-# --- round 2: out-variant with const-ref mutable out (gen_out_variant string match fails) ---
+# --- out-variant with const-ref mutable out (gen_out_variant string match fails) ---
 resize.out
 _resize_output.out
 resize_as.out

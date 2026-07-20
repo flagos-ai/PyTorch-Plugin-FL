@@ -97,6 +97,9 @@ at::Tensor & WrapperPrivCholeskySolveHelperOut(const at::Tensor & self, const at
 at::Tensor WrapperPrivChunkCat(at::TensorList tensors, int64_t dim, int64_t num_chunks) {
   return at::native::flagos::priv_chunk_cat_dispatcher(tensors, dim, num_chunks);
 }
+at::Tensor & WrapperPrivChunkCatOut(at::TensorList tensors, int64_t dim, int64_t num_chunks, at::Tensor & out) {
+  return at::native::flagos::priv_chunk_cat_out_dispatcher(tensors, dim, num_chunks, out);
+}
 at::Tensor & WrapperPrivCoalesceOut(const at::Tensor & self, at::Tensor & out) {
   return at::native::flagos::priv_coalesce_out_dispatcher(self, out);
 }
@@ -201,9 +204,6 @@ at::Tensor WrapperPrivCudnnInitDropoutState(double dropout, bool train, int64_t 
 }
 at::Tensor & WrapperPrivCudnnInitDropoutStateOut(double dropout, bool train, int64_t dropout_seed, at::Tensor & out) {
   return at::native::flagos::priv_cudnn_init_dropout_state_out_dispatcher(dropout, train, dropout_seed, out);
-}
-::std::tuple<at::Tensor &,at::Tensor &,at::Tensor &,at::Tensor &,at::Tensor &> WrapperPrivCudnnRnnOut(const at::Tensor & input, at::TensorList weight, int64_t weight_stride0, const ::std::optional<at::Tensor> & weight_buf, const at::Tensor & hx, const ::std::optional<at::Tensor> & cx, int64_t mode, int64_t hidden_size, int64_t proj_size, int64_t num_layers, bool batch_first, double dropout, bool train, bool bidirectional, at::IntArrayRef batch_sizes, const ::std::optional<at::Tensor> & dropout_state, at::Tensor & out0, at::Tensor & out1, at::Tensor & out2, at::Tensor & out3, at::Tensor & out4) {
-  return at::native::flagos::priv_cudnn_rnn_out_dispatcher(input, weight, weight_stride0, weight_buf, hx, cx, mode, hidden_size, proj_size, num_layers, batch_first, dropout, train, bidirectional, batch_sizes, dropout_state, out0, out1, out2, out3, out4);
 }
 void WrapperPrivCudnnRnnBackwardOut(const at::Tensor & input, at::TensorList weight, int64_t weight_stride0, const at::Tensor & weight_buf, const at::Tensor & hx, const ::std::optional<at::Tensor> & cx, const at::Tensor & output, const ::std::optional<at::Tensor> & grad_output, const ::std::optional<at::Tensor> & grad_hy, const ::std::optional<at::Tensor> & grad_cy, int64_t mode, int64_t hidden_size, int64_t proj_size, int64_t num_layers, bool batch_first, double dropout, bool train, bool bidirectional, at::IntArrayRef batch_sizes, const ::std::optional<at::Tensor> & dropout_state, const at::Tensor & reserve, ::std::array<bool,4> output_mask, at::Tensor & out0, at::Tensor & out1, at::Tensor & out2, at::TensorList out3) {
   at::native::flagos::priv_cudnn_rnn_backward_out_dispatcher(input, weight, weight_stride0, weight_buf, hx, cx, output, grad_output, grad_hy, grad_cy, mode, hidden_size, proj_size, num_layers, batch_first, dropout, train, bidirectional, batch_sizes, dropout_state, reserve, output_mask, out0, out1, out2, out3);
@@ -1141,9 +1141,6 @@ at::Tensor WrapperPrivLogcumsumexp(const at::Tensor & self, int64_t dim) {
 at::Tensor & WrapperPrivLogcumsumexpOut(const at::Tensor & self, int64_t dim, at::Tensor & out) {
   return at::native::flagos::priv_logcumsumexp_out_dispatcher(self, dim, out);
 }
-::std::tuple<at::Tensor &,at::Tensor &,at::Tensor &,at::Tensor &,at::Tensor &,at::Tensor &> WrapperPrivLstmMpsOut(const at::Tensor & input, at::TensorList hx, at::TensorList params, bool has_biases, int64_t num_layers, double dropout, bool train, bool bidirectional, bool batch_first, at::Tensor & out0, at::Tensor & out1, at::Tensor & out2, at::Tensor & out3, at::Tensor & out4, at::Tensor & out5) {
-  return at::native::flagos::priv_lstm_mps_out_dispatcher(input, hx, params, has_biases, num_layers, dropout, train, bidirectional, batch_first, out0, out1, out2, out3, out4, out5);
-}
 at::Tensor WrapperPrivMakeDual(const at::Tensor & primal, const at::Tensor & tangent, int64_t level) {
   return at::native::flagos::priv_make_dual_dispatcher(primal, tangent, level);
 }
@@ -1470,6 +1467,9 @@ at::Tensor & WrapperPrivSpdiagsOut(const at::Tensor & diagonals, const at::Tenso
 }
 at::Tensor WrapperPrivStack(at::TensorList tensors, int64_t dim) {
   return at::native::flagos::priv_stack_dispatcher(tensors, dim);
+}
+at::Tensor & WrapperPrivStackOut(at::TensorList tensors, int64_t dim, at::Tensor & out) {
+  return at::native::flagos::priv_stack_out_dispatcher(tensors, dim, out);
 }
 at::Tensor WrapperPrivStandardGamma(const at::Tensor & self, ::std::optional<at::Generator> generator) {
   return at::native::flagos::priv_standard_gamma_dispatcher(self, generator);
@@ -2281,6 +2281,9 @@ at::Tensor & WrapperBlackmanWindowPeriodicOut(int64_t window_length, bool period
 at::Tensor WrapperBlockDiag(at::TensorList tensors) {
   return at::native::flagos::block_diag_dispatcher(tensors);
 }
+at::Tensor & WrapperBlockDiagOut(at::TensorList tensors, at::Tensor & out) {
+  return at::native::flagos::block_diag_out_dispatcher(tensors, out);
+}
 at::Tensor WrapperBmm(const at::Tensor & self, const at::Tensor & mat2) {
   return at::native::flagos::bmm_dispatcher(self, mat2);
 }
@@ -2308,6 +2311,9 @@ at::Tensor & WrapperBucketizeTensorOut(const at::Tensor & self, const at::Tensor
 at::Tensor WrapperCat(const at::ITensorListRef & tensors, int64_t dim) {
   return at::native::flagos::cat_dispatcher(tensors, dim);
 }
+at::Tensor & WrapperCatOut(const at::ITensorListRef & tensors, int64_t dim, at::Tensor & out) {
+  return at::native::flagos::cat_out_dispatcher(tensors, dim, out);
+}
 at::Tensor WrapperCauchy(const at::Tensor & self, double median, double sigma, ::std::optional<at::Generator> generator) {
   return at::native::flagos::cauchy_dispatcher(self, median, sigma, generator);
 }
@@ -2334,6 +2340,9 @@ at::Tensor WrapperCelu(const at::Tensor & self, const at::Scalar & alpha) {
 }
 at::Tensor & WrapperCeluOut(const at::Tensor & self, const at::Scalar & alpha, at::Tensor & out) {
   return at::native::flagos::celu_out_dispatcher(self, alpha, out);
+}
+at::Tensor & WrapperCeluInplace(at::Tensor & self, const at::Scalar & alpha) {
+  return at::native::flagos::celu_inplace_dispatcher(self, alpha);
 }
 at::Tensor WrapperChannelShuffle(const at::Tensor & self, int64_t groups) {
   return at::native::flagos::channel_shuffle_dispatcher(self, groups);
@@ -2734,6 +2743,9 @@ at::Tensor WrapperElu(const at::Tensor & self, const at::Scalar & alpha, const a
 at::Tensor & WrapperEluOut(const at::Tensor & self, const at::Scalar & alpha, const at::Scalar & scale, const at::Scalar & input_scale, at::Tensor & out) {
   return at::native::flagos::elu_out_dispatcher(self, alpha, scale, input_scale, out);
 }
+at::Tensor & WrapperEluInplace(at::Tensor & self, const at::Scalar & alpha, const at::Scalar & scale, const at::Scalar & input_scale) {
+  return at::native::flagos::elu_inplace_dispatcher(self, alpha, scale, input_scale);
+}
 at::Tensor WrapperEluBackward(const at::Tensor & grad_output, const at::Scalar & alpha, const at::Scalar & scale, const at::Scalar & input_scale, bool is_result, const at::Tensor & self_or_result) {
   return at::native::flagos::elu_backward_dispatcher(grad_output, alpha, scale, input_scale, is_result, self_or_result);
 }
@@ -2757,6 +2769,9 @@ at::Tensor WrapperEmbeddingRenorm(const at::Tensor & self, const at::Tensor & in
 }
 at::Tensor & WrapperEmbeddingRenormOut(const at::Tensor & self, const at::Tensor & indices, double max_norm, double norm_type, at::Tensor & out) {
   return at::native::flagos::embedding_renorm_out_dispatcher(self, indices, max_norm, norm_type, out);
+}
+at::Tensor & WrapperEmbeddingRenormInplace(at::Tensor & self, const at::Tensor & indices, double max_norm, double norm_type) {
+  return at::native::flagos::embedding_renorm_inplace_dispatcher(self, indices, max_norm, norm_type);
 }
 at::Tensor WrapperEmptyNames(at::IntArrayRef size, ::std::optional<at::DimnameList> names, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory, ::std::optional<at::MemoryFormat> memory_format) {
   return at::native::flagos::empty_names_dispatcher(size, names, dtype, layout, device, pin_memory, memory_format);
@@ -3082,6 +3097,9 @@ at::Tensor WrapperGelu(const at::Tensor & self, c10::string_view approximate) {
 at::Tensor & WrapperGeluOut(const at::Tensor & self, c10::string_view approximate, at::Tensor & out) {
   return at::native::flagos::gelu_out_dispatcher(self, approximate, out);
 }
+at::Tensor & WrapperGeluInplace(at::Tensor & self, c10::string_view approximate) {
+  return at::native::flagos::gelu_inplace_dispatcher(self, approximate);
+}
 at::Tensor WrapperGeluBackward(const at::Tensor & grad_output, const at::Tensor & self, c10::string_view approximate) {
   return at::native::flagos::gelu_backward_dispatcher(grad_output, self, approximate);
 }
@@ -3223,6 +3241,9 @@ at::Tensor WrapperHardsigmoid(const at::Tensor & self) {
 at::Tensor & WrapperHardsigmoidOut(const at::Tensor & self, at::Tensor & out) {
   return at::native::flagos::hardsigmoid_out_dispatcher(self, out);
 }
+at::Tensor & WrapperHardsigmoidInplace(at::Tensor & self) {
+  return at::native::flagos::hardsigmoid_inplace_dispatcher(self);
+}
 at::Tensor WrapperHardsigmoidBackward(const at::Tensor & grad_output, const at::Tensor & self) {
   return at::native::flagos::hardsigmoid_backward_dispatcher(grad_output, self);
 }
@@ -3235,6 +3256,9 @@ at::Tensor WrapperHardswish(const at::Tensor & self) {
 at::Tensor & WrapperHardswishOut(const at::Tensor & self, at::Tensor & out) {
   return at::native::flagos::hardswish_out_dispatcher(self, out);
 }
+at::Tensor & WrapperHardswishInplace(at::Tensor & self) {
+  return at::native::flagos::hardswish_inplace_dispatcher(self);
+}
 at::Tensor WrapperHardswishBackward(const at::Tensor & grad_output, const at::Tensor & self) {
   return at::native::flagos::hardswish_backward_dispatcher(grad_output, self);
 }
@@ -3246,6 +3270,9 @@ at::Tensor WrapperHardtanh(const at::Tensor & self, const at::Scalar & min_val, 
 }
 at::Tensor & WrapperHardtanhOut(const at::Tensor & self, const at::Scalar & min_val, const at::Scalar & max_val, at::Tensor & out) {
   return at::native::flagos::hardtanh_out_dispatcher(self, min_val, max_val, out);
+}
+at::Tensor & WrapperHardtanhInplace(at::Tensor & self, const at::Scalar & min_val, const at::Scalar & max_val) {
+  return at::native::flagos::hardtanh_inplace_dispatcher(self, min_val, max_val);
 }
 at::Tensor WrapperHardtanhBackward(const at::Tensor & grad_output, const at::Tensor & self, const at::Scalar & min_val, const at::Scalar & max_val) {
   return at::native::flagos::hardtanh_backward_dispatcher(grad_output, self, min_val, max_val);
@@ -3495,6 +3522,9 @@ at::Tensor WrapperLeakyRelu(const at::Tensor & self, const at::Scalar & negative
 }
 at::Tensor & WrapperLeakyReluOut(const at::Tensor & self, const at::Scalar & negative_slope, at::Tensor & out) {
   return at::native::flagos::leaky_relu_out_dispatcher(self, negative_slope, out);
+}
+at::Tensor & WrapperLeakyReluInplace(at::Tensor & self, const at::Scalar & negative_slope) {
+  return at::native::flagos::leaky_relu_inplace_dispatcher(self, negative_slope);
 }
 at::Tensor WrapperLeakyReluBackward(const at::Tensor & grad_output, const at::Tensor & self, const at::Scalar & negative_slope, bool self_is_result) {
   return at::native::flagos::leaky_relu_backward_dispatcher(grad_output, self, negative_slope, self_is_result);
@@ -4036,9 +4066,6 @@ at::Tensor WrapperMiopenDepthwiseConvolution(const at::Tensor & self, const at::
 at::Tensor & WrapperMiopenDepthwiseConvolutionOut(const at::Tensor & self, const at::Tensor & weight, const ::std::optional<at::Tensor> & bias, at::IntArrayRef padding, at::IntArrayRef stride, at::IntArrayRef dilation, int64_t groups, bool benchmark, bool deterministic, at::Tensor & out) {
   return at::native::flagos::miopen_depthwise_convolution_out_dispatcher(self, weight, bias, padding, stride, dilation, groups, benchmark, deterministic, out);
 }
-::std::tuple<at::Tensor &,at::Tensor &,at::Tensor &,at::Tensor &,at::Tensor &> WrapperMiopenRnnOut(const at::Tensor & input, at::TensorList weight, int64_t weight_stride0, const at::Tensor & hx, const ::std::optional<at::Tensor> & cx, int64_t mode, int64_t hidden_size, int64_t num_layers, bool batch_first, double dropout, bool train, bool bidirectional, at::IntArrayRef batch_sizes, const ::std::optional<at::Tensor> & dropout_state, at::Tensor & out0, at::Tensor & out1, at::Tensor & out2, at::Tensor & out3, at::Tensor & out4) {
-  return at::native::flagos::miopen_rnn_out_dispatcher(input, weight, weight_stride0, hx, cx, mode, hidden_size, num_layers, batch_first, dropout, train, bidirectional, batch_sizes, dropout_state, out0, out1, out2, out3, out4);
-}
 void WrapperMiopenRnnBackwardOut(const at::Tensor & input, at::TensorList weight, int64_t weight_stride0, const at::Tensor & weight_buf, const at::Tensor & hx, const ::std::optional<at::Tensor> & cx, const at::Tensor & output, const ::std::optional<at::Tensor> & grad_output, const ::std::optional<at::Tensor> & grad_hy, const ::std::optional<at::Tensor> & grad_cy, int64_t mode, int64_t hidden_size, int64_t num_layers, bool batch_first, double dropout, bool train, bool bidirectional, at::IntArrayRef batch_sizes, const ::std::optional<at::Tensor> & dropout_state, const at::Tensor & reserve, ::std::array<bool,4> output_mask, at::Tensor & out0, at::Tensor & out1, at::Tensor & out2, at::TensorList out3) {
   at::native::flagos::miopen_rnn_backward_out_dispatcher(input, weight, weight_stride0, weight_buf, hx, cx, output, grad_output, grad_hy, grad_cy, mode, hidden_size, num_layers, batch_first, dropout, train, bidirectional, batch_sizes, dropout_state, reserve, output_mask, out0, out1, out2, out3);
 }
@@ -4047,6 +4074,9 @@ at::Tensor WrapperMish(const at::Tensor & self) {
 }
 at::Tensor & WrapperMishOut(const at::Tensor & self, at::Tensor & out) {
   return at::native::flagos::mish_out_dispatcher(self, out);
+}
+at::Tensor & WrapperMishInplace(at::Tensor & self) {
+  return at::native::flagos::mish_inplace_dispatcher(self);
 }
 at::Tensor & WrapperMkldnnAdaptiveAvgPool2dBackwardOut(const at::Tensor & grad_output, const at::Tensor & self, at::Tensor & out) {
   return at::native::flagos::mkldnn_adaptive_avg_pool2d_backward_out_dispatcher(grad_output, self, out);
@@ -4912,6 +4942,9 @@ at::Tensor WrapperRreluWithNoise(const at::Tensor & self, at::Tensor & noise, co
 at::Tensor & WrapperRreluWithNoiseOut(const at::Tensor & self, at::Tensor & noise, const at::Scalar & lower, const at::Scalar & upper, bool training, ::std::optional<at::Generator> generator, at::Tensor & out) {
   return at::native::flagos::rrelu_with_noise_out_dispatcher(self, noise, lower, upper, training, generator, out);
 }
+at::Tensor & WrapperRreluWithNoiseInplace(at::Tensor & self, at::Tensor & noise, const at::Scalar & lower, const at::Scalar & upper, bool training, ::std::optional<at::Generator> generator) {
+  return at::native::flagos::rrelu_with_noise_inplace_dispatcher(self, noise, lower, upper, training, generator);
+}
 at::Tensor WrapperRreluWithNoiseBackward(const at::Tensor & grad_output, const at::Tensor & self, const at::Tensor & noise, const at::Scalar & lower, const at::Scalar & upper, bool training, bool self_is_result) {
   return at::native::flagos::rrelu_with_noise_backward_dispatcher(grad_output, self, noise, lower, upper, training, self_is_result);
 }
@@ -5097,6 +5130,9 @@ at::Tensor WrapperSilu(const at::Tensor & self) {
 }
 at::Tensor & WrapperSiluOut(const at::Tensor & self, at::Tensor & out) {
   return at::native::flagos::silu_out_dispatcher(self, out);
+}
+at::Tensor & WrapperSiluInplace(at::Tensor & self) {
+  return at::native::flagos::silu_inplace_dispatcher(self);
 }
 at::Tensor WrapperSiluBackward(const at::Tensor & grad_output, const at::Tensor & self) {
   return at::native::flagos::silu_backward_dispatcher(grad_output, self);
@@ -5626,8 +5662,14 @@ at::Tensor & WrapperSpecialZetaSelfScalarOut(const at::Scalar & self, const at::
 ::std::vector<at::Tensor> WrapperSplitTensor(const at::Tensor & self, int64_t split_size, int64_t dim) {
   return at::native::flagos::split_tensor_dispatcher(self, split_size, dim);
 }
+void WrapperSplitCopyTensorOut(const at::Tensor & self, int64_t split_size, int64_t dim, at::TensorList out) {
+  at::native::flagos::split_copy_tensor_out_dispatcher(self, split_size, dim, out);
+}
 ::std::vector<at::Tensor> WrapperSplitWithSizes(const at::Tensor & self, at::IntArrayRef split_sizes, int64_t dim) {
   return at::native::flagos::split_with_sizes_dispatcher(self, split_sizes, dim);
+}
+void WrapperSplitWithSizesCopyOut(const at::Tensor & self, at::IntArrayRef split_sizes, int64_t dim, at::TensorList out) {
+  at::native::flagos::split_with_sizes_copy_out_dispatcher(self, split_sizes, dim, out);
 }
 at::Tensor WrapperSqrt(const at::Tensor & self) {
   return at::native::flagos::sqrt_dispatcher(self);
@@ -5670,6 +5712,9 @@ at::Tensor & WrapperSspaddmmOut(const at::Tensor & self, const at::Tensor & mat1
 }
 at::Tensor WrapperStack(at::TensorList tensors, int64_t dim) {
   return at::native::flagos::stack_dispatcher(tensors, dim);
+}
+at::Tensor & WrapperStackOut(at::TensorList tensors, int64_t dim, at::Tensor & out) {
+  return at::native::flagos::stack_out_dispatcher(tensors, dim, out);
 }
 at::Tensor WrapperStdCorrection(const at::Tensor & self, at::OptionalIntArrayRef dim, const ::std::optional<at::Scalar> & correction, bool keepdim) {
   return at::native::flagos::std_correction_dispatcher(self, dim, correction, keepdim);
@@ -5758,6 +5803,9 @@ at::Tensor WrapperThreshold(const at::Tensor & self, const at::Scalar & threshol
 at::Tensor & WrapperThresholdOut(const at::Tensor & self, const at::Scalar & threshold, const at::Scalar & value, at::Tensor & out) {
   return at::native::flagos::threshold_out_dispatcher(self, threshold, value, out);
 }
+at::Tensor & WrapperThresholdInplace(at::Tensor & self, const at::Scalar & threshold, const at::Scalar & value) {
+  return at::native::flagos::threshold_inplace_dispatcher(self, threshold, value);
+}
 at::Tensor WrapperThresholdBackward(const at::Tensor & grad_output, const at::Tensor & self, const at::Scalar & threshold) {
   return at::native::flagos::threshold_backward_dispatcher(grad_output, self, threshold);
 }
@@ -5839,6 +5887,9 @@ at::Tensor & WrapperTruncInplace(at::Tensor & self) {
 ::std::vector<at::Tensor> WrapperUnbindInt(const at::Tensor & self, int64_t dim) {
   return at::native::flagos::unbind_int_dispatcher(self, dim);
 }
+void WrapperUnbindCopyIntOut(const at::Tensor & self, int64_t dim, at::TensorList out) {
+  at::native::flagos::unbind_copy_int_out_dispatcher(self, dim, out);
+}
 at::Tensor WrapperUnfoldBackward(const at::Tensor & grad_in, at::IntArrayRef input_sizes, int64_t dim, int64_t size, int64_t step) {
   return at::native::flagos::unfold_backward_dispatcher(grad_in, input_sizes, dim, size, step);
 }
@@ -5878,8 +5929,14 @@ at::Tensor & WrapperUniformInplace(at::Tensor & self, double from, double to, ::
 ::std::vector<at::Tensor> WrapperUnsafeSplitTensor(const at::Tensor & self, int64_t split_size, int64_t dim) {
   return at::native::flagos::unsafe_split_tensor_dispatcher(self, split_size, dim);
 }
+void WrapperUnsafeSplitTensorOut(const at::Tensor & self, int64_t split_size, int64_t dim, at::TensorList out) {
+  at::native::flagos::unsafe_split_tensor_out_dispatcher(self, split_size, dim, out);
+}
 ::std::vector<at::Tensor> WrapperUnsafeSplitWithSizes(const at::Tensor & self, at::IntArrayRef split_sizes, int64_t dim) {
   return at::native::flagos::unsafe_split_with_sizes_dispatcher(self, split_sizes, dim);
+}
+void WrapperUnsafeSplitWithSizesOut(const at::Tensor & self, at::IntArrayRef split_sizes, int64_t dim, at::TensorList out) {
+  at::native::flagos::unsafe_split_with_sizes_out_dispatcher(self, split_sizes, dim, out);
 }
 at::Tensor WrapperUnsqueeze(const at::Tensor & self, int64_t dim) {
   return at::native::flagos::unsqueeze_dispatcher(self, dim);
@@ -6111,6 +6168,7 @@ at::Tensor & WrapperZerosLikeOut(const at::Tensor & self, ::std::optional<at::Me
   m.impl("_cholesky_solve_helper", WrapperPrivCholeskySolveHelper);
   m.impl("_cholesky_solve_helper.out", WrapperPrivCholeskySolveHelperOut);
   m.impl("_chunk_cat", WrapperPrivChunkCat);
+  m.impl("_chunk_cat.out", WrapperPrivChunkCatOut);
   m.impl("_coalesce.out", WrapperPrivCoalesceOut);
   m.impl("_coalesced", WrapperPrivCoalesced);
   m.impl("_coalesced.out", WrapperPrivCoalescedOut);
@@ -6146,7 +6204,6 @@ at::Tensor & WrapperZerosLikeOut(const at::Tensor & self, ::std::optional<at::Me
   m.impl("_cudnn_ctc_loss.out", WrapperPrivCudnnCtcLossOut);
   m.impl("_cudnn_init_dropout_state", WrapperPrivCudnnInitDropoutState);
   m.impl("_cudnn_init_dropout_state.out", WrapperPrivCudnnInitDropoutStateOut);
-  m.impl("_cudnn_rnn.out", WrapperPrivCudnnRnnOut);
   m.impl("_cudnn_rnn_backward.out", WrapperPrivCudnnRnnBackwardOut);
   m.impl("_cudnn_rnn_flatten_weight", WrapperPrivCudnnRnnFlattenWeight);
   m.impl("_dirichlet_grad", WrapperPrivDirichletGrad);
@@ -6459,7 +6516,6 @@ at::Tensor & WrapperZerosLikeOut(const at::Tensor & self, ::std::optional<at::Me
   m.impl("_log_softmax_backward_data.out", WrapperPrivLogSoftmaxBackwardDataOut);
   m.impl("_logcumsumexp", WrapperPrivLogcumsumexp);
   m.impl("_logcumsumexp.out", WrapperPrivLogcumsumexpOut);
-  m.impl("_lstm_mps.out", WrapperPrivLstmMpsOut);
   m.impl("_make_dual", WrapperPrivMakeDual);
   m.impl("_make_dual_copy.out", WrapperPrivMakeDualCopyOut);
   m.impl("_make_per_channel_quantized_tensor", WrapperPrivMakePerChannelQuantizedTensor);
@@ -6569,6 +6625,7 @@ at::Tensor & WrapperZerosLikeOut(const at::Tensor & self, ::std::optional<at::Me
   m.impl("_sparse_sum_backward.out", WrapperPrivSparseSumBackwardOut);
   m.impl("_spdiags.out", WrapperPrivSpdiagsOut);
   m.impl("_stack", WrapperPrivStack);
+  m.impl("_stack.out", WrapperPrivStackOut);
   m.impl("_standard_gamma", WrapperPrivStandardGamma);
   m.impl("_standard_gamma.out", WrapperPrivStandardGammaOut);
   m.impl("_standard_gamma_grad", WrapperPrivStandardGammaGrad);
@@ -6839,6 +6896,7 @@ at::Tensor & WrapperZerosLikeOut(const at::Tensor & self, ::std::optional<at::Me
   m.impl("blackman_window.periodic", WrapperBlackmanWindowPeriodic);
   m.impl("blackman_window.periodic_out", WrapperBlackmanWindowPeriodicOut);
   m.impl("block_diag", WrapperBlockDiag);
+  m.impl("block_diag.out", WrapperBlockDiagOut);
   m.impl("bmm", WrapperBmm);
   m.impl("bmm.dtype", WrapperBmmDtype);
   m.impl("bmm.dtype_out", WrapperBmmDtypeOut);
@@ -6848,6 +6906,7 @@ at::Tensor & WrapperZerosLikeOut(const at::Tensor & self, ::std::optional<at::Me
   m.impl("bucketize.Tensor", WrapperBucketizeTensor);
   m.impl("bucketize.Tensor_out", WrapperBucketizeTensorOut);
   m.impl("cat", WrapperCat);
+  m.impl("cat.out", WrapperCatOut);
   m.impl("cauchy", WrapperCauchy);
   m.impl("cauchy.out", WrapperCauchyOut);
   m.impl("cauchy_", WrapperCauchyInplace);
@@ -6857,6 +6916,7 @@ at::Tensor & WrapperZerosLikeOut(const at::Tensor & self, ::std::optional<at::Me
   m.impl("ceil_", WrapperCeilInplace);
   m.impl("celu", WrapperCelu);
   m.impl("celu.out", WrapperCeluOut);
+  m.impl("celu_", WrapperCeluInplace);
   m.impl("channel_shuffle", WrapperChannelShuffle);
   m.impl("channel_shuffle.out", WrapperChannelShuffleOut);
   m.impl("cholesky", WrapperCholesky);
@@ -6990,6 +7050,7 @@ at::Tensor & WrapperZerosLikeOut(const at::Tensor & self, ::std::optional<at::Me
   m.impl("dot.out", WrapperDotOut);
   m.impl("elu", WrapperElu);
   m.impl("elu.out", WrapperEluOut);
+  m.impl("elu_", WrapperEluInplace);
   m.impl("elu_backward", WrapperEluBackward);
   m.impl("elu_backward.grad_input", WrapperEluBackwardGradInput);
   m.impl("embedding", WrapperEmbedding);
@@ -6998,6 +7059,7 @@ at::Tensor & WrapperZerosLikeOut(const at::Tensor & self, ::std::optional<at::Me
   m.impl("embedding_dense_backward.out", WrapperEmbeddingDenseBackwardOut);
   m.impl("embedding_renorm", WrapperEmbeddingRenorm);
   m.impl("embedding_renorm.out", WrapperEmbeddingRenormOut);
+  m.impl("embedding_renorm_", WrapperEmbeddingRenormInplace);
   m.impl("empty.names", WrapperEmptyNames);
   m.impl("empty.names_out", WrapperEmptyNamesOut);
   m.impl("empty_like", WrapperEmptyLike);
@@ -7106,6 +7168,7 @@ at::Tensor & WrapperZerosLikeOut(const at::Tensor & self, ::std::optional<at::Me
   m.impl("ge_.Tensor", WrapperGeInplaceTensor);
   m.impl("gelu", WrapperGelu);
   m.impl("gelu.out", WrapperGeluOut);
+  m.impl("gelu_", WrapperGeluInplace);
   m.impl("gelu_backward", WrapperGeluBackward);
   m.impl("gelu_backward.grad_input", WrapperGeluBackwardGradInput);
   m.impl("geometric", WrapperGeometric);
@@ -7153,14 +7216,17 @@ at::Tensor & WrapperZerosLikeOut(const at::Tensor & self, ::std::optional<at::Me
   m.impl("hardshrink_backward.grad_input", WrapperHardshrinkBackwardGradInput);
   m.impl("hardsigmoid", WrapperHardsigmoid);
   m.impl("hardsigmoid.out", WrapperHardsigmoidOut);
+  m.impl("hardsigmoid_", WrapperHardsigmoidInplace);
   m.impl("hardsigmoid_backward", WrapperHardsigmoidBackward);
   m.impl("hardsigmoid_backward.grad_input", WrapperHardsigmoidBackwardGradInput);
   m.impl("hardswish", WrapperHardswish);
   m.impl("hardswish.out", WrapperHardswishOut);
+  m.impl("hardswish_", WrapperHardswishInplace);
   m.impl("hardswish_backward", WrapperHardswishBackward);
   m.impl("hardswish_backward.out", WrapperHardswishBackwardOut);
   m.impl("hardtanh", WrapperHardtanh);
   m.impl("hardtanh.out", WrapperHardtanhOut);
+  m.impl("hardtanh_", WrapperHardtanhInplace);
   m.impl("hardtanh_backward", WrapperHardtanhBackward);
   m.impl("hardtanh_backward.grad_input", WrapperHardtanhBackwardGradInput);
   m.impl("hash_tensor", WrapperHashTensor);
@@ -7244,6 +7310,7 @@ at::Tensor & WrapperZerosLikeOut(const at::Tensor & self, ::std::optional<at::Me
   m.impl("le_.Tensor", WrapperLeInplaceTensor);
   m.impl("leaky_relu", WrapperLeakyRelu);
   m.impl("leaky_relu.out", WrapperLeakyReluOut);
+  m.impl("leaky_relu_", WrapperLeakyReluInplace);
   m.impl("leaky_relu_backward", WrapperLeakyReluBackward);
   m.impl("leaky_relu_backward.grad_input", WrapperLeakyReluBackwardGradInput);
   m.impl("lerp.Scalar", WrapperLerpScalar);
@@ -7424,10 +7491,10 @@ at::Tensor & WrapperZerosLikeOut(const at::Tensor & self, ::std::optional<at::Me
   m.impl("miopen_ctc_loss.out", WrapperMiopenCtcLossOut);
   m.impl("miopen_depthwise_convolution", WrapperMiopenDepthwiseConvolution);
   m.impl("miopen_depthwise_convolution.out", WrapperMiopenDepthwiseConvolutionOut);
-  m.impl("miopen_rnn.out", WrapperMiopenRnnOut);
   m.impl("miopen_rnn_backward.out", WrapperMiopenRnnBackwardOut);
   m.impl("mish", WrapperMish);
   m.impl("mish.out", WrapperMishOut);
+  m.impl("mish_", WrapperMishInplace);
   m.impl("mkldnn_adaptive_avg_pool2d_backward.out", WrapperMkldnnAdaptiveAvgPool2dBackwardOut);
   m.impl("mkldnn_convolution", WrapperMkldnnConvolution);
   m.impl("mkldnn_convolution.out", WrapperMkldnnConvolutionOut);
@@ -7716,6 +7783,7 @@ at::Tensor & WrapperZerosLikeOut(const at::Tensor & self, ::std::optional<at::Me
   m.impl("row_indices_copy.out", WrapperRowIndicesCopyOut);
   m.impl("rrelu_with_noise", WrapperRreluWithNoise);
   m.impl("rrelu_with_noise.out", WrapperRreluWithNoiseOut);
+  m.impl("rrelu_with_noise_", WrapperRreluWithNoiseInplace);
   m.impl("rrelu_with_noise_backward", WrapperRreluWithNoiseBackward);
   m.impl("rrelu_with_noise_backward.out", WrapperRreluWithNoiseBackwardOut);
   m.impl("rrelu_with_noise_functional", WrapperRreluWithNoiseFunctional);
@@ -7778,6 +7846,7 @@ at::Tensor & WrapperZerosLikeOut(const at::Tensor & self, ::std::optional<at::Me
   m.impl("signbit.out", WrapperSignbitOut);
   m.impl("silu", WrapperSilu);
   m.impl("silu.out", WrapperSiluOut);
+  m.impl("silu_", WrapperSiluInplace);
   m.impl("silu_backward", WrapperSiluBackward);
   m.impl("silu_backward.grad_input", WrapperSiluBackwardGradInput);
   m.impl("sin", WrapperSin);
@@ -7954,7 +8023,9 @@ at::Tensor & WrapperZerosLikeOut(const at::Tensor & self, ::std::optional<at::Me
   m.impl("special_zeta.self_scalar", WrapperSpecialZetaSelfScalar);
   m.impl("special_zeta.self_scalar_out", WrapperSpecialZetaSelfScalarOut);
   m.impl("split.Tensor", WrapperSplitTensor);
+  m.impl("split_copy.Tensor_out", WrapperSplitCopyTensorOut);
   m.impl("split_with_sizes", WrapperSplitWithSizes);
+  m.impl("split_with_sizes_copy.out", WrapperSplitWithSizesCopyOut);
   m.impl("sqrt", WrapperSqrt);
   m.impl("sqrt.out", WrapperSqrtOut);
   m.impl("sqrt_", WrapperSqrtInplace);
@@ -7969,6 +8040,7 @@ at::Tensor & WrapperZerosLikeOut(const at::Tensor & self, ::std::optional<at::Me
   m.impl("squeeze_copy.out", WrapperSqueezeCopyOut);
   m.impl("sspaddmm.out", WrapperSspaddmmOut);
   m.impl("stack", WrapperStack);
+  m.impl("stack.out", WrapperStackOut);
   m.impl("std.correction", WrapperStdCorrection);
   m.impl("std.correction_out", WrapperStdCorrectionOut);
   m.impl("std_mean.correction", WrapperStdMeanCorrection);
@@ -7998,6 +8070,7 @@ at::Tensor & WrapperZerosLikeOut(const at::Tensor & self, ::std::optional<at::Me
   m.impl("tanh_backward.grad_input", WrapperTanhBackwardGradInput);
   m.impl("threshold", WrapperThreshold);
   m.impl("threshold.out", WrapperThresholdOut);
+  m.impl("threshold_", WrapperThresholdInplace);
   m.impl("threshold_backward", WrapperThresholdBackward);
   m.impl("threshold_backward.grad_input", WrapperThresholdBackwardGradInput);
   m.impl("to_mkldnn.out", WrapperToMkldnnOut);
@@ -8025,6 +8098,7 @@ at::Tensor & WrapperZerosLikeOut(const at::Tensor & self, ::std::optional<at::Me
   m.impl("trunc.out", WrapperTruncOut);
   m.impl("trunc_", WrapperTruncInplace);
   m.impl("unbind.int", WrapperUnbindInt);
+  m.impl("unbind_copy.int_out", WrapperUnbindCopyIntOut);
   m.impl("unfold_backward", WrapperUnfoldBackward);
   m.impl("unfold_backward.out", WrapperUnfoldBackwardOut);
   m.impl("unfold_copy.out", WrapperUnfoldCopyOut);
@@ -8038,7 +8112,9 @@ at::Tensor & WrapperZerosLikeOut(const at::Tensor & self, ::std::optional<at::Me
   m.impl("unique_dim_consecutive", WrapperUniqueDimConsecutive);
   m.impl("unique_dim_consecutive.out", WrapperUniqueDimConsecutiveOut);
   m.impl("unsafe_split.Tensor", WrapperUnsafeSplitTensor);
+  m.impl("unsafe_split.Tensor_out", WrapperUnsafeSplitTensorOut);
   m.impl("unsafe_split_with_sizes", WrapperUnsafeSplitWithSizes);
+  m.impl("unsafe_split_with_sizes.out", WrapperUnsafeSplitWithSizesOut);
   m.impl("unsqueeze", WrapperUnsqueeze);
   m.impl("unsqueeze_", WrapperUnsqueezeInplace);
   m.impl("unsqueeze_copy.out", WrapperUnsqueezeCopyOut);

@@ -101,6 +101,9 @@ DECLARE_DISPATCHER(PrivCholeskySolveHelperOutFn, priv_cholesky_solve_helper_out_
 using PrivChunkCatFn = at::Tensor (*)(at::TensorList, int64_t, int64_t);
 DECLARE_DISPATCHER(PrivChunkCatFn, priv_chunk_cat_dispatcher)
 
+using PrivChunkCatOutFn = at::Tensor & (*)(at::TensorList, int64_t, int64_t, at::Tensor &);
+DECLARE_DISPATCHER(PrivChunkCatOutFn, priv_chunk_cat_out_dispatcher)
+
 using PrivCoalesceOutFn = at::Tensor & (*)(const at::Tensor &, at::Tensor &);
 DECLARE_DISPATCHER(PrivCoalesceOutFn, priv_coalesce_out_dispatcher)
 
@@ -205,9 +208,6 @@ DECLARE_DISPATCHER(PrivCudnnInitDropoutStateFn, priv_cudnn_init_dropout_state_di
 
 using PrivCudnnInitDropoutStateOutFn = at::Tensor & (*)(double, bool, int64_t, at::Tensor &);
 DECLARE_DISPATCHER(PrivCudnnInitDropoutStateOutFn, priv_cudnn_init_dropout_state_out_dispatcher)
-
-using PrivCudnnRnnOutFn = ::std::tuple<at::Tensor &,at::Tensor &,at::Tensor &,at::Tensor &,at::Tensor &> (*)(const at::Tensor &, at::TensorList, int64_t, const ::std::optional<at::Tensor> &, const at::Tensor &, const ::std::optional<at::Tensor> &, int64_t, int64_t, int64_t, int64_t, bool, double, bool, bool, at::IntArrayRef, const ::std::optional<at::Tensor> &, at::Tensor &, at::Tensor &, at::Tensor &, at::Tensor &, at::Tensor &);
-DECLARE_DISPATCHER(PrivCudnnRnnOutFn, priv_cudnn_rnn_out_dispatcher)
 
 using PrivCudnnRnnBackwardOutFn = void (*)(const at::Tensor &, at::TensorList, int64_t, const at::Tensor &, const at::Tensor &, const ::std::optional<at::Tensor> &, const at::Tensor &, const ::std::optional<at::Tensor> &, const ::std::optional<at::Tensor> &, const ::std::optional<at::Tensor> &, int64_t, int64_t, int64_t, int64_t, bool, double, bool, bool, at::IntArrayRef, const ::std::optional<at::Tensor> &, const at::Tensor &, ::std::array<bool,4>, at::Tensor &, at::Tensor &, at::Tensor &, at::TensorList);
 DECLARE_DISPATCHER(PrivCudnnRnnBackwardOutFn, priv_cudnn_rnn_backward_out_dispatcher)
@@ -1145,9 +1145,6 @@ DECLARE_DISPATCHER(PrivLogcumsumexpFn, priv_logcumsumexp_dispatcher)
 using PrivLogcumsumexpOutFn = at::Tensor & (*)(const at::Tensor &, int64_t, at::Tensor &);
 DECLARE_DISPATCHER(PrivLogcumsumexpOutFn, priv_logcumsumexp_out_dispatcher)
 
-using PrivLstmMpsOutFn = ::std::tuple<at::Tensor &,at::Tensor &,at::Tensor &,at::Tensor &,at::Tensor &,at::Tensor &> (*)(const at::Tensor &, at::TensorList, at::TensorList, bool, int64_t, double, bool, bool, bool, at::Tensor &, at::Tensor &, at::Tensor &, at::Tensor &, at::Tensor &, at::Tensor &);
-DECLARE_DISPATCHER(PrivLstmMpsOutFn, priv_lstm_mps_out_dispatcher)
-
 using PrivMakeDualFn = at::Tensor (*)(const at::Tensor &, const at::Tensor &, int64_t);
 DECLARE_DISPATCHER(PrivMakeDualFn, priv_make_dual_dispatcher)
 
@@ -1474,6 +1471,9 @@ DECLARE_DISPATCHER(PrivSpdiagsOutFn, priv_spdiags_out_dispatcher)
 
 using PrivStackFn = at::Tensor (*)(at::TensorList, int64_t);
 DECLARE_DISPATCHER(PrivStackFn, priv_stack_dispatcher)
+
+using PrivStackOutFn = at::Tensor & (*)(at::TensorList, int64_t, at::Tensor &);
+DECLARE_DISPATCHER(PrivStackOutFn, priv_stack_out_dispatcher)
 
 using PrivStandardGammaFn = at::Tensor (*)(const at::Tensor &, ::std::optional<at::Generator>);
 DECLARE_DISPATCHER(PrivStandardGammaFn, priv_standard_gamma_dispatcher)
@@ -2285,6 +2285,9 @@ DECLARE_DISPATCHER(BlackmanWindowPeriodicOutFn, blackman_window_periodic_out_dis
 using BlockDiagFn = at::Tensor (*)(at::TensorList);
 DECLARE_DISPATCHER(BlockDiagFn, block_diag_dispatcher)
 
+using BlockDiagOutFn = at::Tensor & (*)(at::TensorList, at::Tensor &);
+DECLARE_DISPATCHER(BlockDiagOutFn, block_diag_out_dispatcher)
+
 using BmmFn = at::Tensor (*)(const at::Tensor &, const at::Tensor &);
 DECLARE_DISPATCHER(BmmFn, bmm_dispatcher)
 
@@ -2312,6 +2315,9 @@ DECLARE_DISPATCHER(BucketizeTensorOutFn, bucketize_tensor_out_dispatcher)
 using CatFn = at::Tensor (*)(const at::ITensorListRef &, int64_t);
 DECLARE_DISPATCHER(CatFn, cat_dispatcher)
 
+using CatOutFn = at::Tensor & (*)(const at::ITensorListRef &, int64_t, at::Tensor &);
+DECLARE_DISPATCHER(CatOutFn, cat_out_dispatcher)
+
 using CauchyFn = at::Tensor (*)(const at::Tensor &, double, double, ::std::optional<at::Generator>);
 DECLARE_DISPATCHER(CauchyFn, cauchy_dispatcher)
 
@@ -2338,6 +2344,9 @@ DECLARE_DISPATCHER(CeluFn, celu_dispatcher)
 
 using CeluOutFn = at::Tensor & (*)(const at::Tensor &, const at::Scalar &, at::Tensor &);
 DECLARE_DISPATCHER(CeluOutFn, celu_out_dispatcher)
+
+using CeluInplaceFn = at::Tensor & (*)(at::Tensor &, const at::Scalar &);
+DECLARE_DISPATCHER(CeluInplaceFn, celu_inplace_dispatcher)
 
 using ChannelShuffleFn = at::Tensor (*)(const at::Tensor &, int64_t);
 DECLARE_DISPATCHER(ChannelShuffleFn, channel_shuffle_dispatcher)
@@ -2738,6 +2747,9 @@ DECLARE_DISPATCHER(EluFn, elu_dispatcher)
 using EluOutFn = at::Tensor & (*)(const at::Tensor &, const at::Scalar &, const at::Scalar &, const at::Scalar &, at::Tensor &);
 DECLARE_DISPATCHER(EluOutFn, elu_out_dispatcher)
 
+using EluInplaceFn = at::Tensor & (*)(at::Tensor &, const at::Scalar &, const at::Scalar &, const at::Scalar &);
+DECLARE_DISPATCHER(EluInplaceFn, elu_inplace_dispatcher)
+
 using EluBackwardFn = at::Tensor (*)(const at::Tensor &, const at::Scalar &, const at::Scalar &, const at::Scalar &, bool, const at::Tensor &);
 DECLARE_DISPATCHER(EluBackwardFn, elu_backward_dispatcher)
 
@@ -2761,6 +2773,9 @@ DECLARE_DISPATCHER(EmbeddingRenormFn, embedding_renorm_dispatcher)
 
 using EmbeddingRenormOutFn = at::Tensor & (*)(const at::Tensor &, const at::Tensor &, double, double, at::Tensor &);
 DECLARE_DISPATCHER(EmbeddingRenormOutFn, embedding_renorm_out_dispatcher)
+
+using EmbeddingRenormInplaceFn = at::Tensor & (*)(at::Tensor &, const at::Tensor &, double, double);
+DECLARE_DISPATCHER(EmbeddingRenormInplaceFn, embedding_renorm_inplace_dispatcher)
 
 using EmptyNamesFn = at::Tensor (*)(at::IntArrayRef, ::std::optional<at::DimnameList>, ::std::optional<at::ScalarType>, ::std::optional<at::Layout>, ::std::optional<at::Device>, ::std::optional<bool>, ::std::optional<at::MemoryFormat>);
 DECLARE_DISPATCHER(EmptyNamesFn, empty_names_dispatcher)
@@ -3086,6 +3101,9 @@ DECLARE_DISPATCHER(GeluFn, gelu_dispatcher)
 using GeluOutFn = at::Tensor & (*)(const at::Tensor &, c10::string_view, at::Tensor &);
 DECLARE_DISPATCHER(GeluOutFn, gelu_out_dispatcher)
 
+using GeluInplaceFn = at::Tensor & (*)(at::Tensor &, c10::string_view);
+DECLARE_DISPATCHER(GeluInplaceFn, gelu_inplace_dispatcher)
+
 using GeluBackwardFn = at::Tensor (*)(const at::Tensor &, const at::Tensor &, c10::string_view);
 DECLARE_DISPATCHER(GeluBackwardFn, gelu_backward_dispatcher)
 
@@ -3227,6 +3245,9 @@ DECLARE_DISPATCHER(HardsigmoidFn, hardsigmoid_dispatcher)
 using HardsigmoidOutFn = at::Tensor & (*)(const at::Tensor &, at::Tensor &);
 DECLARE_DISPATCHER(HardsigmoidOutFn, hardsigmoid_out_dispatcher)
 
+using HardsigmoidInplaceFn = at::Tensor & (*)(at::Tensor &);
+DECLARE_DISPATCHER(HardsigmoidInplaceFn, hardsigmoid_inplace_dispatcher)
+
 using HardsigmoidBackwardFn = at::Tensor (*)(const at::Tensor &, const at::Tensor &);
 DECLARE_DISPATCHER(HardsigmoidBackwardFn, hardsigmoid_backward_dispatcher)
 
@@ -3239,6 +3260,9 @@ DECLARE_DISPATCHER(HardswishFn, hardswish_dispatcher)
 using HardswishOutFn = at::Tensor & (*)(const at::Tensor &, at::Tensor &);
 DECLARE_DISPATCHER(HardswishOutFn, hardswish_out_dispatcher)
 
+using HardswishInplaceFn = at::Tensor & (*)(at::Tensor &);
+DECLARE_DISPATCHER(HardswishInplaceFn, hardswish_inplace_dispatcher)
+
 using HardswishBackwardFn = at::Tensor (*)(const at::Tensor &, const at::Tensor &);
 DECLARE_DISPATCHER(HardswishBackwardFn, hardswish_backward_dispatcher)
 
@@ -3250,6 +3274,9 @@ DECLARE_DISPATCHER(HardtanhFn, hardtanh_dispatcher)
 
 using HardtanhOutFn = at::Tensor & (*)(const at::Tensor &, const at::Scalar &, const at::Scalar &, at::Tensor &);
 DECLARE_DISPATCHER(HardtanhOutFn, hardtanh_out_dispatcher)
+
+using HardtanhInplaceFn = at::Tensor & (*)(at::Tensor &, const at::Scalar &, const at::Scalar &);
+DECLARE_DISPATCHER(HardtanhInplaceFn, hardtanh_inplace_dispatcher)
 
 using HardtanhBackwardFn = at::Tensor (*)(const at::Tensor &, const at::Tensor &, const at::Scalar &, const at::Scalar &);
 DECLARE_DISPATCHER(HardtanhBackwardFn, hardtanh_backward_dispatcher)
@@ -3499,6 +3526,9 @@ DECLARE_DISPATCHER(LeakyReluFn, leaky_relu_dispatcher)
 
 using LeakyReluOutFn = at::Tensor & (*)(const at::Tensor &, const at::Scalar &, at::Tensor &);
 DECLARE_DISPATCHER(LeakyReluOutFn, leaky_relu_out_dispatcher)
+
+using LeakyReluInplaceFn = at::Tensor & (*)(at::Tensor &, const at::Scalar &);
+DECLARE_DISPATCHER(LeakyReluInplaceFn, leaky_relu_inplace_dispatcher)
 
 using LeakyReluBackwardFn = at::Tensor (*)(const at::Tensor &, const at::Tensor &, const at::Scalar &, bool);
 DECLARE_DISPATCHER(LeakyReluBackwardFn, leaky_relu_backward_dispatcher)
@@ -4040,9 +4070,6 @@ DECLARE_DISPATCHER(MiopenDepthwiseConvolutionFn, miopen_depthwise_convolution_di
 using MiopenDepthwiseConvolutionOutFn = at::Tensor & (*)(const at::Tensor &, const at::Tensor &, const ::std::optional<at::Tensor> &, at::IntArrayRef, at::IntArrayRef, at::IntArrayRef, int64_t, bool, bool, at::Tensor &);
 DECLARE_DISPATCHER(MiopenDepthwiseConvolutionOutFn, miopen_depthwise_convolution_out_dispatcher)
 
-using MiopenRnnOutFn = ::std::tuple<at::Tensor &,at::Tensor &,at::Tensor &,at::Tensor &,at::Tensor &> (*)(const at::Tensor &, at::TensorList, int64_t, const at::Tensor &, const ::std::optional<at::Tensor> &, int64_t, int64_t, int64_t, bool, double, bool, bool, at::IntArrayRef, const ::std::optional<at::Tensor> &, at::Tensor &, at::Tensor &, at::Tensor &, at::Tensor &, at::Tensor &);
-DECLARE_DISPATCHER(MiopenRnnOutFn, miopen_rnn_out_dispatcher)
-
 using MiopenRnnBackwardOutFn = void (*)(const at::Tensor &, at::TensorList, int64_t, const at::Tensor &, const at::Tensor &, const ::std::optional<at::Tensor> &, const at::Tensor &, const ::std::optional<at::Tensor> &, const ::std::optional<at::Tensor> &, const ::std::optional<at::Tensor> &, int64_t, int64_t, int64_t, bool, double, bool, bool, at::IntArrayRef, const ::std::optional<at::Tensor> &, const at::Tensor &, ::std::array<bool,4>, at::Tensor &, at::Tensor &, at::Tensor &, at::TensorList);
 DECLARE_DISPATCHER(MiopenRnnBackwardOutFn, miopen_rnn_backward_out_dispatcher)
 
@@ -4051,6 +4078,9 @@ DECLARE_DISPATCHER(MishFn, mish_dispatcher)
 
 using MishOutFn = at::Tensor & (*)(const at::Tensor &, at::Tensor &);
 DECLARE_DISPATCHER(MishOutFn, mish_out_dispatcher)
+
+using MishInplaceFn = at::Tensor & (*)(at::Tensor &);
+DECLARE_DISPATCHER(MishInplaceFn, mish_inplace_dispatcher)
 
 using MkldnnAdaptiveAvgPool2dBackwardOutFn = at::Tensor & (*)(const at::Tensor &, const at::Tensor &, at::Tensor &);
 DECLARE_DISPATCHER(MkldnnAdaptiveAvgPool2dBackwardOutFn, mkldnn_adaptive_avg_pool2d_backward_out_dispatcher)
@@ -4916,6 +4946,9 @@ DECLARE_DISPATCHER(RreluWithNoiseFn, rrelu_with_noise_dispatcher)
 using RreluWithNoiseOutFn = at::Tensor & (*)(const at::Tensor &, at::Tensor &, const at::Scalar &, const at::Scalar &, bool, ::std::optional<at::Generator>, at::Tensor &);
 DECLARE_DISPATCHER(RreluWithNoiseOutFn, rrelu_with_noise_out_dispatcher)
 
+using RreluWithNoiseInplaceFn = at::Tensor & (*)(at::Tensor &, at::Tensor &, const at::Scalar &, const at::Scalar &, bool, ::std::optional<at::Generator>);
+DECLARE_DISPATCHER(RreluWithNoiseInplaceFn, rrelu_with_noise_inplace_dispatcher)
+
 using RreluWithNoiseBackwardFn = at::Tensor (*)(const at::Tensor &, const at::Tensor &, const at::Tensor &, const at::Scalar &, const at::Scalar &, bool, bool);
 DECLARE_DISPATCHER(RreluWithNoiseBackwardFn, rrelu_with_noise_backward_dispatcher)
 
@@ -5101,6 +5134,9 @@ DECLARE_DISPATCHER(SiluFn, silu_dispatcher)
 
 using SiluOutFn = at::Tensor & (*)(const at::Tensor &, at::Tensor &);
 DECLARE_DISPATCHER(SiluOutFn, silu_out_dispatcher)
+
+using SiluInplaceFn = at::Tensor & (*)(at::Tensor &);
+DECLARE_DISPATCHER(SiluInplaceFn, silu_inplace_dispatcher)
 
 using SiluBackwardFn = at::Tensor (*)(const at::Tensor &, const at::Tensor &);
 DECLARE_DISPATCHER(SiluBackwardFn, silu_backward_dispatcher)
@@ -5630,8 +5666,14 @@ DECLARE_DISPATCHER(SpecialZetaSelfScalarOutFn, special_zeta_self_scalar_out_disp
 using SplitTensorFn = ::std::vector<at::Tensor> (*)(const at::Tensor &, int64_t, int64_t);
 DECLARE_DISPATCHER(SplitTensorFn, split_tensor_dispatcher)
 
+using SplitCopyTensorOutFn = void (*)(const at::Tensor &, int64_t, int64_t, at::TensorList);
+DECLARE_DISPATCHER(SplitCopyTensorOutFn, split_copy_tensor_out_dispatcher)
+
 using SplitWithSizesFn = ::std::vector<at::Tensor> (*)(const at::Tensor &, at::IntArrayRef, int64_t);
 DECLARE_DISPATCHER(SplitWithSizesFn, split_with_sizes_dispatcher)
+
+using SplitWithSizesCopyOutFn = void (*)(const at::Tensor &, at::IntArrayRef, int64_t, at::TensorList);
+DECLARE_DISPATCHER(SplitWithSizesCopyOutFn, split_with_sizes_copy_out_dispatcher)
 
 using SqrtFn = at::Tensor (*)(const at::Tensor &);
 DECLARE_DISPATCHER(SqrtFn, sqrt_dispatcher)
@@ -5674,6 +5716,9 @@ DECLARE_DISPATCHER(SspaddmmOutFn, sspaddmm_out_dispatcher)
 
 using StackFn = at::Tensor (*)(at::TensorList, int64_t);
 DECLARE_DISPATCHER(StackFn, stack_dispatcher)
+
+using StackOutFn = at::Tensor & (*)(at::TensorList, int64_t, at::Tensor &);
+DECLARE_DISPATCHER(StackOutFn, stack_out_dispatcher)
 
 using StdCorrectionFn = at::Tensor (*)(const at::Tensor &, at::OptionalIntArrayRef, const ::std::optional<at::Scalar> &, bool);
 DECLARE_DISPATCHER(StdCorrectionFn, std_correction_dispatcher)
@@ -5762,6 +5807,9 @@ DECLARE_DISPATCHER(ThresholdFn, threshold_dispatcher)
 using ThresholdOutFn = at::Tensor & (*)(const at::Tensor &, const at::Scalar &, const at::Scalar &, at::Tensor &);
 DECLARE_DISPATCHER(ThresholdOutFn, threshold_out_dispatcher)
 
+using ThresholdInplaceFn = at::Tensor & (*)(at::Tensor &, const at::Scalar &, const at::Scalar &);
+DECLARE_DISPATCHER(ThresholdInplaceFn, threshold_inplace_dispatcher)
+
 using ThresholdBackwardFn = at::Tensor (*)(const at::Tensor &, const at::Tensor &, const at::Scalar &);
 DECLARE_DISPATCHER(ThresholdBackwardFn, threshold_backward_dispatcher)
 
@@ -5843,6 +5891,9 @@ DECLARE_DISPATCHER(TruncInplaceFn, trunc_inplace_dispatcher)
 using UnbindIntFn = ::std::vector<at::Tensor> (*)(const at::Tensor &, int64_t);
 DECLARE_DISPATCHER(UnbindIntFn, unbind_int_dispatcher)
 
+using UnbindCopyIntOutFn = void (*)(const at::Tensor &, int64_t, at::TensorList);
+DECLARE_DISPATCHER(UnbindCopyIntOutFn, unbind_copy_int_out_dispatcher)
+
 using UnfoldBackwardFn = at::Tensor (*)(const at::Tensor &, at::IntArrayRef, int64_t, int64_t, int64_t);
 DECLARE_DISPATCHER(UnfoldBackwardFn, unfold_backward_dispatcher)
 
@@ -5882,8 +5933,14 @@ DECLARE_DISPATCHER(UniqueDimConsecutiveOutFn, unique_dim_consecutive_out_dispatc
 using UnsafeSplitTensorFn = ::std::vector<at::Tensor> (*)(const at::Tensor &, int64_t, int64_t);
 DECLARE_DISPATCHER(UnsafeSplitTensorFn, unsafe_split_tensor_dispatcher)
 
+using UnsafeSplitTensorOutFn = void (*)(const at::Tensor &, int64_t, int64_t, at::TensorList);
+DECLARE_DISPATCHER(UnsafeSplitTensorOutFn, unsafe_split_tensor_out_dispatcher)
+
 using UnsafeSplitWithSizesFn = ::std::vector<at::Tensor> (*)(const at::Tensor &, at::IntArrayRef, int64_t);
 DECLARE_DISPATCHER(UnsafeSplitWithSizesFn, unsafe_split_with_sizes_dispatcher)
+
+using UnsafeSplitWithSizesOutFn = void (*)(const at::Tensor &, at::IntArrayRef, int64_t, at::TensorList);
+DECLARE_DISPATCHER(UnsafeSplitWithSizesOutFn, unsafe_split_with_sizes_out_dispatcher)
 
 using UnsqueezeFn = at::Tensor (*)(const at::Tensor &, int64_t);
 DECLARE_DISPATCHER(UnsqueezeFn, unsqueeze_dispatcher)
