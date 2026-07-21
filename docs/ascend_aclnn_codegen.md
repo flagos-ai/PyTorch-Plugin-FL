@@ -61,7 +61,7 @@ CUDA 侧 `scripts/codegen_ops.py` 生成 `generated/cuda_kernels.cc`，内核体
 
 ## 4. 类别体系（逐类扩）
 
-已实现 47 个类别，共 122 个算子（真机全部与 CPU 对拍通过）：
+已实现 52 个类别，共 127 个算子（真机全部与 CPU 对拍通过）：
 
 | category | 判据 | 输出形状 / dtype | 内核体模板 |
 |---|---|---|---|
@@ -107,6 +107,11 @@ CUDA 侧 `scripts/codegen_ops.py` 生成 `generated/cuda_kernels.cc`，内核体
 | `reduce_all` | Tensor（整体归约） | bool 标量 | `aclnn<Name>(flat, dim_list, false, out)`（flatten 到 1-D 归约） |
 | `reduce_sum_dtype` | Tensor + `OptionalIntArrayRef dim` + keepdim + optional dtype | 按 dim 缩，dtype 提升 | `aclnn<Name>(self, dims, keepdim, aclDataType, out)` |
 | `reduce_mean_dtype` | 同上 | 同上 | `aclnnMeanV2(self, dims, keepdim, int32 dtype, out)` |
+| `adaptive_avg_pool2d` | self + `SymInt[2] output_size` | 前导维 + output_size；**NCHW format** | `aclnn<Name>(self, outSize, out)` |
+| `avg_pool2d` | self + k/stride/pad + ceil/countPad + divOverride | 池化公式；**NCHW format** | `aclnn<Name>(self, k, s, p, ceil, cntPad, div, cubeType, out)` |
+| `max_pool2d_indices` | self + k/stride/pad/dil + ceil | **tuple(out, int64 indices)**，池化公式 | `aclnn<Name>(self, k, s, p, dil, ceil, out, idx)` |
+| `convolution` | input + weight + bias? + stride/pad/dil + transposed + outPad + groups | conv 公式，Cout=weight.size(0)；**NCHW/NCL/NCDHW format** | `aclnn<Name>(in, w, b, s, p, d, tr, oPad, g, out, cubeType=0)` |
+| `convolution_backward` | grad_out + input + weight + biasSizes? + …… + output_mask[3] | **tuple(gInput, gWeight, gBias)** | `aclnn<Name>(gOut, in, w, bSz, s, p, d, tr, oPad, g, mask, cubeType=0, gIn, gW, gB)` |
 | `gemm_addmv` | self + mat(n,m) + vec(m) + beta + alpha | (n,) | `aclnn<Name>(self,mat,vec,ALPHA,BETA,out,cubeMathType)`（**alpha 在 beta 前**） |
 | `gemm_addr` | self + vec1(n) + vec2(m) + beta + alpha | (n,m) 外积 | `aclnn<Name>(self,vec1,vec2,beta,alpha,out)`（无 cubeMathType） |
 | `bce` | self + target + optional weight + int reduction | None→输入 / Mean·Sum→标量 | `aclnn<Name>(self,target,weight,reduction,out)` |
@@ -164,6 +169,14 @@ argmax/argmin/logsumexp/isnan/masked_fill/remainder/relu6（无 aclnn 符号或�
 产生 ~4.5e-4 的系统性误差（不是精度抖动，是近似形式不同）。修复：改用 `aclnnGeluV2`
 （`int64_t approximate`：0=none/1=tanh，int 变参安全）与 `aclnnGeluBackwardV2`
 （`char* approximate` 字符串——指针传递也变参安全，不受下方 by-value float 坑影响）。
+
+**关键坑（conv/pool 的 aclFormat）**：`AclTensorWrapper` 默认把 aclTensor 标成
+`ACL_FORMAT_ND`。`aclnnAvgPool2d`/`aclnnAdaptiveAvgPool2d`/`aclnnConvolution` 拒绝 ND 的
+4-D 张量，`GetWorkspaceSize` 直接返回 `161002`（PARAM_INVALID）——不是 shape/dtype 问题。
+修复：给 `AclTensorWrapper` 加可选 `aclFormat fmt` 参数（默认 ND，向后兼容），conv/pool
+模板按 rank 传 `ACL_FORMAT_NCHW`（4-D）/`NCL`（3-D）/`NCDHW`（5-D）。`aclnnMaxPool2dWithIndices`
+反而不挑 format，ND 也能过——所以这是逐 aclnn 而非全局的要求。另：conv 的 `cubeMathType`
+要传 **0（KEEP_DTYPE）**，传 1（ALLOW_FP32_DOWN_PRECISION）会在 cube 单元丢 ~2.5e-3 精度。
 
 **关键坑（varargs float）**：`EXEC_ASCEND_CMD` 通过 `typedef int (*)(...)` 变参函数指针调用
 aclnn。aarch64 上按值传 `float` 会走默认实参提升（float→double）+ 错误寄存器类，导致 aclnn

@@ -42,7 +42,9 @@ struct AclTensorWrapper {
   std::vector<int64_t> strides_;
   std::vector<int64_t> storage_dims_;
 
-  AclTensorWrapper(const at::Tensor& tensor) {
+  // `fmt` overrides the aclFormat. Defaults to ACL_FORMAT_ND; pass e.g.
+  // ACL_FORMAT_NCHW for ops (avg_pool2d, conv) that reject ND 4-D inputs.
+  AclTensorWrapper(const at::Tensor& tensor, aclFormat fmt = ACL_FORMAT_ND) {
     if (!tensor.defined()) {
       acl_tensor = nullptr;
       return;
@@ -55,7 +57,7 @@ struct AclTensorWrapper {
 
     int64_t offset = tensor.storage_offset();
     aclDataType dtype = ToAclDataType(tensor.scalar_type());
-    aclFormat format = ACL_FORMAT_ND;
+    aclFormat format = fmt;
 
     int64_t storage_size = static_cast<int64_t>(
         tensor.storage().nbytes() / tensor.element_size());
@@ -209,6 +211,23 @@ struct AclIntArrayWrapper {
   ~AclIntArrayWrapper() = default;
 
   const aclIntArray* get() const { return acl_array; }
+};
+
+struct AclBoolArrayWrapper {
+  aclBoolArray* acl_array = nullptr;
+  // aclCreateBoolArray stores a pointer to the data, so it must outlive the
+  // aclBoolArray (bool[] cannot be borrowed from a temporary).
+  std::vector<uint8_t> storage_;
+
+  AclBoolArrayWrapper(at::ArrayRef<bool> arr) {
+    storage_.assign(arr.begin(), arr.end());
+    acl_array = aclCreateBoolArray(
+        reinterpret_cast<const bool*>(storage_.data()), storage_.size());
+  }
+
+  ~AclBoolArrayWrapper() = default;
+
+  const aclBoolArray* get() const { return acl_array; }
 };
 
 struct AclTensorListWrapper {

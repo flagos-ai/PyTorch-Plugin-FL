@@ -2158,4 +2158,172 @@ at::Tensor MeanDimKernelAscend(const at::Tensor& self, at::OptionalIntArrayRef d
 
 REGISTER_IMPL_TO_DISPATCHER(MeanDimFn, mean_dim_dispatcher, Backend::kAscend, MeanDimKernelAscend)
 
+at::Tensor PrivAdaptiveAvgPool2dKernelAscend(const at::Tensor& self, at::IntArrayRef output_size) {
+  namespace ascend = at::native::flagos::ascend;
+  auto out_shape = self.sizes().vec();
+  int64_t r = out_shape.size();
+  out_shape[r - 2] = output_size[0];
+  out_shape[r - 1] = output_size[1];
+
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      out_shape, self.options());
+
+  // aclnn pooling rejects ND 4-D; tag as NCHW.
+  aclFormat fmt = self.dim() == 4 ? ACL_FORMAT_NCHW : ACL_FORMAT_NCL;
+  ascend::AclTensorWrapper acl_self(self, fmt);
+  ascend::AclIntArrayWrapper acl_osize(output_size);
+  ascend::AclTensorWrapper acl_out(out, fmt);
+
+  EXEC_ASCEND_CMD(aclnnAdaptiveAvgPool2d, acl_self.get(), acl_osize.get(), acl_out.get());
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(PrivAdaptiveAvgPool2dFn, priv_adaptive_avg_pool2d_dispatcher, Backend::kAscend, PrivAdaptiveAvgPool2dKernelAscend)
+
+at::Tensor AvgPool2dKernelAscend(const at::Tensor& self, at::IntArrayRef kernel_size, at::IntArrayRef stride, at::IntArrayRef padding, bool ceil_mode, bool count_include_pad, ::std::optional<int64_t> divisor_override) {
+  namespace ascend = at::native::flagos::ascend;
+  std::vector<int64_t> k(kernel_size.begin(), kernel_size.end());
+  std::vector<int64_t> s = stride.empty() ? k : std::vector<int64_t>(stride.begin(), stride.end());
+  std::vector<int64_t> p(padding.begin(), padding.end());
+  auto pool_out_dim = [](int64_t in, int64_t k, int64_t s, int64_t p,
+                         int64_t d, bool ceil) -> int64_t {
+    int64_t num = in + 2 * p - d * (k - 1) - 1;
+    int64_t out = (ceil ? (num + s - 1) / s : num / s) + 1;
+    if (ceil && (out - 1) * s >= in + p) out -= 1;   // last window all-padding
+    return out;
+  };
+  auto out_shape = self.sizes().vec();
+  int64_t r = out_shape.size();
+  out_shape[r - 2] = pool_out_dim(self.size(r - 2), k[0], s[0], p[0], 1, ceil_mode);
+  out_shape[r - 1] = pool_out_dim(self.size(r - 1), k[1], s[1], p[1], 1, ceil_mode);
+
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      out_shape, self.options());
+
+  int64_t div_override = divisor_override.value_or(0);
+  aclFormat fmt = self.dim() == 4 ? ACL_FORMAT_NCHW : ACL_FORMAT_NCL;
+  ascend::AclTensorWrapper acl_self(self, fmt);
+  ascend::AclIntArrayWrapper acl_k(k);
+  ascend::AclIntArrayWrapper acl_s(s);
+  ascend::AclIntArrayWrapper acl_p(p);
+  ascend::AclTensorWrapper acl_out(out, fmt);
+
+  EXEC_ASCEND_CMD(aclnnAvgPool2d, acl_self.get(), acl_k.get(), acl_s.get(), acl_p.get(),
+      ceil_mode, count_include_pad, div_override, (int8_t)0, acl_out.get());
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(AvgPool2dFn, avg_pool2d_dispatcher, Backend::kAscend, AvgPool2dKernelAscend)
+
+::std::tuple<at::Tensor, at::Tensor> MaxPool2dWithIndicesKernelAscend(const at::Tensor& self, at::IntArrayRef kernel_size, at::IntArrayRef stride, at::IntArrayRef padding, at::IntArrayRef dilation, bool ceil_mode) {
+  namespace ascend = at::native::flagos::ascend;
+  std::vector<int64_t> k(kernel_size.begin(), kernel_size.end());
+  std::vector<int64_t> s = stride.empty() ? k : std::vector<int64_t>(stride.begin(), stride.end());
+  std::vector<int64_t> p(padding.begin(), padding.end());
+  std::vector<int64_t> dil(dilation.begin(), dilation.end());
+  auto pool_out_dim = [](int64_t in, int64_t k, int64_t s, int64_t p,
+                         int64_t d, bool ceil) -> int64_t {
+    int64_t num = in + 2 * p - d * (k - 1) - 1;
+    int64_t out = (ceil ? (num + s - 1) / s : num / s) + 1;
+    if (ceil && (out - 1) * s >= in + p) out -= 1;   // last window all-padding
+    return out;
+  };
+  auto out_shape = self.sizes().vec();
+  int64_t r = out_shape.size();
+  out_shape[r - 2] = pool_out_dim(self.size(r - 2), k[0], s[0], p[0], dil[0], ceil_mode);
+  out_shape[r - 1] = pool_out_dim(self.size(r - 1), k[1], s[1], p[1], dil[1], ceil_mode);
+
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      out_shape, self.options());
+  auto indices = ascend::OpPreparation::apply_tensor_without_format(
+      out_shape, self.options().dtype(at::kLong));
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclIntArrayWrapper acl_k(k);
+  ascend::AclIntArrayWrapper acl_s(s);
+  ascend::AclIntArrayWrapper acl_p(p);
+  ascend::AclIntArrayWrapper acl_dil(dil);
+  ascend::AclTensorWrapper acl_out(out);
+  ascend::AclTensorWrapper acl_indices(indices);
+
+  EXEC_ASCEND_CMD(aclnnMaxPool2dWithIndices, acl_self.get(), acl_k.get(), acl_s.get(), acl_p.get(),
+      acl_dil.get(), ceil_mode, acl_out.get(), acl_indices.get());
+  return std::make_tuple(out, indices);
+}
+
+REGISTER_IMPL_TO_DISPATCHER(MaxPool2dWithIndicesFn, max_pool2d_with_indices_dispatcher, Backend::kAscend, MaxPool2dWithIndicesKernelAscend)
+
+at::Tensor ConvolutionKernelAscend(const at::Tensor& input, const at::Tensor& weight, const ::std::optional<at::Tensor>& bias, at::IntArrayRef stride, at::IntArrayRef padding, at::IntArrayRef dilation, bool transposed, at::IntArrayRef output_padding, int64_t groups) {
+  namespace ascend = at::native::flagos::ascend;
+  TORCH_CHECK(!transposed, "convolution codegen kernel: transposed not supported");
+  int64_t rank = input.dim();
+  int64_t nspatial = rank - 2;
+  auto out_shape = std::vector<int64_t>{input.size(0), weight.size(0)};
+  for (int64_t i = 0; i < nspatial; ++i) {
+    int64_t in = input.size(i + 2), k = weight.size(i + 2);
+    int64_t st = stride.size() == 1 ? stride[0] : stride[i];
+    int64_t pd = padding.size() == 1 ? padding[0] : padding[i];
+    int64_t dl = dilation.size() == 1 ? dilation[0] : dilation[i];
+    out_shape.push_back((in + 2 * pd - dl * (k - 1) - 1) / st + 1);
+  }
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      out_shape, input.options());
+
+  aclFormat fmt = rank == 4 ? ACL_FORMAT_NCHW : (rank == 3 ? ACL_FORMAT_NCL : ACL_FORMAT_NCDHW);
+  at::Tensor bias_t = bias.value_or(at::Tensor());
+  ascend::AclTensorWrapper acl_input(input, fmt);
+  ascend::AclTensorWrapper acl_weight(weight, fmt);
+  ascend::AclTensorWrapper acl_bias(bias_t);
+  ascend::AclIntArrayWrapper acl_stride(stride);
+  ascend::AclIntArrayWrapper acl_padding(padding);
+  ascend::AclIntArrayWrapper acl_dilation(dilation);
+  ascend::AclIntArrayWrapper acl_outpad(output_padding);
+  ascend::AclTensorWrapper acl_out(out, fmt);
+
+  EXEC_ASCEND_CMD(aclnnConvolution, acl_input.get(), acl_weight.get(), acl_bias.get(),
+      acl_stride.get(), acl_padding.get(), acl_dilation.get(), transposed,
+      acl_outpad.get(), groups, acl_out.get(), (int8_t)0);
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(ConvolutionFn, convolution_dispatcher, Backend::kAscend, ConvolutionKernelAscend)
+
+::std::tuple<at::Tensor, at::Tensor, at::Tensor> ConvolutionBackwardKernelAscend(const at::Tensor& grad_output, const at::Tensor& input, const at::Tensor& weight, at::OptionalIntArrayRef bias_sizes, at::IntArrayRef stride, at::IntArrayRef padding, at::IntArrayRef dilation, bool transposed, at::IntArrayRef output_padding, int64_t groups, ::std::array<bool, 3> output_mask) {
+  namespace ascend = at::native::flagos::ascend;
+  TORCH_CHECK(!transposed, "convolution_backward codegen kernel: transposed not supported");
+  int64_t rank = input.dim();
+  aclFormat fmt = rank == 4 ? ACL_FORMAT_NCHW : (rank == 3 ? ACL_FORMAT_NCL : ACL_FORMAT_NCDHW);
+
+  auto grad_input = ascend::OpPreparation::apply_tensor_without_format(
+      input.sizes(), input.options());
+  auto grad_weight = ascend::OpPreparation::apply_tensor_without_format(
+      weight.sizes(), weight.options());
+  std::vector<int64_t> bias_shape = bias_sizes.has_value()
+      ? bias_sizes.value().vec() : std::vector<int64_t>{weight.size(0)};
+  auto grad_bias = ascend::OpPreparation::apply_tensor_without_format(
+      bias_shape, weight.options());
+
+  ascend::AclTensorWrapper acl_grad(grad_output, fmt);
+  ascend::AclTensorWrapper acl_input(input, fmt);
+  ascend::AclTensorWrapper acl_weight(weight, fmt);
+  ascend::AclIntArrayWrapper acl_bias_sizes(bias_shape);
+  ascend::AclIntArrayWrapper acl_stride(stride);
+  ascend::AclIntArrayWrapper acl_padding(padding);
+  ascend::AclIntArrayWrapper acl_dilation(dilation);
+  ascend::AclIntArrayWrapper acl_outpad(output_padding);
+  ascend::AclBoolArrayWrapper acl_mask(at::ArrayRef<bool>(output_mask.data(), output_mask.size()));
+  ascend::AclTensorWrapper acl_grad_input(grad_input, fmt);
+  ascend::AclTensorWrapper acl_grad_weight(grad_weight, fmt);
+  ascend::AclTensorWrapper acl_grad_bias(grad_bias);
+
+  EXEC_ASCEND_CMD(aclnnConvolutionBackward, acl_grad.get(), acl_input.get(), acl_weight.get(),
+      acl_bias_sizes.get(), acl_stride.get(), acl_padding.get(),
+      acl_dilation.get(), transposed, acl_outpad.get(), (int)groups,
+      acl_mask.get(), (int8_t)0, acl_grad_input.get(), acl_grad_weight.get(),
+      acl_grad_bias.get());
+  return std::make_tuple(grad_input, grad_weight, grad_bias);
+}
+
+REGISTER_IMPL_TO_DISPATCHER(ConvolutionBackwardFn, convolution_backward_dispatcher, Backend::kAscend, ConvolutionBackwardKernelAscend)
+
 } // namespace at::native::flagos
