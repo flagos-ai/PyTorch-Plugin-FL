@@ -362,6 +362,30 @@ at::Tensor CallPythonOp_GenericKw(const char* func_name,
   return PythonToTensor(func(*py_args, **py_kwargs));
 }
 
+at::Tensor CallPythonOp_Factory(const char* func_name,
+                                const std::vector<c10::IValue>& args,
+                                std::optional<at::ScalarType> dtype) {
+  auto& cache = GetCache();
+  cache.EnsureInitialized();
+  py::gil_scoped_acquire gil;
+  auto func = cache.GetFunc(func_name);
+  py::tuple py_args = BuildPyArgs(args, func_name);
+
+  static py::module_ torch_mod = py::module_::import("torch");
+  // device=flagos:0 -> gems' internal torch.empty(...) allocates on PrivateUse1
+  // via our own allocator (no recursion, no CUDA copy). Uses the registered
+  // PrivateUse1 backend name so it stays correct if the alias changes.
+  py::object flagos_dev = torch_mod.attr("device")(
+      torch_mod.attr("_C").attr("_get_privateuse1_backend_name")(), 0);
+  py::object result = func(
+      *py_args,
+      "dtype"_a = OptionalDtypeToPython(dtype),
+      "layout"_a = torch_mod.attr("strided"),
+      "device"_a = flagos_dev,
+      "pin_memory"_a = py::none());
+  return PythonToTensor(result);
+}
+
 std::vector<at::Tensor> CallPythonOp_GenericKwTuple(
     const char* func_name, const std::vector<c10::IValue>& args,
     const std::vector<PyKwarg>& kwargs, int64_t n) {

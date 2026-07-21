@@ -90,6 +90,16 @@ std::vector<at::Tensor> CallPythonOp_GenericKwTuple(
     const char* func_name, const std::vector<c10::IValue>& args,
     const std::vector<PyKwarg>& kwargs, int64_t n);
 
+// Factory caller (arange/eye/full/ones/zeros/linspace/...). `args` are the
+// shape/scalar positionals; the tensor-options are injected as kwargs:
+// device=flagos (so gems' internal torch.empty hits OUR allocator and produces
+// a PrivateUse1 tensor -- no CUDA round-trip, no recursion), layout=strided
+// (gems eye/randperm validate layout, None is rejected), pin_memory=None, and
+// dtype forwarded from the aten call (nullopt -> None, else the ScalarType).
+at::Tensor CallPythonOp_Factory(const char* func_name,
+                                const std::vector<c10::IValue>& args,
+                                std::optional<at::ScalarType> dtype);
+
 // Like CallPythonOp_Generic, but the Python op returns a tuple/list of N tensors
 // (e.g. sort -> (values, indices), var_mean -> (var, mean)). Returns the N
 // tensors in order. Used by the codegen tuple_return kernels.

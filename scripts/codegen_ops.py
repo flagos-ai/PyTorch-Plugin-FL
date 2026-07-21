@@ -355,7 +355,14 @@ def _flaggems_extra_trailing_ok(fn, ncall):
 
 
 # Categories the FlagGems Python path knows how to generate kernels for.
-_FLAGGEMS_PY_CATEGORIES = {"functional_pure", "inplace", "tuple_return", "out_variant"}
+_FLAGGEMS_PY_CATEGORIES = {"functional_pure", "inplace", "tuple_return",
+                           "out_variant", "factory"}
+
+# TensorOptions field names carried by every factory schema after the shape/
+# scalar positionals. The factory caller injects these itself (device=flagos,
+# layout=strided, dtype forwarded, pin_memory=None), so they're stripped from
+# the positional list the codegen passes.
+_FLAGGEMS_TENSOROPT_FIELDS = {"dtype", "layout", "device", "pin_memory"}
 
 # Ops manually held out of the FlagGems Python path (populated during the
 # compile/import/numerical convergence loop with the reason as a comment).
@@ -377,6 +384,14 @@ FLAGGEMS_PYTHON_SKIP = {
     # Same device assert ("Input tensor must be on CUDA device"): gems
     # _safe_softmax rejects the PrivateUse1 tensor before running.
     "_safe_softmax",
+    # Random factories: gems reaches for default_generators[device], but the
+    # PrivateUse1 device has no default generator (IndexError), and randperm
+    # asserts an explicit int dtype. Same root cause as the Generator? blocked
+    # group -- can't be expressed without a per-device generator. See
+    # [[flaggems-gap-analysis]].
+    "rand",
+    "randn",
+    "randperm",
 }
 
 
@@ -434,6 +449,32 @@ def discover_flaggems_ops(codegen_ops, funcs):
         # kwargs: aten trailing args gems declares keyword-only (dtype/alpha/...).
         # Filled by the arity_short branch below; each entry is (name, aten_type).
         kwargs = []
+        if cat == "factory":
+            # Factory: split off the TensorOptions fields (dtype/layout/device/
+            # pin_memory); the factory caller injects device=flagos,
+            # layout=strided, pin_memory=None and forwards dtype. Only the
+            # shape/scalar positionals are passed. Require gems to declare
+            # dtype/layout/device by name (kwonly on every gems factory) and its
+            # positional count to match the non-option args.
+            all_pairs = [(str(a.type), a.name) for a in aten_args]
+            positional = [(t, n) for t, n in all_pairs
+                          if n not in _FLAGGEMS_TENSOROPT_FIELDS]
+            has_opts = any(n in _FLAGGEMS_TENSOROPT_FIELDS for _t, n in all_pairs)
+            byname = _flaggems_gems_byname_params(fn)
+            # gems must accept dtype/layout/device by name, and take exactly the
+            # shape/scalar positionals (npos may exceed via a defaulted step, e.g.
+            # arange.start's gems has an extra `step` default -> allow >=).
+            if (not has_opts
+                    or not {"dtype", "layout", "device"} <= byname
+                    or npos < len(positional)
+                    or (npos > len(positional)
+                        and not _flaggems_extra_trailing_ok(fn, len(positional)))):
+                continue
+            if not all(_flaggems_type_ok(t) for t, _ in positional):
+                continue
+            qualname = f"{fn.__module__}.{fn.__name__}"
+            result[op] = (qualname, "factory", positional)
+            continue
         if cat == "out_variant":
             non_out = [(str(a.type), a.name) for a in aten_args if a not in out_args]
             with_out = non_out + [(str(a.type), a.name) for a in out_args]
@@ -580,6 +621,43 @@ def gen_flaggems_python_kernel(op, fn_type, ret_type, args, gems_func, category,
     s = func.func
     aten_args = list(s.arguments.flat_all)
     out_args = list(s.arguments.out) if hasattr(s.arguments, "out") else []
+
+    if category == "factory":
+        # Factory: pass only the shape/scalar positionals; the factory caller
+        # injects device=flagos/layout=strided/pin_memory=None and forwards
+        # dtype. `kwargs` here carries the positional (aten_type, name) list.
+        positional = kwargs or []
+        pos_names = [n for _t, n in positional]
+        dtype_name = next(
+            (a.name for a in aten_args if a.name == "dtype"), None)
+        dtype_expr = dtype_name if dtype_name else "::std::nullopt"
+        pos_init = "{" + ", ".join(pos_names) + "}"
+        infer = ""
+        # arange: gems defaults dtype=None to int64 unconditionally, but aten
+        # infers float when ANY of start/end/step is floating. Left alone, gems
+        # returns silently-wrong integer values for arange(0.,3.,.5). Replicate
+        # aten's rule here so gems always gets an explicit dtype. Only arange has
+        # this value-dependent inference; the other factories default to float32,
+        # which gems already produces correctly.
+        if op.startswith("arange"):
+            scalar_names = [n for t, n in positional if "Scalar" in t]
+            any_float = " || ".join(f"{n}.isFloatingPoint()" for n in scalar_names)
+            infer = (
+                f"  ::std::optional<at::ScalarType> _dt = {dtype_expr};\n"
+                f"  if (!_dt.has_value()) _dt = ({any_float})\n"
+                f"      ? at::typeMetaToScalarType(at::get_default_dtype()) "
+                f": at::kLong;\n"
+            )
+            dtype_expr = "_dt"
+        body = (
+            f"{infer}"
+            f'  auto result = CallPythonOp_Factory("{gems_func}", '
+            f'{pos_init}, {dtype_expr});\n'
+            f"  UnboxToFlagos(result);\n"
+            f"  return result;"
+        )
+        return f"{ret_type} {kn}({args_decl(args)}) {{\n{body}\n}}"
+
     kwargs = kwargs or []
     kw_names = {name for _t, name in kwargs}
 

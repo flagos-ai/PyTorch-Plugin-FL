@@ -201,6 +201,33 @@ at::Tensor AnyDimsKernelPython(const at::Tensor & self, at::OptionalIntArrayRef 
   return result;
 }
 
+at::Tensor ArangeKernelPython(const at::Scalar & end, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
+  ::std::optional<at::ScalarType> _dt = dtype;
+  if (!_dt.has_value()) _dt = (end.isFloatingPoint())
+      ? at::typeMetaToScalarType(at::get_default_dtype()) : at::kLong;
+  auto result = CallPythonOp_Factory("flag_gems.ops.arange.arange", {end}, _dt);
+  UnboxToFlagos(result);
+  return result;
+}
+
+at::Tensor ArangeStartKernelPython(const at::Scalar & start, const at::Scalar & end, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
+  ::std::optional<at::ScalarType> _dt = dtype;
+  if (!_dt.has_value()) _dt = (start.isFloatingPoint() || end.isFloatingPoint())
+      ? at::typeMetaToScalarType(at::get_default_dtype()) : at::kLong;
+  auto result = CallPythonOp_Factory("flag_gems.ops.arange.arange_start", {start, end}, _dt);
+  UnboxToFlagos(result);
+  return result;
+}
+
+at::Tensor ArangeStartStepKernelPython(const at::Scalar & start, const at::Scalar & end, const at::Scalar & step, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
+  ::std::optional<at::ScalarType> _dt = dtype;
+  if (!_dt.has_value()) _dt = (start.isFloatingPoint() || end.isFloatingPoint() || step.isFloatingPoint())
+      ? at::typeMetaToScalarType(at::get_default_dtype()) : at::kLong;
+  auto result = CallPythonOp_Factory("flag_gems.ops.arange.arange_start", {start, end, step}, _dt);
+  UnboxToFlagos(result);
+  return result;
+}
+
 at::Tensor ArgmaxKernelPython(const at::Tensor & self, ::std::optional<int64_t> dim, bool keepdim) {
   auto result = CallPythonOp_Generic("flag_gems.ops.argmax.argmax", {self, dim, keepdim});
   UnboxToFlagos(result);
@@ -647,6 +674,18 @@ at::Tensor & Expm1InplaceKernelPython(at::Tensor & self) {
   return self;
 }
 
+at::Tensor EyeKernelPython(int64_t n, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
+  auto result = CallPythonOp_Factory("flag_gems.ops.eye.eye", {n}, dtype);
+  UnboxToFlagos(result);
+  return result;
+}
+
+at::Tensor EyeMKernelPython(int64_t n, int64_t m, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
+  auto result = CallPythonOp_Factory("flag_gems.ops.eye_m.eye_m", {n, m}, dtype);
+  UnboxToFlagos(result);
+  return result;
+}
+
 at::Tensor FillScalarKernelPython(const at::Tensor & self, const at::Scalar & value) {
   auto result = CallPythonOp_Generic("flag_gems.ops.fill.fill_scalar", {self, value});
   UnboxToFlagos(result);
@@ -728,6 +767,12 @@ at::Tensor FminKernelPython(const at::Tensor & self, const at::Tensor & other) {
 at::Tensor & FminOutKernelPython(const at::Tensor & self, const at::Tensor & other, at::Tensor & out) {
   CallPythonOp_Generic("flag_gems.ops.fmin.fmin_out", {self, other, out});
   return out;
+}
+
+at::Tensor FullKernelPython(at::IntArrayRef size, const at::Scalar & fill_value, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
+  auto result = CallPythonOp_Factory("flag_gems.ops.full.full", {size, fill_value}, dtype);
+  UnboxToFlagos(result);
+  return result;
 }
 
 at::Tensor GeScalarKernelPython(const at::Tensor & self, const at::Scalar & other) {
@@ -914,6 +959,12 @@ at::Tensor LinalgVectorNormKernelPython(const at::Tensor & self, const at::Scala
   return result;
 }
 
+at::Tensor LinspaceKernelPython(const at::Scalar & start, const at::Scalar & end, int64_t steps, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
+  auto result = CallPythonOp_Factory("flag_gems.ops.linspace.linspace", {start, end, steps}, dtype);
+  UnboxToFlagos(result);
+  return result;
+}
+
 at::Tensor LogKernelPython(const at::Tensor & self) {
   auto result = CallPythonOp_Generic("flag_gems.ops.log.log", {self});
   UnboxToFlagos(result);
@@ -986,6 +1037,12 @@ at::Tensor LogicalXorKernelPython(const at::Tensor & self, const at::Tensor & ot
 
 at::Tensor LogitKernelPython(const at::Tensor & self, ::std::optional<double> eps) {
   auto result = CallPythonOp_Generic("flag_gems.ops.logit.logit", {self, eps});
+  UnboxToFlagos(result);
+  return result;
+}
+
+at::Tensor LogspaceKernelPython(const at::Scalar & start, const at::Scalar & end, int64_t steps, double base, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
+  auto result = CallPythonOp_Factory("flag_gems.ops.logspace.logspace", {start, end, steps, base}, dtype);
   UnboxToFlagos(result);
   return result;
 }
@@ -1238,6 +1295,12 @@ at::Tensor NllLossBackwardKernelPython(const at::Tensor & grad_output, const at:
 
 at::Tensor NonzeroKernelPython(const at::Tensor & self) {
   auto result = CallPythonOp_Generic("flag_gems.ops.nonzero.nonzero", {self});
+  UnboxToFlagos(result);
+  return result;
+}
+
+at::Tensor OnesKernelPython(at::IntArrayRef size, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
+  auto result = CallPythonOp_Factory("flag_gems.ops.ones.ones", {size}, dtype);
   UnboxToFlagos(result);
   return result;
 }
@@ -1771,6 +1834,12 @@ at::Tensor & ZeroInplaceKernelPython(at::Tensor & self) {
   return self;
 }
 
+at::Tensor ZerosKernelPython(at::IntArrayRef size, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
+  auto result = CallPythonOp_Factory("flag_gems.ops.zeros.zeros", {size}, dtype);
+  UnboxToFlagos(result);
+  return result;
+}
+
 } // namespace
 
 REGISTER_IMPL_TO_DISPATCHER(PrivConvDepthwise2dFn, priv_conv_depthwise2d_dispatcher, Backend::kFlagOsPython, PrivConvDepthwise2dKernelPython)
@@ -1804,6 +1873,9 @@ REGISTER_IMPL_TO_DISPATCHER(AngleFn, angle_dispatcher, Backend::kFlagOsPython, A
 REGISTER_IMPL_TO_DISPATCHER(AnyFn, any_dispatcher, Backend::kFlagOsPython, AnyKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(AnyDimFn, any_dim_dispatcher, Backend::kFlagOsPython, AnyDimKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(AnyDimsFn, any_dims_dispatcher, Backend::kFlagOsPython, AnyDimsKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(ArangeFn, arange_dispatcher, Backend::kFlagOsPython, ArangeKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(ArangeStartFn, arange_start_dispatcher, Backend::kFlagOsPython, ArangeStartKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(ArangeStartStepFn, arange_start_step_dispatcher, Backend::kFlagOsPython, ArangeStartStepKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(ArgmaxFn, argmax_dispatcher, Backend::kFlagOsPython, ArgmaxKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(ArgminFn, argmin_dispatcher, Backend::kFlagOsPython, ArgminKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(AtanFn, atan_dispatcher, Backend::kFlagOsPython, AtanKernelPython)
@@ -1879,6 +1951,8 @@ REGISTER_IMPL_TO_DISPATCHER(ExpInplaceFn, exp_inplace_dispatcher, Backend::kFlag
 REGISTER_IMPL_TO_DISPATCHER(Expm1Fn, expm1_dispatcher, Backend::kFlagOsPython, Expm1KernelPython)
 REGISTER_IMPL_TO_DISPATCHER(Expm1OutFn, expm1_out_dispatcher, Backend::kFlagOsPython, Expm1OutKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(Expm1InplaceFn, expm1_inplace_dispatcher, Backend::kFlagOsPython, Expm1InplaceKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(EyeFn, eye_dispatcher, Backend::kFlagOsPython, EyeKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(EyeMFn, eye_m_dispatcher, Backend::kFlagOsPython, EyeMKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(FillScalarFn, fill_scalar_dispatcher, Backend::kFlagOsPython, FillScalarKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(FillScalarOutFn, fill_scalar_out_dispatcher, Backend::kFlagOsPython, FillScalarOutKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(FillTensorFn, fill_tensor_dispatcher, Backend::kFlagOsPython, FillTensorKernelPython)
@@ -1893,6 +1967,7 @@ REGISTER_IMPL_TO_DISPATCHER(FloorDivideInplaceScalarFn, floor_divide_inplace_sca
 REGISTER_IMPL_TO_DISPATCHER(FloorDivideInplaceTensorFn, floor_divide_inplace_tensor_dispatcher, Backend::kFlagOsPython, FloorDivideInplaceTensorKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(FminFn, fmin_dispatcher, Backend::kFlagOsPython, FminKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(FminOutFn, fmin_out_dispatcher, Backend::kFlagOsPython, FminOutKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(FullFn, full_dispatcher, Backend::kFlagOsPython, FullKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(GeScalarFn, ge_scalar_dispatcher, Backend::kFlagOsPython, GeScalarKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(GeTensorFn, ge_tensor_dispatcher, Backend::kFlagOsPython, GeTensorKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(GeluFn, gelu_dispatcher, Backend::kFlagOsPython, GeluKernelPython)
@@ -1924,6 +1999,7 @@ REGISTER_IMPL_TO_DISPATCHER(LerpTensorFn, lerp_tensor_dispatcher, Backend::kFlag
 REGISTER_IMPL_TO_DISPATCHER(LerpInplaceScalarFn, lerp_inplace_scalar_dispatcher, Backend::kFlagOsPython, LerpInplaceScalarKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(LerpInplaceTensorFn, lerp_inplace_tensor_dispatcher, Backend::kFlagOsPython, LerpInplaceTensorKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(LinalgVectorNormFn, linalg_vector_norm_dispatcher, Backend::kFlagOsPython, LinalgVectorNormKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(LinspaceFn, linspace_dispatcher, Backend::kFlagOsPython, LinspaceKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(LogFn, log_dispatcher, Backend::kFlagOsPython, LogKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(Log10Fn, log10_dispatcher, Backend::kFlagOsPython, Log10KernelPython)
 REGISTER_IMPL_TO_DISPATCHER(Log10OutFn, log10_out_dispatcher, Backend::kFlagOsPython, Log10OutKernelPython)
@@ -1937,6 +2013,7 @@ REGISTER_IMPL_TO_DISPATCHER(LogicalOrFn, logical_or_dispatcher, Backend::kFlagOs
 REGISTER_IMPL_TO_DISPATCHER(LogicalOrInplaceFn, logical_or_inplace_dispatcher, Backend::kFlagOsPython, LogicalOrInplaceKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(LogicalXorFn, logical_xor_dispatcher, Backend::kFlagOsPython, LogicalXorKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(LogitFn, logit_dispatcher, Backend::kFlagOsPython, LogitKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(LogspaceFn, logspace_dispatcher, Backend::kFlagOsPython, LogspaceKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(LtScalarFn, lt_scalar_dispatcher, Backend::kFlagOsPython, LtScalarKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(LtTensorFn, lt_tensor_dispatcher, Backend::kFlagOsPython, LtTensorKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(MaskedFillScalarFn, masked_fill_scalar_dispatcher, Backend::kFlagOsPython, MaskedFillScalarKernelPython)
@@ -1976,6 +2053,7 @@ REGISTER_IMPL_TO_DISPATCHER(NllLoss2dForwardFn, nll_loss2d_forward_dispatcher, B
 REGISTER_IMPL_TO_DISPATCHER(NllLossBackwardFn, nll_loss_backward_dispatcher, Backend::kFlagOsPython, NllLossBackwardKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(NllLossForwardFn, nll_loss_forward_dispatcher, Backend::kFlagOsPython, NllLossForwardKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(NonzeroFn, nonzero_dispatcher, Backend::kFlagOsPython, NonzeroKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(OnesFn, ones_dispatcher, Backend::kFlagOsPython, OnesKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(PixelUnshuffleOutFn, pixel_unshuffle_out_dispatcher, Backend::kFlagOsPython, PixelUnshuffleOutKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(PolarFn, polar_dispatcher, Backend::kFlagOsPython, PolarKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(PowScalarFn, pow_scalar_dispatcher, Backend::kFlagOsPython, PowScalarKernelPython)
@@ -2064,6 +2142,7 @@ REGISTER_IMPL_TO_DISPATCHER(VdotFn, vdot_dispatcher, Backend::kFlagOsPython, Vdo
 REGISTER_IMPL_TO_DISPATCHER(WhereSelfFn, where_self_dispatcher, Backend::kFlagOsPython, WhereSelfKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(WhereSelfOutFn, where_self_out_dispatcher, Backend::kFlagOsPython, WhereSelfOutKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(ZeroInplaceFn, zero_inplace_dispatcher, Backend::kFlagOsPython, ZeroInplaceKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(ZerosFn, zeros_dispatcher, Backend::kFlagOsPython, ZerosKernelPython)
 
 } // namespace at::native::flagos
 
