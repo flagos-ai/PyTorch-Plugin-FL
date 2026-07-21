@@ -374,6 +374,9 @@ FLAGGEMS_PYTHON_SKIP = {
     "upsample_nearest2d",
     "upsample_nearest3d",
     "_upsample_bicubic2d_aa",
+    # Same device assert ("Input tensor must be on CUDA device"): gems
+    # _safe_softmax rejects the PrivateUse1 tensor before running.
+    "_safe_softmax",
 }
 
 
@@ -466,6 +469,26 @@ def discover_flaggems_ops(codegen_ops, funcs):
                     continue
             else:
                 continue
+        # Promote ScalarType args out of the positional list into kwargs: the
+        # positional caller can't carry a ScalarType (IValue stores it as a plain
+        # int), but the by-name kwarg path tags it is_dtype and converts to a
+        # torch.dtype. Safe only if gems accepts the arg BY NAME (a param with the
+        # same name that isn't positional-only). This recovers ops like
+        # _softmax_backward_data / linalg_vector_norm where gems takes dtype as a
+        # positional-or-keyword param. See [[flaggems-gap-analysis]] type_gate_dtype.
+        promotable = _flaggems_gems_byname_params(fn)
+        promote_idx = [i for i, (t, name) in enumerate(passed)
+                       if t.startswith("ScalarType") and name in promotable]
+        # Only promote if the ScalarType args form a strict SUFFIX of the
+        # positional list. Promoting a middle arg would shift the following
+        # positionals into gems's dtype slot (wrong). All current ops have dtype
+        # last, so this holds; the guard rejects any future middle-dtype op.
+        if promote_idx and promote_idx == list(range(promote_idx[0], len(passed))):
+            promoted = passed[promote_idx[0]:]
+            passed = passed[:promote_idx[0]]
+            kwargs = promoted + kwargs
+        elif promote_idx:
+            continue  # non-suffix ScalarType -> can't safely reorder
         if not all(_flaggems_type_ok(t) for t, _ in passed):
             continue
         if kwargs and not all(t in _FLAGGEMS_KWARG_OK for t, _ in kwargs):
@@ -473,6 +496,20 @@ def discover_flaggems_ops(codegen_ops, funcs):
         qualname = f"{fn.__module__}.{fn.__name__}"
         result[op] = (qualname, resolved_cat, kwargs)
     return result
+
+
+def _flaggems_gems_byname_params(fn):
+    """Names of gems params that can be passed BY NAME (keyword-only OR
+    positional-or-keyword, i.e. anything except positional-only). Used to promote
+    a ScalarType positional aten arg into a by-name kwarg the caller can convert
+    to a torch.dtype."""
+    import inspect
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (ValueError, TypeError):
+        return set()
+    return {p.name for p in params
+            if p.kind in (p.KEYWORD_ONLY, p.POSITIONAL_OR_KEYWORD)}
 
 
 def _flaggems_split_kwargs(fn, npos, all_passed):

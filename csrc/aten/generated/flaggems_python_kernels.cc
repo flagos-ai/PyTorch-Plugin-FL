@@ -28,8 +28,20 @@ at::Tensor PrivLogSoftmaxKernelPython(const at::Tensor & self, int64_t dim, bool
   return result;
 }
 
+at::Tensor PrivLogSoftmaxBackwardDataKernelPython(const at::Tensor & grad_output, const at::Tensor & output, int64_t dim, at::ScalarType input_dtype) {
+  auto result = CallPythonOp_GenericKw("flag_gems.ops.log_softmax.log_softmax_backward", {grad_output, output, dim}, {PyKwarg{"input_dtype", c10::IValue(static_cast<int64_t>(input_dtype)), /*is_dtype=*/true}});
+  UnboxToFlagos(result);
+  return result;
+}
+
 at::Tensor PrivSoftmaxKernelPython(const at::Tensor & self, int64_t dim, bool half_to_float) {
   auto result = CallPythonOp_Generic("flag_gems.ops.softmax.softmax", {self, dim, half_to_float});
+  UnboxToFlagos(result);
+  return result;
+}
+
+at::Tensor PrivSoftmaxBackwardDataKernelPython(const at::Tensor & grad_output, const at::Tensor & output, int64_t dim, at::ScalarType input_dtype) {
+  auto result = CallPythonOp_GenericKw("flag_gems.ops.softmax.softmax_backward", {grad_output, output, dim}, {PyKwarg{"input_dtype", c10::IValue(static_cast<int64_t>(input_dtype)), /*is_dtype=*/true}});
   UnboxToFlagos(result);
   return result;
 }
@@ -896,6 +908,12 @@ at::Tensor & LerpInplaceTensorKernelPython(at::Tensor & self, const at::Tensor &
   return self;
 }
 
+at::Tensor LinalgVectorNormKernelPython(const at::Tensor & self, const at::Scalar & ord, at::OptionalIntArrayRef dim, bool keepdim, ::std::optional<at::ScalarType> dtype) {
+  auto result = CallPythonOp_GenericKw("flag_gems.ops.vector_norm.vector_norm", {self, ord, dim, keepdim}, {PyKwarg{"dtype", dtype.has_value() ? c10::IValue(static_cast<int64_t>(*dtype)) : c10::IValue(), /*is_dtype=*/true, /*is_none=*/!dtype.has_value()}});
+  UnboxToFlagos(result);
+  return result;
+}
+
 at::Tensor LogKernelPython(const at::Tensor & self) {
   auto result = CallPythonOp_Generic("flag_gems.ops.log.log", {self});
   UnboxToFlagos(result);
@@ -1758,7 +1776,9 @@ at::Tensor & ZeroInplaceKernelPython(at::Tensor & self) {
 REGISTER_IMPL_TO_DISPATCHER(PrivConvDepthwise2dFn, priv_conv_depthwise2d_dispatcher, Backend::kFlagOsPython, PrivConvDepthwise2dKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(PrivIsAllTrueFn, priv_is_all_true_dispatcher, Backend::kFlagOsPython, PrivIsAllTrueKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(PrivLogSoftmaxFn, priv_log_softmax_dispatcher, Backend::kFlagOsPython, PrivLogSoftmaxKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(PrivLogSoftmaxBackwardDataFn, priv_log_softmax_backward_data_dispatcher, Backend::kFlagOsPython, PrivLogSoftmaxBackwardDataKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(PrivSoftmaxFn, priv_softmax_dispatcher, Backend::kFlagOsPython, PrivSoftmaxKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(PrivSoftmaxBackwardDataFn, priv_softmax_backward_data_dispatcher, Backend::kFlagOsPython, PrivSoftmaxBackwardDataKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(PrivUnique2Fn, priv_unique2_dispatcher, Backend::kFlagOsPython, PrivUnique2KernelPython)
 REGISTER_IMPL_TO_DISPATCHER(PrivUpsampleBicubic2dAaBackwardFn, priv_upsample_bicubic2d_aa_backward_dispatcher, Backend::kFlagOsPython, PrivUpsampleBicubic2dAaBackwardKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(PrivWeightNormInterfaceFn, priv_weight_norm_interface_dispatcher, Backend::kFlagOsPython, PrivWeightNormInterfaceKernelPython)
@@ -1903,6 +1923,7 @@ REGISTER_IMPL_TO_DISPATCHER(LerpScalarFn, lerp_scalar_dispatcher, Backend::kFlag
 REGISTER_IMPL_TO_DISPATCHER(LerpTensorFn, lerp_tensor_dispatcher, Backend::kFlagOsPython, LerpTensorKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(LerpInplaceScalarFn, lerp_inplace_scalar_dispatcher, Backend::kFlagOsPython, LerpInplaceScalarKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(LerpInplaceTensorFn, lerp_inplace_tensor_dispatcher, Backend::kFlagOsPython, LerpInplaceTensorKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(LinalgVectorNormFn, linalg_vector_norm_dispatcher, Backend::kFlagOsPython, LinalgVectorNormKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(LogFn, log_dispatcher, Backend::kFlagOsPython, LogKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(Log10Fn, log10_dispatcher, Backend::kFlagOsPython, Log10KernelPython)
 REGISTER_IMPL_TO_DISPATCHER(Log10OutFn, log10_out_dispatcher, Backend::kFlagOsPython, Log10OutKernelPython)
