@@ -228,12 +228,24 @@ OPS = {
     # ---- prod: (Tensor, optional dtype) -> scalar ----
     "prod":               ("prod", "Prod"),
 
-    # ---- gemm family (cubeMathType). addbmm reduces the batch dim (2D out) and
-    #      addmv/addr have different arg order / no cubeMathType -> left long-tail.
+    # ---- gemm family (cubeMathType) ----
     "addmm":              ("gemm_addmm", "Addmm"),
     "baddbmm":            ("gemm_baddbmm", "Baddbmm"),
     "mv":                 ("mv", "Mv"),
     "dot":                ("dot", "Dot"),
+    # addmv: mat(n,m) x vec(m) -> (n,); aclnn arg order is (self,mat,vec,ALPHA,BETA).
+    "addmv":              ("gemm_addmv", "Addmv"),
+    # addr: outer(vec1(n), vec2(m)) -> (n,m); no cubeMathType.
+    "addr":               ("gemm_addr", "Addr"),
+    # NOTE addbmm left out: hf32 cube accumulation over the batch dim inflates
+    #   rel-err to ~1e-2 (single addmm is ~1e-4). native_batch_norm left out:
+    #   aclnnBatchNorm returns ACLNN_ERR_INNER_NULLPTR (561103) on 4D NCHW input
+    #   (2D N,C works), needs a bespoke format/variant batch -> long-tail.
+
+    # ---- BCE loss family: optional weight, int reduction (0=none/1=mean/2=sum) ----
+    "binary_cross_entropy":              ("bce", "BinaryCrossEntropy"),
+    "binary_cross_entropy_backward":     ("bce_backward", "BinaryCrossEntropyBackward"),
+    "binary_cross_entropy_with_logits":  ("bce_logits", "BinaryCrossEntropyWithLogits"),
 
     # ---- norm family: tuple(out, mean, rstd), optional weight/bias ----
     "native_layer_norm":  ("layer_norm", "LayerNorm"),
@@ -910,6 +922,121 @@ at::Tensor {kernel}(const at::Tensor& self, const at::Tensor& tensor) {{
 REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
 """
 
+# gemm_addmv: (self, mat(n,m), vec(m), beta, alpha) -> (n,). NOTE the aclnn arg
+#   order is (self, mat, vec, ALPHA, BETA) -- alpha before beta, unlike addmm.
+T_GEMM_ADDMV = """\
+at::Tensor {kernel}(const at::Tensor& self, const at::Tensor& mat, const at::Tensor& vec, const at::Scalar& beta, const at::Scalar& alpha) {{
+  namespace ascend = at::native::flagos::ascend;
+  int8_t cube_math_type = ascend::OpPreparation::get_cube_math_type(true);
+  std::vector<int64_t> out_shape = {{mat.size(0)}};
+  auto out = ascend::OpPreparation::apply_tensor_without_format(out_shape, self.options());
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_mat(mat);
+  ascend::AclTensorWrapper acl_vec(vec);
+  ascend::AclScalarWrapper acl_beta(beta, self.scalar_type());
+  ascend::AclScalarWrapper acl_alpha(alpha, self.scalar_type());
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_mat.get(), acl_vec.get(), acl_alpha.get(), acl_beta.get(), acl_out.get(), cube_math_type);
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# gemm_addr: (self, vec1(n), vec2(m), beta, alpha) -> (n,m) outer product.
+#   aclnnAddr(self, vec1, vec2, beta, alpha, out) -- no cubeMathType.
+T_GEMM_ADDR = """\
+at::Tensor {kernel}(const at::Tensor& self, const at::Tensor& vec1, const at::Tensor& vec2, const at::Scalar& beta, const at::Scalar& alpha) {{
+  namespace ascend = at::native::flagos::ascend;
+  std::vector<int64_t> out_shape = {{vec1.size(0), vec2.size(0)}};
+  auto out = ascend::OpPreparation::apply_tensor_without_format(out_shape, self.options());
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_vec1(vec1);
+  ascend::AclTensorWrapper acl_vec2(vec2);
+  ascend::AclScalarWrapper acl_beta(beta, self.scalar_type());
+  ascend::AclScalarWrapper acl_alpha(alpha, self.scalar_type());
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_vec1.get(), acl_vec2.get(), acl_beta.get(), acl_alpha.get(), acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# bce: (self, target, optional weight, int reduction) -> Tensor.
+#   aclnnBinaryCrossEntropy(self, target, weight, reduction, out).
+#   reduction 0=none -> out=self.shape; 1=mean/2=sum -> scalar. weight may be
+#   undefined -> AclTensorWrapper yields nullptr (aclnn treats as absent).
+T_BCE = """\
+at::Tensor {kernel}(const at::Tensor& self, const at::Tensor& target, const ::std::optional<at::Tensor>& weight, int64_t reduction) {{
+  namespace ascend = at::native::flagos::ascend;
+  std::vector<int64_t> out_shape;   // scalar for mean/sum
+  if (reduction == 0) out_shape = self.sizes().vec();
+  auto out = ascend::OpPreparation::apply_tensor_without_format(out_shape, self.options());
+
+  at::Tensor weight_t = weight.value_or(at::Tensor());
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_target(target);
+  ascend::AclTensorWrapper acl_weight(weight_t);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_target.get(), acl_weight.get(), reduction, acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# bce_backward: (grad_output, self, target, optional weight, int reduction).
+#   aclnnBinaryCrossEntropyBackward(grad, self, target, weight, reduction, out).
+#   grad_input = self.shape.
+T_BCE_BACKWARD = """\
+at::Tensor {kernel}(const at::Tensor& grad_output, const at::Tensor& self, const at::Tensor& target, const ::std::optional<at::Tensor>& weight, int64_t reduction) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto grad_input = ascend::OpPreparation::apply_tensor_without_format(self.sizes(), self.options());
+
+  at::Tensor weight_t = weight.value_or(at::Tensor());
+  ascend::AclTensorWrapper acl_grad_output(grad_output);
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_target(target);
+  ascend::AclTensorWrapper acl_weight(weight_t);
+  ascend::AclTensorWrapper acl_grad_input(grad_input);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_grad_output.get(), acl_self.get(), acl_target.get(), acl_weight.get(), reduction, acl_grad_input.get());
+  return grad_input;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# bce_logits: (self, target, optional weight, optional pos_weight, reduction).
+#   aclnnBinaryCrossEntropyWithLogits(self, target, weight, posWeight, reduction, out).
+T_BCE_LOGITS = """\
+at::Tensor {kernel}(const at::Tensor& self, const at::Tensor& target, const ::std::optional<at::Tensor>& weight, const ::std::optional<at::Tensor>& pos_weight, int64_t reduction) {{
+  namespace ascend = at::native::flagos::ascend;
+  std::vector<int64_t> out_shape;   // scalar for mean/sum
+  if (reduction == 0) out_shape = self.sizes().vec();
+  auto out = ascend::OpPreparation::apply_tensor_without_format(out_shape, self.options());
+
+  at::Tensor weight_t = weight.value_or(at::Tensor());
+  at::Tensor pos_weight_t = pos_weight.value_or(at::Tensor());
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_target(target);
+  ascend::AclTensorWrapper acl_weight(weight_t);
+  ascend::AclTensorWrapper acl_pos_weight(pos_weight_t);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_target.get(), acl_weight.get(), acl_pos_weight.get(), reduction, acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
 # native_layer_norm: (input, IntArrayRef normalized_shape, optional weight,
 #   optional bias, double eps) -> tuple(out, mean, rstd).
 #   aclnn<Name>(input, normShape, weight, bias, eps, out, meanOut, rstdOut)
@@ -1098,8 +1225,13 @@ CATEGORIES = {
     "prod":                T_PROD,
     "gemm_addmm":          T_GEMM_ADDMM,
     "gemm_baddbmm":        T_GEMM_BADDBMM,
+    "gemm_addmv":          T_GEMM_ADDMV,
+    "gemm_addr":           T_GEMM_ADDR,
     "mv":                  T_MV,
     "dot":                 T_DOT,
+    "bce":                 T_BCE,
+    "bce_backward":        T_BCE_BACKWARD,
+    "bce_logits":          T_BCE_LOGITS,
     "layer_norm":          T_LAYER_NORM,
     "group_norm":          T_GROUP_NORM,
     "gelu":                T_GELU,

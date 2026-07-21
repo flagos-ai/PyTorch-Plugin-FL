@@ -56,7 +56,7 @@ CUDA 侧 `scripts/codegen_ops.py` 生成 `generated/cuda_kernels.cc`，内核体
 
 ## 4. 类别体系（逐类扩）
 
-已实现 35 个类别，共 98 个算子（真机全部与 CPU 对拍通过）：
+已实现 40 个类别，共 103 个算子（真机全部与 CPU 对拍通过）：
 
 | category | 判据 | 输出形状 / dtype | 内核体模板 |
 |---|---|---|---|
@@ -95,6 +95,11 @@ CUDA 侧 `scripts/codegen_ops.py` 生成 `generated/cuda_kernels.cc`，内核体
 | `gelu_backward` | grad_output + self + `approximate` | = self | `aclnnGeluBackwardV2(grad, self, approx_str, grad_in)`（char\* 字符串） |
 | `log_softmax` | Tensor + `int64_t dim` + half_to_float | = 输入（half_to_float→float 出） | `aclnn<Name>(self, dim, out)` |
 | `softmax_backward` | grad_output + output + `int64_t dim` + input_dtype | = grad_output shape，dtype=input_dtype | `aclnn<Name>(grad, output, dim, grad_in)` |
+| `gemm_addmv` | self + mat(n,m) + vec(m) + beta + alpha | (n,) | `aclnn<Name>(self,mat,vec,ALPHA,BETA,out,cubeMathType)`（**alpha 在 beta 前**） |
+| `gemm_addr` | self + vec1(n) + vec2(m) + beta + alpha | (n,m) 外积 | `aclnn<Name>(self,vec1,vec2,beta,alpha,out)`（无 cubeMathType） |
+| `bce` | self + target + optional weight + int reduction | None→输入 / Mean·Sum→标量 | `aclnn<Name>(self,target,weight,reduction,out)` |
+| `bce_backward` | grad_output + self + target + optional weight + reduction | = self | `aclnn<Name>(grad,self,target,weight,reduction,grad_in)` |
+| `bce_logits` | self + target + optional weight + optional pos_weight + reduction | None→输入 / Mean·Sum→标量 | `aclnn<Name>(self,target,weight,posWeight,reduction,out)` |
 
 - **unary（28）**：sqrt/exp/tanh/sigmoid/reciprocal/log/floor/ceil/erf/erfc/expm1/
   log2/log10/log1p/round/trunc/frac/sign/relu/cosh/sinh/asin/atan/asinh/acosh/atanh/
@@ -124,7 +129,8 @@ CUDA 侧 `scripts/codegen_ops.py` 生成 `generated/cuda_kernels.cc`，内核体
 - **cummax_cummin（2）**：cummax/cummin（tuple 返回，同形状扫描）
 - **aminmax（1）**：aminmax（tuple(min,max)，optional dim）
 - **prod（1）**：prod（缩到标量）
-- **gemm 家族（4）**：addmm/baddbmm（cube_math_type）/mv/dot
+- **gemm 家族（6）**：addmm/baddbmm（cube_math_type）/mv/dot/addmv（alpha,beta 顺序反）/addr（无 cube_math_type）
+- **bce 家族（3）**：binary_cross_entropy（+ optional weight）/binary_cross_entropy_backward/binary_cross_entropy_with_logits（+ optional pos_weight）
 - **layer_norm（1）**：native_layer_norm（tuple(out,mean,rstd)，transformer 主干）
 - **group_norm（1）**：native_group_norm（tuple(out,mean,rstd)）
 - **gelu（1）**：gelu（用 aclnnGeluV2 支持 none/tanh 两种近似；见下方"gelu 的 V2 坑"）
@@ -134,7 +140,12 @@ CUDA 侧 `scripts/codegen_ops.py` 生成 `generated/cuda_kernels.cc`，内核体
 
 长尾未接（进后续或手写）：var/std.correction、norm.ScalarOpt_dim（correction/p 参数）、
 argmax/argmin/logsumexp/isnan/masked_fill/remainder/relu6（无 aclnn 符号或需特殊派生）、
-卷积/池化/native_batch_norm 家族（各自 bespoke，需专门批次）。
+卷积/池化家族（各自 bespoke，需输出形状公式，专门批次）。
+- **addbmm**：符号存在且能跑，但 hf32 cube 沿 batch 维累加把相对误差放大到 ~1e-2
+  （单次 addmm 仅 ~1e-4）。留待允许 fp32 累加或降 cubeMathType 时再接。
+- **native_batch_norm**：`aclnnBatchNorm` 对 2D (N,C) 输入正常，但 4D NCHW 输入返回
+  `ACLNN_ERR_INNER_NULLPTR`(561103) —— GetWorkspaceSize 阶段就失败，疑似需要特定
+  format 或改用 BatchNormV2/BatchNormReduce 组合。留待 conv/pool 专门批次一起做。
 
 **关键坑（gelu 的 V2）**：`aclnnGelu`（v1）硬编码 **tanh** 近似，而 PyTorch 的 `gelu`
 默认 `approximate="none"`（erf 形式，qwen3 等主干用这个）。直接用 v1 会让默认 gelu 静默

@@ -1587,6 +1587,98 @@ at::Tensor DotKernelAscend(const at::Tensor& self, const at::Tensor& tensor) {
 
 REGISTER_IMPL_TO_DISPATCHER(DotFn, dot_dispatcher, Backend::kAscend, DotKernelAscend)
 
+at::Tensor AddmvKernelAscend(const at::Tensor& self, const at::Tensor& mat, const at::Tensor& vec, const at::Scalar& beta, const at::Scalar& alpha) {
+  namespace ascend = at::native::flagos::ascend;
+  int8_t cube_math_type = ascend::OpPreparation::get_cube_math_type(true);
+  std::vector<int64_t> out_shape = {mat.size(0)};
+  auto out = ascend::OpPreparation::apply_tensor_without_format(out_shape, self.options());
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_mat(mat);
+  ascend::AclTensorWrapper acl_vec(vec);
+  ascend::AclScalarWrapper acl_beta(beta, self.scalar_type());
+  ascend::AclScalarWrapper acl_alpha(alpha, self.scalar_type());
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD(aclnnAddmv, acl_self.get(), acl_mat.get(), acl_vec.get(), acl_alpha.get(), acl_beta.get(), acl_out.get(), cube_math_type);
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(AddmvFn, addmv_dispatcher, Backend::kAscend, AddmvKernelAscend)
+
+at::Tensor AddrKernelAscend(const at::Tensor& self, const at::Tensor& vec1, const at::Tensor& vec2, const at::Scalar& beta, const at::Scalar& alpha) {
+  namespace ascend = at::native::flagos::ascend;
+  std::vector<int64_t> out_shape = {vec1.size(0), vec2.size(0)};
+  auto out = ascend::OpPreparation::apply_tensor_without_format(out_shape, self.options());
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_vec1(vec1);
+  ascend::AclTensorWrapper acl_vec2(vec2);
+  ascend::AclScalarWrapper acl_beta(beta, self.scalar_type());
+  ascend::AclScalarWrapper acl_alpha(alpha, self.scalar_type());
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD(aclnnAddr, acl_self.get(), acl_vec1.get(), acl_vec2.get(), acl_beta.get(), acl_alpha.get(), acl_out.get());
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(AddrFn, addr_dispatcher, Backend::kAscend, AddrKernelAscend)
+
+at::Tensor BinaryCrossEntropyKernelAscend(const at::Tensor& self, const at::Tensor& target, const ::std::optional<at::Tensor>& weight, int64_t reduction) {
+  namespace ascend = at::native::flagos::ascend;
+  std::vector<int64_t> out_shape;   // scalar for mean/sum
+  if (reduction == 0) out_shape = self.sizes().vec();
+  auto out = ascend::OpPreparation::apply_tensor_without_format(out_shape, self.options());
+
+  at::Tensor weight_t = weight.value_or(at::Tensor());
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_target(target);
+  ascend::AclTensorWrapper acl_weight(weight_t);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD(aclnnBinaryCrossEntropy, acl_self.get(), acl_target.get(), acl_weight.get(), reduction, acl_out.get());
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(BinaryCrossEntropyFn, binary_cross_entropy_dispatcher, Backend::kAscend, BinaryCrossEntropyKernelAscend)
+
+at::Tensor BinaryCrossEntropyBackwardKernelAscend(const at::Tensor& grad_output, const at::Tensor& self, const at::Tensor& target, const ::std::optional<at::Tensor>& weight, int64_t reduction) {
+  namespace ascend = at::native::flagos::ascend;
+  auto grad_input = ascend::OpPreparation::apply_tensor_without_format(self.sizes(), self.options());
+
+  at::Tensor weight_t = weight.value_or(at::Tensor());
+  ascend::AclTensorWrapper acl_grad_output(grad_output);
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_target(target);
+  ascend::AclTensorWrapper acl_weight(weight_t);
+  ascend::AclTensorWrapper acl_grad_input(grad_input);
+
+  EXEC_ASCEND_CMD(aclnnBinaryCrossEntropyBackward, acl_grad_output.get(), acl_self.get(), acl_target.get(), acl_weight.get(), reduction, acl_grad_input.get());
+  return grad_input;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(BinaryCrossEntropyBackwardFn, binary_cross_entropy_backward_dispatcher, Backend::kAscend, BinaryCrossEntropyBackwardKernelAscend)
+
+at::Tensor BinaryCrossEntropyWithLogitsKernelAscend(const at::Tensor& self, const at::Tensor& target, const ::std::optional<at::Tensor>& weight, const ::std::optional<at::Tensor>& pos_weight, int64_t reduction) {
+  namespace ascend = at::native::flagos::ascend;
+  std::vector<int64_t> out_shape;   // scalar for mean/sum
+  if (reduction == 0) out_shape = self.sizes().vec();
+  auto out = ascend::OpPreparation::apply_tensor_without_format(out_shape, self.options());
+
+  at::Tensor weight_t = weight.value_or(at::Tensor());
+  at::Tensor pos_weight_t = pos_weight.value_or(at::Tensor());
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_target(target);
+  ascend::AclTensorWrapper acl_weight(weight_t);
+  ascend::AclTensorWrapper acl_pos_weight(pos_weight_t);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD(aclnnBinaryCrossEntropyWithLogits, acl_self.get(), acl_target.get(), acl_weight.get(), acl_pos_weight.get(), reduction, acl_out.get());
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(BinaryCrossEntropyWithLogitsFn, binary_cross_entropy_with_logits_dispatcher, Backend::kAscend, BinaryCrossEntropyWithLogitsKernelAscend)
+
 ::std::tuple<at::Tensor, at::Tensor, at::Tensor> NativeLayerNormKernelAscend(const at::Tensor& input, at::IntArrayRef normalized_shape, const ::std::optional<at::Tensor>& weight, const ::std::optional<at::Tensor>& bias, double eps) {
   namespace ascend = at::native::flagos::ascend;
   int64_t begin_axis = input.dim() - static_cast<int64_t>(normalized_shape.size());
