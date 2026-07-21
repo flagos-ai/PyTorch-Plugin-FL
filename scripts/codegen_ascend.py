@@ -108,9 +108,20 @@ OPS = {
     "atanh":        ("unary", None),
     "logical_not":  ("unary", None),
     "bitwise_not":  ("unary", None),
+    # migrated from handwritten seed kernels (bodies were identical to T_UNARY):
+    "abs":          ("unary", None),
+    "acos":         ("unary", None),
+    "cos":          ("unary", None),
+    "sin":          ("unary", None),
+    "neg":          ("unary", None),
+    "rsqrt":        ("unary", None),
+    "silu":         ("unary", None),
 
     # ---- binary: aclnn<Name>(self, other, out), broadcast, preserve dtype ----
     "div.Tensor":         ("binary", "Div"),
+    # migrated from handwritten seeds:
+    "mul.Tensor":         ("binary", "Mul"),
+    "bitwise_and.Tensor": ("binary", "BitwiseAndTensor"),
     "pow.Tensor_Tensor":  ("binary", "PowTensorTensor"),
     "atan2":              ("binary", None),
     "maximum":            ("binary", None),
@@ -120,6 +131,11 @@ OPS = {
 
     # ---- binary_alpha: aclnn<Name>(self, other, alpha, out) ----
     "sub.Tensor":         ("binary_alpha", "Sub"),
+    "add.Tensor":         ("binary_alpha", "Add"),   # migrated seed
+
+    # ---- binary_scalar: aclnn<Name>(self, scalar, out), no alpha (migrated seeds) ----
+    "mul.Scalar":         ("binary_scalar", "Muls"),
+    "div.Scalar":         ("binary_scalar", "Divs"),
 
     # ---- binary_cmp: bool out ----
     "eq.Tensor":          ("binary_cmp", "EqTensor"),
@@ -163,6 +179,7 @@ OPS = {
     "clamp_min":          ("unary_scalar", None),
     "clamp_max":          ("unary_scalar", None),
     "fmod.Scalar":        ("unary_scalar", "FmodScalar"),
+    "pow.Tensor_Scalar":  ("unary_scalar", "PowTensorScalar"),   # migrated seed
 
     # ---- unary_two_scalar: (Tensor, Scalar, Scalar) -> same shape ----
     "softplus":           ("unary_two_scalar", None),
@@ -261,14 +278,25 @@ OPS = {
     # backward: aclnn names lack the aten "_data" suffix.
     "_softmax_backward_data":     ("softmax_backward", "SoftmaxBackward"),
     "_log_softmax_backward_data": ("softmax_backward", "LogSoftmaxBackward"),
+
+    # ---- migrated seeds needing dedicated categories ----
+    "silu_backward":      ("act_backward_self", "SiluBackward"),
+    "where.self":         ("where", "SWhere"),
+    "_softmax":           ("softmax_fwd", "Softmax"),
+    "all":                ("reduce_all", "All"),
+    "sum.dim_IntList":    ("reduce_sum_dtype", "ReduceSum"),
+    "mean.dim":           ("reduce_mean_dtype", "MeanV2"),
 }
 
 # Ops with a handwritten kAscend kernel — never regenerate (double-register).
 # Kept as a guard even though none currently overlap OPS above.
 SKIP = {
-    "abs", "acos", "cos", "sin", "neg", "rsqrt", "silu",
-    "add.Tensor", "mul.Tensor", "mul.Scalar", "div.Scalar",
-    "pow.Tensor_Scalar", "le.Tensor", "bitwise_and.Tensor", "where.self",
+    # le.Tensor stays handwritten: aclnnLe symbol is absent, needs runtime
+    # multi-version probing (aclnnLe / aclnnLeTensor / aclnnLessEqual).
+    "le.Tensor",
+    # mm/bmm stay handwritten: they also register out-variants (Mm/BmmOutFn)
+    # that codegen does not emit.
+    "mm", "bmm",
 }
 
 # --------------------------------------------------------------------------
@@ -1197,6 +1225,173 @@ at::Tensor {kernel}(const at::Tensor& grad_output, const at::Tensor& output, int
 REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
 """
 
+# binary_scalar: (Tensor, Scalar) -> same shape/dtype. Scalar op, NO alpha.
+#   aclnn<Name>(self, scalar, out)   e.g. mul.Scalar->aclnnMuls, div.Scalar->aclnnDivs
+# (aclnn headers for Muls/Divs are absent but the symbols exist; arg marshaling
+#  confirmed from the handwritten mul_scalar.cc / div_scalar.cc.)
+T_BINARY_SCALAR = """\
+at::Tensor {kernel}(const at::Tensor& self, const at::Scalar& other) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options());
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclScalarWrapper acl_other(other, self.scalar_type());
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_other.get(), acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# act_backward_self: (grad_output, self) -> grad_input. Differs from act_backward
+#   (grad, output) in taking `self` as the second tensor. e.g. silu_backward.
+#   aclnn<Name>(gradOutput, self, gradInput)
+T_ACT_BACKWARD_SELF = """\
+at::Tensor {kernel}(const at::Tensor& grad_output, const at::Tensor& self) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto grad_input = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options());
+
+  ascend::AclTensorWrapper acl_grad(grad_output);
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_grad_input(grad_input);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_grad.get(), acl_self.get(), acl_grad_input.get());
+  return grad_input;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# where: where.self(cond, self, other) -> broadcast(cond, self, other), self dtype.
+#   aclnn<Name>(condition, self, other, out). aclnn does not broadcast, so all
+#   three operands are expanded+contiguous to the common shape.
+T_WHERE = """\
+at::Tensor {kernel}(const at::Tensor& condition, const at::Tensor& self, const at::Tensor& other) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto out_shape = at::infer_size(self.sizes(), other.sizes());
+  out_shape = at::infer_size(condition.sizes(), out_shape);
+
+  auto cond_b = condition.expand(out_shape).contiguous();
+  auto self_b = self.expand(out_shape).contiguous();
+  auto other_b = other.expand(out_shape).contiguous();
+
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      out_shape, self.options());
+
+  ascend::AclTensorWrapper acl_cond(cond_b);
+  ascend::AclTensorWrapper acl_self(self_b);
+  ascend::AclTensorWrapper acl_other(other_b);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_cond.get(), acl_self.get(), acl_other.get(), acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# softmax_fwd: _softmax(self, int64 dim, bool half_to_float) -> same shape.
+#   aclnn<Name>(self, dim, out). half_to_float promotes the output dtype to float.
+T_SOFTMAX_FWD = """\
+at::Tensor {kernel}(const at::Tensor& self, int64_t dim, bool half_to_float) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto out_dtype = half_to_float ? at::kFloat : self.scalar_type();
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options().dtype(out_dtype));
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), dim, acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# reduce_all: all(self) -> bool scalar over ALL elements. aclnnAll reduces along
+#   a dim list, so flatten to 1-D and reduce dim=0 to a 0-d bool out.
+#   aclnn<Name>(self_flat, dim_list, keepdim=false, out)
+T_REDUCE_ALL = """\
+at::Tensor {kernel}(const at::Tensor& self) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto input = self.contiguous().reshape({{-1}});
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      {{}}, self.options().dtype(at::kBool));
+
+  ascend::AclTensorWrapper acl_self(input);
+  ascend::AclTensorWrapper acl_out(out);
+
+  int64_t dim_val = 0;
+  std::vector<int64_t> dims{{dim_val}};
+  ascend::AclIntArrayWrapper acl_dim(dims);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_dim.get(), false, acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# Shared prologue for the dtype-aware reduce categories (sum.dim_IntList /
+# mean.dim). OptionalIntArrayRef dim (None/empty = reduce all) + optional dtype.
+# Mirrors the handwritten sum.cc dim-normalization and reduced-shape logic.
+_REDUCE_DTYPE_PROLOGUE = """\
+  namespace ascend = at::native::flagos::ascend;
+  auto out_dtype = dtype.has_value() ? dtype.value() : self.scalar_type();
+  int64_t ndim = self.dim();
+  std::vector<int64_t> norm_dims;
+  if (dim.has_value() && !dim.value().empty()) {{
+    for (int64_t d : dim.value()) norm_dims.push_back(d < 0 ? d + ndim : d);
+  }} else {{
+    for (int64_t d = 0; d < ndim; ++d) norm_dims.push_back(d);
+  }}
+  auto out_shape = self.sizes().vec();
+  std::vector<int64_t> sorted_dims(norm_dims);
+  std::sort(sorted_dims.rbegin(), sorted_dims.rend());
+  for (int64_t d : sorted_dims) {{
+    if (keepdim) out_shape[d] = 1;
+    else out_shape.erase(out_shape.begin() + d);
+  }}
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      out_shape, self.options().dtype(out_dtype));
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_out(out);
+  ascend::AclIntArrayWrapper acl_dim(norm_dims);
+"""
+
+# reduce_sum_dtype: sum.dim_IntList(self, int[]? dim, keepdim, ScalarType? dtype).
+#   aclnnReduceSum(self, dims, keepdim, aclDataType, out)
+T_REDUCE_SUM_DTYPE = """\
+at::Tensor {kernel}(const at::Tensor& self, at::OptionalIntArrayRef dim, bool keepdim, std::optional<at::ScalarType> dtype) {{
+""" + _REDUCE_DTYPE_PROLOGUE + """\
+  aclDataType acl_dtype = ascend::ToAclDataType(out_dtype);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_dim.get(), keepdim, acl_dtype, acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# reduce_mean_dtype: mean.dim(self, int[]? dim, keepdim, ScalarType? dtype).
+#   aclnnMeanV2(self, dims, keepdim, int32 dtype, out)  -- MeanV2 for CANN 8.5.
+T_REDUCE_MEAN_DTYPE = """\
+at::Tensor {kernel}(const at::Tensor& self, at::OptionalIntArrayRef dim, bool keepdim, std::optional<at::ScalarType> dtype) {{
+""" + _REDUCE_DTYPE_PROLOGUE + """\
+  auto acl_dtype = static_cast<int32_t>(ascend::ToAclDataType(out_dtype));
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_dim.get(), keepdim, acl_dtype, acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
 CATEGORIES = {
     "unary":               T_UNARY,
     "binary":              T_BINARY,
@@ -1238,6 +1433,13 @@ CATEGORIES = {
     "gelu_backward":       T_GELU_BACKWARD,
     "log_softmax":         T_LOG_SOFTMAX,
     "softmax_backward":    T_SOFTMAX_BACKWARD,
+    "binary_scalar":       T_BINARY_SCALAR,
+    "act_backward_self":   T_ACT_BACKWARD_SELF,
+    "where":               T_WHERE,
+    "softmax_fwd":         T_SOFTMAX_FWD,
+    "reduce_all":          T_REDUCE_ALL,
+    "reduce_sum_dtype":    T_REDUCE_SUM_DTYPE,
+    "reduce_mean_dtype":   T_REDUCE_MEAN_DTYPE,
 }
 
 FILE_HEADER = """\

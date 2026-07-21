@@ -53,10 +53,15 @@ CUDA 侧 `scripts/codegen_ops.py` 生成 `generated/cuda_kernels.cc`，内核体
   ```
 - 与手写内核**互斥**：一个 op 要么手写、要么 codegen，不能同时注册 `kAscend`（重复注册报错）。
   codegen 读一份 skip 名单排除已手写的 op。
+- **原则（2026-07）**：能被某个 codegen 类别表达的算子一律走 codegen；手写只保留
+  codegen 表达不了的 bespoke。早期在 codegen 之前手写的"种子"算子（abs/cos/add.Tensor/
+  mul.Scalar/where/softmax/sum/mean 等 19 个）已迁移到 codegen 并删除手写文件，`SKIP`
+  收缩到只剩 `le.Tensor`（aclnnLe 符号缺失，需运行时多版本探测）和 `mm`/`bmm`
+  （另注册了 codegen 不产的 out 变体）。当前手写 17 个注册、codegen 122 个。
 
 ## 4. 类别体系（逐类扩）
 
-已实现 40 个类别，共 103 个算子（真机全部与 CPU 对拍通过）：
+已实现 47 个类别，共 122 个算子（真机全部与 CPU 对拍通过）：
 
 | category | 判据 | 输出形状 / dtype | 内核体模板 |
 |---|---|---|---|
@@ -95,6 +100,13 @@ CUDA 侧 `scripts/codegen_ops.py` 生成 `generated/cuda_kernels.cc`，内核体
 | `gelu_backward` | grad_output + self + `approximate` | = self | `aclnnGeluBackwardV2(grad, self, approx_str, grad_in)`（char\* 字符串） |
 | `log_softmax` | Tensor + `int64_t dim` + half_to_float | = 输入（half_to_float→float 出） | `aclnn<Name>(self, dim, out)` |
 | `softmax_backward` | grad_output + output + `int64_t dim` + input_dtype | = grad_output shape，dtype=input_dtype | `aclnn<Name>(grad, output, dim, grad_in)` |
+| `binary_scalar` | Tensor + Scalar，无 alpha | = 输入 | `aclnn<Name>(self, scalar, out)`（mul.Scalar→Muls / div.Scalar→Divs） |
+| `act_backward_self` | grad_output + self | = self | `aclnn<Name>(grad, self, grad_in)`（silu_backward，区别于 act_backward 的 grad+output） |
+| `where` | cond + self + other（3-Tensor） | broadcast(3)，= self dtype | `aclnn<Name>(cond, self, other, out)` |
+| `softmax_fwd` | Tensor + `int64 dim` + half_to_float | = 输入 shape；half_to_float→float | `aclnn<Name>(self, dim, out)` |
+| `reduce_all` | Tensor（整体归约） | bool 标量 | `aclnn<Name>(flat, dim_list, false, out)`（flatten 到 1-D 归约） |
+| `reduce_sum_dtype` | Tensor + `OptionalIntArrayRef dim` + keepdim + optional dtype | 按 dim 缩，dtype 提升 | `aclnn<Name>(self, dims, keepdim, aclDataType, out)` |
+| `reduce_mean_dtype` | 同上 | 同上 | `aclnnMeanV2(self, dims, keepdim, int32 dtype, out)` |
 | `gemm_addmv` | self + mat(n,m) + vec(m) + beta + alpha | (n,) | `aclnn<Name>(self,mat,vec,ALPHA,BETA,out,cubeMathType)`（**alpha 在 beta 前**） |
 | `gemm_addr` | self + vec1(n) + vec2(m) + beta + alpha | (n,m) 外积 | `aclnn<Name>(self,vec1,vec2,beta,alpha,out)`（无 cubeMathType） |
 | `bce` | self + target + optional weight + int reduction | None→输入 / Mean·Sum→标量 | `aclnn<Name>(self,target,weight,reduction,out)` |
