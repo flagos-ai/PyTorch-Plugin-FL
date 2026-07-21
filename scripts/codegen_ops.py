@@ -298,6 +298,39 @@ def _flaggems_gems_npos(fn):
     return n
 
 
+def _flaggems_extra_trailing_ok(fn, ncall):
+    """True if a gems function with more positional params than the `ncall` args
+    we intend to pass can be safely called with exactly `ncall` positional args.
+
+    Safe iff every gems param at index >= ncall has a default (so omitting it is
+    fine) AND no such trailing param is named `out` sitting *before* a param we
+    would still pass -- i.e. the extra params are strictly trailing, never
+    interleaved. This rejects the reordering trap (e.g. gems gather inserts
+    `out=None` at position 3, so aten's 4th arg `sparse_grad` would land in the
+    `out` tensor slot). Returns False if uninspectable.
+    """
+    import inspect
+    try:
+        params = list(inspect.signature(fn).parameters.values())
+    except (ValueError, TypeError):
+        return False
+    pos = [p for p in params
+           if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+    if len(pos) < ncall:
+        return False
+    # Every gems param beyond the ones we pass must have a default.
+    for p in pos[ncall:]:
+        if p.default is inspect.Parameter.empty:
+            return False
+    # The first `ncall` gems params (which receive our aten args positionally)
+    # must not include a param named `out`: that would mean gems expects `out`
+    # among the leading positions and our aten arg would be misrouted into it.
+    for p in pos[:ncall]:
+        if p.name == "out":
+            return False
+    return True
+
+
 # Categories the FlagGems Python path knows how to generate kernels for.
 _FLAGGEMS_PY_CATEGORIES = {"functional_pure", "inplace", "tuple_return", "out_variant"}
 
@@ -371,21 +404,26 @@ def discover_flaggems_ops(codegen_ops, funcs):
         resolved_cat = cat
         if cat == "out_variant":
             non_out = [(str(a.type), a.name) for a in aten_args if a not in out_args]
-            if npos == len(non_out):
-                # gems takes only the non-out args, returns a fresh tensor; the
-                # kernel copy_'s it into the aten `out`.
+            with_out = non_out + [(str(a.type), a.name) for a in out_args]
+            if npos == len(non_out) or (npos > len(non_out)
+                                        and _flaggems_extra_trailing_ok(fn, len(non_out))):
+                # gems takes only the non-out args (plus optional trailing
+                # defaults), returns a fresh tensor; kernel copy_'s it into out.
                 passed = non_out
-            elif npos == len(non_out) + len(out_args):
+            elif npos == len(with_out) or (npos > len(with_out)
+                                           and _flaggems_extra_trailing_ok(fn, len(with_out))):
                 # gems takes `out` positionally and writes into it; pass the out
-                # tensor(s) too. (Distinguished from mm.out, whose gems out is a
-                # required keyword-only arg the positional caller can't supply.)
-                passed = non_out + [(str(a.type), a.name) for a in out_args]
+                # tensor(s) too (plus optional trailing defaults like
+                # memory_format=None). Distinguished from mm.out, whose gems out
+                # is a required keyword-only arg the positional caller can't supply.
+                passed = with_out
                 resolved_cat = "out_variant_gemsout"
             else:
                 continue
         else:
             passed = [(str(a.type), a.name) for a in aten_args]
-            if npos != len(passed):
+            if npos != len(passed) and not (
+                    npos > len(passed) and _flaggems_extra_trailing_ok(fn, len(passed))):
                 continue
         if not all(_flaggems_type_ok(t) for t, _ in passed):
             continue

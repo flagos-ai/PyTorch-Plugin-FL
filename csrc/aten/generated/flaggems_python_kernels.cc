@@ -80,6 +80,12 @@ at::Tensor AcosKernelPython(const at::Tensor & self) {
   return result;
 }
 
+at::Tensor AddcdivKernelPython(const at::Tensor & self, const at::Tensor & tensor1, const at::Tensor & tensor2, const at::Scalar & value) {
+  auto result = CallPythonOp_Generic("flag_gems.ops.addcdiv.addcdiv", {self, tensor1, tensor2, value});
+  UnboxToFlagos(result);
+  return result;
+}
+
 at::Tensor AllKernelPython(const at::Tensor & self) {
   auto result = CallPythonOp_Generic("flag_gems.ops.all.all", {self});
   UnboxToFlagos(result);
@@ -1250,6 +1256,12 @@ at::Tensor RollKernelPython(const at::Tensor & self, at::IntArrayRef shifts, at:
   return result;
 }
 
+at::Tensor RoundKernelPython(const at::Tensor & self) {
+  auto result = CallPythonOp_Generic("flag_gems.ops.round.round", {self});
+  UnboxToFlagos(result);
+  return result;
+}
+
 at::Tensor & RoundOutKernelPython(const at::Tensor & self, at::Tensor & out) {
   auto result = CallPythonOp_Generic("flag_gems.ops.round.round_out", {self});
   out.copy_(result);
@@ -1286,8 +1298,20 @@ at::Tensor ScatterReduceKernelPython(const at::Tensor & self, int64_t dim, const
   return result;
 }
 
+at::Tensor ScatterSrcKernelPython(const at::Tensor & self, int64_t dim, const at::Tensor & index, const at::Tensor & src) {
+  auto result = CallPythonOp_Generic("flag_gems.ops.scatter.scatter", {self, dim, index, src});
+  UnboxToFlagos(result);
+  return result;
+}
+
 at::Tensor & ScatterInplaceReduceKernelPython(at::Tensor & self, int64_t dim, const at::Tensor & index, const at::Tensor & src, c10::string_view reduce) {
   auto result = CallPythonOp_Generic("flag_gems.ops.scatter.scatter_", {self, dim, index, src, reduce});
+  self.copy_(result);
+  return self;
+}
+
+at::Tensor & ScatterInplaceSrcKernelPython(at::Tensor & self, int64_t dim, const at::Tensor & index, const at::Tensor & src) {
+  auto result = CallPythonOp_Generic("flag_gems.ops.scatter.scatter_", {self, dim, index, src});
   self.copy_(result);
   return self;
 }
@@ -1383,7 +1407,8 @@ at::Tensor SoftshrinkKernelPython(const at::Tensor & self, const at::Scalar & la
 }
 
 at::Tensor & SoftshrinkOutKernelPython(const at::Tensor & self, const at::Scalar & lambd, at::Tensor & out) {
-  CallPythonOp_Generic("flag_gems.ops.softshrink.softshrink_out", {self, lambd, out});
+  auto result = CallPythonOp_Generic("flag_gems.ops.softshrink.softshrink_out", {self, lambd});
+  out.copy_(result);
   return out;
 }
 
@@ -1529,7 +1554,8 @@ at::Tensor WhereSelfKernelPython(const at::Tensor & condition, const at::Tensor 
 }
 
 at::Tensor & WhereSelfOutKernelPython(const at::Tensor & condition, const at::Tensor & self, const at::Tensor & other, at::Tensor & out) {
-  CallPythonOp_Generic("flag_gems.ops.where.where_self_out", {condition, self, other, out});
+  auto result = CallPythonOp_Generic("flag_gems.ops.where.where_self_out", {condition, self, other});
+  out.copy_(result);
   return out;
 }
 
@@ -1552,6 +1578,7 @@ REGISTER_IMPL_TO_DISPATCHER(PrivWeightNormInterfaceBackwardFn, priv_weight_norm_
 REGISTER_IMPL_TO_DISPATCHER(AbsFn, abs_dispatcher, Backend::kFlagOsPython, AbsKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(AbsInplaceFn, abs_inplace_dispatcher, Backend::kFlagOsPython, AbsInplaceKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(AcosFn, acos_dispatcher, Backend::kFlagOsPython, AcosKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(AddcdivFn, addcdiv_dispatcher, Backend::kFlagOsPython, AddcdivKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(AllFn, all_dispatcher, Backend::kFlagOsPython, AllKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(AllDimFn, all_dim_dispatcher, Backend::kFlagOsPython, AllDimKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(AllDimsFn, all_dims_dispatcher, Backend::kFlagOsPython, AllDimsKernelPython)
@@ -1746,13 +1773,16 @@ REGISTER_IMPL_TO_DISPATCHER(ReplicationPad1dFn, replication_pad1d_dispatcher, Ba
 REGISTER_IMPL_TO_DISPATCHER(ReplicationPad1dOutFn, replication_pad1d_out_dispatcher, Backend::kFlagOsPython, ReplicationPad1dOutKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(ReplicationPad3dFn, replication_pad3d_dispatcher, Backend::kFlagOsPython, ReplicationPad3dKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(RollFn, roll_dispatcher, Backend::kFlagOsPython, RollKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(RoundFn, round_dispatcher, Backend::kFlagOsPython, RoundKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(RoundOutFn, round_out_dispatcher, Backend::kFlagOsPython, RoundOutKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(RoundInplaceFn, round_inplace_dispatcher, Backend::kFlagOsPython, RoundInplaceKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(RreluWithNoiseBackwardFn, rrelu_with_noise_backward_dispatcher, Backend::kFlagOsPython, RreluWithNoiseBackwardKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(RsqrtFn, rsqrt_dispatcher, Backend::kFlagOsPython, RsqrtKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(RsqrtInplaceFn, rsqrt_inplace_dispatcher, Backend::kFlagOsPython, RsqrtInplaceKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(ScatterReduceFn, scatter_reduce_dispatcher, Backend::kFlagOsPython, ScatterReduceKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(ScatterSrcFn, scatter_src_dispatcher, Backend::kFlagOsPython, ScatterSrcKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(ScatterInplaceReduceFn, scatter_inplace_reduce_dispatcher, Backend::kFlagOsPython, ScatterInplaceReduceKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(ScatterInplaceSrcFn, scatter_inplace_src_dispatcher, Backend::kFlagOsPython, ScatterInplaceSrcKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(ScatterAddInplaceFn, scatter_add_inplace_dispatcher, Backend::kFlagOsPython, ScatterAddInplaceKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(SigmoidFn, sigmoid_dispatcher, Backend::kFlagOsPython, SigmoidKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(SigmoidInplaceFn, sigmoid_inplace_dispatcher, Backend::kFlagOsPython, SigmoidInplaceKernelPython)
