@@ -166,9 +166,16 @@ CUDA 侧 `scripts/codegen_ops.py` 生成 `generated/cuda_kernels.cc`，内核体
 - **log_softmax（1）**：_log_softmax（照搬手写 softmax.cc 范式）
 - **softmax_backward（2）**：_softmax_backward_data/_log_softmax_backward_data（训练用；aclnn 名去掉 aten 的 `_data` 后缀）
 
-长尾未接（进后续或手写）：var/std.correction、norm.ScalarOpt_dim（correction/p 参数）、
-argmax/argmin/logsumexp/isnan/masked_fill/remainder/relu6（无 aclnn 符号或需特殊派生）、
-卷积/池化家族（各自 bespoke，需输出形状公式，专门批次）。
+长尾未接（进后续或手写）：
+- **SDPA/flash-attention** (`_scaled_dot_product_efficient_attention` 前向 + `_scaled_dot_product_efficient_attention_backward` 反向)：已调研 aclnn API (`aclnnFlashAttentionScore` / `aclnnFlashAttentionScoreGrad`)，确认：
+  - inputLayout="BNSD" for `[B, num_heads, S, head_dim]`
+  - softmaxMax/Sum shape = `[B, N, S, 8]` (8 是 tiling factor)，dtype=float32
+  - scaleValue = `1.0 / sqrt(head_dim)`，keepProb = `1 - dropout_p`
+  - attenMask 必须 2D 或 4D（不能 3D），true=KEEP
+  - **关键映射**：PyTorch 返回单个 `logsumexp [B,N,S]`，但 aclnn 前向产出 softmaxMax+softmaxSum (shape `[B,N,S,8]`)，反向需要两者。关系：`logsumexp = log(softmaxSum) + softmaxMax`（可逆，但需处理 shape 差异：`[B,N,S]` vs `[B,N,S,8]`，可能需 reduce 最后一维）。
+  - preTokens/nextTokens/sparseMode 的 causal/non-causal 组合未找到确切文档（torch_npu 源码因网络限制未获取）。
+  - **结论**：SDPA 是 bespoke 多日任务（非模板批次），需专门实现 pass：测试 causal/dropout/mask 组合，处理 logsumexp 与 (max,sum) 的 shape/数值映射，验证前向/反向闭环。暂留长尾。
+- var/std.correction、norm.ScalarOpt_dim（correction/p 参数）、argmax/argmin/logsumexp/isnan/remainder/relu6（无 aclnn 符号或需特殊派生）、transposed conv, conv/pool 3D, upsample/interpolate, pad (reflection/replication/constant), scatter/scatter_add/index_put, sort/topk。
 - **addbmm**：符号存在且能跑，但 hf32 cube 沿 batch 维累加把相对误差放大到 ~1e-2
   （单次 addmm 仅 ~1e-4）。留待允许 fp32 累加或降 cubeMathType 时再接。
 - **native_batch_norm**：`aclnnBatchNorm` 对 2D (N,C) 输入正常，但 4D NCHW 输入返回
