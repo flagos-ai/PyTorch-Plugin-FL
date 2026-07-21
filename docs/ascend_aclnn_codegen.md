@@ -61,7 +61,7 @@ CUDA 侧 `scripts/codegen_ops.py` 生成 `generated/cuda_kernels.cc`，内核体
 
 ## 4. 类别体系（逐类扩）
 
-已实现 59 个类别，共 134 个算子（真机全部与 CPU 对拍通过）：
+已实现 63 个类别，共 138 个算子（真机全部与 CPU 对拍通过）：
 
 | category | 判据 | 输出形状 / dtype | 内核体模板 |
 |---|---|---|---|
@@ -119,6 +119,10 @@ CUDA 侧 `scripts/codegen_ops.py` 生成 `generated/cuda_kernels.cc`，内核体
 | `adaptive_avg_pool2d_backward` | grad_out + self | = self；**NCHW format** | `aclnn<Name>(gOut, self, gIn)` |
 | `native_layer_norm_backward` | grad_out + input + normShape + mean + rstd + weight?/bias? + output_mask[3] | **tuple(gInput, gWeight, gBias)** | `aclnn<Name>(gOut, in, nShape, mean, rstd, w, b, mask, gIn, gW, gB)` |
 | `native_group_norm_backward` | grad_out + input + mean + rstd + weight? + N/C/HxW/group + output_mask[3] | **tuple(gInput, gGamma, gBeta)** | `aclnn<Name>(gOut, in, mean, rstd, gamma, N, C, HxW, group, mask, gIn, gG, gB)` |
+| `masked_fill_scalar` | self + mask + Scalar value | broadcast(self,mask) | clone→`aclnnInplaceMaskedFillScalar(out, mask, value)` |
+| `masked_fill_tensor` | self + mask + Tensor value（0-dim） | broadcast(self,mask) | 同上（value 张量，需 device 对齐） |
+| `gather` | self + `int64 dim` + index | = index shape，self dtype | `aclnnGather(self, dim, index, out)` |
+| `index_select` | self + `int64 dim` + index（1-D） | self shape，dim 维换成 index.numel() | `aclnnIndexSelect(self, dim, index, out)` |
 | `gemm_addmv` | self + mat(n,m) + vec(m) + beta + alpha | (n,) | `aclnn<Name>(self,mat,vec,ALPHA,BETA,out,cubeMathType)`（**alpha 在 beta 前**） |
 | `gemm_addr` | self + vec1(n) + vec2(m) + beta + alpha | (n,m) 外积 | `aclnn<Name>(self,vec1,vec2,beta,alpha,out)`（无 cubeMathType） |
 | `bce` | self + target + optional weight + int reduction | None→输入 / Mean·Sum→标量 | `aclnn<Name>(self,target,weight,reduction,out)` |
@@ -190,6 +194,13 @@ argmax/argmin/logsumexp/isnan/masked_fill/remainder/relu6（无 aclnn 符号或�
 format 又要 indices 为 int32**——直接把前向的 int64 indices 喂进去会 161002。反向模板里
 `indices.to(at::kInt)` 转一下 + 打 NCHW 标即可。所以前向/反向对 format/dtype 的要求可以不同，
 必须逐 aclnn 读头文件的 `@param` 注释确认。
+
+**关键坑（out-of-place op 靠 inplace aclnn + 别用 clone）**：aclnn 的 masked_fill 只有
+inplace 变体（`aclnnInplaceMaskedFillScalar/Tensor`，selfRef 非 const）。要实现 out-of-place
+的 aten `masked_fill`，得先拷一份 self 再原地填。但 **不能用 `self.clone()`**——clone 走
+`empty_like`，而 ascend 后端没注册 `empty_like`（`RuntimeError: empty_like: backend not
+registered`）。改用 `OpPreparation::apply_tensor_without_format(out_shape, opts)` 分配 +
+`out.copy_(self.expand(out_shape))`。这条同样适用于任何需要「先复制再原地改」的 codegen 算子。
 
 **关键坑（batch_norm 的 save_invstd 语义）**：`aclnnBatchNorm` 前向的 `output`/`saveMean`
 与 CPU 逐位对齐，但 `saveInvstd` 定义与 PyTorch CPU 不同（CPU 是 `1/sqrt(var+eps)`，

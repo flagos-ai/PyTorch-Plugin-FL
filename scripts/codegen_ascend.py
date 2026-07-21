@@ -266,6 +266,12 @@ OPS = {
     "native_layer_norm_backward":     ("native_layer_norm_backward", "LayerNormBackward"),
     "native_group_norm_backward":     ("native_group_norm_backward", "GroupNormBackward"),
 
+    # ---- Transformer indexing / masking (aclnn masked_fill is INPLACE-only) ----
+    "masked_fill.Scalar":  ("masked_fill_scalar", "InplaceMaskedFillScalar"),
+    "masked_fill.Tensor":  ("masked_fill_tensor", "InplaceMaskedFillTensor"),
+    "gather":              ("gather", "Gather"),
+    "index_select":        ("index_select", "IndexSelect"),
+
     # ---- BCE loss family: optional weight, int reduction (0=none/1=mean/2=sum) ----
     "binary_cross_entropy":              ("bce", "BinaryCrossEntropy"),
     "binary_cross_entropy_backward":     ("bce_backward", "BinaryCrossEntropyBackward"),
@@ -1519,6 +1525,99 @@ T_MAX_POOL2D_INDICES = """\
 REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
 """
 
+# masked_fill.Scalar: (self, mask, value) -> Tensor (= self broadcast mask).
+#   aclnn only ships the INPLACE variant (aclnnInplaceMaskedFillScalar), so
+#   clone self (broadcast to mask if needed) and fill in place. mask is bool.
+T_MASKED_FILL_SCALAR = """\
+at::Tensor {kernel}(const at::Tensor& self, const at::Tensor& mask, const at::Scalar& value) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto out_shape = at::infer_size(self.sizes(), mask.sizes());
+  // avoid clone()/empty_like (not registered for ascend): alloc + copy_.
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      out_shape, self.options());
+  out.copy_(self.expand(out_shape));
+  auto mask_b = mask.expand(out_shape).contiguous();
+
+  ascend::AclTensorWrapper acl_self(out);
+  ascend::AclTensorWrapper acl_mask(mask_b);
+  ascend::AclScalarWrapper acl_value(value, self.scalar_type());
+
+  EXEC_ASCEND_CMD({aclnn}, const_cast<aclTensor*>(acl_self.get()), acl_mask.get(),
+      acl_value.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# masked_fill.Tensor: (self, mask, value) -> Tensor. value is a 0-dim tensor;
+#   coerce to self's device/dtype (CPU scalar-tensor path, cf. binary prologue).
+T_MASKED_FILL_TENSOR = """\
+at::Tensor {kernel}(const at::Tensor& self, const at::Tensor& mask, const at::Tensor& value) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto out_shape = at::infer_size(self.sizes(), mask.sizes());
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      out_shape, self.options());
+  out.copy_(self.expand(out_shape));
+  auto mask_b = mask.expand(out_shape).contiguous();
+  auto value_c = value.is_privateuseone()
+      ? (value.scalar_type() == self.scalar_type() ? value : value.to(self.scalar_type()))
+      : value.to(self.options());
+
+  ascend::AclTensorWrapper acl_self(out);
+  ascend::AclTensorWrapper acl_mask(mask_b);
+  ascend::AclTensorWrapper acl_value(value_c);
+
+  EXEC_ASCEND_CMD({aclnn}, const_cast<aclTensor*>(acl_self.get()), acl_mask.get(),
+      acl_value.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# gather: (self, dim, index, sparse_grad) -> Tensor (= index shape, self dtype).
+#   aclnnGather(self, dim, index, out). dim normalized for negatives.
+T_GATHER = """\
+at::Tensor {kernel}(const at::Tensor& self, int64_t dim, const at::Tensor& index, bool sparse_grad) {{
+  namespace ascend = at::native::flagos::ascend;
+  int64_t d = dim < 0 ? dim + self.dim() : dim;
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      index.sizes(), self.options());
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_index(index);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), d, acl_index.get(), acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# index_select: (self, dim, index) -> Tensor (= self shape w/ dim replaced by
+#   index.numel()). index is 1-D. aclnnIndexSelect(self, dim, index, out).
+T_INDEX_SELECT = """\
+at::Tensor {kernel}(const at::Tensor& self, int64_t dim, const at::Tensor& index) {{
+  namespace ascend = at::native::flagos::ascend;
+  int64_t d = dim < 0 ? dim + self.dim() : dim;
+  std::vector<int64_t> out_shape(self.sizes().begin(), self.sizes().end());
+  out_shape[d] = index.numel();
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      out_shape, self.options());
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_index(index);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), d, acl_index.get(), acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
 # avg_pool2d_backward: (grad_output, self, k, stride, padding, ceil_mode,
 #   count_include_pad, divisor_override) -> grad_input (= self shape). Same
 #   NCHW-format requirement as the forward. cubeMathType=0 (KEEP_DTYPE).
@@ -1915,6 +2014,10 @@ CATEGORIES = {
     "adaptive_avg_pool2d_backward": T_ADAPTIVE_AVG_POOL2D_BACKWARD,
     "native_layer_norm_backward": T_NATIVE_LAYER_NORM_BACKWARD,
     "native_group_norm_backward": T_NATIVE_GROUP_NORM_BACKWARD,
+    "masked_fill_scalar":  T_MASKED_FILL_SCALAR,
+    "masked_fill_tensor":  T_MASKED_FILL_TENSOR,
+    "gather":              T_GATHER,
+    "index_select":        T_INDEX_SELECT,
 }
 
 FILE_HEADER = """\

@@ -2044,6 +2044,82 @@ REGISTER_IMPL_TO_DISPATCHER(NativeLayerNormBackwardFn, native_layer_norm_backwar
 
 REGISTER_IMPL_TO_DISPATCHER(NativeGroupNormBackwardFn, native_group_norm_backward_dispatcher, Backend::kAscend, NativeGroupNormBackwardKernelAscend)
 
+at::Tensor MaskedFillScalarKernelAscend(const at::Tensor& self, const at::Tensor& mask, const at::Scalar& value) {
+  namespace ascend = at::native::flagos::ascend;
+  auto out_shape = at::infer_size(self.sizes(), mask.sizes());
+  // avoid clone()/empty_like (not registered for ascend): alloc + copy_.
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      out_shape, self.options());
+  out.copy_(self.expand(out_shape));
+  auto mask_b = mask.expand(out_shape).contiguous();
+
+  ascend::AclTensorWrapper acl_self(out);
+  ascend::AclTensorWrapper acl_mask(mask_b);
+  ascend::AclScalarWrapper acl_value(value, self.scalar_type());
+
+  EXEC_ASCEND_CMD(aclnnInplaceMaskedFillScalar, const_cast<aclTensor*>(acl_self.get()), acl_mask.get(),
+      acl_value.get());
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(MaskedFillScalarFn, masked_fill_scalar_dispatcher, Backend::kAscend, MaskedFillScalarKernelAscend)
+
+at::Tensor MaskedFillTensorKernelAscend(const at::Tensor& self, const at::Tensor& mask, const at::Tensor& value) {
+  namespace ascend = at::native::flagos::ascend;
+  auto out_shape = at::infer_size(self.sizes(), mask.sizes());
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      out_shape, self.options());
+  out.copy_(self.expand(out_shape));
+  auto mask_b = mask.expand(out_shape).contiguous();
+  auto value_c = value.is_privateuseone()
+      ? (value.scalar_type() == self.scalar_type() ? value : value.to(self.scalar_type()))
+      : value.to(self.options());
+
+  ascend::AclTensorWrapper acl_self(out);
+  ascend::AclTensorWrapper acl_mask(mask_b);
+  ascend::AclTensorWrapper acl_value(value_c);
+
+  EXEC_ASCEND_CMD(aclnnInplaceMaskedFillTensor, const_cast<aclTensor*>(acl_self.get()), acl_mask.get(),
+      acl_value.get());
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(MaskedFillTensorFn, masked_fill_tensor_dispatcher, Backend::kAscend, MaskedFillTensorKernelAscend)
+
+at::Tensor GatherKernelAscend(const at::Tensor& self, int64_t dim, const at::Tensor& index, bool sparse_grad) {
+  namespace ascend = at::native::flagos::ascend;
+  int64_t d = dim < 0 ? dim + self.dim() : dim;
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      index.sizes(), self.options());
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_index(index);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD(aclnnGather, acl_self.get(), d, acl_index.get(), acl_out.get());
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(GatherFn, gather_dispatcher, Backend::kAscend, GatherKernelAscend)
+
+at::Tensor IndexSelectKernelAscend(const at::Tensor& self, int64_t dim, const at::Tensor& index) {
+  namespace ascend = at::native::flagos::ascend;
+  int64_t d = dim < 0 ? dim + self.dim() : dim;
+  std::vector<int64_t> out_shape(self.sizes().begin(), self.sizes().end());
+  out_shape[d] = index.numel();
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      out_shape, self.options());
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_index(index);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD(aclnnIndexSelect, acl_self.get(), d, acl_index.get(), acl_out.get());
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(IndexSelectFn, index_select_dispatcher, Backend::kAscend, IndexSelectKernelAscend)
+
 at::Tensor BinaryCrossEntropyKernelAscend(const at::Tensor& self, const at::Tensor& target, const ::std::optional<at::Tensor>& weight, int64_t reduction) {
   namespace ascend = at::native::flagos::ascend;
   std::vector<int64_t> out_shape;   // scalar for mean/sum
