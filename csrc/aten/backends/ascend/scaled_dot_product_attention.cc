@@ -30,6 +30,7 @@ PrivScaledDotProductEfficientAttentionKernelAscend(
   TORCH_CHECK(query.sizes() == key.sizes(), "query and key must have same shape");
   TORCH_CHECK(query.sizes() == value.sizes(), "query and value must have same shape");
   TORCH_CHECK(query.is_privateuseone(), "SDPA Ascend: inputs must be on NPU");
+  TORCH_CHECK(dropout_p == 0.0, "SDPA Ascend: dropout not yet supported (aclnn requires explicit mask handling)");
 
   int64_t B = query.size(0);
   int64_t N = query.size(1);  // num_heads
@@ -41,7 +42,7 @@ PrivScaledDotProductEfficientAttentionKernelAscend(
 
   // Dropout parameters
   double keep_prob = 1.0 - dropout_p;
-  TORCH_CHECK(dropout_p == 0.0, "SDPA Ascend: dropout not yet supported (TODO)");
+  at::Tensor drop_mask;  // Leave undefined - aclnn will generate internally based on keep_prob
 
   // Sparse mode and token range for causal vs full attention
   int64_t sparse_mode;
@@ -53,7 +54,8 @@ PrivScaledDotProductEfficientAttentionKernelAscend(
     sparse_mode = 0;  // disable sparse, use explicit mask
     pre_tokens = 65536;
     next_tokens = 65536;
-    // Try inverted: true=MASK_OUT (upper triangular), false=KEEP
+    // Generate causal mask on CPU then move to device
+    // (ones/triu not registered for Ascend backend)
     auto mask_2d = at::triu(at::ones({S, S}, at::TensorOptions().dtype(at::kBool)), 1);
     atten_mask = mask_2d.unsqueeze(0).unsqueeze(0).to(query.device());  // [1,1,S,S]
   } else {
@@ -83,6 +85,7 @@ PrivScaledDotProductEfficientAttentionKernelAscend(
   AclTensorWrapper k_wrap(key);
   AclTensorWrapper v_wrap(value);
   AclTensorWrapper mask_wrap(is_causal ? atten_mask : at::Tensor());
+  AclTensorWrapper drop_mask_wrap(drop_mask);
   AclTensorWrapper softmax_max_wrap(softmax_max);
   AclTensorWrapper softmax_sum_wrap(softmax_sum);
   AclTensorWrapper output_wrap(output);
@@ -96,7 +99,7 @@ PrivScaledDotProductEfficientAttentionKernelAscend(
       k_wrap.get(),
       v_wrap.get(),
       nullptr,  // realShiftOptional
-      nullptr,  // dropMaskOptional
+      drop_mask_wrap.get(),  // dropMaskOptional
       nullptr,  // paddingMaskOptional
       mask_wrap.get(),  // attenMaskOptional
       nullptr,  // prefixOptional
@@ -172,19 +175,126 @@ PrivScaledDotProductEfficientAttentionBackwardKernelAscend(
 
   namespace ascend = at::native::flagos::ascend;
 
-  TORCH_CHECK(false, "SDPA Ascend backward: NOT IMPLEMENTED YET\n"
-      "CRITICAL BLOCKER: aclnnFlashAttentionScoreGrad requires softmaxMax AND softmaxSum "
-      "[B,N,S,8] from forward, but PyTorch backward only passes logsumexp [B,N,S]. "
-      "Cannot uniquely reconstruct both from logsumexp alone.\n"
-      "SOLUTION: Need custom autograd Function that saves softmaxMax/softmaxSum in ctx, "
-      "NOT a direct kernel registration. See docs/ascend_aclnn_codegen.md for details.");
+  // Input validation
+  TORCH_CHECK(query.dim() == 4, "query must be 4D [B, N, S, D]");
+  TORCH_CHECK(query.is_privateuseone(), "SDPA Ascend backward: inputs must be on NPU");
+  TORCH_CHECK(dropout_p == 0.0, "SDPA Ascend backward: dropout not yet supported");
 
-  // Placeholder returns to satisfy dispatcher signature
-  auto grad_query = at::empty_like(query);
-  auto grad_key = at::empty_like(key);
-  auto grad_value = at::empty_like(value);
+  int64_t B = query.size(0);
+  int64_t N = query.size(1);
+  int64_t S = query.size(2);
+  int64_t D = query.size(3);
+
+  double scale_value = scale.value_or(1.0 / std::sqrt(static_cast<double>(D)));
+  double keep_prob = 1.0 - dropout_p;
+
+  // Dropout mask: let aclnn generate internally based on keep_prob
+  // (In production, should retrieve the exact forward mask from autograd ctx)
+  at::Tensor drop_mask;  // undefined -> nullptr to aclnn
+
+  // Reconstruct causal mask and parameters (must match forward)
+  int64_t sparse_mode = 0;
+  int64_t pre_tokens = 65536;
+  int64_t next_tokens = 65536;
+  at::Tensor atten_mask;
+  if (is_causal) {
+    // Generate causal mask on CPU then move to device
+    auto mask_2d = at::triu(at::ones({S, S}, at::TensorOptions().dtype(at::kBool)), 1);
+    atten_mask = mask_2d.unsqueeze(0).unsqueeze(0).to(query.device());
+  } else {
+    atten_mask = at::Tensor();
+  }
+
+  // RECOMPUTATION: Run forward again to get softmaxMax and softmaxSum.
+  // This trades compute for memory (activation checkpointing strategy).
+  // PyTorch's autograd only gives us logsumexp, but aclnn backward needs the
+  // full [B,N,S,8] softmaxMax and softmaxSum tensors.
+  auto softmax_max = ascend::OpPreparation::apply_tensor_without_format(
+      {B, N, S, 8}, query.options().dtype(at::kFloat));
+  auto softmax_sum = ascend::OpPreparation::apply_tensor_without_format(
+      {B, N, S, 8}, query.options().dtype(at::kFloat));
+  auto output_recompute = ascend::OpPreparation::apply_tensor_without_format(
+      query.sizes().vec(), query.options());
+
+  AclTensorWrapper q_wrap(query);
+  AclTensorWrapper k_wrap(key);
+  AclTensorWrapper v_wrap(value);
+  AclTensorWrapper mask_wrap(is_causal ? atten_mask : at::Tensor());
+  AclTensorWrapper drop_mask_wrap(drop_mask);
+  AclTensorWrapper softmax_max_wrap(softmax_max);
+  AclTensorWrapper softmax_sum_wrap(softmax_sum);
+  AclTensorWrapper output_recompute_wrap(output_recompute);
+
+  char input_layout[] = "BNSD";
+
+  EXEC_ASCEND_CMD(
+      aclnnFlashAttentionScore,
+      q_wrap.get(),
+      k_wrap.get(),
+      v_wrap.get(),
+      nullptr,  // realShiftOptional
+      drop_mask_wrap.get(),  // dropMaskOptional
+      nullptr,  // paddingMaskOptional
+      mask_wrap.get(),
+      nullptr,  // prefixOptional
+      scale_value,
+      keep_prob,
+      pre_tokens,
+      next_tokens,
+      N,
+      input_layout,
+      1,  // innerPrecise
+      sparse_mode,
+      softmax_max_wrap.get(),
+      softmax_sum_wrap.get(),
+      nullptr,  // softmaxOutOut
+      output_recompute_wrap.get()
+  );
+
+  // Allocate gradient outputs
+  auto grad_query = ascend::OpPreparation::apply_tensor_without_format(
+      query.sizes().vec(), query.options());
+  auto grad_key = ascend::OpPreparation::apply_tensor_without_format(
+      key.sizes().vec(), key.options());
+  auto grad_value = ascend::OpPreparation::apply_tensor_without_format(
+      value.sizes().vec(), value.options());
+
+  AclTensorWrapper grad_out_wrap(grad_out);
+  AclTensorWrapper grad_query_wrap(grad_query);
+  AclTensorWrapper grad_key_wrap(grad_key);
+  AclTensorWrapper grad_value_wrap(grad_value);
+
+  // Call aclnnFlashAttentionScoreGrad
+  EXEC_ASCEND_CMD(
+      aclnnFlashAttentionScoreGrad,
+      q_wrap.get(),
+      k_wrap.get(),
+      v_wrap.get(),
+      grad_out_wrap.get(),  // dy
+      nullptr,  // pseShiftOptional
+      drop_mask_wrap.get(),  // dropMaskOptional
+      nullptr,  // paddingMaskOptional
+      mask_wrap.get(),  // attenMaskOptional
+      softmax_max_wrap.get(),  // from recomputation
+      softmax_sum_wrap.get(),  // from recomputation
+      nullptr,  // softmaxInOptional
+      output_recompute_wrap.get(),  // attentionInOptional (use recomputed)
+      nullptr,  // prefixOptional
+      scale_value,
+      keep_prob,
+      pre_tokens,
+      next_tokens,
+      N,
+      input_layout,
+      1,  // innerPrecise
+      sparse_mode,
+      grad_query_wrap.get(),
+      grad_key_wrap.get(),
+      grad_value_wrap.get(),
+      nullptr  // dpseOut
+  );
+
   auto grad_attn_bias = at::empty({0}, query.options());
-
   return std::make_tuple(grad_query, grad_key, grad_value, grad_attn_bias);
 }
 
