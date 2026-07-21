@@ -62,6 +62,34 @@ at::Tensor CallPythonOp_Embedding(const char* func_name, const at::Tensor& weigh
 // Arguments are passed as a vector of IValues.
 at::Tensor CallPythonOp_Generic(const char* func_name, const std::vector<c10::IValue>& args);
 
+// A keyword argument to forward to the FlagGems Python op by name. Used for the
+// aten trailing args that gems declares keyword-only (dtype/alpha/correction/...).
+// `is_dtype` flags a ScalarType payload: an IValue stores ScalarType as a plain
+// int, so the caller can't tell it apart from an ordinary int at runtime -- the
+// codegen sets this per-arg from the schema so the value is converted to a
+// torch.dtype (or None) instead of an int. `is_none` carries an absent optional
+// (e.g. dtype=None / correction=None) since IValue can't distinguish "missing".
+struct PyKwarg {
+  const char* name;
+  c10::IValue value;
+  bool is_dtype = false;
+  bool is_none = false;
+};
+
+// Like CallPythonOp_Generic, but also forwards `kwargs` by name. Positional
+// `args` are the aten args gems takes positionally; `kwargs` are the trailing
+// aten args gems declares keyword-only. Covers functional_pure/inplace via the
+// single-tensor return.
+at::Tensor CallPythonOp_GenericKw(const char* func_name,
+                                  const std::vector<c10::IValue>& args,
+                                  const std::vector<PyKwarg>& kwargs);
+
+// Like CallPythonOp_GenericTuple, but with keyword args (e.g. sort.stable,
+// var_mean.correction). Returns the N tensors in order.
+std::vector<at::Tensor> CallPythonOp_GenericKwTuple(
+    const char* func_name, const std::vector<c10::IValue>& args,
+    const std::vector<PyKwarg>& kwargs, int64_t n);
+
 // Like CallPythonOp_Generic, but the Python op returns a tuple/list of N tensors
 // (e.g. sort -> (values, indices), var_mean -> (var, mean)). Returns the N
 // tensors in order. Used by the codegen tuple_return kernels.

@@ -327,6 +327,65 @@ at::Tensor CallPythonOp_Generic(const char* func_name, const std::vector<c10::IV
   return PythonToTensor(func(*py_args));
 }
 
+namespace {
+
+// Build the **kwargs dict for a keyword-arg call. `is_dtype` kwargs convert the
+// int ScalarType payload to a torch.dtype (see PyKwarg); `is_none` kwargs pass
+// Python None (an absent optional the IValue can't otherwise represent).
+py::dict BuildPyKwargs(const std::vector<PyKwarg>& kwargs, const char* func_name) {
+  py::dict d;
+  for (const auto& kw : kwargs) {
+    if (kw.is_none) {
+      d[kw.name] = py::none();
+    } else if (kw.is_dtype) {
+      d[kw.name] = OptionalDtypeToPython(
+          static_cast<at::ScalarType>(kw.value.toInt()));
+    } else {
+      d[kw.name] = IValueToPython(kw.value, func_name);
+    }
+  }
+  return d;
+}
+
+} // namespace
+
+at::Tensor CallPythonOp_GenericKw(const char* func_name,
+                                  const std::vector<c10::IValue>& args,
+                                  const std::vector<PyKwarg>& kwargs) {
+  auto& cache = GetCache();
+  cache.EnsureInitialized();
+
+  py::gil_scoped_acquire gil;
+  auto func = cache.GetFunc(func_name);
+  py::tuple py_args = BuildPyArgs(args, func_name);
+  py::dict py_kwargs = BuildPyKwargs(kwargs, func_name);
+  return PythonToTensor(func(*py_args, **py_kwargs));
+}
+
+std::vector<at::Tensor> CallPythonOp_GenericKwTuple(
+    const char* func_name, const std::vector<c10::IValue>& args,
+    const std::vector<PyKwarg>& kwargs, int64_t n) {
+  auto& cache = GetCache();
+  cache.EnsureInitialized();
+
+  py::gil_scoped_acquire gil;
+  auto func = cache.GetFunc(func_name);
+  py::tuple py_args = BuildPyArgs(args, func_name);
+  py::dict py_kwargs = BuildPyKwargs(kwargs, func_name);
+  py::object result = func(*py_args, **py_kwargs);
+
+  py::sequence seq = py::reinterpret_borrow<py::sequence>(result);
+  TORCH_CHECK(static_cast<int64_t>(py::len(seq)) == n,
+              "Expected ", n, " return values from FlagGems op ", func_name,
+              ", got ", py::len(seq));
+  std::vector<at::Tensor> out;
+  out.reserve(n);
+  for (int64_t i = 0; i < n; ++i) {
+    out.push_back(PythonToTensor(py::reinterpret_borrow<py::object>(seq[i])));
+  }
+  return out;
+}
+
 std::vector<at::Tensor> CallPythonOp_GenericTuple(
     const char* func_name, const std::vector<c10::IValue>& args, int64_t n) {
   auto& cache = GetCache();

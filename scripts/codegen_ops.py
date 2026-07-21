@@ -298,6 +298,29 @@ def _flaggems_gems_npos(fn):
     return n
 
 
+def _flaggems_kwonly_names(fn):
+    """Set of keyword-only parameter names of a flag_gems function (params after
+    the `*` in its signature), or empty set if uninspectable. These are the args
+    gems accepts only by name -- the codegen forwards the matching aten trailing
+    args as kwargs (dtype/alpha/correction/...)."""
+    import inspect
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (ValueError, TypeError):
+        return set()
+    return {p.name for p in params if p.kind == p.KEYWORD_ONLY}
+
+
+# aten types the keyword-arg forwarding path can express. ScalarType IS allowed
+# here (unlike the positional _FLAGGEMS_GENERIC_OK set): the codegen tags a dtype
+# kwarg so the caller converts it to a torch.dtype by name, sidestepping the
+# "IValue stores ScalarType as int" ambiguity that blocks the positional path.
+_FLAGGEMS_KWARG_OK = {
+    "ScalarType", "ScalarType?", "Scalar", "Scalar?", "int", "int?",
+    "float", "float?", "bool", "bool?", "str", "str?", "SymInt", "SymInt?",
+}
+
+
 def _flaggems_extra_trailing_ok(fn, ncall):
     """True if a gems function with more positional params than the `ncall` args
     we intend to pass can be safely called with exactly `ncall` positional args.
@@ -357,7 +380,10 @@ FLAGGEMS_PYTHON_SKIP = {
 def discover_flaggems_ops(codegen_ops, funcs):
     """Discover ops that can be safely routed to the FlagGems Python path.
 
-    Returns {op_name: (gems_func_qualname, category)}.
+    Returns {op_name: (gems_func_qualname, category, kwargs)} where kwargs is a
+    list of (aten_type, name) for trailing aten args that gems declares
+    keyword-only and the kernel forwards by name (dtype/alpha/correction/...);
+    empty for the common all-positional case.
 
     Safety gates (see plan; validated in scratch analysis):
       - op must have a generated dispatcher (op in codegen_ops) and a schema.
@@ -402,6 +428,9 @@ def discover_flaggems_ops(codegen_ops, funcs):
         aten_args = list(s.arguments.flat_all)
         out_args = list(s.arguments.out) if hasattr(s.arguments, "out") else []
         resolved_cat = cat
+        # kwargs: aten trailing args gems declares keyword-only (dtype/alpha/...).
+        # Filled by the arity_short branch below; each entry is (name, aten_type).
+        kwargs = []
         if cat == "out_variant":
             non_out = [(str(a.type), a.name) for a in aten_args if a not in out_args]
             with_out = non_out + [(str(a.type), a.name) for a in out_args]
@@ -418,27 +447,93 @@ def discover_flaggems_ops(codegen_ops, funcs):
                 # is a required keyword-only arg the positional caller can't supply.
                 passed = with_out
                 resolved_cat = "out_variant_gemsout"
+            elif npos < len(non_out):
+                passed, kwargs = _flaggems_split_kwargs(fn, npos, non_out)
+                if passed is None:
+                    continue
             else:
                 continue
         else:
-            passed = [(str(a.type), a.name) for a in aten_args]
-            if npos != len(passed) and not (
-                    npos > len(passed) and _flaggems_extra_trailing_ok(fn, len(passed))):
+            all_args = [(str(a.type), a.name) for a in aten_args]
+            if npos == len(all_args) or (
+                    npos > len(all_args) and _flaggems_extra_trailing_ok(fn, len(all_args))):
+                passed = all_args
+            elif npos < len(all_args):
+                # gems takes fewer positional args: the trailing aten args must be
+                # gems keyword-only params, forwarded by name (see kwarg path).
+                passed, kwargs = _flaggems_split_kwargs(fn, npos, all_args)
+                if passed is None:
+                    continue
+            else:
                 continue
         if not all(_flaggems_type_ok(t) for t, _ in passed):
             continue
+        if kwargs and not all(t in _FLAGGEMS_KWARG_OK for t, _ in kwargs):
+            continue
         qualname = f"{fn.__module__}.{fn.__name__}"
-        result[op] = (qualname, resolved_cat)
+        result[op] = (qualname, resolved_cat, kwargs)
     return result
 
 
-def gen_flaggems_python_kernel(op, fn_type, ret_type, args, gems_func, category, func):
+def _flaggems_split_kwargs(fn, npos, all_passed):
+    """For an arity_short op (gems takes `npos` positional args, fewer than the
+    `all_passed` aten args), split into (positional, kwargs). The trailing aten
+    args beyond `npos` must ALL be gems keyword-only params matched BY NAME, else
+    return (None, None) to reject the op (a name mismatch means we can't safely
+    forward, and dropping the arg would silently change the result).
+
+    Returns (positional_list, kwarg_list) where each list holds (aten_type, name)
+    for positional and (aten_type, name) for kwargs.
+    """
+    positional = all_passed[:npos]
+    trailing = all_passed[npos:]
+    kwonly = _flaggems_kwonly_names(fn)
+    for _t, name in trailing:
+        if name not in kwonly:
+            return None, None
+    return positional, list(trailing)
+
+
+def _flaggems_kwarg_cpp(kwargs):
+    """Render the C++ `std::vector<PyKwarg>` initializer for the keyword args to
+    forward to gems. Each PyKwarg is {name, value, is_dtype, is_none}; a dtype
+    (ScalarType) arg is tagged is_dtype so the caller converts it to torch.dtype.
+    Optional args (T?) are passed straight through -- the aten C++ arg is a
+    std::optional, so a nullopt naturally maps to Python None inside the caller
+    only if we mark it; but since we pass the IValue, an absent optional would
+    become an int/None ambiguity for dtype. We therefore build the PyKwarg with a
+    runtime `.has_value()` check for ScalarType? args."""
+    parts = []
+    for t, name in kwargs:
+        is_dtype = t.startswith("ScalarType")
+        if is_dtype:
+            if t.endswith("?"):
+                # std::optional<ScalarType>: None when absent, else tagged dtype.
+                parts.append(
+                    f'PyKwarg{{"{name}", {name}.has_value() ? '
+                    f'c10::IValue(static_cast<int64_t>(*{name})) : c10::IValue(), '
+                    f'/*is_dtype=*/true, /*is_none=*/!{name}.has_value()}}')
+            else:
+                parts.append(
+                    f'PyKwarg{{"{name}", '
+                    f'c10::IValue(static_cast<int64_t>({name})), '
+                    f'/*is_dtype=*/true}}')
+        else:
+            # Scalar/int/bool/str/SymInt (and their optionals): IValue can carry
+            # these directly. c10::IValue has implicit ctors for each.
+            parts.append(f'PyKwarg{{"{name}", {name}}}')
+    return "{" + ", ".join(parts) + "}"
+
+
+def gen_flaggems_python_kernel(op, fn_type, ret_type, args, gems_func, category,
+                               func, kwargs=None):
     """Generate a <Name>KernelPython forwarding to the FlagGems Python op.
 
     Signature matches the generated `*Fn` typedef exactly. The body packs the
-    aten args (faithful order) into a std::vector<c10::IValue> and calls the
-    generic caller by qualname, then adapts the result to the category's return
-    convention:
+    aten positional args (faithful order) into a std::vector<c10::IValue> and any
+    keyword-only gems args (dtype/alpha/correction/...) into a
+    std::vector<PyKwarg>, then calls the generic caller by qualname and adapts
+    the result to the category's return convention:
       functional_pure -> UnboxToFlagos(result); return result;
       inplace         -> self.copy_(result); return self;  (or void)
       tuple_return    -> GenericTuple(...); unbox each; return make_tuple(...)
@@ -448,21 +543,38 @@ def gen_flaggems_python_kernel(op, fn_type, ret_type, args, gems_func, category,
     s = func.func
     aten_args = list(s.arguments.flat_all)
     out_args = list(s.arguments.out) if hasattr(s.arguments, "out") else []
+    kwargs = kwargs or []
+    kw_names = {name for _t, name in kwargs}
 
-    # arg names as they appear in the generated C++ signature
+    # arg names as they appear in the generated C++ signature. Kwarg-forwarded
+    # args are removed from the positional list (they go into the PyKwarg vector).
     if category == "out_variant":
-        passed_names = [a.name for a in aten_args if a not in out_args]
+        passed_names = [a.name for a in aten_args
+                        if a not in out_args and a.name not in kw_names]
     elif category == "out_variant_gemsout":
         # gems takes the out tensor(s) positionally after the non-out args.
-        passed_names = ([a.name for a in aten_args if a not in out_args]
+        passed_names = ([a.name for a in aten_args
+                         if a not in out_args and a.name not in kw_names]
                         + [a.name for a in out_args])
     else:
-        passed_names = [a.name for a in aten_args]
+        passed_names = [a.name for a in aten_args if a.name not in kw_names]
     ivalues = "{" + ", ".join(passed_names) + "}"
+
+    # kwarg call selects the *Kw caller variant; positional-only uses the plain one.
+    if kwargs:
+        kw_init = _flaggems_kwarg_cpp(kwargs)
+        gen_call = f'CallPythonOp_GenericKw("{gems_func}", {ivalues}, {kw_init})'
+        tuple_call = (lambda n:
+                      f'CallPythonOp_GenericKwTuple("{gems_func}", {ivalues}, '
+                      f'{kw_init}, {n})')
+    else:
+        gen_call = f'CallPythonOp_Generic("{gems_func}", {ivalues})'
+        tuple_call = (lambda n:
+                      f'CallPythonOp_GenericTuple("{gems_func}", {ivalues}, {n})')
 
     if category == "functional_pure":
         body = (
-            f'  auto result = CallPythonOp_Generic("{gems_func}", {ivalues});\n'
+            f'  auto result = {gen_call};\n'
             f"  UnboxToFlagos(result);\n"
             f"  return result;"
         )
@@ -470,7 +582,7 @@ def gen_flaggems_python_kernel(op, fn_type, ret_type, args, gems_func, category,
         self_name = passed_names[0]
         ret_line = "" if ret_type == "void" else f"\n  return {self_name};"
         body = (
-            f'  auto result = CallPythonOp_Generic("{gems_func}", {ivalues});\n'
+            f'  auto result = {gen_call};\n'
             f"  {self_name}.copy_(result);{ret_line}"
         )
     elif category == "tuple_return":
@@ -478,7 +590,7 @@ def gen_flaggems_python_kernel(op, fn_type, ret_type, args, gems_func, category,
         unbox = "\n".join(f"  UnboxToFlagos(result[{i}]);" for i in range(n))
         make = ", ".join(f"result[{i}]" for i in range(n))
         body = (
-            f'  auto result = CallPythonOp_GenericTuple("{gems_func}", {ivalues}, {n});\n'
+            f'  auto result = {tuple_call(n)};\n'
             f"{unbox}\n"
             f"  return {{{make}}};"
         )
@@ -491,14 +603,14 @@ def gen_flaggems_python_kernel(op, fn_type, ret_type, args, gems_func, category,
             )
             make = ", ".join(out_names)
             body = (
-                f'  auto result = CallPythonOp_GenericTuple("{gems_func}", {ivalues}, {n});\n'
+                f'  auto result = {tuple_call(n)};\n'
                 f"{copies}\n"
                 f"  return {{{make}}};"
             )
         else:
             out_name = out_names[0]
             body = (
-                f'  auto result = CallPythonOp_Generic("{gems_func}", {ivalues});\n'
+                f'  auto result = {gen_call};\n'
                 f"  {out_name}.copy_(result);\n"
                 f"  return {out_name};"
             )
@@ -508,7 +620,7 @@ def gen_flaggems_python_kernel(op, fn_type, ret_type, args, gems_func, category,
         # the aten out arg(s). (Only single-out ops reach here today.)
         out_name = [a.name for a in out_args][0]
         body = (
-            f'  CallPythonOp_Generic("{gems_func}", {ivalues});\n'
+            f'  {gen_call};\n'
             f"  return {out_name};"
         )
     else:
@@ -1106,7 +1218,7 @@ def main():
     flaggems_py = discover_flaggems_ops(set(op_info), funcs)
     flaggems_py = {op: v for op, v in flaggems_py.items() if op in op_info}
     py_cat_counts = defaultdict(int)
-    for _op, (_q, _c) in flaggems_py.items():
+    for _op, (_q, _c, _kw) in flaggems_py.items():
         py_cat_counts[_c] += 1
     print(f"\nFlagGems Python-path ops discovered: {len(flaggems_py)}")
     for cat in sorted(py_cat_counts):
@@ -1214,9 +1326,10 @@ def main():
     ]
     for op in py_ops:
         i = op_info[op]
-        gems_func, category = flaggems_py[op]
+        gems_func, category, kwargs = flaggems_py[op]
         lines.append(gen_flaggems_python_kernel(
-            op, i["fn_type"], i["ret_type"], i["args"], gems_func, category, i["func"]))
+            op, i["fn_type"], i["ret_type"], i["args"], gems_func, category,
+            i["func"], kwargs))
         lines.append("")
     lines.append("} // namespace")
     lines.append("")
