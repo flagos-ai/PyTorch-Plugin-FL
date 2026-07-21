@@ -167,14 +167,13 @@ CUDA 侧 `scripts/codegen_ops.py` 生成 `generated/cuda_kernels.cc`，内核体
 - **softmax_backward（2）**：_softmax_backward_data/_log_softmax_backward_data（训练用；aclnn 名去掉 aten 的 `_data` 后缀）
 
 长尾未接（进后续或手写）：
-- **SDPA/flash-attention** (`_scaled_dot_product_efficient_attention` 前向 + `_scaled_dot_product_efficient_attention_backward` 反向)：已调研 aclnn API (`aclnnFlashAttentionScore` / `aclnnFlashAttentionScoreGrad`)，确认：
-  - inputLayout="BNSD" for `[B, num_heads, S, head_dim]`
-  - softmaxMax/Sum shape = `[B, N, S, 8]` (8 是 tiling factor)，dtype=float32
-  - scaleValue = `1.0 / sqrt(head_dim)`，keepProb = `1 - dropout_p`
-  - attenMask 必须 2D 或 4D（不能 3D），true=KEEP
-  - **关键映射**：PyTorch 返回单个 `logsumexp [B,N,S]`，但 aclnn 前向产出 softmaxMax+softmaxSum (shape `[B,N,S,8]`)，反向需要两者。关系：`logsumexp = log(softmaxSum) + softmaxMax`（可逆，但需处理 shape 差异：`[B,N,S]` vs `[B,N,S,8]`，可能需 reduce 最后一维）。
-  - preTokens/nextTokens/sparseMode 的 causal/non-causal 组合未找到确切文档（torch_npu 源码因网络限制未获取）。
-  - **结论**：SDPA 是 bespoke 多日任务（非模板批次），需专门实现 pass：测试 causal/dropout/mask 组合，处理 logsumexp 与 (max,sum) 的 shape/数值映射，验证前向/反向闭环。暂留长尾。
+- **SDPA/flash-attention** (`_scaled_dot_product_efficient_attention` 前向)：**已实现并验证**（2026-07-21）。
+  - 手写 `csrc/aten/backends/ascend/scaled_dot_product_attention.cc`，直接调用 `aclnnFlashAttentionScore`
+  - 参数：inputLayout="BNSD"，scaleValue=1.0/sqrt(D)，keepProb=1-dropout_p，headNum=num_heads
+  - **关键映射**：aclnn 输出 softmaxMax/Sum `[B,N,S,8]`（8 是 online softmax tiling），PyTorch 需要 `logsumexp [B,N,S]`。实现：取 softmaxMax/Sum 的最后一维首元素（`[:,:,:,0]`），计算 `log(softmaxSum) + softmaxMax` 得到 logsumexp。
+  - **attenMask 语义**：`true=MASK_OUT`（屏蔽），`false=KEEP`（保留）—— 与文档描述相反！causal attention 用 `triu(..., diagonal=1)` 产生上三角 mask。
+  - 验证：non-causal max_err=3.34e-06，causal max_err=7.15e-07（真机对拍 CPU）。
+  - **backward 未实现**：`_scaled_dot_product_efficient_attention_backward` 注册为 NotImplemented（原因：aclnn 反向需要分别传入 softmaxMax 和 softmaxSum，但 PyTorch 前向只返回单个 logsumexp 张量；需要修改前向保存 max/sum 或在 backward 时重算，是多日工程）。
 - var/std.correction、norm.ScalarOpt_dim（correction/p 参数）、argmax/argmin/logsumexp/isnan/remainder/relu6（无 aclnn 符号或需特殊派生）、transposed conv, conv/pool 3D, upsample/interpolate, pad (reflection/replication/constant), scatter/scatter_add/index_put, sort/topk。
 - **addbmm**：符号存在且能跑，但 hf32 cube 沿 batch 维累加把相对误差放大到 ~1e-2
   （单次 addmm 仅 ~1e-4）。留待允许 fp32 累加或降 cubeMathType 时再接。
@@ -208,6 +207,21 @@ inplace 变体（`aclnnInplaceMaskedFillScalar/Tensor`，selfRef 非 const）。
 `empty_like`，而 ascend 后端没注册 `empty_like`（`RuntimeError: empty_like: backend not
 registered`）。改用 `OpPreparation::apply_tensor_without_format(out_shape, opts)` 分配 +
 `out.copy_(self.expand(out_shape))`。这条同样适用于任何需要「先复制再原地改」的 codegen 算子。
+
+**关键坑（SDPA attenMask 语义反转）**：aclnnFlashAttentionScore 的 attenMask 语义是 **`true=MASK_OUT`
+（屏蔽该位置），`false=KEEP`（保留）**，与 CANN 文档及研究结果（"true=KEEP"）相反。实测：causal
+attention 需要用 `torch.triu(torch.ones(...), diagonal=1).bool()`（上三角为 true）作为 mask，
+才能正确屏蔽未来位置。若传反（下三角为 true），数值误差巨大（err~4.0）。另：attenMask 必须是 2D `[S,S]`
+或 4D `[B,1,S,S]` broadcast，不能是 3D。
+
+**关键坑（SDPA logsumexp 映射）**：PyTorch `_scaled_dot_product_efficient_attention` 返回
+`logsumexp [B,N,S]`（单张量），但 aclnnFlashAttentionScore 输出 softmaxMax/Sum 各为 `[B,N,S,8]`
+（8 是 online softmax 的 tiling factor）。实现映射：取最后一维首元素（`softmaxMax[:,:,:,0]` 和
+`softmaxSum[:,:,:,0]`，均为 `[B,N,S]`），计算 `logsumexp = torch.log(softmaxSum_0) + softmaxMax_0`。
+这个映射在 non-causal/causal 下均与 CPU 对齐（max_err ≤3.34e-06）。**Backward 阻塞原因**：
+aclnnFlashAttentionScoreGrad 需要分别传入 softmaxMax 和 softmaxSum（作为前向的 saved tensors），
+但 PyTorch autograd 只保存单个 logsumexp 张量，无法逆推出原始的 max 和 sum（log 不可逆加）。
+解决方案需修改前向 context 同时保存 max/sum，或在 backward 时重算——多日工程，当前版本仅实现前向。
 
 **关键坑（batch_norm 的 save_invstd 语义）**：`aclnnBatchNorm` 前向的 `output`/`saveMean`
 与 CPU 逐位对齐，但 `saveInvstd` 定义与 PyTorch CPU 不同（CPU 是 `1/sqrt(var+eps)`，
