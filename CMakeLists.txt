@@ -13,7 +13,19 @@ if(ACCELERATOR STREQUAL "ascend")
   project(TORCH_FLAGOS CXX C)
 elseif(ACCELERATOR STREQUAL "metax")
   include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/MetaxEnv.cmake)
-  set(METAX_KERNEL ON CACHE BOOL "Build MetaX kernel implementations" FORCE)
+  # Boxing mode ($ENV{FLAGOS_METAX_BOXING}=1): reuse the generated CUDA boxing
+  # kernels (csrc/aten/generated/cuda_kernels.cc, host g++, no mxcc) that
+  # dispatch PrivateUse1 -> CUDA into maca's libtorch_cuda.so, instead of the
+  # hand-written mxcc .cu kernels under backends/metax/. Keeps the MetaX SDK
+  # runtime + cu-bridge headers path (no nvcc / project(...CUDA)).
+  if(DEFINED ENV{FLAGOS_METAX_BOXING} AND NOT "$ENV{FLAGOS_METAX_BOXING}" STREQUAL "0")
+    set(FLAGOS_METAX_BOXING ON)
+  endif()
+  if(FLAGOS_METAX_BOXING)
+    set(METAX_KERNEL OFF CACHE BOOL "Build MetaX kernel implementations" FORCE)
+  else()
+    set(METAX_KERNEL ON CACHE BOOL "Build MetaX kernel implementations" FORCE)
+  endif()
   set(CUDA_KERNEL OFF CACHE BOOL "Build CUDA kernel implementations" FORCE)
   set(FLAGGEMS_KERNEL OFF CACHE BOOL "Build FlagGems kernel implementations" FORCE)
   project(TORCH_FLAGOS CXX C)
@@ -208,7 +220,11 @@ if(FLAGGEMS_KERNEL)
   message(STATUS "FlagGems liboperators RPATH: ${_flaggems_libdir}")
   list(APPEND CMAKE_INSTALL_RPATH "${_flaggems_libdir}")
 elseif(ACCELERATOR STREQUAL "metax")
-  message(STATUS "MetaX build: native runtime + mxcc kernels (no FlagGems)")
+  if(FLAGOS_METAX_BOXING)
+    message(STATUS "MetaX build: native runtime + CUDA boxing kernels (host g++, no mxcc/FlagGems)")
+  else()
+    message(STATUS "MetaX build: native runtime + mxcc kernels (no FlagGems)")
+  endif()
 endif()
 
 if(DEFINED PYTHON_INCLUDE_DIR)

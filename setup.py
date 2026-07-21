@@ -285,9 +285,19 @@ def build_deps():
 
     cmake_args.append(f"-DACCELERATOR={ACCELERATOR}")
     if ACCELERATOR == "metax":
+        # Boxing mode reuses the generated CUDA boxing kernels (host g++) instead
+        # of hand-written mxcc .cu kernels; leave METAX_KERNEL off so CMake picks
+        # it up from the FLAGOS_METAX_BOXING env branch in CMakeLists.txt.
+        metax_boxing = os.environ.get("FLAGOS_METAX_BOXING", "0") not in (
+            "0",
+            "OFF",
+            "off",
+            "false",
+            "FALSE",
+        )
         cmake_args.extend(
             [
-                "-DMETAX_KERNEL=ON",
+                "-DMETAX_KERNEL=" + ("OFF" if metax_boxing else "ON"),
                 "-DCUDA_KERNEL=OFF",
                 "-DFLAGGEMS_KERNEL=OFF",
             ]

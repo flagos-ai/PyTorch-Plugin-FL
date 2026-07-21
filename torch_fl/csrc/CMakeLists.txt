@@ -6,6 +6,11 @@ file(GLOB_RECURSE SOURCE_FILES
 
 add_library(${LIBRARY_NAME} SHARED ${SOURCE_FILES})
 
+if(ACCELERATOR STREQUAL "metax")
+  # maca torch headers are gated on USE_MACA (see csrc/CMakeLists.txt).
+  target_compile_definitions(${LIBRARY_NAME} PRIVATE USE_MACA=1)
+endif()
+
 target_link_libraries(${LIBRARY_NAME} PRIVATE torch_python_library torch_fl)
 
 if(WIN32)

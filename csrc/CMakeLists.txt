@@ -79,6 +79,12 @@ if(NOT ACCELERATOR STREQUAL "ascend")
   target_compile_definitions(${LIBRARY_NAME} PRIVATE C10_CUDA_NO_CMAKE_CONFIGURE_FILE)
 endif()
 
+if(ACCELERATOR STREQUAL "metax")
+  # maca's torch headers are a hard fork gated on USE_MACA (e.g. C10_WARP_SIZE,
+  # Context.h allow_tf32_cudnn). Without it the headers hit static_assert(0).
+  target_compile_definitions(${LIBRARY_NAME} PRIVATE USE_MACA=1)
+endif()
+
 set(_torch_fl_link_libs torch_cpu_library torch_python_library flagos ${CUDA_RUNTIME_LIB})
 if(FLAGGEMS_KERNEL)
   if(TARGET FlagGems::operators)

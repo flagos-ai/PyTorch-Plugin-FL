@@ -317,9 +317,6 @@ DECLARE_DISPATCHER(PrivFlashAttentionBackwardFn, priv_flash_attention_backward_d
 using PrivFlashAttentionForwardFn = ::std::tuple<at::Tensor,at::Tensor,at::Tensor,at::Tensor,at::Tensor> (*)(const at::Tensor &, const at::Tensor &, const at::Tensor &, const ::std::optional<at::Tensor> &, const ::std::optional<at::Tensor> &, int64_t, int64_t, double, bool, bool, ::std::optional<double>, ::std::optional<int64_t>, ::std::optional<int64_t>, const ::std::optional<at::Tensor> &, const ::std::optional<at::Tensor> &);
 DECLARE_DISPATCHER(PrivFlashAttentionForwardFn, priv_flash_attention_forward_dispatcher)
 
-using PrivFlashAttentionForwardQuantizedFn = ::std::tuple<at::Tensor,at::Tensor,at::Tensor,at::Tensor,at::Tensor> (*)(const at::Tensor &, const at::Tensor &, const at::Tensor &, const ::std::optional<at::Tensor> &, const ::std::optional<at::Tensor> &, int64_t, int64_t, double, bool, bool, const ::std::optional<at::Tensor> &, const ::std::optional<at::Tensor> &, const ::std::optional<at::Tensor> &, ::std::optional<double>, ::std::optional<int64_t>, ::std::optional<int64_t>, const ::std::optional<at::Tensor> &, const ::std::optional<at::Tensor> &);
-DECLARE_DISPATCHER(PrivFlashAttentionForwardQuantizedFn, priv_flash_attention_forward_quantized_dispatcher)
-
 using PrivFoobarOutFn = at::Tensor & (*)(const at::Tensor &, bool, bool, bool, at::Tensor &);
 DECLARE_DISPATCHER(PrivFoobarOutFn, priv_foobar_out_dispatcher)
 
@@ -841,12 +838,6 @@ DECLARE_DISPATCHER(ForeachPowInplaceScalarFn, foreach_pow_inplace_scalar_dispatc
 
 using ForeachPowInplaceScalarlistFn = void (*)(at::TensorList, at::ArrayRef<at::Scalar>);
 DECLARE_DISPATCHER(ForeachPowInplaceScalarlistFn, foreach_pow_inplace_scalarlist_dispatcher)
-
-using ForeachPowsumScalarFn = ::std::vector<at::Tensor> (*)(at::TensorList, const at::Scalar &, ::std::optional<at::ScalarType>);
-DECLARE_DISPATCHER(ForeachPowsumScalarFn, foreach_powsum_scalar_dispatcher)
-
-using ForeachPowsumScalarOutFn = void (*)(at::TensorList, const at::Scalar &, ::std::optional<at::ScalarType>, at::TensorList);
-DECLARE_DISPATCHER(ForeachPowsumScalarOutFn, foreach_powsum_scalar_out_dispatcher)
 
 using ForeachReciprocalFn = ::std::vector<at::Tensor> (*)(at::TensorList);
 DECLARE_DISPATCHER(ForeachReciprocalFn, foreach_reciprocal_dispatcher)
@@ -2588,6 +2579,12 @@ DECLARE_DISPATCHER(CudnnConvolutionAddReluFn, cudnn_convolution_add_relu_dispatc
 using CudnnConvolutionAddReluOutFn = at::Tensor & (*)(const at::Tensor &, const at::Tensor &, const at::Tensor &, const ::std::optional<at::Scalar> &, const ::std::optional<at::Tensor> &, at::IntArrayRef, at::IntArrayRef, at::IntArrayRef, int64_t, at::Tensor &);
 DECLARE_DISPATCHER(CudnnConvolutionAddReluOutFn, cudnn_convolution_add_relu_out_dispatcher)
 
+using CudnnConvolutionBiasFusedFn = at::Tensor (*)(const at::Tensor &, const at::Tensor &, const at::Tensor &, at::IntArrayRef, at::IntArrayRef, at::IntArrayRef, int64_t, bool, bool, bool);
+DECLARE_DISPATCHER(CudnnConvolutionBiasFusedFn, cudnn_convolution_bias_fused_dispatcher)
+
+using CudnnConvolutionBiasFusedOutFn = at::Tensor & (*)(const at::Tensor &, const at::Tensor &, const at::Tensor &, at::IntArrayRef, at::IntArrayRef, at::IntArrayRef, int64_t, bool, bool, bool, at::Tensor &);
+DECLARE_DISPATCHER(CudnnConvolutionBiasFusedOutFn, cudnn_convolution_bias_fused_out_dispatcher)
+
 using CudnnConvolutionReluFn = at::Tensor (*)(const at::Tensor &, const at::Tensor &, const ::std::optional<at::Tensor> &, at::IntArrayRef, at::IntArrayRef, at::IntArrayRef, int64_t);
 DECLARE_DISPATCHER(CudnnConvolutionReluFn, cudnn_convolution_relu_dispatcher)
 
@@ -3494,15 +3491,6 @@ DECLARE_DISPATCHER(LcmOutFn, lcm_out_dispatcher)
 using LcmInplaceFn = at::Tensor & (*)(at::Tensor &, const at::Tensor &);
 DECLARE_DISPATCHER(LcmInplaceFn, lcm_inplace_dispatcher)
 
-using LdexpTensorFn = at::Tensor (*)(const at::Tensor &, const at::Tensor &);
-DECLARE_DISPATCHER(LdexpTensorFn, ldexp_tensor_dispatcher)
-
-using LdexpOutFn = at::Tensor & (*)(const at::Tensor &, const at::Tensor &, at::Tensor &);
-DECLARE_DISPATCHER(LdexpOutFn, ldexp_out_dispatcher)
-
-using LdexpInplaceFn = at::Tensor & (*)(at::Tensor &, const at::Tensor &);
-DECLARE_DISPATCHER(LdexpInplaceFn, ldexp_inplace_dispatcher)
-
 using LeScalarFn = at::Tensor (*)(const at::Tensor &, const at::Scalar &);
 DECLARE_DISPATCHER(LeScalarFn, le_scalar_dispatcher)
 
@@ -3574,9 +3562,6 @@ DECLARE_DISPATCHER(LiftFreshFn, lift_fresh_dispatcher)
 
 using LiftFreshCopyOutFn = at::Tensor & (*)(const at::Tensor &, at::Tensor &);
 DECLARE_DISPATCHER(LiftFreshCopyOutFn, lift_fresh_copy_out_dispatcher)
-
-using LinalgPowsumFn = at::Tensor (*)(const at::Tensor &, const at::Scalar &, at::OptionalIntArrayRef, bool, ::std::optional<at::ScalarType>);
-DECLARE_DISPATCHER(LinalgPowsumFn, linalg__powsum_dispatcher)
 
 using LinalgCholeskyExFn = ::std::tuple<at::Tensor,at::Tensor> (*)(const at::Tensor &, bool, bool);
 DECLARE_DISPATCHER(LinalgCholeskyExFn, linalg_cholesky_ex_dispatcher)
@@ -4054,15 +4039,6 @@ DECLARE_DISPATCHER(MiopenConvolutionTransposeFn, miopen_convolution_transpose_di
 
 using MiopenConvolutionTransposeOutFn = at::Tensor & (*)(const at::Tensor &, const at::Tensor &, const ::std::optional<at::Tensor> &, at::IntArrayRef, at::IntArrayRef, at::IntArrayRef, at::IntArrayRef, int64_t, bool, bool, at::Tensor &);
 DECLARE_DISPATCHER(MiopenConvolutionTransposeOutFn, miopen_convolution_transpose_out_dispatcher)
-
-using MiopenCtcLossFn = ::std::tuple<at::Tensor,at::Tensor> (*)(const at::Tensor &, const at::Tensor &, at::IntArrayRef, at::IntArrayRef, int64_t, bool, bool);
-DECLARE_DISPATCHER(MiopenCtcLossFn, miopen_ctc_loss_dispatcher)
-
-using MiopenCtcLossTensorFn = ::std::tuple<at::Tensor,at::Tensor> (*)(const at::Tensor &, const at::Tensor &, const at::Tensor &, const at::Tensor &, int64_t, bool, bool);
-DECLARE_DISPATCHER(MiopenCtcLossTensorFn, miopen_ctc_loss_tensor_dispatcher)
-
-using MiopenCtcLossOutFn = ::std::tuple<at::Tensor &,at::Tensor &> (*)(const at::Tensor &, const at::Tensor &, at::IntArrayRef, at::IntArrayRef, int64_t, bool, bool, at::Tensor &, at::Tensor &);
-DECLARE_DISPATCHER(MiopenCtcLossOutFn, miopen_ctc_loss_out_dispatcher)
 
 using MiopenDepthwiseConvolutionFn = at::Tensor (*)(const at::Tensor &, const at::Tensor &, const ::std::optional<at::Tensor> &, at::IntArrayRef, at::IntArrayRef, at::IntArrayRef, int64_t, bool, bool);
 DECLARE_DISPATCHER(MiopenDepthwiseConvolutionFn, miopen_depthwise_convolution_dispatcher)

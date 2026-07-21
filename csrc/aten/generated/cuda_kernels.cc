@@ -99,7 +99,6 @@
 #include <ATen/ops/_foreach_neg.h>
 #include <ATen/ops/_foreach_norm.h>
 #include <ATen/ops/_foreach_pow.h>
-#include <ATen/ops/_foreach_powsum.h>
 #include <ATen/ops/_foreach_reciprocal.h>
 #include <ATen/ops/_foreach_round.h>
 #include <ATen/ops/_foreach_rsqrt.h>
@@ -374,6 +373,7 @@
 #include <ATen/ops/cudnn_batch_norm_backward.h>
 #include <ATen/ops/cudnn_convolution.h>
 #include <ATen/ops/cudnn_convolution_add_relu.h>
+#include <ATen/ops/cudnn_convolution_bias_fused.h>
 #include <ATen/ops/cudnn_convolution_relu.h>
 #include <ATen/ops/cudnn_convolution_transpose.h>
 #include <ATen/ops/cudnn_grid_sampler.h>
@@ -487,7 +487,6 @@
 #include <ATen/ops/kaiser_window.h>
 #include <ATen/ops/kthvalue.h>
 #include <ATen/ops/lcm.h>
-#include <ATen/ops/ldexp.h>
 #include <ATen/ops/le.h>
 #include <ATen/ops/leaky_relu.h>
 #include <ATen/ops/leaky_relu_backward.h>
@@ -496,7 +495,6 @@
 #include <ATen/ops/lift.h>
 #include <ATen/ops/lift_fresh.h>
 #include <ATen/ops/lift_fresh_copy.h>
-#include <ATen/ops/linalg__powsum.h>
 #include <ATen/ops/linalg_cholesky_ex.h>
 #include <ATen/ops/linalg_cross.h>
 #include <ATen/ops/linalg_eig.h>
@@ -563,7 +561,6 @@
 #include <ATen/ops/miopen_convolution_add_relu.h>
 #include <ATen/ops/miopen_convolution_relu.h>
 #include <ATen/ops/miopen_convolution_transpose.h>
-#include <ATen/ops/miopen_ctc_loss.h>
 #include <ATen/ops/miopen_depthwise_convolution.h>
 #include <ATen/ops/miopen_rnn_backward.h>
 #include <ATen/ops/mish.h>
@@ -1664,24 +1661,6 @@ at::Tensor & PrivFftR2cOutKernelCuda(const at::Tensor & self, at::IntArrayRef di
   at::Tensor alibi_slopes_t = alibi_slopes.has_value() ? *alibi_slopes : at::Tensor();
   DeviceBoxingGuard guard(query, key, value, cum_seq_q_t, cum_seq_k_t, seqused_k_t, alibi_slopes_t);
   auto result = at::_flash_attention_forward(query, key, value, cum_seq_q, cum_seq_k, max_q, max_k, dropout_p, is_causal, return_debug_mask, scale, window_size_left, window_size_right, seqused_k, alibi_slopes);
-  UnboxToFlagos(std::get<0>(result));
-  UnboxToFlagos(std::get<1>(result));
-  UnboxToFlagos(std::get<2>(result));
-  UnboxToFlagos(std::get<3>(result));
-  UnboxToFlagos(std::get<4>(result));
-  return result;
-}
-
-::std::tuple<at::Tensor,at::Tensor,at::Tensor,at::Tensor,at::Tensor> PrivFlashAttentionForwardQuantizedKernelCuda(const at::Tensor & query, const at::Tensor & key, const at::Tensor & value, const ::std::optional<at::Tensor> & cum_seq_q, const ::std::optional<at::Tensor> & cum_seq_k, int64_t max_q, int64_t max_k, double dropout_p, bool is_causal, bool return_debug_mask, const ::std::optional<at::Tensor> & q_descale, const ::std::optional<at::Tensor> & k_descale, const ::std::optional<at::Tensor> & v_descale, ::std::optional<double> scale, ::std::optional<int64_t> window_size_left, ::std::optional<int64_t> window_size_right, const ::std::optional<at::Tensor> & seqused_k, const ::std::optional<at::Tensor> & alibi_slopes) {
-  at::Tensor cum_seq_q_t = cum_seq_q.has_value() ? *cum_seq_q : at::Tensor();
-  at::Tensor cum_seq_k_t = cum_seq_k.has_value() ? *cum_seq_k : at::Tensor();
-  at::Tensor q_descale_t = q_descale.has_value() ? *q_descale : at::Tensor();
-  at::Tensor k_descale_t = k_descale.has_value() ? *k_descale : at::Tensor();
-  at::Tensor v_descale_t = v_descale.has_value() ? *v_descale : at::Tensor();
-  at::Tensor seqused_k_t = seqused_k.has_value() ? *seqused_k : at::Tensor();
-  at::Tensor alibi_slopes_t = alibi_slopes.has_value() ? *alibi_slopes : at::Tensor();
-  DeviceBoxingGuard guard(query, key, value, cum_seq_q_t, cum_seq_k_t, q_descale_t, k_descale_t, v_descale_t, seqused_k_t, alibi_slopes_t);
-  auto result = at::_flash_attention_forward(query, key, value, cum_seq_q, cum_seq_k, max_q, max_k, dropout_p, is_causal, return_debug_mask, q_descale, k_descale, v_descale, scale, window_size_left, window_size_right, seqused_k, alibi_slopes);
   UnboxToFlagos(std::get<0>(result));
   UnboxToFlagos(std::get<1>(result));
   UnboxToFlagos(std::get<2>(result));
@@ -3290,24 +3269,6 @@ void ForeachPowInplaceScalarlistKernelCuda(at::TensorList self, at::ArrayRef<at:
   TensorListBoxingGuard guard;
   guard.box(self_vec);
   at::_foreach_pow_(self_vec, exponent);
-}
-
-::std::vector<at::Tensor> ForeachPowsumScalarKernelCuda(at::TensorList self, const at::Scalar & ord, ::std::optional<at::ScalarType> dtype) {
-  auto self_vec = MaterializeToTensorVec(self);
-  TensorListBoxingGuard guard;
-  guard.box(self_vec);
-  auto result = at::_foreach_powsum(self_vec, ord, dtype);
-  UnboxTensorVecToFlagos(result);
-  return result;
-}
-
-void ForeachPowsumScalarOutKernelCuda(at::TensorList self, const at::Scalar & ord, ::std::optional<at::ScalarType> dtype, at::TensorList out) {
-  auto self_vec = MaterializeToTensorVec(self);
-  auto out_vec = MaterializeToTensorVec(out);
-  TensorListBoxingGuard guard;
-  guard.box(self_vec);
-  guard.box(out_vec);
-  at::_foreach_powsum_outf(self_vec, ord, dtype, out_vec);
 }
 
 ::std::vector<at::Tensor> ForeachReciprocalKernelCuda(at::TensorList self) {
@@ -7868,6 +7829,20 @@ at::Tensor & CudnnConvolutionAddReluOutKernelCuda(const at::Tensor & self, const
   return out;
 }
 
+at::Tensor CudnnConvolutionBiasFusedKernelCuda(const at::Tensor & self, const at::Tensor & weight, const at::Tensor & bias, at::IntArrayRef padding, at::IntArrayRef stride, at::IntArrayRef dilation, int64_t groups, bool benchmark, bool deterministic, bool allow_tf32) {
+  DeviceBoxingGuard guard(self, weight, bias);
+  auto result = at::cudnn_convolution_bias_fused(self, weight, bias, padding, stride, dilation, groups, benchmark, deterministic, allow_tf32);
+  UnboxToFlagos(result);
+  return result;
+}
+
+at::Tensor & CudnnConvolutionBiasFusedOutKernelCuda(const at::Tensor & self, const at::Tensor & weight, const at::Tensor & bias, at::IntArrayRef padding, at::IntArrayRef stride, at::IntArrayRef dilation, int64_t groups, bool benchmark, bool deterministic, bool allow_tf32, at::Tensor & out) {
+  DeviceBoxingGuard guard(self, weight, bias, out);
+  at::cudnn_convolution_bias_fused_outf(self, weight, bias, padding, stride, dilation, groups, benchmark, deterministic, allow_tf32, out);
+  UnboxToFlagos(out);
+  return out;
+}
+
 at::Tensor CudnnConvolutionReluKernelCuda(const at::Tensor & self, const at::Tensor & weight, const ::std::optional<at::Tensor> & bias, at::IntArrayRef stride, at::IntArrayRef padding, at::IntArrayRef dilation, int64_t groups) {
   DeviceBoxingGuard guard(self, weight);
   auto result = at::cudnn_convolution_relu(self, weight, bias, stride, padding, dilation, groups);
@@ -10083,26 +10058,6 @@ at::Tensor & LcmInplaceKernelCuda(at::Tensor & self, const at::Tensor & other) {
   return self;
 }
 
-at::Tensor LdexpTensorKernelCuda(const at::Tensor & self, const at::Tensor & other) {
-  DeviceBoxingGuard guard(self, other);
-  auto result = at::ldexp(self, other);
-  UnboxToFlagos(result);
-  return result;
-}
-
-at::Tensor & LdexpOutKernelCuda(const at::Tensor & self, const at::Tensor & other, at::Tensor & out) {
-  DeviceBoxingGuard guard(self, other, out);
-  at::ldexp_outf(self, other, out);
-  UnboxToFlagos(out);
-  return out;
-}
-
-at::Tensor & LdexpInplaceKernelCuda(at::Tensor & self, const at::Tensor & other) {
-  DeviceBoxingGuard guard(self, other);
-  self.ldexp_(other);
-  return self;
-}
-
 at::Tensor LeScalarKernelCuda(const at::Tensor & self, const at::Scalar & other) {
   DeviceBoxingGuard guard(self);
   auto result = at::le(self, other);
@@ -10263,13 +10218,6 @@ at::Tensor & LiftFreshCopyOutKernelCuda(const at::Tensor & self, at::Tensor & ou
   at::lift_fresh_copy_outf(self, out);
   UnboxToFlagos(out);
   return out;
-}
-
-at::Tensor LinalgPowsumKernelCuda(const at::Tensor & self, const at::Scalar & ord, at::OptionalIntArrayRef dim, bool keepdim, ::std::optional<at::ScalarType> dtype) {
-  DeviceBoxingGuard guard(self);
-  auto result = at::linalg__powsum(self, ord, dim, keepdim, dtype);
-  UnboxToFlagos(result);
-  return result;
 }
 
 ::std::tuple<at::Tensor,at::Tensor> LinalgCholeskyExKernelCuda(const at::Tensor & self, bool upper, bool check_errors) {
@@ -11461,30 +11409,6 @@ at::Tensor & MiopenConvolutionTransposeOutKernelCuda(const at::Tensor & self, co
   at::miopen_convolution_transpose_outf(self, weight, bias, padding, output_padding, stride, dilation, groups, benchmark, deterministic, out);
   UnboxToFlagos(out);
   return out;
-}
-
-::std::tuple<at::Tensor,at::Tensor> MiopenCtcLossKernelCuda(const at::Tensor & log_probs, const at::Tensor & targets, at::IntArrayRef input_lengths, at::IntArrayRef target_lengths, int64_t blank, bool deterministic, bool zero_infinity) {
-  DeviceBoxingGuard guard(log_probs, targets);
-  auto result = at::miopen_ctc_loss(log_probs, targets, input_lengths, target_lengths, blank, deterministic, zero_infinity);
-  UnboxToFlagos(std::get<0>(result));
-  UnboxToFlagos(std::get<1>(result));
-  return result;
-}
-
-::std::tuple<at::Tensor,at::Tensor> MiopenCtcLossTensorKernelCuda(const at::Tensor & log_probs, const at::Tensor & targets, const at::Tensor & input_lengths, const at::Tensor & target_lengths, int64_t blank, bool deterministic, bool zero_infinity) {
-  DeviceBoxingGuard guard(log_probs, targets, input_lengths, target_lengths);
-  auto result = at::miopen_ctc_loss(log_probs, targets, input_lengths, target_lengths, blank, deterministic, zero_infinity);
-  UnboxToFlagos(std::get<0>(result));
-  UnboxToFlagos(std::get<1>(result));
-  return result;
-}
-
-::std::tuple<at::Tensor &,at::Tensor &> MiopenCtcLossOutKernelCuda(const at::Tensor & log_probs, const at::Tensor & targets, at::IntArrayRef input_lengths, at::IntArrayRef target_lengths, int64_t blank, bool deterministic, bool zero_infinity, at::Tensor & out0, at::Tensor & out1) {
-  DeviceBoxingGuard guard(log_probs, targets, out0, out1);
-  auto _ret = at::miopen_ctc_loss_outf(log_probs, targets, input_lengths, target_lengths, blank, deterministic, zero_infinity, out0, out1);
-  UnboxToFlagos(out0);
-  UnboxToFlagos(out1);
-  return _ret;
 }
 
 at::Tensor MiopenDepthwiseConvolutionKernelCuda(const at::Tensor & self, const at::Tensor & weight, const ::std::optional<at::Tensor> & bias, at::IntArrayRef padding, at::IntArrayRef stride, at::IntArrayRef dilation, int64_t groups, bool benchmark, bool deterministic) {
@@ -16675,7 +16599,6 @@ REGISTER_IMPL_TO_DISPATCHER(PrivFftR2cFn, priv_fft_r2c_dispatcher, Backend::kCud
 REGISTER_IMPL_TO_DISPATCHER(PrivFftR2cOutFn, priv_fft_r2c_out_dispatcher, Backend::kCuda, PrivFftR2cOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivFlashAttentionBackwardFn, priv_flash_attention_backward_dispatcher, Backend::kCuda, PrivFlashAttentionBackwardKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivFlashAttentionForwardFn, priv_flash_attention_forward_dispatcher, Backend::kCuda, PrivFlashAttentionForwardKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(PrivFlashAttentionForwardQuantizedFn, priv_flash_attention_forward_quantized_dispatcher, Backend::kCuda, PrivFlashAttentionForwardQuantizedKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivFoobarOutFn, priv_foobar_out_dispatcher, Backend::kCuda, PrivFoobarOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(ForeachAbsFn, foreach_abs_dispatcher, Backend::kCuda, ForeachAbsKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(ForeachAbsOutFn, foreach_abs_out_dispatcher, Backend::kCuda, ForeachAbsOutKernelCuda)
@@ -16850,8 +16773,6 @@ REGISTER_IMPL_TO_DISPATCHER(ForeachPowScalarOutFn, foreach_pow_scalar_out_dispat
 REGISTER_IMPL_TO_DISPATCHER(ForeachPowInplaceListFn, foreach_pow_inplace_list_dispatcher, Backend::kCuda, ForeachPowInplaceListKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(ForeachPowInplaceScalarFn, foreach_pow_inplace_scalar_dispatcher, Backend::kCuda, ForeachPowInplaceScalarKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(ForeachPowInplaceScalarlistFn, foreach_pow_inplace_scalarlist_dispatcher, Backend::kCuda, ForeachPowInplaceScalarlistKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(ForeachPowsumScalarFn, foreach_powsum_scalar_dispatcher, Backend::kCuda, ForeachPowsumScalarKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(ForeachPowsumScalarOutFn, foreach_powsum_scalar_out_dispatcher, Backend::kCuda, ForeachPowsumScalarOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(ForeachReciprocalFn, foreach_reciprocal_dispatcher, Backend::kCuda, ForeachReciprocalKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(ForeachReciprocalOutFn, foreach_reciprocal_out_dispatcher, Backend::kCuda, ForeachReciprocalOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(ForeachReciprocalInplaceFn, foreach_reciprocal_inplace_dispatcher, Backend::kCuda, ForeachReciprocalInplaceKernelCuda)
@@ -17432,6 +17353,8 @@ REGISTER_IMPL_TO_DISPATCHER(CudnnConvolutionFn, cudnn_convolution_dispatcher, Ba
 REGISTER_IMPL_TO_DISPATCHER(CudnnConvolutionOutFn, cudnn_convolution_out_dispatcher, Backend::kCuda, CudnnConvolutionOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(CudnnConvolutionAddReluFn, cudnn_convolution_add_relu_dispatcher, Backend::kCuda, CudnnConvolutionAddReluKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(CudnnConvolutionAddReluOutFn, cudnn_convolution_add_relu_out_dispatcher, Backend::kCuda, CudnnConvolutionAddReluOutKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(CudnnConvolutionBiasFusedFn, cudnn_convolution_bias_fused_dispatcher, Backend::kCuda, CudnnConvolutionBiasFusedKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(CudnnConvolutionBiasFusedOutFn, cudnn_convolution_bias_fused_out_dispatcher, Backend::kCuda, CudnnConvolutionBiasFusedOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(CudnnConvolutionReluFn, cudnn_convolution_relu_dispatcher, Backend::kCuda, CudnnConvolutionReluKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(CudnnConvolutionReluOutFn, cudnn_convolution_relu_out_dispatcher, Backend::kCuda, CudnnConvolutionReluOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(CudnnConvolutionTransposeFn, cudnn_convolution_transpose_dispatcher, Backend::kCuda, CudnnConvolutionTransposeKernelCuda)
@@ -17734,9 +17657,6 @@ REGISTER_IMPL_TO_DISPATCHER(KthvalueValuesFn, kthvalue_values_dispatcher, Backen
 REGISTER_IMPL_TO_DISPATCHER(LcmFn, lcm_dispatcher, Backend::kCuda, LcmKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(LcmOutFn, lcm_out_dispatcher, Backend::kCuda, LcmOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(LcmInplaceFn, lcm_inplace_dispatcher, Backend::kCuda, LcmInplaceKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(LdexpTensorFn, ldexp_tensor_dispatcher, Backend::kCuda, LdexpTensorKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(LdexpOutFn, ldexp_out_dispatcher, Backend::kCuda, LdexpOutKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(LdexpInplaceFn, ldexp_inplace_dispatcher, Backend::kCuda, LdexpInplaceKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(LeScalarFn, le_scalar_dispatcher, Backend::kCuda, LeScalarKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(LeScalarOutFn, le_scalar_out_dispatcher, Backend::kCuda, LeScalarOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(LeTensorFn, le_tensor_dispatcher, Backend::kCuda, LeTensorKernelCuda)
@@ -17761,7 +17681,6 @@ REGISTER_IMPL_TO_DISPATCHER(LiftFn, lift_dispatcher, Backend::kCuda, LiftKernelC
 REGISTER_IMPL_TO_DISPATCHER(LiftOutFn, lift_out_dispatcher, Backend::kCuda, LiftOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(LiftFreshFn, lift_fresh_dispatcher, Backend::kCuda, LiftFreshKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(LiftFreshCopyOutFn, lift_fresh_copy_out_dispatcher, Backend::kCuda, LiftFreshCopyOutKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(LinalgPowsumFn, linalg__powsum_dispatcher, Backend::kCuda, LinalgPowsumKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(LinalgCholeskyExFn, linalg_cholesky_ex_dispatcher, Backend::kCuda, LinalgCholeskyExKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(LinalgCholeskyExLFn, linalg_cholesky_ex_l_dispatcher, Backend::kCuda, LinalgCholeskyExLKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(LinalgCrossFn, linalg_cross_dispatcher, Backend::kCuda, LinalgCrossKernelCuda)
@@ -17921,9 +17840,6 @@ REGISTER_IMPL_TO_DISPATCHER(MiopenConvolutionAddReluFn, miopen_convolution_add_r
 REGISTER_IMPL_TO_DISPATCHER(MiopenConvolutionReluFn, miopen_convolution_relu_dispatcher, Backend::kCuda, MiopenConvolutionReluKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(MiopenConvolutionTransposeFn, miopen_convolution_transpose_dispatcher, Backend::kCuda, MiopenConvolutionTransposeKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(MiopenConvolutionTransposeOutFn, miopen_convolution_transpose_out_dispatcher, Backend::kCuda, MiopenConvolutionTransposeOutKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(MiopenCtcLossFn, miopen_ctc_loss_dispatcher, Backend::kCuda, MiopenCtcLossKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(MiopenCtcLossTensorFn, miopen_ctc_loss_tensor_dispatcher, Backend::kCuda, MiopenCtcLossTensorKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(MiopenCtcLossOutFn, miopen_ctc_loss_out_dispatcher, Backend::kCuda, MiopenCtcLossOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(MiopenDepthwiseConvolutionFn, miopen_depthwise_convolution_dispatcher, Backend::kCuda, MiopenDepthwiseConvolutionKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(MiopenDepthwiseConvolutionOutFn, miopen_depthwise_convolution_out_dispatcher, Backend::kCuda, MiopenDepthwiseConvolutionOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(MiopenRnnBackwardOutFn, miopen_rnn_backward_out_dispatcher, Backend::kCuda, MiopenRnnBackwardOutKernelCuda)

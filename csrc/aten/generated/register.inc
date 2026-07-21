@@ -313,9 +313,6 @@ at::Tensor & WrapperPrivFftR2cOut(const at::Tensor & self, at::IntArrayRef dim, 
 ::std::tuple<at::Tensor,at::Tensor,at::Tensor,at::Tensor,at::Tensor> WrapperPrivFlashAttentionForward(const at::Tensor & query, const at::Tensor & key, const at::Tensor & value, const ::std::optional<at::Tensor> & cum_seq_q, const ::std::optional<at::Tensor> & cum_seq_k, int64_t max_q, int64_t max_k, double dropout_p, bool is_causal, bool return_debug_mask, ::std::optional<double> scale, ::std::optional<int64_t> window_size_left, ::std::optional<int64_t> window_size_right, const ::std::optional<at::Tensor> & seqused_k, const ::std::optional<at::Tensor> & alibi_slopes) {
   return at::native::flagos::priv_flash_attention_forward_dispatcher(query, key, value, cum_seq_q, cum_seq_k, max_q, max_k, dropout_p, is_causal, return_debug_mask, scale, window_size_left, window_size_right, seqused_k, alibi_slopes);
 }
-::std::tuple<at::Tensor,at::Tensor,at::Tensor,at::Tensor,at::Tensor> WrapperPrivFlashAttentionForwardQuantized(const at::Tensor & query, const at::Tensor & key, const at::Tensor & value, const ::std::optional<at::Tensor> & cum_seq_q, const ::std::optional<at::Tensor> & cum_seq_k, int64_t max_q, int64_t max_k, double dropout_p, bool is_causal, bool return_debug_mask, const ::std::optional<at::Tensor> & q_descale, const ::std::optional<at::Tensor> & k_descale, const ::std::optional<at::Tensor> & v_descale, ::std::optional<double> scale, ::std::optional<int64_t> window_size_left, ::std::optional<int64_t> window_size_right, const ::std::optional<at::Tensor> & seqused_k, const ::std::optional<at::Tensor> & alibi_slopes) {
-  return at::native::flagos::priv_flash_attention_forward_quantized_dispatcher(query, key, value, cum_seq_q, cum_seq_k, max_q, max_k, dropout_p, is_causal, return_debug_mask, q_descale, k_descale, v_descale, scale, window_size_left, window_size_right, seqused_k, alibi_slopes);
-}
 at::Tensor & WrapperPrivFoobarOut(const at::Tensor & self, bool arg1, bool arg2, bool arg3, at::Tensor & out) {
   return at::native::flagos::priv_foobar_out_dispatcher(self, arg1, arg2, arg3, out);
 }
@@ -837,12 +834,6 @@ void WrapperForeachPowInplaceScalar(at::TensorList self, const at::Scalar & expo
 }
 void WrapperForeachPowInplaceScalarlist(at::TensorList self, at::ArrayRef<at::Scalar> exponent) {
   at::native::flagos::foreach_pow_inplace_scalarlist_dispatcher(self, exponent);
-}
-::std::vector<at::Tensor> WrapperForeachPowsumScalar(at::TensorList self, const at::Scalar & ord, ::std::optional<at::ScalarType> dtype) {
-  return at::native::flagos::foreach_powsum_scalar_dispatcher(self, ord, dtype);
-}
-void WrapperForeachPowsumScalarOut(at::TensorList self, const at::Scalar & ord, ::std::optional<at::ScalarType> dtype, at::TensorList out) {
-  at::native::flagos::foreach_powsum_scalar_out_dispatcher(self, ord, dtype, out);
 }
 ::std::vector<at::Tensor> WrapperForeachReciprocal(at::TensorList self) {
   return at::native::flagos::foreach_reciprocal_dispatcher(self);
@@ -2584,6 +2575,12 @@ at::Tensor WrapperCudnnConvolutionAddRelu(const at::Tensor & self, const at::Ten
 at::Tensor & WrapperCudnnConvolutionAddReluOut(const at::Tensor & self, const at::Tensor & weight, const at::Tensor & z, const ::std::optional<at::Scalar> & alpha, const ::std::optional<at::Tensor> & bias, at::IntArrayRef stride, at::IntArrayRef padding, at::IntArrayRef dilation, int64_t groups, at::Tensor & out) {
   return at::native::flagos::cudnn_convolution_add_relu_out_dispatcher(self, weight, z, alpha, bias, stride, padding, dilation, groups, out);
 }
+at::Tensor WrapperCudnnConvolutionBiasFused(const at::Tensor & self, const at::Tensor & weight, const at::Tensor & bias, at::IntArrayRef padding, at::IntArrayRef stride, at::IntArrayRef dilation, int64_t groups, bool benchmark, bool deterministic, bool allow_tf32) {
+  return at::native::flagos::cudnn_convolution_bias_fused_dispatcher(self, weight, bias, padding, stride, dilation, groups, benchmark, deterministic, allow_tf32);
+}
+at::Tensor & WrapperCudnnConvolutionBiasFusedOut(const at::Tensor & self, const at::Tensor & weight, const at::Tensor & bias, at::IntArrayRef padding, at::IntArrayRef stride, at::IntArrayRef dilation, int64_t groups, bool benchmark, bool deterministic, bool allow_tf32, at::Tensor & out) {
+  return at::native::flagos::cudnn_convolution_bias_fused_out_dispatcher(self, weight, bias, padding, stride, dilation, groups, benchmark, deterministic, allow_tf32, out);
+}
 at::Tensor WrapperCudnnConvolutionRelu(const at::Tensor & self, const at::Tensor & weight, const ::std::optional<at::Tensor> & bias, at::IntArrayRef stride, at::IntArrayRef padding, at::IntArrayRef dilation, int64_t groups) {
   return at::native::flagos::cudnn_convolution_relu_dispatcher(self, weight, bias, stride, padding, dilation, groups);
 }
@@ -3490,15 +3487,6 @@ at::Tensor & WrapperLcmOut(const at::Tensor & self, const at::Tensor & other, at
 at::Tensor & WrapperLcmInplace(at::Tensor & self, const at::Tensor & other) {
   return at::native::flagos::lcm_inplace_dispatcher(self, other);
 }
-at::Tensor WrapperLdexpTensor(const at::Tensor & self, const at::Tensor & other) {
-  return at::native::flagos::ldexp_tensor_dispatcher(self, other);
-}
-at::Tensor & WrapperLdexpOut(const at::Tensor & self, const at::Tensor & other, at::Tensor & out) {
-  return at::native::flagos::ldexp_out_dispatcher(self, other, out);
-}
-at::Tensor & WrapperLdexpInplace(at::Tensor & self, const at::Tensor & other) {
-  return at::native::flagos::ldexp_inplace_dispatcher(self, other);
-}
 at::Tensor WrapperLeScalar(const at::Tensor & self, const at::Scalar & other) {
   return at::native::flagos::le_scalar_dispatcher(self, other);
 }
@@ -3570,9 +3558,6 @@ at::Tensor WrapperLiftFresh(const at::Tensor & self) {
 }
 at::Tensor & WrapperLiftFreshCopyOut(const at::Tensor & self, at::Tensor & out) {
   return at::native::flagos::lift_fresh_copy_out_dispatcher(self, out);
-}
-at::Tensor WrapperLinalgPowsum(const at::Tensor & self, const at::Scalar & ord, at::OptionalIntArrayRef dim, bool keepdim, ::std::optional<at::ScalarType> dtype) {
-  return at::native::flagos::linalg__powsum_dispatcher(self, ord, dim, keepdim, dtype);
 }
 ::std::tuple<at::Tensor,at::Tensor> WrapperLinalgCholeskyEx(const at::Tensor & self, bool upper, bool check_errors) {
   return at::native::flagos::linalg_cholesky_ex_dispatcher(self, upper, check_errors);
@@ -4050,15 +4035,6 @@ at::Tensor WrapperMiopenConvolutionTranspose(const at::Tensor & self, const at::
 }
 at::Tensor & WrapperMiopenConvolutionTransposeOut(const at::Tensor & self, const at::Tensor & weight, const ::std::optional<at::Tensor> & bias, at::IntArrayRef padding, at::IntArrayRef output_padding, at::IntArrayRef stride, at::IntArrayRef dilation, int64_t groups, bool benchmark, bool deterministic, at::Tensor & out) {
   return at::native::flagos::miopen_convolution_transpose_out_dispatcher(self, weight, bias, padding, output_padding, stride, dilation, groups, benchmark, deterministic, out);
-}
-::std::tuple<at::Tensor,at::Tensor> WrapperMiopenCtcLoss(const at::Tensor & log_probs, const at::Tensor & targets, at::IntArrayRef input_lengths, at::IntArrayRef target_lengths, int64_t blank, bool deterministic, bool zero_infinity) {
-  return at::native::flagos::miopen_ctc_loss_dispatcher(log_probs, targets, input_lengths, target_lengths, blank, deterministic, zero_infinity);
-}
-::std::tuple<at::Tensor,at::Tensor> WrapperMiopenCtcLossTensor(const at::Tensor & log_probs, const at::Tensor & targets, const at::Tensor & input_lengths, const at::Tensor & target_lengths, int64_t blank, bool deterministic, bool zero_infinity) {
-  return at::native::flagos::miopen_ctc_loss_tensor_dispatcher(log_probs, targets, input_lengths, target_lengths, blank, deterministic, zero_infinity);
-}
-::std::tuple<at::Tensor &,at::Tensor &> WrapperMiopenCtcLossOut(const at::Tensor & log_probs, const at::Tensor & targets, at::IntArrayRef input_lengths, at::IntArrayRef target_lengths, int64_t blank, bool deterministic, bool zero_infinity, at::Tensor & out0, at::Tensor & out1) {
-  return at::native::flagos::miopen_ctc_loss_out_dispatcher(log_probs, targets, input_lengths, target_lengths, blank, deterministic, zero_infinity, out0, out1);
 }
 at::Tensor WrapperMiopenDepthwiseConvolution(const at::Tensor & self, const at::Tensor & weight, const ::std::optional<at::Tensor> & bias, at::IntArrayRef padding, at::IntArrayRef stride, at::IntArrayRef dilation, int64_t groups, bool benchmark, bool deterministic) {
   return at::native::flagos::miopen_depthwise_convolution_dispatcher(self, weight, bias, padding, stride, dilation, groups, benchmark, deterministic);
@@ -6240,7 +6216,6 @@ at::Tensor & WrapperZerosLikeOut(const at::Tensor & self, ::std::optional<at::Me
   m.impl("_fft_r2c.out", WrapperPrivFftR2cOut);
   m.impl("_flash_attention_backward", WrapperPrivFlashAttentionBackward);
   m.impl("_flash_attention_forward", WrapperPrivFlashAttentionForward);
-  m.impl("_flash_attention_forward.quantized", WrapperPrivFlashAttentionForwardQuantized);
   m.impl("_foobar.out", WrapperPrivFoobarOut);
   m.impl("_foreach_abs", WrapperForeachAbs);
   m.impl("_foreach_abs.out", WrapperForeachAbsOut);
@@ -6415,8 +6390,6 @@ at::Tensor & WrapperZerosLikeOut(const at::Tensor & self, ::std::optional<at::Me
   m.impl("_foreach_pow_.List", WrapperForeachPowInplaceList);
   m.impl("_foreach_pow_.Scalar", WrapperForeachPowInplaceScalar);
   m.impl("_foreach_pow_.ScalarList", WrapperForeachPowInplaceScalarlist);
-  m.impl("_foreach_powsum.Scalar", WrapperForeachPowsumScalar);
-  m.impl("_foreach_powsum.Scalar_out", WrapperForeachPowsumScalarOut);
   m.impl("_foreach_reciprocal", WrapperForeachReciprocal);
   m.impl("_foreach_reciprocal.out", WrapperForeachReciprocalOut);
   m.impl("_foreach_reciprocal_", WrapperForeachReciprocalInplace);
@@ -6997,6 +6970,8 @@ at::Tensor & WrapperZerosLikeOut(const at::Tensor & self, ::std::optional<at::Me
   m.impl("cudnn_convolution.out", WrapperCudnnConvolutionOut);
   m.impl("cudnn_convolution_add_relu", WrapperCudnnConvolutionAddRelu);
   m.impl("cudnn_convolution_add_relu.out", WrapperCudnnConvolutionAddReluOut);
+  m.impl("cudnn_convolution_bias_fused", WrapperCudnnConvolutionBiasFused);
+  m.impl("cudnn_convolution_bias_fused.out", WrapperCudnnConvolutionBiasFusedOut);
   m.impl("cudnn_convolution_relu", WrapperCudnnConvolutionRelu);
   m.impl("cudnn_convolution_relu.out", WrapperCudnnConvolutionReluOut);
   m.impl("cudnn_convolution_transpose", WrapperCudnnConvolutionTranspose);
@@ -7299,9 +7274,6 @@ at::Tensor & WrapperZerosLikeOut(const at::Tensor & self, ::std::optional<at::Me
   m.impl("lcm", WrapperLcm);
   m.impl("lcm.out", WrapperLcmOut);
   m.impl("lcm_", WrapperLcmInplace);
-  m.impl("ldexp.Tensor", WrapperLdexpTensor);
-  m.impl("ldexp.out", WrapperLdexpOut);
-  m.impl("ldexp_", WrapperLdexpInplace);
   m.impl("le.Scalar", WrapperLeScalar);
   m.impl("le.Scalar_out", WrapperLeScalarOut);
   m.impl("le.Tensor", WrapperLeTensor);
@@ -7326,7 +7298,6 @@ at::Tensor & WrapperZerosLikeOut(const at::Tensor & self, ::std::optional<at::Me
   m.impl("lift.out", WrapperLiftOut);
   m.impl("lift_fresh", WrapperLiftFresh);
   m.impl("lift_fresh_copy.out", WrapperLiftFreshCopyOut);
-  m.impl("linalg__powsum", WrapperLinalgPowsum);
   m.impl("linalg_cholesky_ex", WrapperLinalgCholeskyEx);
   m.impl("linalg_cholesky_ex.L", WrapperLinalgCholeskyExL);
   m.impl("linalg_cross", WrapperLinalgCross);
@@ -7486,9 +7457,6 @@ at::Tensor & WrapperZerosLikeOut(const at::Tensor & self, ::std::optional<at::Me
   m.impl("miopen_convolution_relu", WrapperMiopenConvolutionRelu);
   m.impl("miopen_convolution_transpose", WrapperMiopenConvolutionTranspose);
   m.impl("miopen_convolution_transpose.out", WrapperMiopenConvolutionTransposeOut);
-  m.impl("miopen_ctc_loss", WrapperMiopenCtcLoss);
-  m.impl("miopen_ctc_loss.Tensor", WrapperMiopenCtcLossTensor);
-  m.impl("miopen_ctc_loss.out", WrapperMiopenCtcLossOut);
   m.impl("miopen_depthwise_convolution", WrapperMiopenDepthwiseConvolution);
   m.impl("miopen_depthwise_convolution.out", WrapperMiopenDepthwiseConvolutionOut);
   m.impl("miopen_rnn_backward.out", WrapperMiopenRnnBackwardOut);
