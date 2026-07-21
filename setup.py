@@ -292,6 +292,12 @@ def build_deps():
                 "-DFLAGGEMS_KERNEL=OFF",
             ]
         )
+        # FLAGGEMS_PYTHON now defaults ON (single-wheel CUDA runtime switch).
+        # MetaX has not historically built the Python path; keep it opt-in there
+        # unless explicitly requested via the FLAGGEMS_PYTHON env var (handled
+        # by the generic pass-through below).
+        if os.environ.get("FLAGGEMS_PYTHON") is None:
+            cmake_args.append("-DFLAGGEMS_PYTHON=OFF")
 
     # Kernel build options from environment
     for kernel_opt in (
@@ -353,6 +359,51 @@ def build_deps():
 
     subprocess.check_call([cmake] + build_args, cwd=build_dir, env=build_env)
     _verify_built_native_libs()
+    _bundle_cuda_assets()
+
+
+def _bundle_cuda_assets() -> None:
+    """Copy the external CUDA .so assets into torch_fl/lib so the wheel is
+    self-contained.
+
+    torch_fl's CUDA backend reuses PyTorch's registered CUDA kernels via an
+    externally-supplied libtorch_cuda.so (CPU-only pip torch does not ship it).
+    Historically this was LD_PRELOAD-ed by scripts/with_cuda_libtorch.sh; for a
+    single self-contained wheel we bundle the assets and preload them from
+    torch_fl/__init__.py before `import torch` (see docs §约束1). CUDA only.
+
+    Set FLAGOS_SKIP_CUDA_ASSETS=1 to skip (e.g. a slim build for a machine that
+    supplies libtorch_cuda.so out-of-band).
+    """
+    if ACCELERATOR != "cuda":
+        return
+    if os.environ.get("FLAGOS_SKIP_CUDA_ASSETS", "0") == "1":
+        return
+    assets_dir = os.environ.get(
+        "FLAGOS_CUDA_ASSETS_DIR",
+        os.path.join(BASE_DIR, ".libtorch_cuda_assets"),
+    )
+    if not os.path.isdir(assets_dir):
+        print(
+            f"[setup] warning: CUDA assets dir {assets_dir} not found; wheel "
+            "will require an externally-supplied libtorch_cuda.so at runtime."
+        )
+        return
+    dst_dir = os.path.join(BASE_DIR, "torch_fl", "lib")
+    os.makedirs(dst_dir, exist_ok=True)
+    import glob
+
+    copied = []
+    for src in sorted(glob.glob(os.path.join(assets_dir, "*.so*"))):
+        dst = os.path.join(dst_dir, os.path.basename(src))
+        # Skip if already present and identical size (avoid re-copying ~1GB).
+        if os.path.exists(dst) and os.path.getsize(dst) == os.path.getsize(src):
+            copied.append(os.path.basename(src))
+            continue
+        shutil.copy2(src, dst)
+        copied.append(os.path.basename(src))
+    if copied:
+        print(f"[setup] bundled CUDA assets into torch_fl/lib: {', '.join(copied)}")
 
 
 def _verify_built_native_libs() -> None:
@@ -452,6 +503,9 @@ def _get_setup_kwargs():
             "lib/*.dll",
             "lib/*.lib",
             "backends.conf",
+            # Runtime op-routing configs selected via FLAGOS_USE_FLAGGEMS.
+            "backends_cuda.conf",
+            "backends_flaggems.conf",
         ]
     }
 
@@ -473,10 +527,46 @@ def _get_setup_kwargs():
         },
         include_package_data=False,
         python_requires=">=3.8",
-        install_requires=[
-            "torch",
-        ],
+        install_requires=_install_requires(),
+        extras_require={"cuda": _cuda_runtime_requires()},
     )
+
+
+# NVIDIA CUDA runtime libs that the bundled libtorch_cuda.so (cu12.x) links
+# against. Pinned to the cu12 major sonames it needs (libcudart.so.12,
+# libcublas.so.12, libcudnn.so.9, libnvshmem_host.so.3, ...). Lower bounds keep
+# pip free to resolve a compatible patch; the bundled .so was built against the
+# cu12.8 wheels present in the build env.
+_CUDA_RUNTIME_DEPS = [
+    "nvidia-cuda-runtime-cu12>=12.8",
+    "nvidia-cublas-cu12>=12.8",
+    "nvidia-cudnn-cu12>=9.0",
+    "nvidia-cuda-nvrtc-cu12>=12.8",
+    "nvidia-cufft-cu12>=11.0",
+    "nvidia-curand-cu12>=10.0",
+    "nvidia-cusolver-cu12>=11.0",
+    "nvidia-cusparse-cu12>=12.0",
+    "nvidia-cusparselt-cu12>=0.7",
+    "nvidia-nccl-cu12>=2.20",
+    "nvidia-nvtx-cu12>=12.8",
+    "nvidia-cuda-cupti-cu12>=12.8",
+    "nvidia-nvjitlink-cu12>=12.8",
+    "nvidia-nvshmem-cu12>=3.0",
+]
+
+
+def _cuda_runtime_requires():
+    return list(_CUDA_RUNTIME_DEPS)
+
+
+def _install_requires():
+    reqs = ["torch"]
+    # For a CUDA wheel we bundle libtorch_cuda.so and preload it at import; it
+    # needs the NVIDIA runtime libs present, so make them hard deps. Ascend/MetaX
+    # builds do not (they supply their own runtime), so keep it CUDA-only.
+    if ACCELERATOR == "cuda":
+        reqs += _CUDA_RUNTIME_DEPS
+    return reqs
 
 
 # PEP 517 / pip install -e loads setup.py as a script; setup() must run at import time
