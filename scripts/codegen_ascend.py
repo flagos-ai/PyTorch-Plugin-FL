@@ -238,6 +238,17 @@ OPS = {
     # ---- norm family: tuple(out, mean, rstd), optional weight/bias ----
     "native_layer_norm":  ("layer_norm", "LayerNorm"),
     "native_group_norm":  ("group_norm", "GroupNorm"),
+
+    # ---- gelu / softmax family (transformer backbone, fwd + bwd) ----
+    # gelu: v1 aclnnGelu hardcodes tanh; use V2 (int64 approximate 0=none/1=tanh)
+    # to honor PyTorch's default approximate="none" (erf form).
+    "gelu":                       ("gelu", "GeluV2"),
+    "gelu_backward":              ("gelu_backward", "GeluBackwardV2"),
+    # _log_softmax mirrors handwritten softmax.cc (aclnnLogSoftmax(self,dim,out)).
+    "_log_softmax":               ("log_softmax", "LogSoftmax"),
+    # backward: aclnn names lack the aten "_data" suffix.
+    "_softmax_backward_data":     ("softmax_backward", "SoftmaxBackward"),
+    "_log_softmax_backward_data": ("softmax_backward", "LogSoftmaxBackward"),
 }
 
 # Ops with a handwritten kAscend kernel — never regenerate (double-register).
@@ -970,6 +981,95 @@ T_GROUP_NORM = """\
 REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
 """
 
+# gelu: (self, c10::string_view approximate) -> Tensor. NOTE: aclnnGelu (v1)
+# hardcodes the *tanh* approximation, but PyTorch's default is approximate=
+# "none" (erf form, used by qwen3 et al). So we use aclnnGeluV2, whose
+# int64_t approximate selects 0="none"/1="tanh" (int is varargs-safe). out =
+# self shape/dtype.
+T_GELU = """\
+at::Tensor {kernel}(const at::Tensor& self, c10::string_view approximate) {{
+  namespace ascend = at::native::flagos::ascend;
+  int64_t approx = (approximate == "tanh") ? 1 : 0;
+  TORCH_CHECK(approximate == "none" || approximate == "tanh",
+      "gelu: unsupported approximate='", approximate, "'");
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options());
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), approx, acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# gelu_backward: (grad_output, self, approximate) -> Tensor. aclnnGeluBackwardV2
+# takes the approximation as a `char*` string ("none"/"tanh"); a pointer is
+# varargs-safe. grad_input = self shape. (v1 aclnnGeluBackward is tanh-only,
+# same mismatch as forward.)
+T_GELU_BACKWARD = """\
+at::Tensor {kernel}(const at::Tensor& grad_output, const at::Tensor& self, c10::string_view approximate) {{
+  namespace ascend = at::native::flagos::ascend;
+  TORCH_CHECK(approximate == "none" || approximate == "tanh",
+      "gelu_backward: unsupported approximate='", approximate, "'");
+  std::string approx_str(approximate);
+  auto grad_input = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options());
+
+  ascend::AclTensorWrapper acl_grad_output(grad_output);
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_grad_input(grad_input);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_grad_output.get(), acl_self.get(), approx_str.data(), acl_grad_input.get());
+  return grad_input;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# _log_softmax: (self, int64 dim, bool half_to_float) -> Tensor. Mirrors the
+# handwritten softmax.cc: aclnn<Name>(self, dim, out); half_to_float promotes
+# the output dtype to float. out = self shape.
+T_LOG_SOFTMAX = """\
+at::Tensor {kernel}(const at::Tensor& self, int64_t dim, bool half_to_float) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto out_dtype = half_to_float ? at::kFloat : self.scalar_type();
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options().dtype(out_dtype));
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), dim, acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# _softmax_backward_data / _log_softmax_backward_data:
+#   (grad_output, output, int64 dim, at::ScalarType input_dtype) -> Tensor.
+#   aclnn<Name>(gradOutput, output, dim, gradInput). grad_input = grad_output
+#   shape, dtype = input_dtype (the dtype the forward input had).
+T_SOFTMAX_BACKWARD = """\
+at::Tensor {kernel}(const at::Tensor& grad_output, const at::Tensor& output, int64_t dim, at::ScalarType input_dtype) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      grad_output.sizes(), grad_output.options().dtype(input_dtype));
+
+  ascend::AclTensorWrapper acl_grad_output(grad_output);
+  ascend::AclTensorWrapper acl_output(output);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_grad_output.get(), acl_output.get(), dim, acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
 CATEGORIES = {
     "unary":               T_UNARY,
     "binary":              T_BINARY,
@@ -1002,6 +1102,10 @@ CATEGORIES = {
     "dot":                 T_DOT,
     "layer_norm":          T_LAYER_NORM,
     "group_norm":          T_GROUP_NORM,
+    "gelu":                T_GELU,
+    "gelu_backward":       T_GELU_BACKWARD,
+    "log_softmax":         T_LOG_SOFTMAX,
+    "softmax_backward":    T_SOFTMAX_BACKWARD,
 }
 
 FILE_HEADER = """\

@@ -56,7 +56,7 @@ CUDA 侧 `scripts/codegen_ops.py` 生成 `generated/cuda_kernels.cc`，内核体
 
 ## 4. 类别体系（逐类扩）
 
-已实现 31 个类别，共 93 个算子（真机全部与 CPU 对拍通过）：
+已实现 35 个类别，共 98 个算子（真机全部与 CPU 对拍通过）：
 
 | category | 判据 | 输出形状 / dtype | 内核体模板 |
 |---|---|---|---|
@@ -91,6 +91,10 @@ CUDA 侧 `scripts/codegen_ops.py` 生成 `generated/cuda_kernels.cc`，内核体
 | `dot` | self + tensor（均 1-D） | 标量 | `aclnn<Name>(self, tensor, out)` |
 | `layer_norm` | input + normalized_shape + optional weight/bias + eps | **tuple(out, mean, rstd)**；out=输入，stat=前缀维+1 | `aclnn<Name>(input, ns, weight, bias, eps, out, mean, rstd)` |
 | `group_norm` | input + optional weight/bias + N/C/HxW/group + eps | **tuple(out, mean, rstd)**；out=输入，stat=(N,group) | `aclnn<Name>(input, weight, bias, N, C, HxW, group, eps, out, mean, rstd)` |
+| `gelu` | Tensor + `approximate` string_view | = 输入 | `aclnnGeluV2(self, approx_int, out)`（int64 0=none/1=tanh） |
+| `gelu_backward` | grad_output + self + `approximate` | = self | `aclnnGeluBackwardV2(grad, self, approx_str, grad_in)`（char\* 字符串） |
+| `log_softmax` | Tensor + `int64_t dim` + half_to_float | = 输入（half_to_float→float 出） | `aclnn<Name>(self, dim, out)` |
+| `softmax_backward` | grad_output + output + `int64_t dim` + input_dtype | = grad_output shape，dtype=input_dtype | `aclnn<Name>(grad, output, dim, grad_in)` |
 
 - **unary（28）**：sqrt/exp/tanh/sigmoid/reciprocal/log/floor/ceil/erf/erfc/expm1/
   log2/log10/log1p/round/trunc/frac/sign/relu/cosh/sinh/asin/atan/asinh/acosh/atanh/
@@ -123,10 +127,20 @@ CUDA 侧 `scripts/codegen_ops.py` 生成 `generated/cuda_kernels.cc`，内核体
 - **gemm 家族（4）**：addmm/baddbmm（cube_math_type）/mv/dot
 - **layer_norm（1）**：native_layer_norm（tuple(out,mean,rstd)，transformer 主干）
 - **group_norm（1）**：native_group_norm（tuple(out,mean,rstd)）
+- **gelu（1）**：gelu（用 aclnnGeluV2 支持 none/tanh 两种近似；见下方"gelu 的 V2 坑"）
+- **gelu_backward（1）**：gelu_backward（aclnnGeluBackwardV2，char\* approximate）
+- **log_softmax（1）**：_log_softmax（照搬手写 softmax.cc 范式）
+- **softmax_backward（2）**：_softmax_backward_data/_log_softmax_backward_data（训练用；aclnn 名去掉 aten 的 `_data` 后缀）
 
 长尾未接（进后续或手写）：var/std.correction、norm.ScalarOpt_dim（correction/p 参数）、
 argmax/argmin/logsumexp/isnan/masked_fill/remainder/relu6（无 aclnn 符号或需特殊派生）、
-gelu（`approximate` string_view 参数）、卷积/池化/native_batch_norm 家族（各自 bespoke，需专门批次）。
+卷积/池化/native_batch_norm 家族（各自 bespoke，需专门批次）。
+
+**关键坑（gelu 的 V2）**：`aclnnGelu`（v1）硬编码 **tanh** 近似，而 PyTorch 的 `gelu`
+默认 `approximate="none"`（erf 形式，qwen3 等主干用这个）。直接用 v1 会让默认 gelu 静默
+产生 ~4.5e-4 的系统性误差（不是精度抖动，是近似形式不同）。修复：改用 `aclnnGeluV2`
+（`int64_t approximate`：0=none/1=tanh，int 变参安全）与 `aclnnGeluBackwardV2`
+（`char* approximate` 字符串——指针传递也变参安全，不受下方 by-value float 坑影响）。
 
 **关键坑（varargs float）**：`EXEC_ASCEND_CMD` 通过 `typedef int (*)(...)` 变参函数指针调用
 aclnn。aarch64 上按值传 `float` 会走默认实参提升（float→double）+ 错误寄存器类，导致 aclnn

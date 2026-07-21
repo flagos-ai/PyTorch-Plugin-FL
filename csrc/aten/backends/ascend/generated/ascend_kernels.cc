@@ -1644,4 +1644,84 @@ REGISTER_IMPL_TO_DISPATCHER(NativeLayerNormFn, native_layer_norm_dispatcher, Bac
 
 REGISTER_IMPL_TO_DISPATCHER(NativeGroupNormFn, native_group_norm_dispatcher, Backend::kAscend, NativeGroupNormKernelAscend)
 
+at::Tensor GeluKernelAscend(const at::Tensor& self, c10::string_view approximate) {
+  namespace ascend = at::native::flagos::ascend;
+  int64_t approx = (approximate == "tanh") ? 1 : 0;
+  TORCH_CHECK(approximate == "none" || approximate == "tanh",
+      "gelu: unsupported approximate='", approximate, "'");
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options());
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD(aclnnGeluV2, acl_self.get(), approx, acl_out.get());
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(GeluFn, gelu_dispatcher, Backend::kAscend, GeluKernelAscend)
+
+at::Tensor GeluBackwardKernelAscend(const at::Tensor& grad_output, const at::Tensor& self, c10::string_view approximate) {
+  namespace ascend = at::native::flagos::ascend;
+  TORCH_CHECK(approximate == "none" || approximate == "tanh",
+      "gelu_backward: unsupported approximate='", approximate, "'");
+  std::string approx_str(approximate);
+  auto grad_input = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options());
+
+  ascend::AclTensorWrapper acl_grad_output(grad_output);
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_grad_input(grad_input);
+
+  EXEC_ASCEND_CMD(aclnnGeluBackwardV2, acl_grad_output.get(), acl_self.get(), approx_str.data(), acl_grad_input.get());
+  return grad_input;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(GeluBackwardFn, gelu_backward_dispatcher, Backend::kAscend, GeluBackwardKernelAscend)
+
+at::Tensor PrivLogSoftmaxKernelAscend(const at::Tensor& self, int64_t dim, bool half_to_float) {
+  namespace ascend = at::native::flagos::ascend;
+  auto out_dtype = half_to_float ? at::kFloat : self.scalar_type();
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options().dtype(out_dtype));
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD(aclnnLogSoftmax, acl_self.get(), dim, acl_out.get());
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(PrivLogSoftmaxFn, priv_log_softmax_dispatcher, Backend::kAscend, PrivLogSoftmaxKernelAscend)
+
+at::Tensor PrivSoftmaxBackwardDataKernelAscend(const at::Tensor& grad_output, const at::Tensor& output, int64_t dim, at::ScalarType input_dtype) {
+  namespace ascend = at::native::flagos::ascend;
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      grad_output.sizes(), grad_output.options().dtype(input_dtype));
+
+  ascend::AclTensorWrapper acl_grad_output(grad_output);
+  ascend::AclTensorWrapper acl_output(output);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD(aclnnSoftmaxBackward, acl_grad_output.get(), acl_output.get(), dim, acl_out.get());
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(PrivSoftmaxBackwardDataFn, priv_softmax_backward_data_dispatcher, Backend::kAscend, PrivSoftmaxBackwardDataKernelAscend)
+
+at::Tensor PrivLogSoftmaxBackwardDataKernelAscend(const at::Tensor& grad_output, const at::Tensor& output, int64_t dim, at::ScalarType input_dtype) {
+  namespace ascend = at::native::flagos::ascend;
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      grad_output.sizes(), grad_output.options().dtype(input_dtype));
+
+  ascend::AclTensorWrapper acl_grad_output(grad_output);
+  ascend::AclTensorWrapper acl_output(output);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD(aclnnLogSoftmaxBackward, acl_grad_output.get(), acl_output.get(), dim, acl_out.get());
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(PrivLogSoftmaxBackwardDataFn, priv_log_softmax_backward_data_dispatcher, Backend::kAscend, PrivLogSoftmaxBackwardDataKernelAscend)
+
 } // namespace at::native::flagos
