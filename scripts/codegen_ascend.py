@@ -261,6 +261,10 @@ OPS = {
     "max_pool2d_with_indices_backward": ("max_pool2d_indices_backward", "MaxPool2dWithIndicesBackward"),
     "native_batch_norm":          ("native_batch_norm", "BatchNorm"),
     "native_batch_norm_backward": ("native_batch_norm_backward", "BatchNormBackward"),
+    "avg_pool2d_backward":            ("avg_pool2d_backward", "AvgPool2dBackward"),
+    "_adaptive_avg_pool2d_backward":  ("adaptive_avg_pool2d_backward", "AdaptiveAvgPool2dBackward"),
+    "native_layer_norm_backward":     ("native_layer_norm_backward", "LayerNormBackward"),
+    "native_group_norm_backward":     ("native_group_norm_backward", "GroupNormBackward"),
 
     # ---- BCE loss family: optional weight, int reduction (0=none/1=mean/2=sum) ----
     "binary_cross_entropy":              ("bce", "BinaryCrossEntropy"),
@@ -1515,6 +1519,129 @@ T_MAX_POOL2D_INDICES = """\
 REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
 """
 
+# avg_pool2d_backward: (grad_output, self, k, stride, padding, ceil_mode,
+#   count_include_pad, divisor_override) -> grad_input (= self shape). Same
+#   NCHW-format requirement as the forward. cubeMathType=0 (KEEP_DTYPE).
+T_AVG_POOL2D_BACKWARD = """\
+at::Tensor {kernel}(const at::Tensor& grad_output, const at::Tensor& self, at::IntArrayRef kernel_size, at::IntArrayRef stride, at::IntArrayRef padding, bool ceil_mode, bool count_include_pad, ::std::optional<int64_t> divisor_override) {{
+  namespace ascend = at::native::flagos::ascend;
+  std::vector<int64_t> k(kernel_size.begin(), kernel_size.end());
+  std::vector<int64_t> s = stride.empty() ? k : std::vector<int64_t>(stride.begin(), stride.end());
+  std::vector<int64_t> p(padding.begin(), padding.end());
+
+  auto grad_input = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options());
+
+  int64_t div_override = divisor_override.value_or(0);
+  aclFormat fmt = self.dim() == 4 ? ACL_FORMAT_NCHW : ACL_FORMAT_NCL;
+  ascend::AclTensorWrapper acl_grad(grad_output, fmt);
+  ascend::AclTensorWrapper acl_self(self, fmt);
+  ascend::AclIntArrayWrapper acl_k(k);
+  ascend::AclIntArrayWrapper acl_s(s);
+  ascend::AclIntArrayWrapper acl_p(p);
+  ascend::AclTensorWrapper acl_grad_input(grad_input, fmt);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_grad.get(), acl_self.get(), acl_k.get(), acl_s.get(),
+      acl_p.get(), ceil_mode, count_include_pad, div_override, (int8_t)0,
+      acl_grad_input.get());
+  return grad_input;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# _adaptive_avg_pool2d_backward: (grad_output, self) -> grad_input (= self
+#   shape). Minimal aclnn(grad, self, out). NCHW format like the forward.
+T_ADAPTIVE_AVG_POOL2D_BACKWARD = """\
+at::Tensor {kernel}(const at::Tensor& grad_output, const at::Tensor& self) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto grad_input = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options());
+
+  aclFormat fmt = self.dim() == 4 ? ACL_FORMAT_NCHW : ACL_FORMAT_NCL;
+  ascend::AclTensorWrapper acl_grad(grad_output, fmt);
+  ascend::AclTensorWrapper acl_self(self, fmt);
+  ascend::AclTensorWrapper acl_grad_input(grad_input, fmt);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_grad.get(), acl_self.get(), acl_grad_input.get());
+  return grad_input;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# native_layer_norm_backward: (grad_out, input, normalized_shape, mean, rstd,
+#   weight?, bias?, output_mask[3]) -> (grad_input, grad_weight, grad_bias).
+#   grad_input = input shape; grad_weight/grad_bias = normalized_shape.
+T_NATIVE_LAYER_NORM_BACKWARD = """\
+::std::tuple<at::Tensor, at::Tensor, at::Tensor> {kernel}(const at::Tensor& grad_out, const at::Tensor& input, at::IntArrayRef normalized_shape, const at::Tensor& mean, const at::Tensor& rstd, const ::std::optional<at::Tensor>& weight, const ::std::optional<at::Tensor>& bias, ::std::array<bool, 3> output_mask) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto grad_input = ascend::OpPreparation::apply_tensor_without_format(
+      input.sizes(), input.options());
+  auto grad_weight = ascend::OpPreparation::apply_tensor_without_format(
+      normalized_shape, input.options());
+  auto grad_bias = ascend::OpPreparation::apply_tensor_without_format(
+      normalized_shape, input.options());
+
+  at::Tensor weight_t = weight.value_or(at::Tensor());
+  at::Tensor bias_t = bias.value_or(at::Tensor());
+
+  ascend::AclTensorWrapper acl_grad(grad_out);
+  ascend::AclTensorWrapper acl_input(input);
+  ascend::AclIntArrayWrapper acl_nshape(normalized_shape);
+  ascend::AclTensorWrapper acl_mean(mean);
+  ascend::AclTensorWrapper acl_rstd(rstd);
+  ascend::AclTensorWrapper acl_weight(weight_t);
+  ascend::AclTensorWrapper acl_bias(bias_t);
+  ascend::AclBoolArrayWrapper acl_mask(at::ArrayRef<bool>(output_mask.data(), output_mask.size()));
+  ascend::AclTensorWrapper acl_grad_input(grad_input);
+  ascend::AclTensorWrapper acl_grad_weight(grad_weight);
+  ascend::AclTensorWrapper acl_grad_bias(grad_bias);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_grad.get(), acl_input.get(), acl_nshape.get(),
+      acl_mean.get(), acl_rstd.get(), acl_weight.get(), acl_bias.get(),
+      acl_mask.get(), acl_grad_input.get(), acl_grad_weight.get(),
+      acl_grad_bias.get());
+  return std::make_tuple(grad_input, grad_weight, grad_bias);
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# native_group_norm_backward: (grad_out, input, mean, rstd, weight?, N, C, HxW,
+#   group, output_mask[3]) -> (grad_input, grad_gamma, grad_beta). grad_input =
+#   input shape; grad_gamma/grad_beta = [C].
+T_NATIVE_GROUP_NORM_BACKWARD = """\
+::std::tuple<at::Tensor, at::Tensor, at::Tensor> {kernel}(const at::Tensor& grad_out, const at::Tensor& input, const at::Tensor& mean, const at::Tensor& rstd, const ::std::optional<at::Tensor>& weight, int64_t N, int64_t C, int64_t HxW, int64_t group, ::std::array<bool, 3> output_mask) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto grad_input = ascend::OpPreparation::apply_tensor_without_format(
+      input.sizes(), input.options());
+  auto grad_gamma = ascend::OpPreparation::apply_tensor_without_format(
+      {{C}}, input.options());
+  auto grad_beta = ascend::OpPreparation::apply_tensor_without_format(
+      {{C}}, input.options());
+
+  at::Tensor weight_t = weight.value_or(at::Tensor());
+
+  ascend::AclTensorWrapper acl_grad(grad_out);
+  ascend::AclTensorWrapper acl_input(input);
+  ascend::AclTensorWrapper acl_mean(mean);
+  ascend::AclTensorWrapper acl_rstd(rstd);
+  ascend::AclTensorWrapper acl_gamma(weight_t);
+  ascend::AclBoolArrayWrapper acl_mask(at::ArrayRef<bool>(output_mask.data(), output_mask.size()));
+  ascend::AclTensorWrapper acl_grad_input(grad_input);
+  ascend::AclTensorWrapper acl_grad_gamma(grad_gamma);
+  ascend::AclTensorWrapper acl_grad_beta(grad_beta);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_grad.get(), acl_input.get(), acl_mean.get(),
+      acl_rstd.get(), acl_gamma.get(), N, C, HxW, group, acl_mask.get(),
+      acl_grad_input.get(), acl_grad_gamma.get(), acl_grad_beta.get());
+  return std::make_tuple(grad_input, grad_gamma, grad_beta);
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
 # max_pool2d_with_indices_backward: (grad_output, self, kernel_size, stride,
 #   padding, dilation, ceil_mode, indices) -> grad_input (= self shape).
 #   NOTE aten arg order != aclnn: aclnn puts `indices` right after `self`
@@ -1784,6 +1911,10 @@ CATEGORIES = {
     "max_pool2d_indices_backward": T_MAX_POOL2D_INDICES_BACKWARD,
     "native_batch_norm":   T_NATIVE_BATCH_NORM,
     "native_batch_norm_backward": T_NATIVE_BATCH_NORM_BACKWARD,
+    "avg_pool2d_backward": T_AVG_POOL2D_BACKWARD,
+    "adaptive_avg_pool2d_backward": T_ADAPTIVE_AVG_POOL2D_BACKWARD,
+    "native_layer_norm_backward": T_NATIVE_LAYER_NORM_BACKWARD,
+    "native_group_norm_backward": T_NATIVE_GROUP_NORM_BACKWARD,
 }
 
 FILE_HEADER = """\

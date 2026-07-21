@@ -61,7 +61,7 @@ CUDA 侧 `scripts/codegen_ops.py` 生成 `generated/cuda_kernels.cc`，内核体
 
 ## 4. 类别体系（逐类扩）
 
-已实现 55 个类别，共 130 个算子（真机全部与 CPU 对拍通过）：
+已实现 59 个类别，共 134 个算子（真机全部与 CPU 对拍通过）：
 
 | category | 判据 | 输出形状 / dtype | 内核体模板 |
 |---|---|---|---|
@@ -115,6 +115,10 @@ CUDA 侧 `scripts/codegen_ops.py` 生成 `generated/cuda_kernels.cc`，内核体
 | `max_pool2d_indices_backward` | grad_out + self + k/s/p/dil + ceil + indices | = self；**NCHW format**，indices 转 int32 | `aclnn<Name>(gOut, self, idx_i32, k, s, p, dil, ceil, gIn)` |
 | `native_batch_norm` | input + weight?/bias?/rMean?/rVar? + training + momentum + eps | **tuple(out, saveMean, saveInvstd)**；**NCHW format** | `aclnn<Name>(in, w, b, rMean, rVar, train, mom, eps, out, sMean, sInvstd)` |
 | `native_batch_norm_backward` | grad_out + input + weight? + rMean?/rVar?/sMean?/sInvstd? + train + eps + output_mask[3] | **tuple(gInput, gWeight, gBias)** | `aclnn<Name>(gOut, in, w, rMean, rVar, sMean, sInvstd, train, eps, mask, gIn, gW, gB)` |
+| `avg_pool2d_backward` | grad_out + self + k/s/p + ceil/countPad + divOverride | = self；**NCHW format** | `aclnn<Name>(gOut, self, k, s, p, ceil, cntPad, div, cubeType=0, gIn)` |
+| `adaptive_avg_pool2d_backward` | grad_out + self | = self；**NCHW format** | `aclnn<Name>(gOut, self, gIn)` |
+| `native_layer_norm_backward` | grad_out + input + normShape + mean + rstd + weight?/bias? + output_mask[3] | **tuple(gInput, gWeight, gBias)** | `aclnn<Name>(gOut, in, nShape, mean, rstd, w, b, mask, gIn, gW, gB)` |
+| `native_group_norm_backward` | grad_out + input + mean + rstd + weight? + N/C/HxW/group + output_mask[3] | **tuple(gInput, gGamma, gBeta)** | `aclnn<Name>(gOut, in, mean, rstd, gamma, N, C, HxW, group, mask, gIn, gG, gB)` |
 | `gemm_addmv` | self + mat(n,m) + vec(m) + beta + alpha | (n,) | `aclnn<Name>(self,mat,vec,ALPHA,BETA,out,cubeMathType)`（**alpha 在 beta 前**） |
 | `gemm_addr` | self + vec1(n) + vec2(m) + beta + alpha | (n,m) 外积 | `aclnn<Name>(self,vec1,vec2,beta,alpha,out)`（无 cubeMathType） |
 | `bce` | self + target + optional weight + int reduction | None→输入 / Mean·Sum→标量 | `aclnn<Name>(self,target,weight,reduction,out)` |
