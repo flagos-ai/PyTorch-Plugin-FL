@@ -368,16 +368,29 @@ def discover_flaggems_ops(codegen_ops, funcs):
         s = func.func
         aten_args = list(s.arguments.flat_all)
         out_args = list(s.arguments.out) if hasattr(s.arguments, "out") else []
+        resolved_cat = cat
         if cat == "out_variant":
-            passed = [(str(a.type), a.name) for a in aten_args if a not in out_args]
+            non_out = [(str(a.type), a.name) for a in aten_args if a not in out_args]
+            if npos == len(non_out):
+                # gems takes only the non-out args, returns a fresh tensor; the
+                # kernel copy_'s it into the aten `out`.
+                passed = non_out
+            elif npos == len(non_out) + len(out_args):
+                # gems takes `out` positionally and writes into it; pass the out
+                # tensor(s) too. (Distinguished from mm.out, whose gems out is a
+                # required keyword-only arg the positional caller can't supply.)
+                passed = non_out + [(str(a.type), a.name) for a in out_args]
+                resolved_cat = "out_variant_gemsout"
+            else:
+                continue
         else:
             passed = [(str(a.type), a.name) for a in aten_args]
-        if npos != len(passed):
-            continue
+            if npos != len(passed):
+                continue
         if not all(_flaggems_type_ok(t) for t, _ in passed):
             continue
         qualname = f"{fn.__module__}.{fn.__name__}"
-        result[op] = (qualname, cat)
+        result[op] = (qualname, resolved_cat)
     return result
 
 
@@ -401,6 +414,10 @@ def gen_flaggems_python_kernel(op, fn_type, ret_type, args, gems_func, category,
     # arg names as they appear in the generated C++ signature
     if category == "out_variant":
         passed_names = [a.name for a in aten_args if a not in out_args]
+    elif category == "out_variant_gemsout":
+        # gems takes the out tensor(s) positionally after the non-out args.
+        passed_names = ([a.name for a in aten_args if a not in out_args]
+                        + [a.name for a in out_args])
     else:
         passed_names = [a.name for a in aten_args]
     ivalues = "{" + ", ".join(passed_names) + "}"
@@ -447,6 +464,15 @@ def gen_flaggems_python_kernel(op, fn_type, ret_type, args, gems_func, category,
                 f"  {out_name}.copy_(result);\n"
                 f"  return {out_name};"
             )
+    elif category == "out_variant_gemsout":
+        # gems receives the out tensor(s) positionally and writes into them in
+        # place, then returns them; just discard the returned handle and return
+        # the aten out arg(s). (Only single-out ops reach here today.)
+        out_name = [a.name for a in out_args][0]
+        body = (
+            f'  CallPythonOp_Generic("{gems_func}", {ivalues});\n'
+            f"  return {out_name};"
+        )
     else:
         raise ValueError(f"unsupported flaggems-python category {category} for {op}")
 
