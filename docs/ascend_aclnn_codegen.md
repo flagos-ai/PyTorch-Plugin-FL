@@ -61,7 +61,7 @@ CUDA 侧 `scripts/codegen_ops.py` 生成 `generated/cuda_kernels.cc`，内核体
 
 ## 4. 类别体系（逐类扩）
 
-已实现 52 个类别，共 127 个算子（真机全部与 CPU 对拍通过）：
+已实现 55 个类别，共 130 个算子（真机全部与 CPU 对拍通过）：
 
 | category | 判据 | 输出形状 / dtype | 内核体模板 |
 |---|---|---|---|
@@ -112,6 +112,9 @@ CUDA 侧 `scripts/codegen_ops.py` 生成 `generated/cuda_kernels.cc`，内核体
 | `max_pool2d_indices` | self + k/stride/pad/dil + ceil | **tuple(out, int64 indices)**，池化公式 | `aclnn<Name>(self, k, s, p, dil, ceil, out, idx)` |
 | `convolution` | input + weight + bias? + stride/pad/dil + transposed + outPad + groups | conv 公式，Cout=weight.size(0)；**NCHW/NCL/NCDHW format** | `aclnn<Name>(in, w, b, s, p, d, tr, oPad, g, out, cubeType=0)` |
 | `convolution_backward` | grad_out + input + weight + biasSizes? + …… + output_mask[3] | **tuple(gInput, gWeight, gBias)** | `aclnn<Name>(gOut, in, w, bSz, s, p, d, tr, oPad, g, mask, cubeType=0, gIn, gW, gB)` |
+| `max_pool2d_indices_backward` | grad_out + self + k/s/p/dil + ceil + indices | = self；**NCHW format**，indices 转 int32 | `aclnn<Name>(gOut, self, idx_i32, k, s, p, dil, ceil, gIn)` |
+| `native_batch_norm` | input + weight?/bias?/rMean?/rVar? + training + momentum + eps | **tuple(out, saveMean, saveInvstd)**；**NCHW format** | `aclnn<Name>(in, w, b, rMean, rVar, train, mom, eps, out, sMean, sInvstd)` |
+| `native_batch_norm_backward` | grad_out + input + weight? + rMean?/rVar?/sMean?/sInvstd? + train + eps + output_mask[3] | **tuple(gInput, gWeight, gBias)** | `aclnn<Name>(gOut, in, w, rMean, rVar, sMean, sInvstd, train, eps, mask, gIn, gW, gB)` |
 | `gemm_addmv` | self + mat(n,m) + vec(m) + beta + alpha | (n,) | `aclnn<Name>(self,mat,vec,ALPHA,BETA,out,cubeMathType)`（**alpha 在 beta 前**） |
 | `gemm_addr` | self + vec1(n) + vec2(m) + beta + alpha | (n,m) 外积 | `aclnn<Name>(self,vec1,vec2,beta,alpha,out)`（无 cubeMathType） |
 | `bce` | self + target + optional weight + int reduction | None→输入 / Mean·Sum→标量 | `aclnn<Name>(self,target,weight,reduction,out)` |
@@ -177,6 +180,18 @@ argmax/argmin/logsumexp/isnan/masked_fill/remainder/relu6（无 aclnn 符号或�
 模板按 rank 传 `ACL_FORMAT_NCHW`（4-D）/`NCL`（3-D）/`NCDHW`（5-D）。`aclnnMaxPool2dWithIndices`
 反而不挑 format，ND 也能过——所以这是逐 aclnn 而非全局的要求。另：conv 的 `cubeMathType`
 要传 **0（KEEP_DTYPE）**，传 1（ALLOW_FP32_DOWN_PRECISION）会在 cube 单元丢 ~2.5e-3 精度。
+
+**关键坑（max_pool 反向的 format + indices dtype）**：`aclnnMaxPool2dWithIndices`（前向）
+不挑 format、输出 int64 indices；但 `aclnnMaxPool2dWithIndicesBackward`（反向）**既要 NCHW
+format 又要 indices 为 int32**——直接把前向的 int64 indices 喂进去会 161002。反向模板里
+`indices.to(at::kInt)` 转一下 + 打 NCHW 标即可。所以前向/反向对 format/dtype 的要求可以不同，
+必须逐 aclnn 读头文件的 `@param` 注释确认。
+
+**关键坑（batch_norm 的 save_invstd 语义）**：`aclnnBatchNorm` 前向的 `output`/`saveMean`
+与 CPU 逐位对齐，但 `saveInvstd` 定义与 PyTorch CPU 不同（CPU 是 `1/sqrt(var+eps)`，
+aclnn 返回另一种形式，实测差 ~0.18）。**这不影响训练正确性**：反向 `aclnnBatchNormBackward`
+吃的是同源 NPU `saveInvstd`，grad_input/weight/bias 三个梯度与 CPU 全部对齐（err≤4e-6）。
+只有把 save_invstd 当最终结果直接比对才会「失配」，端到端 BN 训练闭环是对的。
 
 **关键坑（varargs float）**：`EXEC_ASCEND_CMD` 通过 `typedef int (*)(...)` 变参函数指针调用
 aclnn。aarch64 上按值传 `float` 会走默认实参提升（float→double）+ 错误寄存器类，导致 aclnn

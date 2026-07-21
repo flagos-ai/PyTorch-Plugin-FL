@@ -1834,6 +1834,112 @@ at::Tensor AddrKernelAscend(const at::Tensor& self, const at::Tensor& vec1, cons
 
 REGISTER_IMPL_TO_DISPATCHER(AddrFn, addr_dispatcher, Backend::kAscend, AddrKernelAscend)
 
+at::Tensor MaxPool2dWithIndicesBackwardKernelAscend(const at::Tensor& grad_output, const at::Tensor& self, at::IntArrayRef kernel_size, at::IntArrayRef stride, at::IntArrayRef padding, at::IntArrayRef dilation, bool ceil_mode, const at::Tensor& indices) {
+  namespace ascend = at::native::flagos::ascend;
+  std::vector<int64_t> k(kernel_size.begin(), kernel_size.end());
+  std::vector<int64_t> s = stride.empty() ? k : std::vector<int64_t>(stride.begin(), stride.end());
+  std::vector<int64_t> p(padding.begin(), padding.end());
+  std::vector<int64_t> dil(dilation.begin(), dilation.end());
+
+  auto grad_input = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options());
+
+  // aclnn max_pool2d backward (unlike forward) rejects ND 4-D; tag NCHW.
+  // aclnn also wants indices as int32, but the forward emits int64 -> cast.
+  aclFormat fmt = self.dim() == 4 ? ACL_FORMAT_NCHW : ACL_FORMAT_NCL;
+  auto indices_i32 = indices.scalar_type() == at::kInt ? indices : indices.to(at::kInt);
+  ascend::AclTensorWrapper acl_grad(grad_output, fmt);
+  ascend::AclTensorWrapper acl_self(self, fmt);
+  ascend::AclTensorWrapper acl_indices(indices_i32, fmt);
+  ascend::AclIntArrayWrapper acl_k(k);
+  ascend::AclIntArrayWrapper acl_s(s);
+  ascend::AclIntArrayWrapper acl_p(p);
+  ascend::AclIntArrayWrapper acl_dil(dil);
+  ascend::AclTensorWrapper acl_grad_input(grad_input, fmt);
+
+  EXEC_ASCEND_CMD(aclnnMaxPool2dWithIndicesBackward, acl_grad.get(), acl_self.get(), acl_indices.get(),
+      acl_k.get(), acl_s.get(), acl_p.get(), acl_dil.get(), ceil_mode,
+      acl_grad_input.get());
+  return grad_input;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(MaxPool2dWithIndicesBackwardFn, max_pool2d_with_indices_backward_dispatcher, Backend::kAscend, MaxPool2dWithIndicesBackwardKernelAscend)
+
+::std::tuple<at::Tensor, at::Tensor, at::Tensor> NativeBatchNormKernelAscend(const at::Tensor& input, const ::std::optional<at::Tensor>& weight, const ::std::optional<at::Tensor>& bias, const ::std::optional<at::Tensor>& running_mean, const ::std::optional<at::Tensor>& running_var, bool training, double momentum, double eps) {
+  namespace ascend = at::native::flagos::ascend;
+  int64_t rank = input.dim();
+  int64_t C = input.size(1);
+  aclFormat fmt = rank == 4 ? ACL_FORMAT_NCHW : (rank == 3 ? ACL_FORMAT_NCL : (rank == 5 ? ACL_FORMAT_NCDHW : ACL_FORMAT_ND));
+
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      input.sizes(), input.options());
+  auto save_mean = ascend::OpPreparation::apply_tensor_without_format(
+      {C}, input.options());
+  auto save_invstd = ascend::OpPreparation::apply_tensor_without_format(
+      {C}, input.options());
+
+  at::Tensor weight_t = weight.value_or(at::Tensor());
+  at::Tensor bias_t = bias.value_or(at::Tensor());
+  at::Tensor rmean_t = running_mean.value_or(at::Tensor());
+  at::Tensor rvar_t = running_var.value_or(at::Tensor());
+
+  ascend::AclTensorWrapper acl_input(input, fmt);
+  ascend::AclTensorWrapper acl_weight(weight_t);
+  ascend::AclTensorWrapper acl_bias(bias_t);
+  ascend::AclTensorWrapper acl_rmean(rmean_t);
+  ascend::AclTensorWrapper acl_rvar(rvar_t);
+  ascend::AclTensorWrapper acl_out(out, fmt);
+  ascend::AclTensorWrapper acl_save_mean(save_mean);
+  ascend::AclTensorWrapper acl_save_invstd(save_invstd);
+
+  EXEC_ASCEND_CMD(aclnnBatchNorm, acl_input.get(), acl_weight.get(), acl_bias.get(),
+      const_cast<aclTensor*>(acl_rmean.get()), const_cast<aclTensor*>(acl_rvar.get()),
+      training, momentum, eps, acl_out.get(), acl_save_mean.get(), acl_save_invstd.get());
+  return std::make_tuple(out, save_mean, save_invstd);
+}
+
+REGISTER_IMPL_TO_DISPATCHER(NativeBatchNormFn, native_batch_norm_dispatcher, Backend::kAscend, NativeBatchNormKernelAscend)
+
+::std::tuple<at::Tensor, at::Tensor, at::Tensor> NativeBatchNormBackwardKernelAscend(const at::Tensor& grad_out, const at::Tensor& input, const ::std::optional<at::Tensor>& weight, const ::std::optional<at::Tensor>& running_mean, const ::std::optional<at::Tensor>& running_var, const ::std::optional<at::Tensor>& save_mean, const ::std::optional<at::Tensor>& save_invstd, bool train, double eps, ::std::array<bool, 3> output_mask) {
+  namespace ascend = at::native::flagos::ascend;
+  int64_t rank = input.dim();
+  int64_t C = input.size(1);
+  aclFormat fmt = rank == 4 ? ACL_FORMAT_NCHW : (rank == 3 ? ACL_FORMAT_NCL : (rank == 5 ? ACL_FORMAT_NCDHW : ACL_FORMAT_ND));
+
+  auto grad_input = ascend::OpPreparation::apply_tensor_without_format(
+      input.sizes(), input.options());
+  auto grad_weight = ascend::OpPreparation::apply_tensor_without_format(
+      {C}, input.options());
+  auto grad_bias = ascend::OpPreparation::apply_tensor_without_format(
+      {C}, input.options());
+
+  at::Tensor weight_t = weight.value_or(at::Tensor());
+  at::Tensor rmean_t = running_mean.value_or(at::Tensor());
+  at::Tensor rvar_t = running_var.value_or(at::Tensor());
+  at::Tensor smean_t = save_mean.value_or(at::Tensor());
+  at::Tensor sinvstd_t = save_invstd.value_or(at::Tensor());
+
+  ascend::AclTensorWrapper acl_grad(grad_out, fmt);
+  ascend::AclTensorWrapper acl_input(input, fmt);
+  ascend::AclTensorWrapper acl_weight(weight_t);
+  ascend::AclTensorWrapper acl_rmean(rmean_t);
+  ascend::AclTensorWrapper acl_rvar(rvar_t);
+  ascend::AclTensorWrapper acl_smean(smean_t);
+  ascend::AclTensorWrapper acl_sinvstd(sinvstd_t);
+  ascend::AclBoolArrayWrapper acl_mask(at::ArrayRef<bool>(output_mask.data(), output_mask.size()));
+  ascend::AclTensorWrapper acl_grad_input(grad_input, fmt);
+  ascend::AclTensorWrapper acl_grad_weight(grad_weight);
+  ascend::AclTensorWrapper acl_grad_bias(grad_bias);
+
+  EXEC_ASCEND_CMD(aclnnBatchNormBackward, acl_grad.get(), acl_input.get(), acl_weight.get(),
+      acl_rmean.get(), acl_rvar.get(), acl_smean.get(), acl_sinvstd.get(),
+      train, eps, acl_mask.get(), acl_grad_input.get(), acl_grad_weight.get(),
+      acl_grad_bias.get());
+  return std::make_tuple(grad_input, grad_weight, grad_bias);
+}
+
+REGISTER_IMPL_TO_DISPATCHER(NativeBatchNormBackwardFn, native_batch_norm_backward_dispatcher, Backend::kAscend, NativeBatchNormBackwardKernelAscend)
+
 at::Tensor BinaryCrossEntropyKernelAscend(const at::Tensor& self, const at::Tensor& target, const ::std::optional<at::Tensor>& weight, int64_t reduction) {
   namespace ascend = at::native::flagos::ascend;
   std::vector<int64_t> out_shape;   // scalar for mean/sum
