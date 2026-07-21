@@ -1587,4 +1587,61 @@ at::Tensor DotKernelAscend(const at::Tensor& self, const at::Tensor& tensor) {
 
 REGISTER_IMPL_TO_DISPATCHER(DotFn, dot_dispatcher, Backend::kAscend, DotKernelAscend)
 
+::std::tuple<at::Tensor, at::Tensor, at::Tensor> NativeLayerNormKernelAscend(const at::Tensor& input, at::IntArrayRef normalized_shape, const ::std::optional<at::Tensor>& weight, const ::std::optional<at::Tensor>& bias, double eps) {
+  namespace ascend = at::native::flagos::ascend;
+  int64_t begin_axis = input.dim() - static_cast<int64_t>(normalized_shape.size());
+  auto stat_shape = input.sizes().vec();
+  for (int64_t i = begin_axis; i < input.dim(); ++i) stat_shape[i] = 1;
+
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      input.sizes(), input.options());
+  auto mean = ascend::OpPreparation::apply_tensor_without_format(
+      stat_shape, input.options());
+  auto rstd = ascend::OpPreparation::apply_tensor_without_format(
+      stat_shape, input.options());
+
+  at::Tensor weight_t = weight.value_or(at::Tensor());
+  at::Tensor bias_t = bias.value_or(at::Tensor());
+
+  ascend::AclTensorWrapper acl_input(input);
+  ascend::AclTensorWrapper acl_weight(weight_t);
+  ascend::AclTensorWrapper acl_bias(bias_t);
+  ascend::AclTensorWrapper acl_out(out);
+  ascend::AclTensorWrapper acl_mean(mean);
+  ascend::AclTensorWrapper acl_rstd(rstd);
+
+  std::vector<int64_t> ns(normalized_shape.begin(), normalized_shape.end());
+  ascend::AclIntArrayWrapper acl_ns(ns);
+
+  EXEC_ASCEND_CMD(aclnnLayerNorm, acl_input.get(), acl_ns.get(), acl_weight.get(), acl_bias.get(), eps, acl_out.get(), acl_mean.get(), acl_rstd.get());
+  return std::make_tuple(out, mean, rstd);
+}
+
+REGISTER_IMPL_TO_DISPATCHER(NativeLayerNormFn, native_layer_norm_dispatcher, Backend::kAscend, NativeLayerNormKernelAscend)
+
+::std::tuple<at::Tensor, at::Tensor, at::Tensor> NativeGroupNormKernelAscend(const at::Tensor& input, const ::std::optional<at::Tensor>& weight, const ::std::optional<at::Tensor>& bias, int64_t N, int64_t C, int64_t HxW, int64_t group, double eps) {
+  namespace ascend = at::native::flagos::ascend;
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      input.sizes(), input.options());
+  auto mean = ascend::OpPreparation::apply_tensor_without_format(
+      {N, group}, input.options());
+  auto rstd = ascend::OpPreparation::apply_tensor_without_format(
+      {N, group}, input.options());
+
+  at::Tensor weight_t = weight.value_or(at::Tensor());
+  at::Tensor bias_t = bias.value_or(at::Tensor());
+
+  ascend::AclTensorWrapper acl_input(input);
+  ascend::AclTensorWrapper acl_weight(weight_t);
+  ascend::AclTensorWrapper acl_bias(bias_t);
+  ascend::AclTensorWrapper acl_out(out);
+  ascend::AclTensorWrapper acl_mean(mean);
+  ascend::AclTensorWrapper acl_rstd(rstd);
+
+  EXEC_ASCEND_CMD(aclnnGroupNorm, acl_input.get(), acl_weight.get(), acl_bias.get(), N, C, HxW, group, eps, acl_out.get(), acl_mean.get(), acl_rstd.get());
+  return std::make_tuple(out, mean, rstd);
+}
+
+REGISTER_IMPL_TO_DISPATCHER(NativeGroupNormFn, native_group_norm_dispatcher, Backend::kAscend, NativeGroupNormKernelAscend)
+
 } // namespace at::native::flagos

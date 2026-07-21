@@ -56,7 +56,7 @@ CUDA 侧 `scripts/codegen_ops.py` 生成 `generated/cuda_kernels.cc`，内核体
 
 ## 4. 类别体系（逐类扩）
 
-已实现 29 个类别，共 91 个算子（真机全部与 CPU 对拍通过）：
+已实现 31 个类别，共 93 个算子（真机全部与 CPU 对拍通过）：
 
 | category | 判据 | 输出形状 / dtype | 内核体模板 |
 |---|---|---|---|
@@ -89,6 +89,8 @@ CUDA 侧 `scripts/codegen_ops.py` 生成 `generated/cuda_kernels.cc`，内核体
 | `gemm_baddbmm` | self + batch1 + batch2 + beta + alpha | (b, b1.rows, b2.cols) | 同上（batched） |
 | `mv` | self (n,m) + vec (m,) | (n,) | `aclnn<Name>(self, vec, out, cubeMathType)` |
 | `dot` | self + tensor（均 1-D） | 标量 | `aclnn<Name>(self, tensor, out)` |
+| `layer_norm` | input + normalized_shape + optional weight/bias + eps | **tuple(out, mean, rstd)**；out=输入，stat=前缀维+1 | `aclnn<Name>(input, ns, weight, bias, eps, out, mean, rstd)` |
+| `group_norm` | input + optional weight/bias + N/C/HxW/group + eps | **tuple(out, mean, rstd)**；out=输入，stat=(N,group) | `aclnn<Name>(input, weight, bias, N, C, HxW, group, eps, out, mean, rstd)` |
 
 - **unary（28）**：sqrt/exp/tanh/sigmoid/reciprocal/log/floor/ceil/erf/erfc/expm1/
   log2/log10/log1p/round/trunc/frac/sign/relu/cosh/sinh/asin/atan/asinh/acosh/atanh/
@@ -119,10 +121,12 @@ CUDA 侧 `scripts/codegen_ops.py` 生成 `generated/cuda_kernels.cc`，内核体
 - **aminmax（1）**：aminmax（tuple(min,max)，optional dim）
 - **prod（1）**：prod（缩到标量）
 - **gemm 家族（4）**：addmm/baddbmm（cube_math_type）/mv/dot
+- **layer_norm（1）**：native_layer_norm（tuple(out,mean,rstd)，transformer 主干）
+- **group_norm（1）**：native_group_norm（tuple(out,mean,rstd)）
 
 长尾未接（进后续或手写）：var/std.correction、norm.ScalarOpt_dim（correction/p 参数）、
 argmax/argmin/logsumexp/isnan/masked_fill/remainder/relu6（无 aclnn 符号或需特殊派生）、
-gelu（`approximate` string_view 参数）、卷积/池化/native_norm 家族（各自 bespoke，需专门批次）。
+gelu（`approximate` string_view 参数）、卷积/池化/native_batch_norm 家族（各自 bespoke，需专门批次）。
 
 **关键坑（varargs float）**：`EXEC_ASCEND_CMD` 通过 `typedef int (*)(...)` 变参函数指针调用
 aclnn。aarch64 上按值传 `float` 会走默认实参提升（float→double）+ 错误寄存器类，导致 aclnn

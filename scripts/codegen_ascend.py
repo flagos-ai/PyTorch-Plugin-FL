@@ -234,6 +234,10 @@ OPS = {
     "baddbmm":            ("gemm_baddbmm", "Baddbmm"),
     "mv":                 ("mv", "Mv"),
     "dot":                ("dot", "Dot"),
+
+    # ---- norm family: tuple(out, mean, rstd), optional weight/bias ----
+    "native_layer_norm":  ("layer_norm", "LayerNorm"),
+    "native_group_norm":  ("group_norm", "GroupNorm"),
 }
 
 # Ops with a handwritten kAscend kernel — never regenerate (double-register).
@@ -895,6 +899,77 @@ at::Tensor {kernel}(const at::Tensor& self, const at::Tensor& tensor) {{
 REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
 """
 
+# native_layer_norm: (input, IntArrayRef normalized_shape, optional weight,
+#   optional bias, double eps) -> tuple(out, mean, rstd).
+#   aclnn<Name>(input, normShape, weight, bias, eps, out, meanOut, rstdOut)
+# out = input shape; mean/rstd = input.shape[:begin_axis] + 1s, where
+# begin_axis = input.dim() - normalized_shape.size(). weight/bias may be
+# undefined -> AclTensorWrapper yields nullptr (aclnn treats as absent).
+T_LAYER_NORM = """\
+::std::tuple<at::Tensor, at::Tensor, at::Tensor> {kernel}(const at::Tensor& input, at::IntArrayRef normalized_shape, const ::std::optional<at::Tensor>& weight, const ::std::optional<at::Tensor>& bias, double eps) {{
+  namespace ascend = at::native::flagos::ascend;
+  int64_t begin_axis = input.dim() - static_cast<int64_t>(normalized_shape.size());
+  auto stat_shape = input.sizes().vec();
+  for (int64_t i = begin_axis; i < input.dim(); ++i) stat_shape[i] = 1;
+
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      input.sizes(), input.options());
+  auto mean = ascend::OpPreparation::apply_tensor_without_format(
+      stat_shape, input.options());
+  auto rstd = ascend::OpPreparation::apply_tensor_without_format(
+      stat_shape, input.options());
+
+  at::Tensor weight_t = weight.value_or(at::Tensor());
+  at::Tensor bias_t = bias.value_or(at::Tensor());
+
+  ascend::AclTensorWrapper acl_input(input);
+  ascend::AclTensorWrapper acl_weight(weight_t);
+  ascend::AclTensorWrapper acl_bias(bias_t);
+  ascend::AclTensorWrapper acl_out(out);
+  ascend::AclTensorWrapper acl_mean(mean);
+  ascend::AclTensorWrapper acl_rstd(rstd);
+
+  std::vector<int64_t> ns(normalized_shape.begin(), normalized_shape.end());
+  ascend::AclIntArrayWrapper acl_ns(ns);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_input.get(), acl_ns.get(), acl_weight.get(), acl_bias.get(), eps, acl_out.get(), acl_mean.get(), acl_rstd.get());
+  return std::make_tuple(out, mean, rstd);
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# native_group_norm: (input, optional weight, optional bias, int64 N, int64 C,
+#   int64 HxW, int64 group, double eps) -> tuple(out, mean, rstd).
+#   aclnn<Name>(self, gamma, beta, N, C, HxW, group, eps, out, meanOut, rstdOut)
+# out = input shape; mean/rstd = (N, group).
+T_GROUP_NORM = """\
+::std::tuple<at::Tensor, at::Tensor, at::Tensor> {kernel}(const at::Tensor& input, const ::std::optional<at::Tensor>& weight, const ::std::optional<at::Tensor>& bias, int64_t N, int64_t C, int64_t HxW, int64_t group, double eps) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      input.sizes(), input.options());
+  auto mean = ascend::OpPreparation::apply_tensor_without_format(
+      {{N, group}}, input.options());
+  auto rstd = ascend::OpPreparation::apply_tensor_without_format(
+      {{N, group}}, input.options());
+
+  at::Tensor weight_t = weight.value_or(at::Tensor());
+  at::Tensor bias_t = bias.value_or(at::Tensor());
+
+  ascend::AclTensorWrapper acl_input(input);
+  ascend::AclTensorWrapper acl_weight(weight_t);
+  ascend::AclTensorWrapper acl_bias(bias_t);
+  ascend::AclTensorWrapper acl_out(out);
+  ascend::AclTensorWrapper acl_mean(mean);
+  ascend::AclTensorWrapper acl_rstd(rstd);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_input.get(), acl_weight.get(), acl_bias.get(), N, C, HxW, group, eps, acl_out.get(), acl_mean.get(), acl_rstd.get());
+  return std::make_tuple(out, mean, rstd);
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
 CATEGORIES = {
     "unary":               T_UNARY,
     "binary":              T_BINARY,
@@ -925,6 +1000,8 @@ CATEGORIES = {
     "gemm_baddbmm":        T_GEMM_BADDBMM,
     "mv":                  T_MV,
     "dot":                 T_DOT,
+    "layer_norm":          T_LAYER_NORM,
+    "group_norm":          T_GROUP_NORM,
 }
 
 FILE_HEADER = """\
