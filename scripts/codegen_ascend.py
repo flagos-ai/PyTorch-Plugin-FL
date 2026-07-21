@@ -45,6 +45,12 @@ Known limitations (documented, acceptable for the current op set):
   - binary/binary_alpha take the output dtype from `self`; ops with C++-level
     type promotion on mixed-dtype inputs (e.g. integer div -> float) are not
     modelled. Typical float workloads are unaffected.
+  - No category may pass a by-value `float`/`double` argument to aclnn.
+    EXEC_ASCEND_CMD calls the aclnn entry through a variadic `int(*)(...)`
+    pointer, and on AArch64 a by-value float goes through varargs promotion
+    (float->double, wrong register class) so aclnn reads a garbage value.
+    Scalars must be marshalled as `aclScalar*`; int64/bool pass through fine.
+    (This is why smooth_l1_loss, which has a `float beta`, is left long-tail.)
 """
 
 import argparse
@@ -191,6 +197,43 @@ OPS = {
     # ---- reduce_max_dim: (Tensor, int64_t dim, bool keepdim) -> (values, indices) ----
     "max.dim":            ("reduce_max_dim", "MaxDim"),
     "min.dim":            ("reduce_max_dim", "MinDim"),
+
+    # ---- more unary_scalar activations ----
+    "celu":               ("unary_scalar", None),
+    "softshrink":         ("unary_scalar", None),
+    "hardshrink":         ("unary_scalar", None),
+
+    # ---- more unary_two_scalar (min/max clip) ----
+    "hardtanh":           ("unary_two_scalar", None),
+
+    # ---- elu: (Tensor, alpha, scale, input_scale) ----
+    "elu":                ("elu", None),
+
+    # ---- loss: (self, target, reduction) -> scalar/elementwise ----
+    "mse_loss":           ("loss", "MseLoss"),
+    # smooth_l1_loss/l1_loss(*): smooth_l1 needs a by-value `float beta`. The
+    # EXEC_ASCEND_CMD macro calls the aclnn entry through a variadic
+    # `int(*)(...)` pointer; on AArch64 a by-value float passed through varargs
+    # is promoted to double and lands in the wrong register class, so aclnn
+    # reads beta as 0 (result collapses to pure L1). Left long-tail until the
+    # macro grows a typed-call path for by-value floats.
+
+    # ---- cummax/cummin: (Tensor, dim) -> tuple(values, indices) ----
+    "cummax":             ("cummax_cummin", "Cummax"),
+    "cummin":             ("cummax_cummin", "Cummin"),
+
+    # ---- aminmax: (Tensor, optional dim, keepdim) -> tuple(min, max) ----
+    "aminmax":            ("aminmax", "Aminmax"),
+
+    # ---- prod: (Tensor, optional dtype) -> scalar ----
+    "prod":               ("prod", "Prod"),
+
+    # ---- gemm family (cubeMathType). addbmm reduces the batch dim (2D out) and
+    #      addmv/addr have different arg order / no cubeMathType -> left long-tail.
+    "addmm":              ("gemm_addmm", "Addmm"),
+    "baddbmm":            ("gemm_baddbmm", "Baddbmm"),
+    "mv":                 ("mv", "Mv"),
+    "dot":                ("dot", "Dot"),
 }
 
 # Ops with a handwritten kAscend kernel — never regenerate (double-register).
@@ -650,6 +693,208 @@ T_REDUCE_MAX_DIM = """\
 REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
 """
 
+# elu: (Tensor, Scalar alpha, Scalar scale, Scalar input_scale) -> same shape.
+#   aclnn<Name>(self, alpha, scale, inputScale, out)
+T_ELU = """\
+at::Tensor {kernel}(const at::Tensor& self, const at::Scalar& alpha, const at::Scalar& scale, const at::Scalar& input_scale) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options());
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclScalarWrapper acl_alpha(alpha, self.scalar_type());
+  ascend::AclScalarWrapper acl_scale(scale, self.scalar_type());
+  ascend::AclScalarWrapper acl_input_scale(input_scale, self.scalar_type());
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_alpha.get(), acl_scale.get(), acl_input_scale.get(), acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# loss: (self, target, int64_t reduction) -> reduction==None(0) elementwise,
+# Mean(1)/Sum(2) scalar.  aclnn<Name>(self, target, reduction, out)
+# e.g. mse_loss / l1_loss. target is a genuine on-device tensor (no CPU-scalar
+# lowering as with the binary categories), so no device coercion is needed.
+T_LOSS = """\
+at::Tensor {kernel}(const at::Tensor& self, const at::Tensor& target, int64_t reduction) {{
+  namespace ascend = at::native::flagos::ascend;
+  std::vector<int64_t> out_shape;   // scalar for Mean/Sum
+  if (reduction == 0) out_shape = self.sizes().vec();
+  auto out = ascend::OpPreparation::apply_tensor_without_format(out_shape, self.options());
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_target(target);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_target.get(), reduction, acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# cummax/cummin: (Tensor, int64_t dim) -> tuple(values, indices), same shape.
+#   aclnn<Name>(self, dim, valuesOut, indicesOut)
+T_CUMMAX_CUMMIN = """\
+::std::tuple<at::Tensor, at::Tensor> {kernel}(const at::Tensor& self, int64_t dim) {{
+  namespace ascend = at::native::flagos::ascend;
+  int64_t d = dim < 0 ? dim + self.dim() : dim;
+  auto values = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options());
+  auto indices = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options().dtype(at::kLong));
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_values(values);
+  ascend::AclTensorWrapper acl_indices(indices);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), d, acl_values.get(), acl_indices.get());
+  return std::make_tuple(values, indices);
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# aminmax: (Tensor, optional<int64_t> dim, bool keepdim) -> tuple(min, max).
+#   aclnn<Name>(self, dim_list, keepDim, minOut, maxOut)
+# nullopt dim reduces all dims (scalar out); a given dim reduces that one.
+T_AMINMAX = """\
+::std::tuple<at::Tensor, at::Tensor> {kernel}(const at::Tensor& self, ::std::optional<int64_t> dim, bool keepdim) {{
+  namespace ascend = at::native::flagos::ascend;
+  std::vector<int64_t> dims;
+  std::vector<int64_t> out_shape;
+  if (dim.has_value()) {{
+    int64_t d = dim.value() < 0 ? dim.value() + self.dim() : dim.value();
+    dims.push_back(d);
+    out_shape = self.sizes().vec();
+    if (keepdim) out_shape[d] = 1;
+    else out_shape.erase(out_shape.begin() + d);
+  }} else {{
+    for (int64_t i = 0; i < self.dim(); ++i) dims.push_back(i);
+  }}
+  auto min_out = ascend::OpPreparation::apply_tensor_without_format(out_shape, self.options());
+  auto max_out = ascend::OpPreparation::apply_tensor_without_format(out_shape, self.options());
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_min(min_out);
+  ascend::AclTensorWrapper acl_max(max_out);
+  ascend::AclIntArrayWrapper acl_dim(dims);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_dim.get(), keepdim, acl_min.get(), acl_max.get());
+  return std::make_tuple(min_out, max_out);
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# prod: (Tensor, optional<ScalarType> dtype) -> scalar.
+#   aclnn<Name>(self, dtype, out)
+T_PROD = """\
+at::Tensor {kernel}(const at::Tensor& self, ::std::optional<at::ScalarType> dtype) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto out_dtype = dtype.value_or(self.scalar_type());
+  std::vector<int64_t> out_shape;   // scalar
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      out_shape, self.options().dtype(out_dtype));
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_out(out);
+  aclDataType acl_dtype = ascend::ToAclDataType(out_dtype);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_dtype, acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# gemm_addmm: (self, mat1, mat2, Scalar beta, Scalar alpha) -> (m1.rows, m2.cols).
+#   aclnn<Name>(self, mat1, mat2, beta, alpha, out, cubeMathType)   e.g. addmm
+# self broadcasts into the matmul result; aclnn handles the broadcast.
+T_GEMM_ADDMM = """\
+at::Tensor {kernel}(const at::Tensor& self, const at::Tensor& mat1, const at::Tensor& mat2, const at::Scalar& beta, const at::Scalar& alpha) {{
+  namespace ascend = at::native::flagos::ascend;
+  int8_t cube_math_type = ascend::OpPreparation::get_cube_math_type(true);
+  std::vector<int64_t> out_shape = {{mat1.size(0), mat2.size(1)}};
+  auto out = ascend::OpPreparation::apply_tensor_without_format(out_shape, self.options());
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_mat1(mat1);
+  ascend::AclTensorWrapper acl_mat2(mat2);
+  ascend::AclScalarWrapper acl_beta(beta, self.scalar_type());
+  ascend::AclScalarWrapper acl_alpha(alpha, self.scalar_type());
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_mat1.get(), acl_mat2.get(), acl_beta.get(), acl_alpha.get(), acl_out.get(), cube_math_type);
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# gemm_baddbmm: batched addmm -> (b, b1.rows, b2.cols).
+#   aclnn<Name>(self, batch1, batch2, beta, alpha, out, cubeMathType)
+T_GEMM_BADDBMM = """\
+at::Tensor {kernel}(const at::Tensor& self, const at::Tensor& batch1, const at::Tensor& batch2, const at::Scalar& beta, const at::Scalar& alpha) {{
+  namespace ascend = at::native::flagos::ascend;
+  int8_t cube_math_type = ascend::OpPreparation::get_cube_math_type(true);
+  std::vector<int64_t> out_shape = {{batch1.size(0), batch1.size(1), batch2.size(2)}};
+  auto out = ascend::OpPreparation::apply_tensor_without_format(out_shape, self.options());
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_batch1(batch1);
+  ascend::AclTensorWrapper acl_batch2(batch2);
+  ascend::AclScalarWrapper acl_beta(beta, self.scalar_type());
+  ascend::AclScalarWrapper acl_alpha(alpha, self.scalar_type());
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_batch1.get(), acl_batch2.get(), acl_beta.get(), acl_alpha.get(), acl_out.get(), cube_math_type);
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# mv: (self (n,m), vec (m,)) -> (n,).  aclnn<Name>(self, vec, out, cubeMathType)
+T_MV = """\
+at::Tensor {kernel}(const at::Tensor& self, const at::Tensor& vec) {{
+  namespace ascend = at::native::flagos::ascend;
+  int8_t cube_math_type = ascend::OpPreparation::get_cube_math_type(true);
+  std::vector<int64_t> out_shape = {{self.size(0)}};
+  auto out = ascend::OpPreparation::apply_tensor_without_format(out_shape, self.options());
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_vec(vec);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_vec.get(), acl_out.get(), cube_math_type);
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# dot: (self, tensor) both 1-D -> scalar.  aclnn<Name>(self, tensor, out)
+T_DOT = """\
+at::Tensor {kernel}(const at::Tensor& self, const at::Tensor& tensor) {{
+  namespace ascend = at::native::flagos::ascend;
+  std::vector<int64_t> out_shape;   // scalar
+  auto out = ascend::OpPreparation::apply_tensor_without_format(out_shape, self.options());
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_tensor(tensor);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_tensor.get(), acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
 CATEGORIES = {
     "unary":               T_UNARY,
     "binary":              T_BINARY,
@@ -671,6 +916,15 @@ CATEGORIES = {
     "threshold_backward":  T_THRESHOLD_BACKWARD,
     "pow_scalar_tensor":   T_POW_SCALAR_TENSOR,
     "reduce_max_dim":      T_REDUCE_MAX_DIM,
+    "elu":                 T_ELU,
+    "loss":                T_LOSS,
+    "cummax_cummin":       T_CUMMAX_CUMMIN,
+    "aminmax":             T_AMINMAX,
+    "prod":                T_PROD,
+    "gemm_addmm":          T_GEMM_ADDMM,
+    "gemm_baddbmm":        T_GEMM_BADDBMM,
+    "mv":                  T_MV,
+    "dot":                 T_DOT,
 }
 
 FILE_HEADER = """\

@@ -56,7 +56,7 @@ CUDA 侧 `scripts/codegen_ops.py` 生成 `generated/cuda_kernels.cc`，内核体
 
 ## 4. 类别体系（逐类扩）
 
-已实现 20 个类别，共 77 个算子（真机全部与 CPU 对拍通过）：
+已实现 29 个类别，共 91 个算子（真机全部与 CPU 对拍通过）：
 
 | category | 判据 | 输出形状 / dtype | 内核体模板 |
 |---|---|---|---|
@@ -80,6 +80,15 @@ CUDA 侧 `scripts/codegen_ops.py` 生成 `generated/cuda_kernels.cc`，内核体
 | `cumprod` | 同 cumsum，但 dim 以 `aclScalar*` 传 | = 输入 shape（扫描） | `aclnn<Name>(self, &dim, dtype, out)` |
 | `act_backward` | grad_output + output | = output | `aclnn<Name>(grad, output, grad_in)` |
 | `threshold_backward` | grad_output + self + Scalar threshold | = self | `aclnn<Name>(grad, self, thr, grad_in)` |
+| `elu` | Tensor + Scalar×3（alpha/scale/input_scale） | = 输入 | `aclnn<Name>(self, a, s, is, out)` |
+| `loss` | self + target + `int64 reduction` | None→输入 / Mean·Sum→标量 | `aclnn<Name>(self, target, reduction, out)` |
+| `cummax_cummin` | Tensor + `int64_t dim` | **tuple(values, indices)**，= 输入 shape | `aclnn<Name>(self, dim, val, idx)` |
+| `aminmax` | Tensor + optional dim + keepdim | **tuple(min, max)** | `aclnn<Name>(self, dim_list, keepdim, min, max)` |
+| `prod` | Tensor + optional dtype | 标量 | `aclnn<Name>(self, dtype, out)` |
+| `gemm_addmm` | self + mat1 + mat2 + beta + alpha | (m1.rows, m2.cols) | `aclnn<Name>(self,m1,m2,beta,alpha,out,cubeMathType)` |
+| `gemm_baddbmm` | self + batch1 + batch2 + beta + alpha | (b, b1.rows, b2.cols) | 同上（batched） |
+| `mv` | self (n,m) + vec (m,) | (n,) | `aclnn<Name>(self, vec, out, cubeMathType)` |
+| `dot` | self + tensor（均 1-D） | 标量 | `aclnn<Name>(self, tensor, out)` |
 
 - **unary（28）**：sqrt/exp/tanh/sigmoid/reciprocal/log/floor/ceil/erf/erfc/expm1/
   log2/log10/log1p/round/trunc/frac/sign/relu/cosh/sinh/asin/atan/asinh/acosh/atanh/
@@ -103,10 +112,23 @@ CUDA 侧 `scripts/codegen_ops.py` 生成 `generated/cuda_kernels.cc`，内核体
 - **cumsum（1）**：cumsum；**cumprod（1）**：cumprod
 - **act_backward（2）**：tanh_backward/sigmoid_backward（训练用）
 - **threshold_backward（1）**：threshold_backward（relu 反向，训练用）
+- **unary_scalar 补充（3）**：celu/softshrink/hardshrink；**unary_two_scalar 补充（1）**：hardtanh
+- **elu（1）**：elu
+- **loss（1）**：mse_loss（reduction 决定标量/逐元素输出）
+- **cummax_cummin（2）**：cummax/cummin（tuple 返回，同形状扫描）
+- **aminmax（1）**：aminmax（tuple(min,max)，optional dim）
+- **prod（1）**：prod（缩到标量）
+- **gemm 家族（4）**：addmm/baddbmm（cube_math_type）/mv/dot
 
 长尾未接（进后续或手写）：var/std.correction、norm.ScalarOpt_dim（correction/p 参数）、
-argmax/argmin/prod/logsumexp/isnan/masked_fill/remainder/relu6（无 aclnn 符号或需特殊派生）、
-addmm/baddbmm（cube_math_type，归 matmul 家族）、gelu（`approximate` string_view 参数）。
+argmax/argmin/logsumexp/isnan/masked_fill/remainder/relu6（无 aclnn 符号或需特殊派生）、
+gelu（`approximate` string_view 参数）、卷积/池化/native_norm 家族（各自 bespoke，需专门批次）。
+
+**关键坑（varargs float）**：`EXEC_ASCEND_CMD` 通过 `typedef int (*)(...)` 变参函数指针调用
+aclnn。aarch64 上按值传 `float` 会走默认实参提升（float→double）+ 错误寄存器类，导致 aclnn
+读到垃圾值。所有标量都以 `aclScalar*` 指针或 `int64_t` 传递是安全的；唯独 smooth_l1_loss 的
+`float beta` 是按值传 float——实测 beta 恒为 0（退化成纯 L1）。故 smooth_l1_loss 暂留长尾，
+需要按值 float 参数的 aclnn 都要走非变参的显式 dlsym 调用（参考手写 `le.cc`）。
 
 ### 二元类别的共享 prologue（关键坑）
 
