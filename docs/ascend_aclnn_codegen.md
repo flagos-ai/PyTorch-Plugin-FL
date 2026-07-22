@@ -1,0 +1,294 @@
+# Ascend aclnn 算子 codegen 方案
+
+> 目标：把 `csrc/aten/backends/ascend/` 的手写 aclnn 内核，用代码生成的方式批量扩到全量，
+> 低维护成本地覆盖推理/训练主干算子。
+>
+> 状态：设计 + unary 类别原型（真机验证通过）。日期 2026-07-20，torch 2.11 分支。
+
+## 1. 为什么不能照搬 CUDA codegen
+
+CUDA 侧 `scripts/codegen_ops.py` 生成 `generated/cuda_kernels.cc`，内核体就一行
+`at::op(args)` —— 靠 `DeviceBoxingGuard` 把 flagos(PrivateUse1)张量的 device 元数据
+改成 CUDA，直接复用 PyTorch 已注册的 CUDA kernel。这条捷径在 Ascend 上不成立：
+
+- torch_npu 与 flagos 同占 PrivateUse1，无独立 key 可 box（见 [[ascend-libtorch-npu-fallback-fails]]、
+  [[ascend-route1-intercept-fails]]，均已实测封死）。
+- 所以 Ascend 内核体必须**自己调 CANN aclnn**（`libopapi.so` 公开 C ABI），
+  这意味着每个算子要手动：把参数包成 `AclTensorWrapper`/`AclScalarWrapper`/`AclIntArrayWrapper`，
+  **自己分配输出、推形状/ dtype**，再走两段式 `GetWorkspaceSize` + `Execute`。
+
+| | CUDA codegen | aclnn codegen |
+|---|---|---|
+| 内核体 | `at::op(args)` 一行 | 参数编组 + 输出分配 + `EXEC_ASCEND_CMD(aclnn<Name>, ...)` |
+| 信息来源 | 全在 aten schema | schema **不含** aclnn API 名 / 参数编组规则 |
+| 覆盖策略 | 枚举全部 CUDA 算子 | **按类别 + 映射表**，逐类扩 |
+
+关键洞察：aclnn 调用范式高度统一（`EXEC_ASCEND_CMD` 已抽象两段式），真正的差异只在
+"参数怎么编组、输出怎么分配"——而这些**在同一类别内是完全一致的**。所以 codegen 以
+**category（类别）** 为核心。
+
+## 2. 与现有基建的关系
+
+- **dispatcher 声明复用**：`generated/ops.h` 里已有全量 `XxxFn` typedef + `DECLARE_DISPATCHER`，
+  `ops.cc` 里已有 `ADD_IMPL_TO_DISPATCHER`，`register.inc` 里已有 `m.impl("op", WrapperXxx)`
+  把 aten 算子绑到 `xxx_dispatcher`。**ascend codegen 不重复声明任何 dispatcher**，
+  只生成 `REGISTER_IMPL_TO_DISPATCHER(XxxFn, xxx_dispatcher, Backend::kAscend, XxxKernelAscend)`
+  把内核挂到已存在的 dispatcher 的 `kAscend` 槽。
+- **符号名一致**：生成器复用 `codegen_ops.py:schema_to_cpp_name()`，保证 `XxxFn`/`xxx_dispatcher`
+  与 CUDA codegen 完全对齐（否则 link 不上）。
+- **运行时选择**：`torch_fl/backends_ascend.conf` 里 `op = ascend` 的行，让 `GetBackendForOp`
+  在运行时把该 op 路由到 `kAscend` 槽。codegen 会顺带把生成的算子写进这个 conf。
+
+## 3. 落点与构建
+
+生成文件：`csrc/aten/backends/ascend/generated/ascend_kernels.cc`
+
+- 该路径在 `csrc/CMakeLists.txt` 已被非 ascend 构建自动排除
+  （`if(NOT ASCEND_KERNEL) EXCLUDE ".*/aten/backends/ascend/.*"`），无需新增 CMake 规则。
+- include：
+  ```cpp
+  #include "../../../generated/ops.h"   // Fn typedef + DECLARE_DISPATCHER
+  #include "../op_preparation.h"        // OpPreparation::apply_tensor_without_format
+  #include "../op_api_common.h"         // AclTensorWrapper / EXEC_ASCEND_CMD
+  ```
+- 与手写内核**互斥**：一个 op 要么手写、要么 codegen，不能同时注册 `kAscend`（重复注册报错）。
+  codegen 读一份 skip 名单排除已手写的 op。
+- **原则（2026-07）**：能被某个 codegen 类别表达的算子一律走 codegen；手写只保留
+  codegen 表达不了的 bespoke。早期在 codegen 之前手写的"种子"算子（abs/cos/add.Tensor/
+  mul.Scalar/where/softmax/sum/mean 等 19 个）已迁移到 codegen 并删除手写文件，`SKIP`
+  收缩到只剩 `le.Tensor`（aclnnLe 符号缺失，需运行时多版本探测）和 `mm`/`bmm`
+  （另注册了 codegen 不产的 out 变体）。当前手写 17 个注册、codegen 122 个。
+
+## 4. 类别体系（逐类扩）
+
+已实现 63 个类别，共 138 个算子（真机全部与 CPU 对拍通过）：
+
+| category | 判据 | 输出形状 / dtype | 内核体模板 |
+|---|---|---|---|
+| `unary` | 1 个 Tensor 入、Tensor 出 | = 输入 | `aclnn<Name>(self, out)` |
+| `unary_bool` | 1 个 Tensor 入、判定 | = 输入 shape，**bool 出** | `aclnn<Name>(self, out)` |
+| `unary_scalar` | Tensor + Scalar | = 输入 | `aclnn<Name>(self, s, out)` |
+| `unary_two_scalar` | Tensor + Scalar×2 | = 输入 | `aclnn<Name>(self, s1, s2, out)` |
+| `unary_int` | Tensor + `int64_t` | = 输入 | `aclnn<Name>(self, i, out)` |
+| `unary_dims` | Tensor + `IntArrayRef` | = 输入 | `aclnn<Name>(self, dims, out)` |
+| `binary` | 2 个 Tensor 入 | broadcast(self, other)，= self dtype | `aclnn<Name>(self, other, out)` |
+| `binary_alpha` | 2 个 Tensor + Scalar alpha | broadcast | `aclnn<Name>(self, other, alpha, out)` |
+| `binary_cmp` | 2 个 Tensor 入、比较 | broadcast，**bool 出** | `aclnn<Name>(self, other, out)` |
+| `binary_scalar_alpha` | Tensor + Scalar other + Scalar alpha | = 输入 | `aclnn<Name>s(self, other, alpha, out)` |
+| `binary_scalar_cmp` | Tensor + Scalar、比较 | = 输入 shape，**bool 出** | `aclnn<Name>(self, other, out)` |
+| `addcmul` | self + t1 + t2 + Scalar value | broadcast(3) | `aclnn<Name>(self, t1, t2, value, out)` |
+| `pow_scalar_tensor` | Scalar self + Tensor exponent | = exponent | `aclnn<Name>(self, exp, out)` |
+| `reduce_dims` | Tensor + `IntArrayRef dim` + keepdim | 按 dim 缩 | `aclnn<Name>(self, dim, keepdim, out)` |
+| `reduce_dim_bool` | Tensor + `int64_t dim` + keepdim | 按单 dim 缩，**bool 出** | `aclnn<Name>(self, dim_list, keepdim, out)` |
+| `reduce_max_dim` | Tensor + `int64_t dim` + keepdim | **tuple(values, indices)** | `aclnn<Name>(self, dim, keepdim, val, idx)` |
+| `cumsum` | Tensor + `int64_t dim` + optional dtype | = 输入 shape（扫描） | `aclnn<Name>(self, dim, dtype, out)` |
+| `cumprod` | 同 cumsum，但 dim 以 `aclScalar*` 传 | = 输入 shape（扫描） | `aclnn<Name>(self, &dim, dtype, out)` |
+| `act_backward` | grad_output + output | = output | `aclnn<Name>(grad, output, grad_in)` |
+| `threshold_backward` | grad_output + self + Scalar threshold | = self | `aclnn<Name>(grad, self, thr, grad_in)` |
+| `elu` | Tensor + Scalar×3（alpha/scale/input_scale） | = 输入 | `aclnn<Name>(self, a, s, is, out)` |
+| `loss` | self + target + `int64 reduction` | None→输入 / Mean·Sum→标量 | `aclnn<Name>(self, target, reduction, out)` |
+| `cummax_cummin` | Tensor + `int64_t dim` | **tuple(values, indices)**，= 输入 shape | `aclnn<Name>(self, dim, val, idx)` |
+| `aminmax` | Tensor + optional dim + keepdim | **tuple(min, max)** | `aclnn<Name>(self, dim_list, keepdim, min, max)` |
+| `prod` | Tensor + optional dtype | 标量 | `aclnn<Name>(self, dtype, out)` |
+| `gemm_addmm` | self + mat1 + mat2 + beta + alpha | (m1.rows, m2.cols) | `aclnn<Name>(self,m1,m2,beta,alpha,out,cubeMathType)` |
+| `gemm_baddbmm` | self + batch1 + batch2 + beta + alpha | (b, b1.rows, b2.cols) | 同上（batched） |
+| `mv` | self (n,m) + vec (m,) | (n,) | `aclnn<Name>(self, vec, out, cubeMathType)` |
+| `dot` | self + tensor（均 1-D） | 标量 | `aclnn<Name>(self, tensor, out)` |
+| `layer_norm` | input + normalized_shape + optional weight/bias + eps | **tuple(out, mean, rstd)**；out=输入，stat=前缀维+1 | `aclnn<Name>(input, ns, weight, bias, eps, out, mean, rstd)` |
+| `group_norm` | input + optional weight/bias + N/C/HxW/group + eps | **tuple(out, mean, rstd)**；out=输入，stat=(N,group) | `aclnn<Name>(input, weight, bias, N, C, HxW, group, eps, out, mean, rstd)` |
+| `gelu` | Tensor + `approximate` string_view | = 输入 | `aclnnGeluV2(self, approx_int, out)`（int64 0=none/1=tanh） |
+| `gelu_backward` | grad_output + self + `approximate` | = self | `aclnnGeluBackwardV2(grad, self, approx_str, grad_in)`（char\* 字符串） |
+| `log_softmax` | Tensor + `int64_t dim` + half_to_float | = 输入（half_to_float→float 出） | `aclnn<Name>(self, dim, out)` |
+| `softmax_backward` | grad_output + output + `int64_t dim` + input_dtype | = grad_output shape，dtype=input_dtype | `aclnn<Name>(grad, output, dim, grad_in)` |
+| `binary_scalar` | Tensor + Scalar，无 alpha | = 输入 | `aclnn<Name>(self, scalar, out)`（mul.Scalar→Muls / div.Scalar→Divs） |
+| `act_backward_self` | grad_output + self | = self | `aclnn<Name>(grad, self, grad_in)`（silu_backward，区别于 act_backward 的 grad+output） |
+| `where` | cond + self + other（3-Tensor） | broadcast(3)，= self dtype | `aclnn<Name>(cond, self, other, out)` |
+| `softmax_fwd` | Tensor + `int64 dim` + half_to_float | = 输入 shape；half_to_float→float | `aclnn<Name>(self, dim, out)` |
+| `reduce_all` | Tensor（整体归约） | bool 标量 | `aclnn<Name>(flat, dim_list, false, out)`（flatten 到 1-D 归约） |
+| `reduce_sum_dtype` | Tensor + `OptionalIntArrayRef dim` + keepdim + optional dtype | 按 dim 缩，dtype 提升 | `aclnn<Name>(self, dims, keepdim, aclDataType, out)` |
+| `reduce_mean_dtype` | 同上 | 同上 | `aclnnMeanV2(self, dims, keepdim, int32 dtype, out)` |
+| `adaptive_avg_pool2d` | self + `SymInt[2] output_size` | 前导维 + output_size；**NCHW format** | `aclnn<Name>(self, outSize, out)` |
+| `avg_pool2d` | self + k/stride/pad + ceil/countPad + divOverride | 池化公式；**NCHW format** | `aclnn<Name>(self, k, s, p, ceil, cntPad, div, cubeType, out)` |
+| `max_pool2d_indices` | self + k/stride/pad/dil + ceil | **tuple(out, int64 indices)**，池化公式 | `aclnn<Name>(self, k, s, p, dil, ceil, out, idx)` |
+| `convolution` | input + weight + bias? + stride/pad/dil + transposed + outPad + groups | conv 公式，Cout=weight.size(0)；**NCHW/NCL/NCDHW format** | `aclnn<Name>(in, w, b, s, p, d, tr, oPad, g, out, cubeType=0)` |
+| `convolution_backward` | grad_out + input + weight + biasSizes? + …… + output_mask[3] | **tuple(gInput, gWeight, gBias)** | `aclnn<Name>(gOut, in, w, bSz, s, p, d, tr, oPad, g, mask, cubeType=0, gIn, gW, gB)` |
+| `max_pool2d_indices_backward` | grad_out + self + k/s/p/dil + ceil + indices | = self；**NCHW format**，indices 转 int32 | `aclnn<Name>(gOut, self, idx_i32, k, s, p, dil, ceil, gIn)` |
+| `native_batch_norm` | input + weight?/bias?/rMean?/rVar? + training + momentum + eps | **tuple(out, saveMean, saveInvstd)**；**NCHW format** | `aclnn<Name>(in, w, b, rMean, rVar, train, mom, eps, out, sMean, sInvstd)` |
+| `native_batch_norm_backward` | grad_out + input + weight? + rMean?/rVar?/sMean?/sInvstd? + train + eps + output_mask[3] | **tuple(gInput, gWeight, gBias)** | `aclnn<Name>(gOut, in, w, rMean, rVar, sMean, sInvstd, train, eps, mask, gIn, gW, gB)` |
+| `avg_pool2d_backward` | grad_out + self + k/s/p + ceil/countPad + divOverride | = self；**NCHW format** | `aclnn<Name>(gOut, self, k, s, p, ceil, cntPad, div, cubeType=0, gIn)` |
+| `adaptive_avg_pool2d_backward` | grad_out + self | = self；**NCHW format** | `aclnn<Name>(gOut, self, gIn)` |
+| `native_layer_norm_backward` | grad_out + input + normShape + mean + rstd + weight?/bias? + output_mask[3] | **tuple(gInput, gWeight, gBias)** | `aclnn<Name>(gOut, in, nShape, mean, rstd, w, b, mask, gIn, gW, gB)` |
+| `native_group_norm_backward` | grad_out + input + mean + rstd + weight? + N/C/HxW/group + output_mask[3] | **tuple(gInput, gGamma, gBeta)** | `aclnn<Name>(gOut, in, mean, rstd, gamma, N, C, HxW, group, mask, gIn, gG, gB)` |
+| `masked_fill_scalar` | self + mask + Scalar value | broadcast(self,mask) | clone→`aclnnInplaceMaskedFillScalar(out, mask, value)` |
+| `masked_fill_tensor` | self + mask + Tensor value（0-dim） | broadcast(self,mask) | 同上（value 张量，需 device 对齐） |
+| `gather` | self + `int64 dim` + index | = index shape，self dtype | `aclnnGather(self, dim, index, out)` |
+| `index_select` | self + `int64 dim` + index（1-D） | self shape，dim 维换成 index.numel() | `aclnnIndexSelect(self, dim, index, out)` |
+| `gemm_addmv` | self + mat(n,m) + vec(m) + beta + alpha | (n,) | `aclnn<Name>(self,mat,vec,ALPHA,BETA,out,cubeMathType)`（**alpha 在 beta 前**） |
+| `gemm_addr` | self + vec1(n) + vec2(m) + beta + alpha | (n,m) 外积 | `aclnn<Name>(self,vec1,vec2,beta,alpha,out)`（无 cubeMathType） |
+| `bce` | self + target + optional weight + int reduction | None→输入 / Mean·Sum→标量 | `aclnn<Name>(self,target,weight,reduction,out)` |
+| `bce_backward` | grad_output + self + target + optional weight + reduction | = self | `aclnn<Name>(grad,self,target,weight,reduction,grad_in)` |
+| `bce_logits` | self + target + optional weight + optional pos_weight + reduction | None→输入 / Mean·Sum→标量 | `aclnn<Name>(self,target,weight,posWeight,reduction,out)` |
+
+- **unary（28）**：sqrt/exp/tanh/sigmoid/reciprocal/log/floor/ceil/erf/erfc/expm1/
+  log2/log10/log1p/round/trunc/frac/sign/relu/cosh/sinh/asin/atan/asinh/acosh/atanh/
+  logical_not/bitwise_not
+- **unary_bool（1）**：isinf
+- **unary_scalar（4）**：leaky_relu/clamp_min/clamp_max/fmod.Scalar
+- **unary_two_scalar（2）**：softplus(beta,threshold)/threshold(threshold,value)
+- **unary_int（2）**：tril/triu（diagonal 偏移）
+- **unary_dims（1）**：flip
+- **binary（9）**：div.Tensor/pow.Tensor_Tensor/atan2/maximum/minimum/bitwise_or/bitwise_xor/
+  fmod.Tensor/floor_divide
+- **binary_alpha（1）**：sub.Tensor
+- **binary_cmp（8）**：eq/ne/gt/lt/ge.Tensor + logical_and/logical_or/logical_xor
+- **binary_scalar_alpha（2）**：add.Scalar/sub.Scalar
+- **binary_scalar_cmp（6）**：eq/ne/gt/lt/ge/le.Scalar
+- **addcmul（2）**：addcmul/addcdiv
+- **pow_scalar_tensor（1）**：pow.Scalar
+- **reduce_dims（2）**：amax/amin（复用 `sum.cc` 的 dim 归一化 + 缩形状逻辑）
+- **reduce_dim_bool（1）**：any.dim（单 dim 包成一元 list 传给 aclnn）
+- **reduce_max_dim（2）**：max.dim/min.dim（tuple 返回 values+int64 indices）
+- **cumsum（1）**：cumsum；**cumprod（1）**：cumprod
+- **act_backward（2）**：tanh_backward/sigmoid_backward（训练用）
+- **threshold_backward（1）**：threshold_backward（relu 反向，训练用）
+- **unary_scalar 补充（3）**：celu/softshrink/hardshrink；**unary_two_scalar 补充（1）**：hardtanh
+- **elu（1）**：elu
+- **loss（1）**：mse_loss（reduction 决定标量/逐元素输出）
+- **cummax_cummin（2）**：cummax/cummin（tuple 返回，同形状扫描）
+- **aminmax（1）**：aminmax（tuple(min,max)，optional dim）
+- **prod（1）**：prod（缩到标量）
+- **gemm 家族（6）**：addmm/baddbmm（cube_math_type）/mv/dot/addmv（alpha,beta 顺序反）/addr（无 cube_math_type）
+- **bce 家族（3）**：binary_cross_entropy（+ optional weight）/binary_cross_entropy_backward/binary_cross_entropy_with_logits（+ optional pos_weight）
+- **layer_norm（1）**：native_layer_norm（tuple(out,mean,rstd)，transformer 主干）
+- **group_norm（1）**：native_group_norm（tuple(out,mean,rstd)）
+- **gelu（1）**：gelu（用 aclnnGeluV2 支持 none/tanh 两种近似；见下方"gelu 的 V2 坑"）
+- **gelu_backward（1）**：gelu_backward（aclnnGeluBackwardV2，char\* approximate）
+- **log_softmax（1）**：_log_softmax（照搬手写 softmax.cc 范式）
+- **softmax_backward（2）**：_softmax_backward_data/_log_softmax_backward_data（训练用；aclnn 名去掉 aten 的 `_data` 后缀）
+
+长尾未接（进后续或手写）：
+- **SDPA/flash-attention** (`_scaled_dot_product_efficient_attention` 前向)：**已实现并验证**（2026-07-21）。
+  - 手写 `csrc/aten/backends/ascend/scaled_dot_product_attention.cc`，直接调用 `aclnnFlashAttentionScore`
+  - 参数：inputLayout="BNSD"，scaleValue=1.0/sqrt(D)，keepProb=1-dropout_p，headNum=num_heads
+  - **关键映射**：aclnn 输出 softmaxMax/Sum `[B,N,S,8]`（8 是 online softmax tiling），PyTorch 需要 `logsumexp [B,N,S]`。实现：取 softmaxMax/Sum 的最后一维首元素（`[:,:,:,0]`），计算 `log(softmaxSum) + softmaxMax` 得到 logsumexp。
+  - **attenMask 语义**：`true=MASK_OUT`（屏蔽），`false=KEEP`（保留）—— 与文档描述相反！causal attention 用 `triu(..., diagonal=1)` 产生上三角 mask。
+  - 验证：non-causal max_err=3.34e-06，causal max_err=7.15e-07（真机对拍 CPU）。
+  - **backward 未实现**：`_scaled_dot_product_efficient_attention_backward` 注册为 NotImplemented（原因：aclnn 反向需要分别传入 softmaxMax 和 softmaxSum，但 PyTorch 前向只返回单个 logsumexp 张量；需要修改前向保存 max/sum 或在 backward 时重算，是多日工程）。
+- var/std.correction、norm.ScalarOpt_dim（correction/p 参数）、argmax/argmin/logsumexp/isnan/remainder/relu6（无 aclnn 符号或需特殊派生）、transposed conv, conv/pool 3D, upsample/interpolate, pad (reflection/replication/constant), scatter/scatter_add/index_put, sort/topk。
+- **addbmm**：符号存在且能跑，但 hf32 cube 沿 batch 维累加把相对误差放大到 ~1e-2
+  （单次 addmm 仅 ~1e-4）。留待允许 fp32 累加或降 cubeMathType 时再接。
+- **native_batch_norm**：`aclnnBatchNorm` 对 2D (N,C) 输入正常，但 4D NCHW 输入返回
+  `ACLNN_ERR_INNER_NULLPTR`(561103) —— GetWorkspaceSize 阶段就失败，疑似需要特定
+  format 或改用 BatchNormV2/BatchNormReduce 组合。留待 conv/pool 专门批次一起做。
+
+**关键坑（gelu 的 V2）**：`aclnnGelu`（v1）硬编码 **tanh** 近似，而 PyTorch 的 `gelu`
+默认 `approximate="none"`（erf 形式，qwen3 等主干用这个）。直接用 v1 会让默认 gelu 静默
+产生 ~4.5e-4 的系统性误差（不是精度抖动，是近似形式不同）。修复：改用 `aclnnGeluV2`
+（`int64_t approximate`：0=none/1=tanh，int 变参安全）与 `aclnnGeluBackwardV2`
+（`char* approximate` 字符串——指针传递也变参安全，不受下方 by-value float 坑影响）。
+
+**关键坑（conv/pool 的 aclFormat）**：`AclTensorWrapper` 默认把 aclTensor 标成
+`ACL_FORMAT_ND`。`aclnnAvgPool2d`/`aclnnAdaptiveAvgPool2d`/`aclnnConvolution` 拒绝 ND 的
+4-D 张量，`GetWorkspaceSize` 直接返回 `161002`（PARAM_INVALID）——不是 shape/dtype 问题。
+修复：给 `AclTensorWrapper` 加可选 `aclFormat fmt` 参数（默认 ND，向后兼容），conv/pool
+模板按 rank 传 `ACL_FORMAT_NCHW`（4-D）/`NCL`（3-D）/`NCDHW`（5-D）。`aclnnMaxPool2dWithIndices`
+反而不挑 format，ND 也能过——所以这是逐 aclnn 而非全局的要求。另：conv 的 `cubeMathType`
+要传 **0（KEEP_DTYPE）**，传 1（ALLOW_FP32_DOWN_PRECISION）会在 cube 单元丢 ~2.5e-3 精度。
+
+**关键坑（max_pool 反向的 format + indices dtype）**：`aclnnMaxPool2dWithIndices`（前向）
+不挑 format、输出 int64 indices；但 `aclnnMaxPool2dWithIndicesBackward`（反向）**既要 NCHW
+format 又要 indices 为 int32**——直接把前向的 int64 indices 喂进去会 161002。反向模板里
+`indices.to(at::kInt)` 转一下 + 打 NCHW 标即可。所以前向/反向对 format/dtype 的要求可以不同，
+必须逐 aclnn 读头文件的 `@param` 注释确认。
+
+**关键坑（out-of-place op 靠 inplace aclnn + 别用 clone）**：aclnn 的 masked_fill 只有
+inplace 变体（`aclnnInplaceMaskedFillScalar/Tensor`，selfRef 非 const）。要实现 out-of-place
+的 aten `masked_fill`，得先拷一份 self 再原地填。但 **不能用 `self.clone()`**——clone 走
+`empty_like`，而 ascend 后端没注册 `empty_like`（`RuntimeError: empty_like: backend not
+registered`）。改用 `OpPreparation::apply_tensor_without_format(out_shape, opts)` 分配 +
+`out.copy_(self.expand(out_shape))`。这条同样适用于任何需要「先复制再原地改」的 codegen 算子。
+
+**关键坑（SDPA attenMask 语义反转）**：aclnnFlashAttentionScore 的 attenMask 语义是 **`true=MASK_OUT`
+（屏蔽该位置），`false=KEEP`（保留）**，与 CANN 文档及研究结果（"true=KEEP"）相反。实测：causal
+attention 需要用 `torch.triu(torch.ones(...), diagonal=1).bool()`（上三角为 true）作为 mask，
+才能正确屏蔽未来位置。若传反（下三角为 true），数值误差巨大（err~4.0）。另：attenMask 必须是 2D `[S,S]`
+或 4D `[B,1,S,S]` broadcast，不能是 3D。
+
+**关键坑（SDPA logsumexp 映射）**：PyTorch `_scaled_dot_product_efficient_attention` 返回
+`logsumexp [B,N,S]`（单张量），但 aclnnFlashAttentionScore 输出 softmaxMax/Sum 各为 `[B,N,S,8]`
+（8 是 online softmax 的 tiling factor）。实现映射：取最后一维首元素（`softmaxMax[:,:,:,0]` 和
+`softmaxSum[:,:,:,0]`，均为 `[B,N,S]`），计算 `logsumexp = torch.log(softmaxSum_0) + softmaxMax_0`。
+这个映射在 non-causal/causal 下均与 CPU 对齐（max_err ≤3.34e-06）。**Backward 阻塞原因**：
+aclnnFlashAttentionScoreGrad 需要分别传入 softmaxMax 和 softmaxSum（作为前向的 saved tensors），
+但 PyTorch autograd 只保存单个 logsumexp 张量，无法逆推出原始的 max 和 sum（log 不可逆加）。
+解决方案需修改前向 context 同时保存 max/sum，或在 backward 时重算——多日工程，当前版本仅实现前向。
+
+**关键坑（batch_norm 的 save_invstd 语义）**：`aclnnBatchNorm` 前向的 `output`/`saveMean`
+与 CPU 逐位对齐，但 `saveInvstd` 定义与 PyTorch CPU 不同（CPU 是 `1/sqrt(var+eps)`，
+aclnn 返回另一种形式，实测差 ~0.18）。**这不影响训练正确性**：反向 `aclnnBatchNormBackward`
+吃的是同源 NPU `saveInvstd`，grad_input/weight/bias 三个梯度与 CPU 全部对齐（err≤4e-6）。
+只有把 save_invstd 当最终结果直接比对才会「失配」，端到端 BN 训练闭环是对的。
+
+**关键坑（varargs float）**：`EXEC_ASCEND_CMD` 通过 `typedef int (*)(...)` 变参函数指针调用
+aclnn。aarch64 上按值传 `float` 会走默认实参提升（float→double）+ 错误寄存器类，导致 aclnn
+读到垃圾值。所有标量都以 `aclScalar*` 指针或 `int64_t` 传递是安全的；唯独 smooth_l1_loss 的
+`float beta` 是按值传 float——实测 beta 恒为 0（退化成纯 L1）。故 smooth_l1_loss 暂留长尾，
+需要按值 float 参数的 aclnn 都要走非变参的显式 dlsym 调用（参考手写 `le.cc`）。
+
+### 二元类别的共享 prologue（关键坑）
+
+所有 tensor-tensor 类别共用一段 prologue，做三件事：
+
+```cpp
+auto result_dtype = self.scalar_type();
+// ① other 必须同时对齐 device 和 dtype——不只是 dtype！
+auto other_c = other.is_privateuseone()
+    ? (other.scalar_type() == result_dtype ? other : other.to(result_dtype))
+    : other.to(self.options());           // CPU other → 搬到 flagos(NPU)
+auto out_shape = at::infer_size(self.sizes(), other_c.sizes());
+auto self_b  = self.expand(out_shape).contiguous();   // aclnn 不总是自己 broadcast
+auto other_b = other_c.expand(out_shape).contiguous();
+```
+
+**踩过的坑**：`torch.sub(x, 3.0)` 这类"张量 + python 标量"在 PyTorch 里会把标量包成
+**CPU 标量张量**并派发到 `aten::sub.Tensor`（不是 sub.Scalar）。若 prologue 只对齐 dtype
+不对齐 device，CPU 存储会被 `AclTensorWrapper` 当成 NPU 显存地址读取 → 全 nan。
+修复即上面 `other.to(self.options())`（与手写 `add.cc` 一致）。这一处同时修好了
+sub/div/pow 等所有"标量走 Tensor overload"的路径。
+
+## 5. aclnn 命名派生
+
+- 默认：`op_name` snake_case → `aclnn` + PascalCase（`sqrt`→`aclnnSqrt`，`floor`→`aclnnFloor`）。
+- 不规则：`OPS` dict 里逐 op 显式覆盖 stem（`eq.Tensor`→`EqTensor`、`div.Tensor`→`Div`、
+  `pow.Tensor_Tensor`→`PowTensorTensor`、`add.Scalar`→`Adds` 等）。
+- 生成前用 `nm -D libopapi.so` 校验 `aclnn<Name>` 与 `aclnn<Name>GetWorkspaceSize` 两个符号，
+  缺任一即跳过并告警（例如 `square`/`isnan`/`isfinite` 因无 dispatcher 或无符号被自动排除）。
+
+## 6. 生成器 `scripts/codegen_ascend.py`
+
+结构：
+- `OPS` dict：`schema op 名 → (category, aclnn-name override)`，是唯一的手工维护点。
+- `SKIP` set：已手写 kAscend 的 op（abs/cos/add.Tensor/mul.Tensor/le.Tensor…），
+  绝不重发（重复注册 kAscend 会在 import 时崩）。
+- `CATEGORIES` dict：`category → 内核体模板字符串`，加新类别 = 加一个模板 + 一批 OPS 条目。
+- 复用 `codegen_ops.py:schema_to_cpp_name` 保证 `XxxFn`/`xxx_dispatcher` 与 `ops.h` 完全对齐。
+
+用法：`python scripts/codegen_ascend.py [--category unary] [--no-conf]`（默认 all）。
+
+输出：
+- `csrc/aten/backends/ascend/generated/ascend_kernels.cc`
+- 幂等重写 `backends_ascend.conf` 末尾的 `# --- generated ---` 块（追加新覆盖的 op）
+
+## 7. 验证闭环
+
+`ACCELERATOR=ascend ASCEND_KERNEL=1 FLAGGEMS_PYTHON=1 CUDA_KERNEL=0 FLAGGEMS_KERNEL=0`
+构建，`FLAGOS_BACKEND_CONFIG=torch_fl/backends_ascend.conf`，逐 op 与 CPU 对拍。
+51/51 通过（unary max_err≤4.4e-5，binary≤4.7e-6，比较类精确匹配）。
+
+**注意**：编译时必须显式传全套 env（`ACCELERATOR=ascend …`），否则 setup.py 默认
+`ACCELERATOR=cuda`，cmake 配置阶段就会失败。
+
+## 8. 相关
+
+见 `docs/ascend_npu_plan.md`（总纲）、`docs/ascend_aclnn_codegen_prototype.cc`（裸 aclnn 原型）。
+记忆：[[ascend-aclnn-codegen-plan]]、[[ascend-backend-broken-on-2.11]]。

@@ -36,7 +36,22 @@ struct PythonOpCache {
   py::object GetFunc(const char* name) {
     auto it = func_cache.find(name);
     if (it != func_cache.end()) return it->second;
-    py::object func = ops_module.attr(name);
+    std::string qual(name);
+    py::object func;
+    auto dot = qual.rfind('.');
+    if (dot == std::string::npos) {
+      // Bare name: resolve from the flag_gems.ops module (legacy typed callers).
+      func = ops_module.attr(name);
+    } else {
+      // Dotted qualname "module.submodule.func": import the module, getattr func.
+      // This is what the auto-discovered generic kernels pass, taken from
+      // fn.__module__ + "." + fn.__name__, so it locates the exact callable in
+      // _FULL_CONFIG regardless of whether flag_gems.ops re-exports it.
+      std::string module_path = qual.substr(0, dot);
+      std::string func_name = qual.substr(dot + 1);
+      py::module_ mod = py::module_::import(module_path.c_str());
+      func = mod.attr(func_name.c_str());
+    }
     func_cache[name] = func;
     return func;
   }
@@ -120,6 +135,69 @@ py::object OptionalDtypeToPython(std::optional<at::ScalarType> dtype) {
     case at::ScalarType::Bool:    return torch_mod.attr("bool");
     default: return py::none();
   }
+}
+
+// Convert a single IValue to a Python object, covering the argument types the
+// codegen'd generic FlagGems kernels can produce. Note: ScalarType is
+// deliberately NOT handled here -- an IValue stores ScalarType as a plain int
+// (see c10::IValue(ScalarType)), so it is indistinguishable from an ordinary
+// int at runtime. Ops that pass a dtype to the FlagGems function are excluded
+// from the generic path (kept in the codegen skip list) instead.
+py::object IValueToPython(const c10::IValue& val, const char* func_name) {
+  if (val.isTensor()) {
+    return TensorToPython(val.toTensor());
+  } else if (val.isInt()) {
+    return py::int_(val.toInt());
+  } else if (val.isDouble()) {
+    return py::float_(val.toDouble());
+  } else if (val.isBool()) {
+    return py::bool_(val.toBool());
+  } else if (val.isNone()) {
+    return py::none();
+  } else if (val.isString()) {
+    return py::str(val.toStringRef());
+  } else if (val.isScalar()) {
+    return ScalarToPython(val.toScalar());
+  } else if (val.isIntList()) {
+    auto list = val.toIntList();
+    py::tuple t(list.size());
+    for (size_t j = 0; j < list.size(); ++j) {
+      t[j] = py::int_(static_cast<int64_t>(list[j]));
+    }
+    return std::move(t);
+  } else if (val.isDoubleList()) {
+    auto list = val.toDoubleList();
+    py::tuple t(list.size());
+    for (size_t j = 0; j < list.size(); ++j) {
+      t[j] = py::float_(static_cast<double>(list[j]));
+    }
+    return std::move(t);
+  } else if (val.isBoolList()) {
+    auto list = val.toBoolList();
+    py::tuple t(list.size());
+    for (size_t j = 0; j < list.size(); ++j) {
+      t[j] = py::bool_(static_cast<bool>(list[j]));
+    }
+    return std::move(t);
+  } else if (val.isTensorList()) {
+    auto list = val.toTensorList();
+    py::list t;
+    for (size_t j = 0; j < list.size(); ++j) {
+      t.append(TensorToPython(list.get(j)));
+    }
+    return std::move(t);
+  }
+  TORCH_CHECK(false, "Unsupported IValue type in generic FlagGems caller for op: ",
+              func_name);
+}
+
+// Build the Python positional-arg tuple from a vector of IValues.
+py::tuple BuildPyArgs(const std::vector<c10::IValue>& args, const char* func_name) {
+  py::tuple py_args(args.size());
+  for (size_t i = 0; i < args.size(); ++i) {
+    py_args[i] = IValueToPython(args[i], func_name);
+  }
+  return py_args;
 }
 
 } // namespace
@@ -212,41 +290,202 @@ at::Tensor CallPythonOp_TD(const char* func_name, const at::Tensor& self,
   return PythonToTensor(result);
 }
 
+at::Tensor CallPythonOp_ListI(const char* func_name,
+                              const at::ITensorListRef& tensors, int64_t dim) {
+  auto& cache = GetCache();
+  cache.EnsureInitialized();
+  py::gil_scoped_acquire gil;
+  auto func = cache.GetFunc(func_name);
+  py::list py_tensors;
+  for (const auto& t : tensors) {
+    py_tensors.append(TensorToPython(t));
+  }
+  py::object result = func(py_tensors, py::int_(dim));
+  return PythonToTensor(result);
+}
+
+at::Tensor CallPythonOp_Embedding(const char* func_name, const at::Tensor& weight,
+                                  const at::Tensor& indices, int64_t padding_idx,
+                                  bool scale_grad_by_freq, bool sparse) {
+  auto& cache = GetCache();
+  cache.EnsureInitialized();
+  py::gil_scoped_acquire gil;
+  auto func = cache.GetFunc(func_name);
+  py::object result = func(
+      TensorToPython(weight), TensorToPython(indices),
+      py::int_(padding_idx), py::bool_(scale_grad_by_freq), py::bool_(sparse));
+  return PythonToTensor(result);
+}
+
 at::Tensor CallPythonOp_Generic(const char* func_name, const std::vector<c10::IValue>& args) {
   auto& cache = GetCache();
   cache.EnsureInitialized();
 
   py::gil_scoped_acquire gil;
   auto func = cache.GetFunc(func_name);
+  py::tuple py_args = BuildPyArgs(args, func_name);
+  return PythonToTensor(func(*py_args));
+}
 
-  py::tuple py_args(args.size());
-  for (size_t i = 0; i < args.size(); ++i) {
-    const auto& val = args[i];
-    if (val.isTensor()) {
-      py_args[i] = TensorToPython(val.toTensor());
-    } else if (val.isInt()) {
-      py_args[i] = py::int_(val.toInt());
-    } else if (val.isDouble()) {
-      py_args[i] = py::float_(val.toDouble());
-    } else if (val.isBool()) {
-      py_args[i] = py::bool_(val.toBool());
-    } else if (val.isNone()) {
-      py_args[i] = py::none();
-    } else if (val.isIntList()) {
-      auto list = val.toIntList();
-      py::tuple t(list.size());
-      for (size_t j = 0; j < list.size(); ++j) {
-        t[j] = py::int_(static_cast<int64_t>(list[j]));
-      }
-      py_args[i] = t;
-    } else if (val.isScalar()) {
-      py_args[i] = ScalarToPython(val.toScalar());
+namespace {
+
+// Build the **kwargs dict for a keyword-arg call. `is_dtype` kwargs convert the
+// int ScalarType payload to a torch.dtype (see PyKwarg); `is_none` kwargs pass
+// Python None (an absent optional the IValue can't otherwise represent).
+py::dict BuildPyKwargs(const std::vector<PyKwarg>& kwargs, const char* func_name) {
+  py::dict d;
+  for (const auto& kw : kwargs) {
+    if (kw.is_none) {
+      d[kw.name] = py::none();
+    } else if (kw.is_dtype) {
+      d[kw.name] = OptionalDtypeToPython(
+          static_cast<at::ScalarType>(kw.value.toInt()));
     } else {
-      TORCH_CHECK(false, "Unsupported IValue type in CallPythonOp_Generic for op: ", func_name);
+      d[kw.name] = IValueToPython(kw.value, func_name);
     }
   }
+  return d;
+}
 
-  return PythonToTensor(func(*py_args));
+} // namespace
+
+at::Tensor CallPythonOp_GenericKw(const char* func_name,
+                                  const std::vector<c10::IValue>& args,
+                                  const std::vector<PyKwarg>& kwargs) {
+  auto& cache = GetCache();
+  cache.EnsureInitialized();
+
+  py::gil_scoped_acquire gil;
+  auto func = cache.GetFunc(func_name);
+  py::tuple py_args = BuildPyArgs(args, func_name);
+  py::dict py_kwargs = BuildPyKwargs(kwargs, func_name);
+  return PythonToTensor(func(*py_args, **py_kwargs));
+}
+
+at::Tensor CallPythonOp_Factory(const char* func_name,
+                                const std::vector<c10::IValue>& args,
+                                std::optional<at::ScalarType> dtype) {
+  auto& cache = GetCache();
+  cache.EnsureInitialized();
+  py::gil_scoped_acquire gil;
+  auto func = cache.GetFunc(func_name);
+  py::tuple py_args = BuildPyArgs(args, func_name);
+
+  static py::module_ torch_mod = py::module_::import("torch");
+  // device=flagos:0 -> gems' internal torch.empty(...) allocates on PrivateUse1
+  // via our own allocator (no recursion, no CUDA copy). Uses the registered
+  // PrivateUse1 backend name so it stays correct if the alias changes.
+  py::object flagos_dev = torch_mod.attr("device")(
+      torch_mod.attr("_C").attr("_get_privateuse1_backend_name")(), 0);
+  py::object result = func(
+      *py_args,
+      "dtype"_a = OptionalDtypeToPython(dtype),
+      "layout"_a = torch_mod.attr("strided"),
+      "device"_a = flagos_dev,
+      "pin_memory"_a = py::none());
+  return PythonToTensor(result);
+}
+
+at::Tensor CallPythonOp_LikeFactory(const char* func_name,
+                                    const std::vector<c10::IValue>& args,
+                                    std::optional<at::ScalarType> dtype) {
+  auto& cache = GetCache();
+  cache.EnsureInitialized();
+  py::gil_scoped_acquire gil;
+  auto func = cache.GetFunc(func_name);
+  py::tuple py_args = BuildPyArgs(args, func_name);
+
+  static py::module_ torch_mod = py::module_::import("torch");
+  // device=flagos:0 -> gems' internal torch.empty_like(self, device=...) stays
+  // on PrivateUse1 (no CUDA round-trip). dtype=None means "same as self".
+  py::object flagos_dev = torch_mod.attr("device")(
+      torch_mod.attr("_C").attr("_get_privateuse1_backend_name")(), 0);
+  py::object result = func(
+      *py_args,
+      "dtype"_a = OptionalDtypeToPython(dtype),
+      "layout"_a = torch_mod.attr("strided"),
+      "device"_a = flagos_dev,
+      "pin_memory"_a = py::none(),
+      "memory_format"_a = py::none());
+  return PythonToTensor(result);
+}
+
+namespace {
+// One CUDA generator shared by all random in-place gems calls. gems reads only
+// philox seed+offset from it and set_state's the advanced offset back, so
+// successive calls draw distinct streams. Guarded by the GIL (every caller
+// holds it). Lazily created on first use; seeded from torch's global default so
+// torch.manual_seed(...) before the first random op is reflected.
+py::object& CudaRngGenerator() {
+  static py::object gen;
+  if (!gen) {
+    py::module_ torch_mod = py::module_::import("torch");
+    gen = torch_mod.attr("Generator")("cuda");
+    // Seed from the global default generator's current seed for reproducibility.
+    int64_t seed = torch_mod.attr("initial_seed")().cast<int64_t>();
+    gen.attr("manual_seed")(seed);
+  }
+  return gen;
+}
+} // namespace
+
+at::Tensor CallPythonOp_RandomInplace(const char* func_name,
+                                      const std::vector<c10::IValue>& args) {
+  auto& cache = GetCache();
+  cache.EnsureInitialized();
+  py::gil_scoped_acquire gil;
+  auto func = cache.GetFunc(func_name);
+  py::tuple py_args = BuildPyArgs(args, func_name);
+  py::object result = func(*py_args, "generator"_a = CudaRngGenerator());
+  return PythonToTensor(result);
+}
+
+std::vector<at::Tensor> CallPythonOp_GenericKwTuple(
+    const char* func_name, const std::vector<c10::IValue>& args,
+    const std::vector<PyKwarg>& kwargs, int64_t n) {
+  auto& cache = GetCache();
+  cache.EnsureInitialized();
+
+  py::gil_scoped_acquire gil;
+  auto func = cache.GetFunc(func_name);
+  py::tuple py_args = BuildPyArgs(args, func_name);
+  py::dict py_kwargs = BuildPyKwargs(kwargs, func_name);
+  py::object result = func(*py_args, **py_kwargs);
+
+  py::sequence seq = py::reinterpret_borrow<py::sequence>(result);
+  TORCH_CHECK(static_cast<int64_t>(py::len(seq)) == n,
+              "Expected ", n, " return values from FlagGems op ", func_name,
+              ", got ", py::len(seq));
+  std::vector<at::Tensor> out;
+  out.reserve(n);
+  for (int64_t i = 0; i < n; ++i) {
+    out.push_back(PythonToTensor(py::reinterpret_borrow<py::object>(seq[i])));
+  }
+  return out;
+}
+
+std::vector<at::Tensor> CallPythonOp_GenericTuple(
+    const char* func_name, const std::vector<c10::IValue>& args, int64_t n) {
+  auto& cache = GetCache();
+  cache.EnsureInitialized();
+
+  py::gil_scoped_acquire gil;
+  auto func = cache.GetFunc(func_name);
+  py::tuple py_args = BuildPyArgs(args, func_name);
+  py::object result = func(*py_args);
+
+  // FlagGems tuple-returning ops give back a tuple/list of Tensors (some may be
+  // None, e.g. an optional running-stats output); map None -> undefined Tensor.
+  py::sequence seq = py::reinterpret_borrow<py::sequence>(result);
+  TORCH_CHECK(static_cast<int64_t>(py::len(seq)) == n,
+              "Expected ", n, " return values from FlagGems op ", func_name,
+              ", got ", py::len(seq));
+  std::vector<at::Tensor> out;
+  out.reserve(n);
+  for (int64_t i = 0; i < n; ++i) {
+    out.push_back(PythonToTensor(py::reinterpret_borrow<py::object>(seq[i])));
+  }
+  return out;
 }
 
 } // namespace at::native::flagos

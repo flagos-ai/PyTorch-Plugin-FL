@@ -1,6 +1,41 @@
 import os
 import sys
 
+
+def _select_backend_config() -> None:
+    """Pick the op-routing config file based on the FLAGOS_USE_FLAGGEMS switch.
+
+    The C++ dispatcher (csrc/aten/common.cc) reads FLAGOS_BACKEND_CONFIG to
+    decide, per op, whether to run the CUDA boxing kernel or the FlagGems
+    Python-path kernel. Both kernel sets are compiled into the wheel, so the
+    choice is purely runtime:
+
+      * FLAGOS_USE_FLAGGEMS=1  -> backends_flaggems.conf (FlagGems where available)
+      * unset / 0              -> backends_cuda.conf      (pure CUDA)
+
+    An explicit FLAGOS_BACKEND_CONFIG always wins (advanced/testing use), and
+    the per-op FLAGOS_OP_<name> overrides in common.cc still apply on top. This
+    must run before the first op dispatch triggers BackendTable() init; setting
+    it at import time (before any flagos tensor op) is well before that.
+    """
+    if os.environ.get("FLAGOS_BACKEND_CONFIG"):
+        return
+    use_flaggems = os.environ.get("FLAGOS_USE_FLAGGEMS", "0") not in (
+        "0",
+        "",
+        "off",
+        "OFF",
+        "false",
+        "FALSE",
+    )
+    conf_name = "backends_flaggems.conf" if use_flaggems else "backends_cuda.conf"
+    conf_path = os.path.join(os.path.dirname(__file__), conf_name)
+    if os.path.exists(conf_path):
+        os.environ["FLAGOS_BACKEND_CONFIG"] = conf_path
+
+
+_select_backend_config()
+
 # Optional: PyTorch wheels may require libcudart.so.12 version tags on MetaX.
 if os.environ.get("FLAGOS_METAX_CUDART_SHIM", "0") == "1":
     from torch_fl.accelerator.metax._metax_cudart_shim import ensure_cudart_shim
@@ -18,6 +53,106 @@ if os.environ.get("FLAGOS_METAX_BOXING", "0") == "1":
     )
 
     ensure_maca_libtorch_links()
+
+
+def _preload_cuda_assets() -> None:
+    """Load the bundled CUDA .so into this process BEFORE `import torch`.
+
+    Hard constraint (docs/cpu_torch_external_libtorch_cuda.md §约束1): PyTorch
+    caches its CUDAHooks on first `import torch`. If libtorch_cuda.so is loaded
+    afterwards, device init fails with "Cannot initialize CUDA without ATen_cuda
+    library" even though the kernels register. So we ctypes-dlopen it here, at
+    the very top of torch_fl, before torch is imported.
+
+    libtorch_cuda.so has unresolved deps on the NVIDIA runtime libs (libcudart,
+    libcublas, libcudnn, libnvshmem_host, ...) shipped by the pip nvidia-*-cu12
+    wheels. Since the process is already running, LD_LIBRARY_PATH cannot help;
+    we must explicitly dlopen those deps (RTLD_GLOBAL) in dependency order first,
+    then torch's own libc10/libtorch_cpu, then the CUDA libs.
+
+    Skipped when:
+      * FLAGOS_DISABLE_CUDA_ASSETS=1 (Ascend/MetaX/pure-CPU, or external preload)
+      * the bundled libtorch_cuda.so is absent (e.g. slim build)
+    """
+    import ctypes
+    import glob
+    import importlib.util
+
+    if os.environ.get("FLAGOS_DISABLE_CUDA_ASSETS", "0") == "1":
+        return
+
+    lib_dir = os.path.join(os.path.dirname(__file__), "lib")
+    main_cuda = os.path.join(lib_dir, "libtorch_cuda.so")
+    if not os.path.exists(main_cuda):
+        # No bundled assets; rely on an out-of-band preload (e.g. LD_PRELOAD via
+        # scripts/with_cuda_libtorch.sh) if the user set one up.
+        return
+
+    def _try(path, mode=ctypes.RTLD_GLOBAL):
+        try:
+            ctypes.CDLL(path, mode=mode)
+            return True
+        except OSError:
+            return False
+
+    # 1) NVIDIA runtime deps from pip nvidia-*-cu12 wheels. Locate their lib dirs
+    #    via the installed `nvidia` namespace package (no torch import needed).
+    nvidia_lib_dirs = []
+    spec = importlib.util.find_spec("nvidia")
+    if spec is not None and spec.submodule_search_locations:
+        for base in spec.submodule_search_locations:
+            nvidia_lib_dirs.extend(sorted(glob.glob(os.path.join(base, "*", "lib"))))
+    # Dependency order: cudart first (everything needs it), then the math/comm
+    # libs, then nvshmem. Load by soname glob; ignore any that are absent.
+    _dep_order = [
+        "libcudart.so*",
+        "libnvrtc.so*",
+        "libnvjitlink.so*",
+        "libcublasLt.so*",
+        "libcublas.so*",
+        "libcudnn*.so*",
+        "libcufft.so*",
+        "libcurand.so*",
+        "libcusparse.so*",
+        "libcusparseLt.so*",
+        "libcusolver.so*",
+        "libnccl.so*",
+        "libnvshmem_host.so*",
+        "libnvToolsExt.so*",
+        "libcupti.so*",
+    ]
+    for pattern in _dep_order:
+        for d in nvidia_lib_dirs:
+            for so in sorted(glob.glob(os.path.join(d, pattern))):
+                _try(so)
+
+    # 2) torch's own CPU libs (libtorch_cuda depends on libc10 / libtorch_cpu).
+    torch_spec = importlib.util.find_spec("torch")
+    if torch_spec is not None and torch_spec.submodule_search_locations:
+        torch_lib = os.path.join(
+            list(torch_spec.submodule_search_locations)[0], "lib"
+        )
+        for name in ("libc10.so", "libtorch_cpu.so"):
+            _try(os.path.join(torch_lib, name))
+
+    # 3) Bundled CUDA libs. Order: nvshmem/nvrtc helpers, libc10_cuda, then the
+    #    big libtorch_cuda.so (which pulls linalg on demand via bare dlopen, so
+    #    its dir must be resolvable -- it is, since we load from lib_dir).
+    for name in (
+        "libtorch_nvshmem.so",
+        "libcaffe2_nvrtc.so",
+        "libc10_cuda.so",
+        "libtorch_cuda.so",
+        # linalg ops dlopen this by bare soname on demand; preloading makes the
+        # loaded copy satisfy that later bare-name dlopen.
+        "libtorch_cuda_linalg.so",
+    ):
+        p = os.path.join(lib_dir, name)
+        if os.path.exists(p):
+            _try(p)
+
+
+_preload_cuda_assets()
 
 import torch  # noqa: E402
 
@@ -81,20 +216,43 @@ _registered_ops = []
 
 def _patch_flaggems_codegen_config():
     """
-    Configure FlagGems to use ASCEND codegen config on the flagos device.
+    Configure FlagGems' vendor + torch.cuda shim for the flagos device.
 
-    FlagGems uses GEMS_VENDOR env var to detect the hardware vendor. On Ascend
-    hardware without torch_npu, FlagGems can't auto-detect the vendor and falls
-    back to NVIDIA config (prefer_block_pointer=True). This triggers a
-    triton-ascend compiler bug with tl.make_block_ptr.
+    FlagGems uses GEMS_VENDOR env var to detect the hardware vendor.
 
-    Fix: set GEMS_VENDOR=ascend so FlagGems uses the ASCEND codegen config
-    (prefer_block_pointer=False), and register torch.flagos as torch.npu shim
-    so FlagGems' gen_torch_device_object('ascend') resolves correctly.
+    - Generic NVIDIA CUDA (default when a real NVIDIA GPU is reachable via
+      libcuda.so and MetaX compat is not requested): set GEMS_VENDOR=nvidia and
+      shim torch.cuda so FlagGems' Triton kernels can compile/run under CPU
+      torch + external libtorch_cuda.so. GEMS_VENDOR=nvidia is REQUIRED so
+      FlagGems' tl_extra_shim resolves triton.language.extra.cuda.libdevice
+      (which has `pow`); otherwise it falls back to tl.math (no `pow`).
+      Disable with FLAGOS_DISABLE_CUDA_SHIM=1.
+
+    - Ascend (fallback): set GEMS_VENDOR=ascend so FlagGems uses the ASCEND
+      codegen config (prefer_block_pointer=False, avoiding a triton-ascend
+      tl.make_block_ptr bug), and register torch.flagos as a torch.npu shim so
+      FlagGems' gen_torch_device_object('ascend') resolves correctly.
     """
     import os
     import sys
 
+    # --- Generic NVIDIA CUDA branch (default) ---
+    if (
+        os.environ.get("FLAGOS_DISABLE_CUDA_SHIM", "0") != "1"
+        and os.environ.get("FLAGOS_METAX_COMPAT", "0") != "1"
+        and os.environ.get("GEMS_VENDOR") != "ascend"
+    ):
+        from torch_fl.accelerator.cuda._cuda_compat import (
+            is_nvidia_cuda_available,
+            patch_torch_cuda_for_flagos,
+        )
+
+        if is_nvidia_cuda_available():
+            os.environ.setdefault("GEMS_VENDOR", "nvidia")
+            patch_torch_cuda_for_flagos()
+            return
+
+    # --- Ascend fallback branch ---
     # Set vendor before FlagGems runtime initializes
     if "GEMS_VENDOR" not in os.environ:
         os.environ["GEMS_VENDOR"] = "ascend"

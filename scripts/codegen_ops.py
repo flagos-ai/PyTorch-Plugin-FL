@@ -235,6 +235,616 @@ def kernel_name(fn_type: str) -> str:
     return fn_type[:-2] + 'KernelCuda'
 
 
+def python_kernel_name(fn_type: str) -> str:
+    """AddTensorFn -> AddTensorKernelPython"""
+    return fn_type[:-2] + 'KernelPython'
+
+
+# ============================================================================
+# FlagGems Python-path kernels (auto-discovered)
+# ============================================================================
+# Ops routed to the FlagGems Triton implementation via the embedded-Python
+# caller (csrc/aten/backends/flagos/python_op_caller.{h,cc}). Rather than a
+# hand-maintained map, discover_flaggems_ops() walks flag_gems._FULL_CONFIG and
+# keeps only ops that can be wired SAFELY (see the arity/type gates below).
+#
+# Key facts (verified):
+#   - flag_gems op names ARE aten schema names ("add.Tensor", "addmm.out",
+#     "_softmax"), so no name mapping is needed.
+#   - flag_gems functions take args by POSITION in aten faithful order (the
+#     parameter *names* differ -- A/inp/self -- but positions align).
+#   - Every generated kernel body packs the aten args (in faithful order) into a
+#     std::vector<c10::IValue> and calls the generic caller; the func is located
+#     by its "<module>.<name>" qualname.
+
+# Types the generic IValue caller (python_op_caller.cc IValueToPython) can carry.
+# ScalarType is deliberately EXCLUDED: an IValue stores it as a plain int, so it
+# is indistinguishable from an ordinary int at runtime -> ops passing a dtype to
+# the FlagGems function are dropped from the safe set (would silently mis-call).
+_FLAGGEMS_GENERIC_OK = {
+    "Tensor", "Tensor?", "Scalar", "Scalar?", "int", "int?",
+    "float", "float?", "bool", "bool?", "SymInt", "SymInt?", "str", "str?",
+}
+
+
+def _flaggems_type_ok(t: str) -> bool:
+    import re
+    t = t.strip()
+    if t in _FLAGGEMS_GENERIC_OK:
+        return True
+    if re.fullmatch(r"(int|SymInt|bool|float)\[\d*\]\??", t):
+        return True
+    if re.fullmatch(r"(int|SymInt|bool|float)\[\]\??", t):
+        return True
+    if t in ("Tensor[]", "Tensor?[]"):
+        return True
+    return False
+
+
+def _flaggems_gems_npos(fn):
+    """Number of positional params of a flag_gems function, or None if it has
+    *args/**kwargs (uninspectable arity -> unsafe)."""
+    import inspect
+    try:
+        sig = inspect.signature(fn)
+    except (ValueError, TypeError):
+        return None
+    n = 0
+    for p in sig.parameters.values():
+        if p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD):
+            return None
+        if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD):
+            n += 1
+    return n
+
+
+def _flaggems_kwonly_names(fn):
+    """Set of keyword-only parameter names of a flag_gems function (params after
+    the `*` in its signature), or empty set if uninspectable. These are the args
+    gems accepts only by name -- the codegen forwards the matching aten trailing
+    args as kwargs (dtype/alpha/correction/...)."""
+    import inspect
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (ValueError, TypeError):
+        return set()
+    return {p.name for p in params if p.kind == p.KEYWORD_ONLY}
+
+
+# aten types the keyword-arg forwarding path can express. ScalarType IS allowed
+# here (unlike the positional _FLAGGEMS_GENERIC_OK set): the codegen tags a dtype
+# kwarg so the caller converts it to a torch.dtype by name, sidestepping the
+# "IValue stores ScalarType as int" ambiguity that blocks the positional path.
+_FLAGGEMS_KWARG_OK = {
+    "ScalarType", "ScalarType?", "Scalar", "Scalar?", "int", "int?",
+    "float", "float?", "bool", "bool?", "str", "str?", "SymInt", "SymInt?",
+}
+
+
+def _flaggems_extra_trailing_ok(fn, ncall):
+    """True if a gems function with more positional params than the `ncall` args
+    we intend to pass can be safely called with exactly `ncall` positional args.
+
+    Safe iff every gems param at index >= ncall has a default (so omitting it is
+    fine) AND no such trailing param is named `out` sitting *before* a param we
+    would still pass -- i.e. the extra params are strictly trailing, never
+    interleaved. This rejects the reordering trap (e.g. gems gather inserts
+    `out=None` at position 3, so aten's 4th arg `sparse_grad` would land in the
+    `out` tensor slot). Returns False if uninspectable.
+    """
+    import inspect
+    try:
+        params = list(inspect.signature(fn).parameters.values())
+    except (ValueError, TypeError):
+        return False
+    pos = [p for p in params
+           if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+    if len(pos) < ncall:
+        return False
+    # Every gems param beyond the ones we pass must have a default.
+    for p in pos[ncall:]:
+        if p.default is inspect.Parameter.empty:
+            return False
+    # The first `ncall` gems params (which receive our aten args positionally)
+    # must not include a param named `out`: that would mean gems expects `out`
+    # among the leading positions and our aten arg would be misrouted into it.
+    for p in pos[:ncall]:
+        if p.name == "out":
+            return False
+    return True
+
+
+# Categories the FlagGems Python path knows how to generate kernels for.
+_FLAGGEMS_PY_CATEGORIES = {"functional_pure", "inplace", "tuple_return",
+                           "out_variant", "factory"}
+
+# TensorOptions field names carried by every factory schema after the shape/
+# scalar positionals. The factory caller injects these itself (device=flagos,
+# layout=strided, dtype forwarded, pin_memory=None), so they're stripped from
+# the positional list the codegen passes. `memory_format` rides along on the
+# *_like factories (like_factory caller injects it as None too).
+_FLAGGEMS_TENSOROPT_FIELDS = {"dtype", "layout", "device", "pin_memory"}
+_FLAGGEMS_LIKE_OPT_FIELDS = _FLAGGEMS_TENSOROPT_FIELDS | {"memory_format"}
+
+# Random in-place ops we route to gems by injecting a CUDA generator (the
+# RandomInplace caller). Whitelisted rather than type-detected because normal_
+# is also inplace+Generator? but gems hardcodes generator=None internally (never
+# forwards the one we pass -> IndexError on the empty PrivateUse1 default
+# generator). Only ops verified to actually thread the generator through belong
+# here. See the plan / [[flaggems-gap-analysis]].
+_FLAGGEMS_RANDOM_INPLACE = {"uniform_", "exponential_", "bernoulli_.float"}
+
+# Ops manually held out of the FlagGems Python path (populated during the
+# compile/import/numerical convergence loop with the reason as a comment).
+FLAGGEMS_PYTHON_SKIP = {
+    # Required `out=` kwarg with no default: flag_gems `mm_out(a, b, *, out)`
+    # forces out, but the generic positional caller cannot supply it, so the
+    # kernel would raise. (7 other out-variants take out=None and are fine.)
+    "mm.out",
+    # Unconditional `assert X.device.type == device` where device == "cuda":
+    # flagos tensors are genuinely PrivateUse1 ("privateuseone"), so the assert
+    # can never pass without abandoning the boxing scheme. Op-specific to these.
+    "maximum",
+    "minimum",
+    "upsample_linear1d",
+    "upsample_nearest1d",
+    "upsample_nearest2d",
+    "upsample_nearest3d",
+    "_upsample_bicubic2d_aa",
+    # Same device assert ("Input tensor must be on CUDA device"): gems
+    # _safe_softmax rejects the PrivateUse1 tensor before running.
+    "_safe_softmax",
+    # Random factories with NO generator parameter: gems' signature omits
+    # `generator`, so its internal philox_backend_seed_offset(increment) reaches
+    # for default_generators[device], but the PrivateUse1 device has no default
+    # generator (IndexError); randperm also asserts an explicit int dtype. Cannot
+    # be expressed without a per-device generator -- unlike uniform_/exponential_/
+    # bernoulli_ which DO take a generator we inject (see _FLAGGEMS_RANDOM_INPLACE).
+    # rand_like/randn_like share this root (same internal call, no generator arg);
+    # they're rejected by the _like whitelist absence, listed here for the record.
+    # See [[flaggems-gap-analysis]].
+    "rand",
+    "randn",
+    "randperm",
+    "rand_like",
+    "randn_like",
+    # normal family: gems' normal_ calls normal_distribution(..., generator=None)
+    # with a hardcoded None, dropping the generator we pass, so it hits the empty
+    # default_generators (IndexError). Upstream gems bug -- can't fix from here.
+    "normal_",
+    "normal.Tensor_Tensor",
+    "normal.Tensor_float",
+    "normal.float_Tensor",
+}
+
+
+def discover_flaggems_ops(codegen_ops, funcs):
+    """Discover ops that can be safely routed to the FlagGems Python path.
+
+    Returns {op_name: (gems_func_qualname, category, kwargs)} where kwargs is a
+    list of (aten_type, name) for trailing aten args that gems declares
+    keyword-only and the kernel forwards by name (dtype/alpha/correction/...);
+    empty for the common all-positional case.
+
+    Safety gates (see plan; validated in scratch analysis):
+      - op must have a generated dispatcher (op in codegen_ops) and a schema.
+      - flag_gems function arity must be inspectable (no *args/**kwargs).
+      - category in {functional_pure, inplace, tuple_return, out_variant}.
+      - ARITY gate (guards the silent "dropped trailing scalar" trap):
+          functional_pure/inplace/tuple_return: gems npos == #aten args.
+          out_variant: gems npos == #aten NON-out args (gems doesn't take `out`).
+      - every arg passed to the gems function has a generic-caller-covered type.
+    """
+    try:
+        # torch_fl activates the torch.cuda shim (CPU-torch reports no CUDA
+        # otherwise), which flag_gems needs at import (get_device_name()). Must
+        # run codegen through scripts/with_cuda_libtorch.sh so torch_fl imports.
+        import torch_fl  # noqa: F401
+        import flag_gems
+    except Exception as e:
+        print(f"  [flaggems] import failed ({e}); no python ops discovered",
+              file=sys.stderr)
+        return {}
+
+    result = {}
+    for item in flag_gems._FULL_CONFIG:
+        if len(item) < 2:
+            continue
+        op, fn = item[0], item[1]
+        if op in FLAGGEMS_PYTHON_SKIP:
+            continue
+        if op not in codegen_ops or op not in funcs:
+            continue
+        # Respect version-condition (item[2]) if present.
+        if len(item) > 2 and callable(item[2]) and not item[2]():
+            continue
+        npos = _flaggems_gems_npos(fn)
+        if npos is None:
+            continue
+        func = funcs[op]
+        cat = detect_category(func)
+        if cat not in _FLAGGEMS_PY_CATEGORIES:
+            continue
+        s = func.func
+        aten_args = list(s.arguments.flat_all)
+        out_args = list(s.arguments.out) if hasattr(s.arguments, "out") else []
+        resolved_cat = cat
+        # kwargs: aten trailing args gems declares keyword-only (dtype/alpha/...).
+        # Filled by the arity_short branch below; each entry is (name, aten_type).
+        kwargs = []
+        # *_like factory: functional op whose schema is a source tensor (+ maybe
+        # a value positional) followed by TensorOptions + memory_format, all
+        # keyword-only in gems. The like_factory caller injects device=flagos/
+        # layout/memory_format/pin_memory and forwards dtype; only the non-option
+        # positionals are passed. gems reads shape/device from the source tensor.
+        if cat == "functional_pure" and op.endswith("_like"):
+            all_pairs = [(str(a.type), a.name) for a in aten_args]
+            positional = [(t, n) for t, n in all_pairs
+                          if n not in _FLAGGEMS_LIKE_OPT_FIELDS]
+            has_opts = any(n in _FLAGGEMS_LIKE_OPT_FIELDS for _t, n in all_pairs)
+            byname = _flaggems_gems_byname_params(fn)
+            # gems must accept dtype/layout/device by name and take exactly the
+            # non-option positionals (the source tensor, plus full_like's
+            # fill_value). npos may exceed via defaulted trailing kwonlys.
+            if (not has_opts
+                    or not {"dtype", "layout", "device"} <= byname
+                    or npos < len(positional)
+                    or (npos > len(positional)
+                        and not _flaggems_extra_trailing_ok(fn, len(positional)))):
+                continue
+            if not all(_flaggems_type_ok(t) for t, _ in positional):
+                continue
+            qualname = f"{fn.__module__}.{fn.__name__}"
+            result[op] = (qualname, "like_factory", positional)
+            continue
+        # Random in-place: whitelisted inplace op with a trailing Generator? arg.
+        # The RandomInplace caller drops the generator positional and injects a
+        # CUDA generator by name; only self + scalar positionals are passed.
+        if cat == "inplace" and op in _FLAGGEMS_RANDOM_INPLACE:
+            all_pairs = [(str(a.type), a.name) for a in aten_args]
+            positional = [(t, n) for t, n in all_pairs if t != "Generator?"]
+            has_gen = any(t == "Generator?" for t, _n in all_pairs)
+            # gems must take exactly self + the scalar params (generator is
+            # keyword-only in gems, supplied by name).
+            if (not has_gen
+                    or npos < len(positional)
+                    or (npos > len(positional)
+                        and not _flaggems_extra_trailing_ok(fn, len(positional)))):
+                continue
+            if not all(_flaggems_type_ok(t) for t, _ in positional):
+                continue
+            qualname = f"{fn.__module__}.{fn.__name__}"
+            result[op] = (qualname, "random_inplace", positional)
+            continue
+        if cat == "factory":
+            # Factory: split off the TensorOptions fields (dtype/layout/device/
+            # pin_memory); the factory caller injects device=flagos,
+            # layout=strided, pin_memory=None and forwards dtype. Only the
+            # shape/scalar positionals are passed. Require gems to declare
+            # dtype/layout/device by name (kwonly on every gems factory) and its
+            # positional count to match the non-option args.
+            all_pairs = [(str(a.type), a.name) for a in aten_args]
+            positional = [(t, n) for t, n in all_pairs
+                          if n not in _FLAGGEMS_TENSOROPT_FIELDS]
+            has_opts = any(n in _FLAGGEMS_TENSOROPT_FIELDS for _t, n in all_pairs)
+            byname = _flaggems_gems_byname_params(fn)
+            # gems must accept dtype/layout/device by name, and take exactly the
+            # shape/scalar positionals (npos may exceed via a defaulted step, e.g.
+            # arange.start's gems has an extra `step` default -> allow >=).
+            if (not has_opts
+                    or not {"dtype", "layout", "device"} <= byname
+                    or npos < len(positional)
+                    or (npos > len(positional)
+                        and not _flaggems_extra_trailing_ok(fn, len(positional)))):
+                continue
+            if not all(_flaggems_type_ok(t) for t, _ in positional):
+                continue
+            qualname = f"{fn.__module__}.{fn.__name__}"
+            result[op] = (qualname, "factory", positional)
+            continue
+        if cat == "out_variant":
+            non_out = [(str(a.type), a.name) for a in aten_args if a not in out_args]
+            with_out = non_out + [(str(a.type), a.name) for a in out_args]
+            if npos == len(non_out) or (npos > len(non_out)
+                                        and _flaggems_extra_trailing_ok(fn, len(non_out))):
+                # gems takes only the non-out args (plus optional trailing
+                # defaults), returns a fresh tensor; kernel copy_'s it into out.
+                passed = non_out
+            elif npos == len(with_out) or (npos > len(with_out)
+                                           and _flaggems_extra_trailing_ok(fn, len(with_out))):
+                # gems takes `out` positionally and writes into it; pass the out
+                # tensor(s) too (plus optional trailing defaults like
+                # memory_format=None). Distinguished from mm.out, whose gems out
+                # is a required keyword-only arg the positional caller can't supply.
+                passed = with_out
+                resolved_cat = "out_variant_gemsout"
+            elif npos < len(non_out):
+                passed, kwargs = _flaggems_split_kwargs(fn, npos, non_out)
+                if passed is None:
+                    continue
+            else:
+                continue
+        else:
+            all_args = [(str(a.type), a.name) for a in aten_args]
+            if npos == len(all_args) or (
+                    npos > len(all_args) and _flaggems_extra_trailing_ok(fn, len(all_args))):
+                passed = all_args
+            elif npos < len(all_args):
+                # gems takes fewer positional args: the trailing aten args must be
+                # gems keyword-only params, forwarded by name (see kwarg path).
+                passed, kwargs = _flaggems_split_kwargs(fn, npos, all_args)
+                if passed is None:
+                    continue
+            else:
+                continue
+        # Promote ScalarType args out of the positional list into kwargs: the
+        # positional caller can't carry a ScalarType (IValue stores it as a plain
+        # int), but the by-name kwarg path tags it is_dtype and converts to a
+        # torch.dtype. Safe only if gems accepts the arg BY NAME (a param with the
+        # same name that isn't positional-only). This recovers ops like
+        # _softmax_backward_data / linalg_vector_norm where gems takes dtype as a
+        # positional-or-keyword param. See [[flaggems-gap-analysis]] type_gate_dtype.
+        promotable = _flaggems_gems_byname_params(fn)
+        promote_idx = [i for i, (t, name) in enumerate(passed)
+                       if t.startswith("ScalarType") and name in promotable]
+        # Only promote if the ScalarType args form a strict SUFFIX of the
+        # positional list. Promoting a middle arg would shift the following
+        # positionals into gems's dtype slot (wrong). All current ops have dtype
+        # last, so this holds; the guard rejects any future middle-dtype op.
+        if promote_idx and promote_idx == list(range(promote_idx[0], len(passed))):
+            promoted = passed[promote_idx[0]:]
+            passed = passed[:promote_idx[0]]
+            kwargs = promoted + kwargs
+        elif promote_idx:
+            continue  # non-suffix ScalarType -> can't safely reorder
+        if not all(_flaggems_type_ok(t) for t, _ in passed):
+            continue
+        if kwargs and not all(t in _FLAGGEMS_KWARG_OK for t, _ in kwargs):
+            continue
+        qualname = f"{fn.__module__}.{fn.__name__}"
+        result[op] = (qualname, resolved_cat, kwargs)
+    return result
+
+
+def _flaggems_gems_byname_params(fn):
+    """Names of gems params that can be passed BY NAME (keyword-only OR
+    positional-or-keyword, i.e. anything except positional-only). Used to promote
+    a ScalarType positional aten arg into a by-name kwarg the caller can convert
+    to a torch.dtype."""
+    import inspect
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (ValueError, TypeError):
+        return set()
+    return {p.name for p in params
+            if p.kind in (p.KEYWORD_ONLY, p.POSITIONAL_OR_KEYWORD)}
+
+
+def _flaggems_split_kwargs(fn, npos, all_passed):
+    """For an arity_short op (gems takes `npos` positional args, fewer than the
+    `all_passed` aten args), split into (positional, kwargs). The trailing aten
+    args beyond `npos` must ALL be gems keyword-only params matched BY NAME, else
+    return (None, None) to reject the op (a name mismatch means we can't safely
+    forward, and dropping the arg would silently change the result).
+
+    Returns (positional_list, kwarg_list) where each list holds (aten_type, name)
+    for positional and (aten_type, name) for kwargs.
+    """
+    positional = all_passed[:npos]
+    trailing = all_passed[npos:]
+    kwonly = _flaggems_kwonly_names(fn)
+    for _t, name in trailing:
+        if name not in kwonly:
+            return None, None
+    return positional, list(trailing)
+
+
+def _flaggems_kwarg_cpp(kwargs):
+    """Render the C++ `std::vector<PyKwarg>` initializer for the keyword args to
+    forward to gems. Each PyKwarg is {name, value, is_dtype, is_none}; a dtype
+    (ScalarType) arg is tagged is_dtype so the caller converts it to torch.dtype.
+    Optional args (T?) are passed straight through -- the aten C++ arg is a
+    std::optional, so a nullopt naturally maps to Python None inside the caller
+    only if we mark it; but since we pass the IValue, an absent optional would
+    become an int/None ambiguity for dtype. We therefore build the PyKwarg with a
+    runtime `.has_value()` check for ScalarType? args."""
+    parts = []
+    for t, name in kwargs:
+        is_dtype = t.startswith("ScalarType")
+        if is_dtype:
+            if t.endswith("?"):
+                # std::optional<ScalarType>: None when absent, else tagged dtype.
+                parts.append(
+                    f'PyKwarg{{"{name}", {name}.has_value() ? '
+                    f'c10::IValue(static_cast<int64_t>(*{name})) : c10::IValue(), '
+                    f'/*is_dtype=*/true, /*is_none=*/!{name}.has_value()}}')
+            else:
+                parts.append(
+                    f'PyKwarg{{"{name}", '
+                    f'c10::IValue(static_cast<int64_t>({name})), '
+                    f'/*is_dtype=*/true}}')
+        else:
+            # Scalar/int/bool/str/SymInt (and their optionals): IValue can carry
+            # these directly. c10::IValue has implicit ctors for each.
+            parts.append(f'PyKwarg{{"{name}", {name}}}')
+    return "{" + ", ".join(parts) + "}"
+
+
+def gen_flaggems_python_kernel(op, fn_type, ret_type, args, gems_func, category,
+                               func, kwargs=None):
+    """Generate a <Name>KernelPython forwarding to the FlagGems Python op.
+
+    Signature matches the generated `*Fn` typedef exactly. The body packs the
+    aten positional args (faithful order) into a std::vector<c10::IValue> and any
+    keyword-only gems args (dtype/alpha/correction/...) into a
+    std::vector<PyKwarg>, then calls the generic caller by qualname and adapts
+    the result to the category's return convention:
+      functional_pure -> UnboxToFlagos(result); return result;
+      inplace         -> self.copy_(result); return self;  (or void)
+      tuple_return    -> GenericTuple(...); unbox each; return make_tuple(...)
+      out_variant     -> Generic/GenericTuple over NON-out args; out_i.copy_(res_i)
+    """
+    kn = python_kernel_name(fn_type)
+    s = func.func
+    aten_args = list(s.arguments.flat_all)
+    out_args = list(s.arguments.out) if hasattr(s.arguments, "out") else []
+
+    if category == "factory":
+        # Factory: pass only the shape/scalar positionals; the factory caller
+        # injects device=flagos/layout=strided/pin_memory=None and forwards
+        # dtype. `kwargs` here carries the positional (aten_type, name) list.
+        positional = kwargs or []
+        pos_names = [n for _t, n in positional]
+        dtype_name = next(
+            (a.name for a in aten_args if a.name == "dtype"), None)
+        dtype_expr = dtype_name if dtype_name else "::std::nullopt"
+        pos_init = "{" + ", ".join(pos_names) + "}"
+        infer = ""
+        # arange: gems defaults dtype=None to int64 unconditionally, but aten
+        # infers float when ANY of start/end/step is floating. Left alone, gems
+        # returns silently-wrong integer values for arange(0.,3.,.5). Replicate
+        # aten's rule here so gems always gets an explicit dtype. Only arange has
+        # this value-dependent inference; the other factories default to float32,
+        # which gems already produces correctly.
+        if op.startswith("arange"):
+            scalar_names = [n for t, n in positional if "Scalar" in t]
+            any_float = " || ".join(f"{n}.isFloatingPoint()" for n in scalar_names)
+            infer = (
+                f"  ::std::optional<at::ScalarType> _dt = {dtype_expr};\n"
+                f"  if (!_dt.has_value()) _dt = ({any_float})\n"
+                f"      ? at::typeMetaToScalarType(at::get_default_dtype()) "
+                f": at::kLong;\n"
+            )
+            dtype_expr = "_dt"
+        body = (
+            f"{infer}"
+            f'  auto result = CallPythonOp_Factory("{gems_func}", '
+            f'{pos_init}, {dtype_expr});\n'
+            f"  UnboxToFlagos(result);\n"
+            f"  return result;"
+        )
+        return f"{ret_type} {kn}({args_decl(args)}) {{\n{body}\n}}"
+
+    if category == "like_factory":
+        # *_like: pass the source tensor (+ full_like's fill_value); the caller
+        # injects device=flagos/layout/memory_format/pin_memory and forwards
+        # dtype (nullopt -> None means "same as self"). `kwargs` here carries the
+        # non-option positional (aten_type, name) list.
+        positional = kwargs or []
+        pos_names = [n for _t, n in positional]
+        dtype_name = next((a.name for a in aten_args if a.name == "dtype"), None)
+        dtype_expr = dtype_name if dtype_name else "::std::nullopt"
+        pos_init = "{" + ", ".join(pos_names) + "}"
+        body = (
+            f'  auto result = CallPythonOp_LikeFactory("{gems_func}", '
+            f'{pos_init}, {dtype_expr});\n'
+            f"  UnboxToFlagos(result);\n"
+            f"  return result;"
+        )
+        return f"{ret_type} {kn}({args_decl(args)}) {{\n{body}\n}}"
+
+    if category == "random_inplace":
+        # Random in-place: pass self + scalar params (generator dropped); the
+        # caller injects a CUDA generator by name. gems writes into self and
+        # returns it; copy_ the result back to self for the aten alias contract.
+        positional = kwargs or []
+        pos_names = [n for _t, n in positional]
+        self_name = pos_names[0]
+        pos_init = "{" + ", ".join(pos_names) + "}"
+        ret_line = "" if ret_type == "void" else f"\n  return {self_name};"
+        body = (
+            f'  auto result = CallPythonOp_RandomInplace("{gems_func}", '
+            f'{pos_init});\n'
+            f"  {self_name}.copy_(result);{ret_line}"
+        )
+        return f"{ret_type} {kn}({args_decl(args)}) {{\n{body}\n}}"
+
+    kwargs = kwargs or []
+    kw_names = {name for _t, name in kwargs}
+
+    # arg names as they appear in the generated C++ signature. Kwarg-forwarded
+    # args are removed from the positional list (they go into the PyKwarg vector).
+    if category == "out_variant":
+        passed_names = [a.name for a in aten_args
+                        if a not in out_args and a.name not in kw_names]
+    elif category == "out_variant_gemsout":
+        # gems takes the out tensor(s) positionally after the non-out args.
+        passed_names = ([a.name for a in aten_args
+                         if a not in out_args and a.name not in kw_names]
+                        + [a.name for a in out_args])
+    else:
+        passed_names = [a.name for a in aten_args if a.name not in kw_names]
+    ivalues = "{" + ", ".join(passed_names) + "}"
+
+    # kwarg call selects the *Kw caller variant; positional-only uses the plain one.
+    if kwargs:
+        kw_init = _flaggems_kwarg_cpp(kwargs)
+        gen_call = f'CallPythonOp_GenericKw("{gems_func}", {ivalues}, {kw_init})'
+        tuple_call = (lambda n:
+                      f'CallPythonOp_GenericKwTuple("{gems_func}", {ivalues}, '
+                      f'{kw_init}, {n})')
+    else:
+        gen_call = f'CallPythonOp_Generic("{gems_func}", {ivalues})'
+        tuple_call = (lambda n:
+                      f'CallPythonOp_GenericTuple("{gems_func}", {ivalues}, {n})')
+
+    if category == "functional_pure":
+        body = (
+            f'  auto result = {gen_call};\n'
+            f"  UnboxToFlagos(result);\n"
+            f"  return result;"
+        )
+    elif category == "inplace":
+        self_name = passed_names[0]
+        ret_line = "" if ret_type == "void" else f"\n  return {self_name};"
+        body = (
+            f'  auto result = {gen_call};\n'
+            f"  {self_name}.copy_(result);{ret_line}"
+        )
+    elif category == "tuple_return":
+        n = ret_type.count(",") + 1  # ::std::tuple<a,b> -> 2
+        unbox = "\n".join(f"  UnboxToFlagos(result[{i}]);" for i in range(n))
+        make = ", ".join(f"result[{i}]" for i in range(n))
+        body = (
+            f'  auto result = {tuple_call(n)};\n'
+            f"{unbox}\n"
+            f"  return {{{make}}};"
+        )
+    elif category == "out_variant":
+        out_names = [a.name for a in out_args]
+        if ret_type.startswith("::std::tuple"):
+            n = len(out_names)
+            copies = "\n".join(
+                f"  {out_names[i]}.copy_(result[{i}]);" for i in range(n)
+            )
+            make = ", ".join(out_names)
+            body = (
+                f'  auto result = {tuple_call(n)};\n'
+                f"{copies}\n"
+                f"  return {{{make}}};"
+            )
+        else:
+            out_name = out_names[0]
+            body = (
+                f'  auto result = {gen_call};\n'
+                f"  {out_name}.copy_(result);\n"
+                f"  return {out_name};"
+            )
+    elif category == "out_variant_gemsout":
+        # gems receives the out tensor(s) positionally and writes into them in
+        # place, then returns them; just discard the returned handle and return
+        # the aten out arg(s). (Only single-out ops reach here today.)
+        out_name = [a.name for a in out_args][0]
+        body = (
+            f'  {gen_call};\n'
+            f"  return {out_name};"
+        )
+    else:
+        raise ValueError(f"unsupported flaggems-python category {category} for {op}")
+
+    return f"{ret_type} {kn}({args_decl(args)}) {{\n{body}\n}}"
+
+
 # ============================================================================
 # Category detection (torchgen metadata)
 # ============================================================================
@@ -817,6 +1427,19 @@ def main():
     for cat in sorted(categories):
         print(f"  {cat:20s} {len(categories[cat]):3d} ops")
 
+    # ---- discover FlagGems Python-path ops ----
+    # Only meaningful in full-CUDA mode (all generated ops have dispatchers).
+    # discover_flaggems_ops returns {op: (gems_func_qualname, category)}; keep
+    # only ops that are actually in op_info (have a generated dispatcher slot).
+    flaggems_py = discover_flaggems_ops(set(op_info), funcs)
+    flaggems_py = {op: v for op, v in flaggems_py.items() if op in op_info}
+    py_cat_counts = defaultdict(int)
+    for _op, (_q, _c, _kw) in flaggems_py.items():
+        py_cat_counts[_c] += 1
+    print(f"\nFlagGems Python-path ops discovered: {len(flaggems_py)}")
+    for cat in sorted(py_cat_counts):
+        print(f"  {cat:20s} {py_cat_counts[cat]:3d} ops")
+
     # ---- ops.h ----
     print("\nGenerating ops.h...")
     lines = [
@@ -895,6 +1518,51 @@ def main():
     (out_dir / "cuda_kernels.cc").write_text("\n".join(lines) + "\n")
     print(f"   generated {len(op_info)} kernels")
 
+    # ---- flaggems_python_kernels.cc ----
+    # FlagGems Python-path kernels (Backend::kFlagOsPython slot) for the ops
+    # auto-discovered by discover_flaggems_ops(). The whole file body is
+    # guarded by FLAGOS_FLAGGEMS_PYTHON so it is a no-op unless the build sets
+    # -DFLAGOS_FLAGGEMS_PYTHON (FLAGGEMS_PYTHON=ON), keeping non-flaggems builds
+    # from pulling in python_op_caller / pybind.
+    print("Generating flaggems_python_kernels.cc...")
+    py_ops = [op for op in sorted(op_info) if op in flaggems_py]
+    lines = [
+        "// Copyright (c) 2026, BAAI. All rights reserved.",
+        "// AUTO-GENERATED by scripts/codegen_ops.py - DO NOT EDIT",
+        "",
+        "#ifdef FLAGOS_FLAGGEMS_PYTHON",
+        "",
+        "#include \"ops.h\"",
+        "#include \"../device_boxing.h\"",
+        "#include \"../backends/flagos/python_op_caller.h\"",
+        "",
+        "namespace at::native::flagos {",
+        "namespace {",
+        "",
+    ]
+    for op in py_ops:
+        i = op_info[op]
+        gems_func, category, kwargs = flaggems_py[op]
+        lines.append(gen_flaggems_python_kernel(
+            op, i["fn_type"], i["ret_type"], i["args"], gems_func, category,
+            i["func"], kwargs))
+        lines.append("")
+    lines.append("} // namespace")
+    lines.append("")
+    for op in py_ops:
+        i = op_info[op]
+        pkn = python_kernel_name(i["fn_type"])
+        lines.append(
+            f'REGISTER_IMPL_TO_DISPATCHER({i["fn_type"]}, {i["dispatcher"]}, '
+            f'Backend::kFlagOsPython, {pkn})'
+        )
+    lines.append("")
+    lines.append("} // namespace at::native::flagos")
+    lines.append("")
+    lines.append("#endif  // FLAGOS_FLAGGEMS_PYTHON")
+    (out_dir / "flaggems_python_kernels.cc").write_text("\n".join(lines) + "\n")
+    print(f"   generated {len(py_ops)} flaggems-python kernels")
+
     # ---- register.inc ----
     print("Generating register.inc...")
     lines = [
@@ -937,6 +1605,25 @@ def main():
             conf_lines.append(f"{op} = cuda")
         conf_path.write_text("\n".join(conf_lines) + "\n")
         print(f"   regenerated {conf_path.name} with {len(op_info)} cuda routes")
+
+        # backends_flaggems.conf: same cuda routes, but the auto-discovered
+        # FlagGems Python-path ops are flipped to flagos_python. Used for testing
+        # / running the FlagGems path (FLAGOS_BACKEND_CONFIG=...backends_flaggems.conf).
+        fg_conf_path = repo_root / "torch_fl/backends_flaggems.conf"
+        fg_lines = [
+            "# flagos op backend config -- AUTO-GENERATED (flaggems python mode)",
+            "# Regenerated by scripts/codegen_ops.py with FLAGOS_CODEGEN_ALL=1.",
+            "# Same as backends_cuda.conf, but the auto-discovered FlagGems ops are",
+            "# routed to the flagos_python (kFlagOsPython) slot; all others to cuda.",
+            "#",
+            "# Format: op_name = backend   (backend: flaggems | flagos_python | cuda)",
+            "",
+        ]
+        for op in sorted(op_info):
+            backend = "flagos_python" if op in flaggems_py else "cuda"
+            fg_lines.append(f"{op} = {backend}")
+        fg_conf_path.write_text("\n".join(fg_lines) + "\n")
+        print(f"   regenerated {fg_conf_path.name} with {len(flaggems_py)} flagos_python routes")
 
     print("\nDone. Files in:", out_dir)
 
