@@ -2152,6 +2152,64 @@ at::Tensor& FillInplaceTensorKernelAscend(at::Tensor& self, const at::Tensor& va
 
 REGISTER_IMPL_TO_DISPATCHER(FillInplaceTensorFn, fill_inplace_tensor_dispatcher, Backend::kAscend, FillInplaceTensorKernelAscend)
 
+at::Tensor EmbeddingKernelAscend(const at::Tensor& weight, const at::Tensor& indices, int64_t padding_idx, bool scale_grad_by_freq, bool sparse) {
+  namespace ascend = at::native::flagos::ascend;
+  auto out_sizes = indices.sizes().vec();
+  out_sizes.push_back(weight.size(1));
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      out_sizes, weight.options());
+
+  ascend::AclTensorWrapper acl_weight(weight);
+  ascend::AclTensorWrapper acl_indices(indices);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD(aclnnEmbedding, acl_weight.get(), acl_indices.get(), acl_out.get());
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(EmbeddingFn, embedding_dispatcher, Backend::kAscend, EmbeddingKernelAscend)
+
+at::Tensor EmbeddingDenseBackwardKernelAscend(const at::Tensor& grad_output, const at::Tensor& indices, int64_t num_weights, int64_t padding_idx, bool scale_grad_by_freq) {
+  namespace ascend = at::native::flagos::ascend;
+  auto grad_weight = ascend::OpPreparation::apply_tensor_without_format(
+      {num_weights, grad_output.size(-1)}, grad_output.options());
+
+  ascend::AclTensorWrapper acl_grad_output(grad_output);
+  ascend::AclTensorWrapper acl_indices(indices);
+  ascend::AclTensorWrapper acl_grad_weight(grad_weight);
+
+  EXEC_ASCEND_CMD(aclnnEmbeddingDenseBackward, acl_grad_output.get(), acl_indices.get(),
+      num_weights, padding_idx, scale_grad_by_freq, acl_grad_weight.get());
+  return grad_weight;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(EmbeddingDenseBackwardFn, embedding_dense_backward_dispatcher, Backend::kAscend, EmbeddingDenseBackwardKernelAscend)
+
+at::Tensor ConstantPadNdKernelAscend(const at::Tensor& self, at::IntArrayRef pad, const at::Scalar& value) {
+  namespace ascend = at::native::flagos::ascend;
+  auto input_sizes = self.sizes().vec();
+  auto ndim = input_sizes.size();
+  auto pad_size = pad.size();
+  std::vector<int64_t> out_sizes(input_sizes.begin(), input_sizes.end());
+  for (size_t i = 0; i < pad_size / 2; ++i) {
+    auto dim = ndim - 1 - i;
+    out_sizes[dim] += pad[2 * i] + pad[2 * i + 1];
+  }
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      out_sizes, self.options());
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclIntArrayWrapper acl_pad(pad);
+  ascend::AclScalarWrapper acl_value(value, self.scalar_type());
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD(aclnnConstantPadNd, acl_self.get(), acl_pad.get(), acl_value.get(),
+      acl_out.get());
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(ConstantPadNdFn, constant_pad_nd_dispatcher, Backend::kAscend, ConstantPadNdKernelAscend)
+
 at::Tensor BinaryCrossEntropyKernelAscend(const at::Tensor& self, const at::Tensor& target, const ::std::optional<at::Tensor>& weight, int64_t reduction) {
   namespace ascend = at::native::flagos::ascend;
   std::vector<int64_t> out_shape;   // scalar for mean/sum

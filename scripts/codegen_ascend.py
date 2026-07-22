@@ -278,6 +278,11 @@ OPS = {
     "fill_.Scalar":        ("inplace_fill_scalar", "InplaceFillScalar"),
     "fill_.Tensor":        ("inplace_fill_tensor", "InplaceFillTensor"),
 
+    # ---- embedding + pad (single-aclnn-call, migrated from handwritten) ----
+    "embedding":               ("embedding", "Embedding"),
+    "embedding_dense_backward": ("embedding_dense_backward", "EmbeddingDenseBackward"),
+    "constant_pad_nd":         ("constant_pad_nd", "ConstantPadNd"),
+
     # ---- BCE loss family: optional weight, int reduction (0=none/1=mean/2=sum) ----
     "binary_cross_entropy":              ("bce", "BinaryCrossEntropy"),
     "binary_cross_entropy_backward":     ("bce_backward", "BinaryCrossEntropyBackward"),
@@ -1670,6 +1675,80 @@ at::Tensor& {kernel}(at::Tensor& self, const at::Tensor& value) {{
 REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
 """
 
+# embedding: (weight, indices, padding_idx, scale_grad_by_freq, sparse) -> Tensor.
+#   aclnnEmbedding(weight, indices, out) uses only weight+indices; the trailing
+#   three args are ignored by aclnn. Output = indices.sizes() + [weight.size(1)].
+T_EMBEDDING = """\
+at::Tensor {kernel}(const at::Tensor& weight, const at::Tensor& indices, int64_t padding_idx, bool scale_grad_by_freq, bool sparse) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto out_sizes = indices.sizes().vec();
+  out_sizes.push_back(weight.size(1));
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      out_sizes, weight.options());
+
+  ascend::AclTensorWrapper acl_weight(weight);
+  ascend::AclTensorWrapper acl_indices(indices);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_weight.get(), acl_indices.get(), acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# embedding_dense_backward: (grad, indices, num_weights, padding_idx,
+#   scale_grad_by_freq) -> grad_weight = {num_weights, grad.size(-1)}.
+#   aclnnEmbeddingDenseBackward(grad, indices, numWeights, paddingIdx,
+#   scaleGradByFreq, out); numWeights/paddingIdx passed as int64 (aclnn uint64).
+T_EMBEDDING_DENSE_BACKWARD = """\
+at::Tensor {kernel}(const at::Tensor& grad_output, const at::Tensor& indices, int64_t num_weights, int64_t padding_idx, bool scale_grad_by_freq) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto grad_weight = ascend::OpPreparation::apply_tensor_without_format(
+      {{num_weights, grad_output.size(-1)}}, grad_output.options());
+
+  ascend::AclTensorWrapper acl_grad_output(grad_output);
+  ascend::AclTensorWrapper acl_indices(indices);
+  ascend::AclTensorWrapper acl_grad_weight(grad_weight);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_grad_output.get(), acl_indices.get(),
+      num_weights, padding_idx, scale_grad_by_freq, acl_grad_weight.get());
+  return grad_weight;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# constant_pad_nd: (self, pad, value) -> Tensor. aclnnConstantPadNd(self, pad,
+#   value, out). Output widens the trailing dims by pad pairs (last-dim-first,
+#   matching torch's pad ordering).
+T_CONSTANT_PAD_ND = """\
+at::Tensor {kernel}(const at::Tensor& self, at::IntArrayRef pad, const at::Scalar& value) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto input_sizes = self.sizes().vec();
+  auto ndim = input_sizes.size();
+  auto pad_size = pad.size();
+  std::vector<int64_t> out_sizes(input_sizes.begin(), input_sizes.end());
+  for (size_t i = 0; i < pad_size / 2; ++i) {{
+    auto dim = ndim - 1 - i;
+    out_sizes[dim] += pad[2 * i] + pad[2 * i + 1];
+  }}
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      out_sizes, self.options());
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclIntArrayWrapper acl_pad(pad);
+  ascend::AclScalarWrapper acl_value(value, self.scalar_type());
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_pad.get(), acl_value.get(),
+      acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
 # avg_pool2d_backward: (grad_output, self, k, stride, padding, ceil_mode,
 #   count_include_pad, divisor_override) -> grad_input (= self shape). Same
 #   NCHW-format requirement as the forward. cubeMathType=0 (KEEP_DTYPE).
@@ -2073,6 +2152,9 @@ CATEGORIES = {
     "inplace_zero":        T_INPLACE_ZERO,
     "inplace_fill_scalar": T_INPLACE_FILL_SCALAR,
     "inplace_fill_tensor": T_INPLACE_FILL_TENSOR,
+    "embedding":           T_EMBEDDING,
+    "embedding_dense_backward": T_EMBEDDING_DENSE_BACKWARD,
+    "constant_pad_nd":     T_CONSTANT_PAD_ND,
 }
 
 FILE_HEADER = """\
