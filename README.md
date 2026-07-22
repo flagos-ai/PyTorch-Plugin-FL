@@ -43,34 +43,7 @@ ACCELERATOR=cuda FLAGGEMS_DIR=/path/to/FlagGems/build/cpython-312/ \
 
 ### Build from Source (MetaX Platform)
 
-MetaX builds compile device kernels with `mxcc`/`cucc` from `csrc/aten/backends/metax/*.cu` and link them into `libtorch_fl.so`. Runtime goes through MetaX cu-bridge (`runtime/accelerator/metax`); it does **not** use PyTorch's `at::cuda` path.
-
-**Prerequisites**
-
-- MetaX MACA SDK (default `/opt/maca`), with cu-bridge and `mxcc`/`cucc` available
-- PyTorch wheel compatible with your MetaX stack (see [Runtime notes](#metax-runtime-notes) below)
-- FlagGems 5.0.2+ (optional; required only when routing ops to `flagos_python`)
-
-> **Getting the MetaX MACA SDK and `torch+metax` wheel**
-> Both are distributed through the MetaX developer portal (SoftNova): <https://developer.metax-tech.com/softnova>. Registration/login is required. Download the MACA SDK (driver + cu-bridge + `mxcc`/`cucc`) matching your card and driver version, and the `torch+metax` (`maca-pytorch`) wheel built for the same MACA version and your Python version. Install the SDK to `/opt/maca` (or point `METAX_PATH` at the install location).
-
-```bash
-git clone https://github.com/flagos-ai/PyTorch-Plugin-FL.git && cd PyTorch-Plugin-FL
-
-# MetaX SDK paths (adjust if MACA is installed elsewhere)
-export METAX_PATH=/opt/maca
-export PATH=/opt/maca/tools/cu-bridge/bin:/opt/maca/bin:/opt/maca/mxgpu_llvm/bin:$PATH
-export LD_LIBRARY_PATH=/opt/maca/lib:/opt/maca/tools/cu-bridge/lib:/opt/maca/mxgpu_llvm/lib:$LD_LIBRARY_PATH
-
-ACCELERATOR=metax METAX_KERNEL=ON FLAGGEMS_PYTHON=1 FLAGGEMS_KERNEL=0 CUDA_KERNEL=0 \
-  pip install --no-build-isolation -vvv -e .
-```
-
-> On MetaX, generic PyPI Triton (`nvidia` backend) cannot JIT kernels for MetaX hardware. Use `torch_fl/backends_metax.conf` or `torch_fl/backends_metax_flagos_py.conf` to route incompatible ops to metax C++ kernels (see [MetaX backend configs](#metax-backend-configs)).
-
-### MetaX Self-Contained Wheel (CUDA boxing)
-
-The source build above compiles hand-written `mxcc` kernels and links against a MetaX `torch+metax` wheel. As an alternative, MetaX supports a **self-contained boxing wheel**: it reuses PyTorch's generated CUDA boxing kernels (host `g++`, no `mxcc`) and bundles the forked libtorch C++ runtime inside the wheel. The target machine then needs only:
+MetaX ships a **self-contained boxing wheel**: it reuses PyTorch's generated CUDA boxing kernels (host `g++`, no `mxcc`) and bundles the forked libtorch C++ runtime inside the wheel. The target machine then needs only:
 
 - The official `torch==2.10.0+cpu` wheel (from PyPI, no CUDA)
 - This `torch_fl` wheel
@@ -78,7 +51,10 @@ The source build above compiles hand-written `mxcc` kernels and links against a 
 
 No separate `torch+metax` wheel and no manual `LD_LIBRARY_PATH` are required — `import torch_fl` symlinks the stock wheel's `torch/lib` to the bundled forked libtorch, whose RPATH resolves the MetaX runtime under `/opt/maca`.
 
-**Build the wheel** (on a machine with the MetaX SDK and a `torch+metax` wheel available as the libtorch source — both from the [MetaX developer portal](https://developer.metax-tech.com/softnova)):
+> **Getting the MetaX MACA SDK and `torch+metax` wheel** (needed only to *build* the wheel, not to run it)
+> Both are distributed through the MetaX developer portal (SoftNova): <https://developer.metax-tech.com/softnova>. Registration/login is required. Download the MACA SDK (driver + cu-bridge) matching your card and driver version, and the `torch+metax` (`maca-pytorch`) wheel built for the same MACA version and your Python version — it is the source of the forked libtorch bundled into the wheel. Install the SDK to `/opt/maca` (or point `METAX_PATH` at the install location).
+
+**Build the wheel** (on a machine with the MetaX SDK and a `torch+metax` wheel available as the libtorch source):
 
 ```bash
 git clone https://github.com/flagos-ai/PyTorch-Plugin-FL.git && cd PyTorch-Plugin-FL
@@ -304,10 +280,8 @@ export FLAGGEMS_SOURCE_DIR=$(python -c "import os,flag_gems;print(os.path.dirnam
 
 #### MetaX runtime notes
 
-- **Two build modes**: The source build (`METAX_KERNEL=ON`) compiles `mxcc` kernels and runs against a `torch+metax` wheel + Triton. The [self-contained boxing wheel](#metax-self-contained-wheel-cuda-boxing) (`FLAGOS_METAX_BOXING=1`) instead reuses CUDA boxing kernels and bundles the forked libtorch, running on official `torch+cpu` with no Triton. Notes below apply to the source/Triton stack.
-- **PyTorch + Triton stack**: Official `maca-pytorch` images ship `torch+metax` and `triton+metax` (outputs `mcfatbin`). A generic PyTorch wheel plus PyPI Triton uses the NVIDIA backend and will fail with `PTX JIT compilation failed` on MetaX unless affected ops are routed to metax C++ kernels.
+- **Boxing wheel, no Triton**: The [self-contained boxing wheel](#build-from-source-metax-platform) (`FLAGOS_METAX_BOXING=1`) reuses PyTorch's CUDA boxing kernels and bundles the forked libtorch, running on official `torch+cpu` with no `mxcc` and no Triton. Ops are routed to `cuda` via `backends_cuda.conf`; there is no `flagos_python`/FlagGems path in this build.
 - **`flash_attn`**: Prebuilt MetaX `flash_attn` wheels may ABI-mismatch newer PyTorch versions. Disable or patch before loading Qwen3/transformers if import fails.
-- **`relu` / `sigmoid`**: Not registered via `m.impl` in the current tree; they fall back to CPU. Do not list them as `metax` in config unless GPU kernels are enabled in `MetaxKernels.cmake`.
 
 ### C++ Stub-Only Mode
 
