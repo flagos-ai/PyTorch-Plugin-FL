@@ -214,6 +214,63 @@ _autograd_lib = None
 _registered_ops = []
 
 
+def _patch_flaggems_philox():
+    """Give FlagGems' RNG ops a working default generator on flagos.
+
+    gems' rand/randn/rand_like/randn_like/randperm/multinomial (and any op that
+    draws randomness without an explicit generator) call
+    ``philox_backend_seed_offset(increment)`` with no generator, which then
+    reaches for ``torch_device_fn.default_generators[current_device()]``. Under
+    the nvidia branch torch_device_fn is torch.cuda, whose ``default_generators``
+    is an EMPTY tuple on a CPU-torch wheel + cuda shim -> IndexError, crashing
+    every generator-less gems RNG op.
+
+    We hold one module-level CUDA ``torch.Generator`` and monkeypatch
+    ``philox_backend_seed_offset`` so a None generator with an empty
+    default_generators falls back to it. gems reads only the philox seed+offset
+    from the generator and ``set_state``'s the advanced offset back, so the one
+    shared generator yields distinct streams across calls. The GIL serializes
+    the set_state (every gems call holds it), so no extra locking is needed.
+    Seeded from ``torch.initial_seed()`` so ``torch.manual_seed(...)`` before the
+    first RNG op is honoured.
+
+    No-op / best-effort: wrapped in try/except so a missing flag_gems or a
+    version without this symbol degrades silently (those ops just stay broken,
+    same as before). Only meaningful on the nvidia branch (empty cuda
+    default_generators); ascend/metax have their own generators.
+    """
+    try:
+        import sys
+
+        import torch
+        from flag_gems.utils import random_utils
+
+        _fallback = torch.Generator(device="cuda")
+        _fallback.manual_seed(torch.initial_seed())
+        _orig = random_utils.philox_backend_seed_offset
+
+        def _patched(increment, generator=None):
+            if (generator is None
+                    and len(random_utils.torch_device_fn.default_generators) == 0):
+                generator = _fallback
+            return _orig(increment, generator=generator)
+
+        # rand.py etc. do `from ..utils.random_utils import
+        # philox_backend_seed_offset` at import time, binding the name into their
+        # own module namespace -- patching random_utils alone would not reach
+        # those local bindings. Rebind the name in every flag_gems module that
+        # exported it (plus the canonical location).
+        for mod in list(sys.modules.values()):
+            name = getattr(mod, "__name__", "")
+            if name.startswith("flag_gems") and hasattr(
+                mod, "philox_backend_seed_offset"
+            ):
+                mod.philox_backend_seed_offset = _patched
+        random_utils.philox_backend_seed_offset = _patched
+    except Exception:
+        pass
+
+
 def _patch_flaggems_codegen_config():
     """
     Configure FlagGems' vendor + torch.cuda shim for the flagos device.
@@ -250,6 +307,7 @@ def _patch_flaggems_codegen_config():
         if is_nvidia_cuda_available():
             os.environ.setdefault("GEMS_VENDOR", "nvidia")
             patch_torch_cuda_for_flagos()
+            _patch_flaggems_philox()
             return
 
     # --- Ascend fallback branch ---

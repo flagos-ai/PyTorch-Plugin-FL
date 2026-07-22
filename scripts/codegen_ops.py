@@ -358,6 +358,28 @@ def _flaggems_extra_trailing_ok(fn, ncall):
 _FLAGGEMS_PY_CATEGORIES = {"functional_pure", "inplace", "tuple_return",
                            "out_variant", "factory"}
 
+# gems ops whose wrapper is `(*args, **kwargs)` so inspect.signature can't
+# recover the arity -> _flaggems_gems_npos() returns None and the main loop's
+# `if npos is None: continue` gate rejects them (guarding the silent
+# dropped-trailing-arg trap). For these hand-verified ops the aten schema IS the
+# authoritative arity, so we supply the gems positional count explicitly. Each
+# value is the number of leading aten args gems takes positionally; the op then
+# falls through to its normal category branch (inplace/functional_pure/
+# out_variant). ONLY simple elementwise ops confirmed to run correctly AND take
+# every aten positional (no dropped kwarg) belong here -- e.g. logit_ takes both
+# self and eps positionally (eps=None passes through), so npos=2.
+_FLAGGEMS_ARITY_OVERRIDE = {
+    "asinh_": 1,
+    "sinh_": 1,
+    "log1p_": 1,
+    "digamma_": 1,
+    "sgn_": 1,
+    "hardswish_": 1,
+    "logit_": 2,  # self + eps (both positional; eps=None ok)
+    "zero": 1,
+    "zero.out": 1,  # self only; out injected by out_variant branch
+}
+
 # TensorOptions field names carried by every factory schema after the shape/
 # scalar positionals. The factory caller injects these itself (device=flagos,
 # layout=strided, dtype forwarded, pin_memory=None), so they're stripped from
@@ -373,6 +395,16 @@ _FLAGGEMS_LIKE_OPT_FIELDS = _FLAGGEMS_TENSOROPT_FIELDS | {"memory_format"}
 # generator). Only ops verified to actually thread the generator through belong
 # here. See the plan / [[flaggems-gap-analysis]].
 _FLAGGEMS_RANDOM_INPLACE = {"uniform_", "exponential_", "bernoulli_.float"}
+
+# RNG functional ops whose aten schema carries a trailing `Generator?` the
+# positional caller can't express. We DROP that arg and let gems draw from the
+# _patch_flaggems_philox() fallback generator (gems' gen=None path hits the
+# patched philox_backend_seed_offset). Verified to run + sample correctly.
+# randperm needs no entry here: its aten schema has no generator arg in this
+# torch version, so the plain factory branch already covers it. normal_* stays
+# excluded (hardcoded generator=None upstream, philox patch can't help). Distinct
+# from _FLAGGEMS_RANDOM_INPLACE, which injects a generator explicitly by name.
+_FLAGGEMS_RNG_DROPGEN = {"multinomial"}
 
 # Ops manually held out of the FlagGems Python path (populated during the
 # compile/import/numerical convergence loop with the reason as a comment).
@@ -394,23 +426,29 @@ FLAGGEMS_PYTHON_SKIP = {
     # Same device assert ("Input tensor must be on CUDA device"): gems
     # _safe_softmax rejects the PrivateUse1 tensor before running.
     "_safe_softmax",
-    # Random factories with NO generator parameter: gems' signature omits
-    # `generator`, so its internal philox_backend_seed_offset(increment) reaches
-    # for default_generators[device], but the PrivateUse1 device has no default
-    # generator (IndexError); randperm also asserts an explicit int dtype. Cannot
-    # be expressed without a per-device generator -- unlike uniform_/exponential_/
-    # bernoulli_ which DO take a generator we inject (see _FLAGGEMS_RANDOM_INPLACE).
-    # rand_like/randn_like share this root (same internal call, no generator arg);
-    # they're rejected by the _like whitelist absence, listed here for the record.
-    # See [[flaggems-gap-analysis]].
-    "rand",
-    "randn",
-    "randperm",
-    "rand_like",
-    "randn_like",
-    # normal family: gems' normal_ calls normal_distribution(..., generator=None)
-    # with a hardcoded None, dropping the generator we pass, so it hits the empty
-    # default_generators (IndexError). Upstream gems bug -- can't fix from here.
+    # gems i0_/zero/zero.out (listed in _FLAGGEMS_ARITY_OVERRIDE for arity) hit an
+    # `assert tensor.is_cuda, "...must be on CUDA device"` in their kernel launch
+    # -- flagos is genuinely PrivateUse1 (is_cuda False), so it can never pass.
+    # (zero's _launch_zero_kernel asserts on both the functional and out paths.)
+    # The other 7 arity-override unary inplace ops (asinh_/sinh_/log1p_/digamma_/
+    # sgn_/hardswish_/logit_) have no such assert and run fine.
+    "i0_",
+    "zero",
+    "zero.out",
+    # rand/randn/rand_like/randn_like/randperm/multinomial are now ROUTED (not
+    # skipped):
+    #   * rand/randn (factory) and rand_like/randn_like (like_factory) have no
+    #     generator param; gems' internal philox_backend_seed_offset(increment)
+    #     reaches for the empty torch.cuda.default_generators (IndexError under
+    #     CPU-torch + cuda shim). Unblocked by _patch_flaggems_philox() in
+    #     torch_fl/__init__.py, which injects a held CUDA generator as fallback.
+    #   * randperm (factory) / multinomial (functional_pure) DO take a generator
+    #     (`generator` / `gen`); the caller injects CudaRngGenerator() by name
+    #     (see _FLAGGEMS_RNG_GEN).
+    # normal family stays skipped: gems' normal_ calls normal_distribution(...,
+    # generator=None) with a hardcoded None, dropping any generator we pass, so it
+    # hits the empty default_generators (IndexError). Upstream gems bug -- can't
+    # fix from here.
     "normal_",
     "normal.Tensor_Tensor",
     "normal.Tensor_float",
@@ -460,7 +498,13 @@ def discover_flaggems_ops(codegen_ops, funcs):
             continue
         npos = _flaggems_gems_npos(fn)
         if npos is None:
-            continue
+            # gems wrapper is (*args, **kwargs): arity uninspectable. Accept only
+            # hand-verified ops via the explicit override (aten schema is the
+            # authoritative arity); everything else stays rejected.
+            if op in _FLAGGEMS_ARITY_OVERRIDE:
+                npos = _FLAGGEMS_ARITY_OVERRIDE[op]
+            else:
+                continue
         func = funcs[op]
         cat = detect_category(func)
         if cat not in _FLAGGEMS_PY_CATEGORIES:
@@ -515,6 +559,21 @@ def discover_flaggems_ops(codegen_ops, funcs):
                 continue
             qualname = f"{fn.__module__}.{fn.__name__}"
             result[op] = (qualname, "random_inplace", positional)
+            continue
+        # RNG functional with a trailing Generator? the caller can't express:
+        # drop it and rely on the philox monkeypatch for RNG state. Routed as
+        # functional_pure over the remaining positionals (e.g. multinomial's
+        # self, num_samples, replacement); gems takes exactly those.
+        if op in _FLAGGEMS_RNG_DROPGEN:
+            all_pairs = [(str(a.type), a.name) for a in aten_args]
+            positional = [(t, n) for t, n in all_pairs if t != "Generator?"]
+            has_gen = any(t == "Generator?" for t, _n in all_pairs)
+            if (not has_gen
+                    or npos != len(positional)
+                    or not all(_flaggems_type_ok(t) for t, _ in positional)):
+                continue
+            qualname = f"{fn.__module__}.{fn.__name__}"
+            result[op] = (qualname, "rng_dropgen", positional)
             continue
         if cat == "factory":
             # Factory: split off the TensorOptions fields (dtype/layout/device/
@@ -756,6 +815,20 @@ def gen_flaggems_python_kernel(op, fn_type, ret_type, args, gems_func, category,
             f'  auto result = CallPythonOp_RandomInplace("{gems_func}", '
             f'{pos_init});\n'
             f"  {self_name}.copy_(result);{ret_line}"
+        )
+        return f"{ret_type} {kn}({args_decl(args)}) {{\n{body}\n}}"
+
+    if category == "rng_dropgen":
+        # RNG functional with the aten Generator? dropped: pass the remaining
+        # positionals to gems; RNG state comes from the philox monkeypatch
+        # (torch_fl._patch_flaggems_philox). Returns a fresh (flagos) tensor.
+        positional = kwargs or []
+        pos_names = [n for _t, n in positional]
+        pos_init = "{" + ", ".join(pos_names) + "}"
+        body = (
+            f'  auto result = CallPythonOp_Generic("{gems_func}", {pos_init});\n'
+            f"  UnboxToFlagos(result);\n"
+            f"  return result;"
         )
         return f"{ret_type} {kn}({args_decl(args)}) {{\n{body}\n}}"
 

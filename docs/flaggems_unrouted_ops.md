@@ -1,12 +1,19 @@
 # FlagGems 未接入算子清单
 
-FlagGems `_FULL_CONFIG` 共 **433** 个算子,当前 **301 已路由**到 `flagos_python` 路径,**132 个对接不上**。本文按原因分桶列出这 132 个,供后续逐批攻关。
+FlagGems `_FULL_CONFIG` 共 **433** 个算子,当前 **320 已路由**到 `flagos_python` 路径,**113 个未以自身名字进路由表**。本文按原因分桶列出,供后续逐批攻关。
+
+> **2026-07 更新(本轮 +13,307 → 320)**:攻下 ③varargs 与部分 rng。
+> - **varargs 一元 inplace(7)**:`asinh_`/`sinh_`/`log1p_`/`digamma_`/`sgn_`/`hardswish_`/`logit_` —— gems wrapper 是 `(*args,**kwargs)` 无法内省 arity,但 aten schema 是权威 arity。加 `_FLAGGEMS_ARITY_OVERRIDE` 显式白名单(仅实测跑通、数值正确、不丢参的简单 elementwise)绕过 npos 闸门。`logit_` npos=2(self+eps 均位置传,eps=None ok)。实测数值与 CPU 一致(maxdiff ≤ 1e-6)。
+> - **rng(6)**:`rand`/`randn`(factory)、`rand_like`/`randn_like`(like_factory)、`randperm`(factory,本 torch 版本 schema 无 generator 参)、`multinomial`(新 `rng_dropgen` 类别,剥离尾部 `Generator?`)。阻塞点是 gems `philox_backend_seed_offset(increment)` 取空的 `torch.cuda.default_generators`(CPU-torch+cuda shim,len=0)→ IndexError。运行时在 `torch_fl/__init__.py._patch_flaggems_philox()` monkeypatch 该函数注入 fallback CUDA generator 一次性解锁。实测分布正确、连调结果不同(offset 推进)。
+> - **维持排除**:`i0_`、`zero`、`zero.out`(gems kernel 硬断言 `tensor.is_cuda` / "Input tensor must be on a CUDA device",flagos 是 PrivateUse1 永不满足,`_FLAGGEMS_ARITY_OVERRIDE` 仅记录 arity,实际进 `FLAGGEMS_PYTHON_SKIP`);`normal_`/`normal.*`(gems 硬编码 `generator=None` 不透传,上游 bug)。
 
 数据由 `discover_flaggems_ops()`(`scripts/codegen_ops.py`)的逐分支拒绝逻辑对账得出,分桶与实际 codegen 拒绝完全一致。
 
+> **重要更正(2026-07 实测)**:①no_dispatcher(88)这一桶**绝大多数并非功能缺口**。实机在 flagos 上逐个探测(`FLAGOS_USE_FLAGGEMS=1`,55 个代表性 op),**54 个 PASS、0 个数值错、0 个真实崩溃**。原因是这些 op 属 `composite_implicit_autograd`,PyTorch 在 PrivateUse1 dispatch key **之上**就把它们分解成 leaf op(conv2d→convolution、divide→div、var→…),而那些 leaf 已经路由好了。给它们单独补 dispatcher 无益(dispatcher 永不命中,属死代码),甚至有害。**"未进路由表" ≠ "不能用"**。
+
 | 桶 | 数量 | 一句话原因 |
 |---|---|---|
-| ① no_dispatcher | 88 | aten 侧没生成 dispatcher(该 schema 未进 `backends_cuda.conf`) |
+| ① no_dispatcher | 88 | **多为设计使然,非缺口**:composite 分解到已路由 leaf,已能跑(见上方更正) |
 | ② type_unsupported_kwarg | 13 | 参数类型通用 caller 表达不了(Generator?/Device?/Layout?/MemoryFormat?/Tensor?) |
 | ③ varargs | 12 | gems 签名 `(*args, **kwargs)`,arity 无法内省 |
 | ④ manual_skip | 12 | 运行期崩溃,手工排除(device assert / 必填 out / rng) |
@@ -16,9 +23,20 @@ FlagGems `_FULL_CONFIG` 共 **433** 个算子,当前 **301 已路由**到 `flago
 
 ---
 
-## ① no_dispatcher —— 88 个
+## ① no_dispatcher —— 88 个(实测:大多已通过 leaf 分解可用)
 
-gems 有实现,但 aten 侧 codegen **没生成 dispatcher**。要先在 CUDA codegen 里补出该 op 的 dispatcher,才谈得上路由到 flaggems。这是最大头。
+gems 有实现,aten 侧 codegen **没以该 op 名生成 dispatcher**。但 torchgen 分类 + 实机验证表明,这 88 个按"该不该补 dispatcher"分成四类:
+
+| 子类 | 数量 | 实测结论 | 是否值得补 |
+|---|---|---|---|
+| **composite_implicit_autograd** | 61 | 在 PrivateUse1 key 之上被分解成已路由 leaf op;实测 conv1/2/3d、divide、true_divide、var、square、clip、selu、pad、one_hot、hstack、vstack、isfinite、kron、diag、tile、absolute、arcsinh 等**全部跑通且数值正确** | **不该**。补 dispatcher 是永不命中的死代码 |
+| **no_cuda_kernel** | 12 | 无 CUDA leaf 可复用;实测 alias_copy/t_copy/diag_embed/pixel_unshuffle/select_scatter/slice_scatter/select_backward/lift_fresh_copy/equal 亦**跑通**(经 cpu_fallback 或 composite 分解) | 仅 max_pool2d_backward 受 flaggems max_pool2d **forward** 上游 bug 阻挡(与本桶无关) |
+| **NOT_IN_YAML** | 9 | 该 op 名不在本 torch 版本 native_functions.yaml(别名/版本差异);bitwise_left/right_shift、copysign、new_full.Tensor、nll_loss_nd_* 实测经等价 leaf **跑通** | **不该**,无对应 schema |
+| **composite_explicit_autograd** | 6 | repeat / allclose / _to_copy / copy_ / index_put / index_put_ 实测**跑通**;repeat.out 已生成 | 理论可补,但已能用,收益低 |
+
+**核心结论**:no_dispatcher 桶几乎不是真实缺口。实测 55 个代表性 op 54 PASS，唯一未通过的 `max_pool2d_backward` 是被 flaggems `max_pool2d_with_indices` **forward** 的 stride 解析上游 bug 挡住,不属本桶职责。因此本桶**优先级应下调为最低**——补 dispatcher 收益近零。
+
+（下方保留原始 88 个 op 全清单，供逐个查阅。）
 
 ```
 __ior__.Scalar          __ior__.Tensor          __or__.Scalar
@@ -155,10 +173,11 @@ arity-short,尾部 aten 参名对不上 gems keyword-only 参名,无法按名转
 
 ---
 
-## 攻关优先级参考
+## 攻关优先级参考(2026-07 实测修订)
 
-- **no_dispatcher（88）** 是最大且最独立的一块:补齐 CUDA 侧 dispatcher 后可批量解锁,但工作量在 aten codegen 侧,非 flaggems 转发层。
-- **Generator? / rng（7 + 3 = 10）** 同根:需要给 PrivateUse1 注册 per-device generator,一次解决随机算子组。
-- **`*_like` 的 Device?/Layout?/MemoryFormat?（5）** 可仿 factory caller 扩展(从输入 tensor 推 shape + 注入 device=flagos）。
+- **~~no_dispatcher（88）~~ → 优先级最低**:实测证明这桶不是缺口——composite 分解到已路由 leaf,已能跑通且数值正确(55 探测 54 PASS)。补 dispatcher 是永不命中的死代码,**不建议投入**。仅个别 no_cuda_kernel op 若确有专用 flaggems kernel 需求,才逐个走 flaggems python 接入(非补 CUDA dispatcher)。
+- **`*_like` 的 Device?/Layout?/MemoryFormat?(原 5,已接 3)** ✅ 已接 `zeros_like`/`ones_like`/`full_like`(commit 4906d22);`rand_like`/`randn_like` 无 generator 入口,排除。
+- **随机 in-place(原 Generator? 组的一部分,已接 3)** ✅ 已接 `uniform_`/`exponential_`/`bernoulli_.float`(显式注入 CUDA generator)。`normal_`/`normal.*` 因 gems 硬编码 `generator=None` 不透传,排除。
+- **rng factory（rand/randn/randperm/multinomial）** 无 generator 注入入口(签名无 generator 参),需给 PrivateUse1 注册 per-device generator 才能一次解决,工作量在运行时层。
 - **varargs（12）** 需 gems 侧或本地维护一份显式 arity 表才能安全接入。
 - **name_mismatch / arity_other / optlist / foreach（10）** 属逐个特判,收益低。
