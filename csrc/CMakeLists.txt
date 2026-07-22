@@ -141,6 +141,19 @@ if(ACCELERATOR STREQUAL "metax")
   else()
     message(WARNING "mcblas not found, MetaX mm will fallback to naive kernel")
   endif()
+
+  # Self-contained wheel: the installed libtorch_fl.so must NOT bake the build
+  # machine's absolute torch/lib path into its RUNPATH (that path does not exist
+  # on target machines). Resolve the forked libtorch bundled under
+  # torch_fl/lib_maca/ via $ORIGIN, and the maca runtime (mcblas/mcdnn/...) from
+  # the target's /opt/maca driver install. Disabling INSTALL_RPATH_USE_LINK_PATH
+  # stops CMake from appending the imported torch target's build-machine link
+  # dir. Mirrors scripts/bundle_maca_libtorch.sh's patchelf pass.
+  set_target_properties(${LIBRARY_NAME} PROPERTIES
+    INSTALL_RPATH "$ORIGIN:$ORIGIN/../lib_maca:${METAX_PATH}/lib:${METAX_PATH}/lib64:/opt/maca/lib:/opt/maca/lib64"
+    INSTALL_RPATH_USE_LINK_PATH OFF
+    BUILD_WITH_INSTALL_RPATH ON
+  )
 endif()
 
 install(TARGETS ${LIBRARY_NAME}
