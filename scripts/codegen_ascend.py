@@ -272,6 +272,12 @@ OPS = {
     "gather":              ("gather", "Gather"),
     "index_select":        ("index_select", "IndexSelect"),
 
+    # ---- in-place zero/fill (aclnn Inplace* ops); device-side, no h2d.
+    #   Factory ops (zeros/ones_like/new_ones/scalar_tensor) call these. ----
+    "zero_":               ("inplace_zero", "InplaceZero"),
+    "fill_.Scalar":        ("inplace_fill_scalar", "InplaceFillScalar"),
+    "fill_.Tensor":        ("inplace_fill_tensor", "InplaceFillTensor"),
+
     # ---- BCE loss family: optional weight, int reduction (0=none/1=mean/2=sum) ----
     "binary_cross_entropy":              ("bce", "BinaryCrossEntropy"),
     "binary_cross_entropy_backward":     ("bce_backward", "BinaryCrossEntropyBackward"),
@@ -1618,6 +1624,52 @@ at::Tensor {kernel}(const at::Tensor& self, int64_t dim, const at::Tensor& index
 REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
 """
 
+# zero_: (self) -> self&, in-place. aclnnInplaceZero(selfRef). selfRef is both
+#   input and output; return the same tensor. Factory ops (zeros/*_like) build
+#   the storage then call this, so it must be device-side aclnn (no h2d).
+T_INPLACE_ZERO = """\
+at::Tensor& {kernel}(at::Tensor& self) {{
+  namespace ascend = at::native::flagos::ascend;
+  ascend::AclTensorWrapper acl_self(self);
+  EXEC_ASCEND_CMD({aclnn}, const_cast<aclTensor*>(acl_self.get()));
+  return self;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# fill_.Scalar: (self, value) -> self&, in-place. aclnnInplaceFillScalar(
+#   selfRef, value). Scalar coerced to self's dtype.
+T_INPLACE_FILL_SCALAR = """\
+at::Tensor& {kernel}(at::Tensor& self, const at::Scalar& value) {{
+  namespace ascend = at::native::flagos::ascend;
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclScalarWrapper acl_value(value, self.scalar_type());
+  EXEC_ASCEND_CMD({aclnn}, const_cast<aclTensor*>(acl_self.get()), acl_value.get());
+  return self;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# fill_.Tensor: (self, value) -> self&, in-place. aclnnInplaceFillTensor(
+#   selfRef, value). value is a 0-dim tensor; coerce to self device/dtype
+#   (CPU scalar-tensor path, cf. masked_fill.Tensor prologue).
+T_INPLACE_FILL_TENSOR = """\
+at::Tensor& {kernel}(at::Tensor& self, const at::Tensor& value) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto value_c = value.is_privateuseone()
+      ? (value.scalar_type() == self.scalar_type() ? value : value.to(self.scalar_type()))
+      : value.to(self.options());
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_value(value_c);
+  EXEC_ASCEND_CMD({aclnn}, const_cast<aclTensor*>(acl_self.get()), acl_value.get());
+  return self;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
 # avg_pool2d_backward: (grad_output, self, k, stride, padding, ceil_mode,
 #   count_include_pad, divisor_override) -> grad_input (= self shape). Same
 #   NCHW-format requirement as the forward. cubeMathType=0 (KEEP_DTYPE).
@@ -2018,6 +2070,9 @@ CATEGORIES = {
     "masked_fill_tensor":  T_MASKED_FILL_TENSOR,
     "gather":              T_GATHER,
     "index_select":        T_INDEX_SELECT,
+    "inplace_zero":        T_INPLACE_ZERO,
+    "inplace_fill_scalar": T_INPLACE_FILL_SCALAR,
+    "inplace_fill_tensor": T_INPLACE_FILL_TENSOR,
 }
 
 FILE_HEADER = """\

@@ -2120,6 +2120,38 @@ at::Tensor IndexSelectKernelAscend(const at::Tensor& self, int64_t dim, const at
 
 REGISTER_IMPL_TO_DISPATCHER(IndexSelectFn, index_select_dispatcher, Backend::kAscend, IndexSelectKernelAscend)
 
+at::Tensor& ZeroInplaceKernelAscend(at::Tensor& self) {
+  namespace ascend = at::native::flagos::ascend;
+  ascend::AclTensorWrapper acl_self(self);
+  EXEC_ASCEND_CMD(aclnnInplaceZero, const_cast<aclTensor*>(acl_self.get()));
+  return self;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(ZeroInplaceFn, zero_inplace_dispatcher, Backend::kAscend, ZeroInplaceKernelAscend)
+
+at::Tensor& FillInplaceScalarKernelAscend(at::Tensor& self, const at::Scalar& value) {
+  namespace ascend = at::native::flagos::ascend;
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclScalarWrapper acl_value(value, self.scalar_type());
+  EXEC_ASCEND_CMD(aclnnInplaceFillScalar, const_cast<aclTensor*>(acl_self.get()), acl_value.get());
+  return self;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(FillInplaceScalarFn, fill_inplace_scalar_dispatcher, Backend::kAscend, FillInplaceScalarKernelAscend)
+
+at::Tensor& FillInplaceTensorKernelAscend(at::Tensor& self, const at::Tensor& value) {
+  namespace ascend = at::native::flagos::ascend;
+  auto value_c = value.is_privateuseone()
+      ? (value.scalar_type() == self.scalar_type() ? value : value.to(self.scalar_type()))
+      : value.to(self.options());
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_value(value_c);
+  EXEC_ASCEND_CMD(aclnnInplaceFillTensor, const_cast<aclTensor*>(acl_self.get()), acl_value.get());
+  return self;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(FillInplaceTensorFn, fill_inplace_tensor_dispatcher, Backend::kAscend, FillInplaceTensorKernelAscend)
+
 at::Tensor BinaryCrossEntropyKernelAscend(const at::Tensor& self, const at::Tensor& target, const ::std::optional<at::Tensor>& weight, int64_t reduction) {
   namespace ascend = at::native::flagos::ascend;
   std::vector<int64_t> out_shape;   // scalar for mean/sum
