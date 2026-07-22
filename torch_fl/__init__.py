@@ -7,6 +7,18 @@ if os.environ.get("FLAGOS_METAX_CUDART_SHIM", "0") == "1":
 
     ensure_cudart_shim()
 
+# When reusing PyTorch's CUDA boxing kernels on MetaX with a stock +cpu torch
+# wheel, the active wheel's torch/lib must point at the MetaX C++ runtime .so.
+# This MUST run before `import torch` (afterwards libc10 is already mapped and
+# relinking is too late).  Gated on FLAGOS_METAX_BOXING=1; idempotent; no-op when
+# torch already IS the MetaX wheel.
+if os.environ.get("FLAGOS_METAX_BOXING", "0") == "1":
+    from torch_fl.accelerator.metax._metax_libtorch_link import (
+        ensure_maca_libtorch_links,
+    )
+
+    ensure_maca_libtorch_links()
+
 import torch  # noqa: E402
 
 
