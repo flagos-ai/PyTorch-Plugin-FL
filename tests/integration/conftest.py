@@ -7,8 +7,18 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _ensure_backend_config() -> None:
-    """Ensure MetaX backend config is set before importing torch_fl (if not already specified)."""
+    """Ensure MetaX backend config is set before importing torch_fl (if not already specified).
+
+    Only forces the hand-written mxcc config (backends_metax.conf) for the
+    legacy source-build path. In boxing mode (FLAGOS_METAX_BOXING=1) the mxcc
+    backend is NOT compiled, so we must leave the choice to torch_fl's own
+    _select_backend_config(), which picks backends_cuda.conf (pure boxing) or
+    backends_metax_flaggems.conf (FLAGOS_USE_FLAGGEMS=1). Setting metax.conf here
+    would route ops to the unregistered `metax` backend -> "backend not registered".
+    """
     if os.environ.get("FLAGOS_BACKEND_CONFIG"):
+        return
+    if os.environ.get("FLAGOS_METAX_BOXING", "0") == "1":
         return
     accel = os.environ.get("ACCELERATOR", "").lower()
     use_metax = accel in ("metax", "maca") or Path("/dev/mxcd").exists()

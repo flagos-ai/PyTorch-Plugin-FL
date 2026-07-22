@@ -97,7 +97,18 @@ print((x + x).sum().cpu())
 
 In boxing mode, `import torch_fl` auto-selects `backends_cuda.conf` (override with `FLAGOS_BACKEND_CONFIG`). If MACA is installed somewhere other than `/opt/maca`, pass `MACA_PATH` at bundle time (step 2) so the RPATH points there.
 
-> **Do not set `FLAGOS_USE_FLAGGEMS=1` with the boxing wheel.** It selects `backends_flaggems.conf`, which routes ops to the `flagos_python` backend that this build does not compile (`no mxcc/FlagGems`), causing `backend not registered` at the first op call. The boxing wheel is a pure CUDA-kernel-reuse path; leave `FLAGOS_USE_FLAGGEMS` unset.
+**Optional: FlagGems on MetaX.** Like the CUDA wheel, the MetaX boxing wheel compiles the FlagGems Python-path kernels (`flagos_python` backend) by default, so FlagGems is a runtime switch — set `FLAGOS_USE_FLAGGEMS=1` to route ops to FlagGems' Triton kernels where available, or leave it unset for pure CUDA-kernel reuse (boxing). Enabling it needs two extra target-side pip installs (not bundled in the wheel):
+
+```bash
+# On the target MetaX machine, in addition to the wheel + torch+cpu above:
+pip install triton-metax flag_gems     # triton-metax emits mcfatbin for MetaX GPUs
+
+export FLAGOS_METAX_BOXING=1
+export FLAGOS_USE_FLAGGEMS=1            # opt into FlagGems; unset = pure boxing
+python -c "import torch_fl, torch; x=torch.randn(1024, device='flagos:0'); print(torch.nn.functional.silu(x).sum().cpu())"
+```
+
+`import torch_fl` then auto-selects `backends_metax_flaggems.conf` and sets `GEMS_VENDOR=metax` + the MetaX `torch.cuda` compat shim automatically. That conf mirrors the CUDA `backends_flaggems.conf` but routes the ops triton-metax cannot run (`mm`/`bmm`/`mean.dim` — FlagGems uses a SPLIT_K kwarg / CUDA-context path triton-metax rejects) back to the `cuda` boxing kernel (maca `libtorch_cuda`), not the mxcc backend (which is off in boxing mode). Without `triton-metax`/`flag_gems` installed, leave `FLAGOS_USE_FLAGGEMS` unset — the pure boxing path has no extra dependencies.
 
 ### Build from Source (Ascend Platform)
 
@@ -280,7 +291,7 @@ export FLAGGEMS_SOURCE_DIR=$(python -c "import os,flag_gems;print(os.path.dirnam
 
 #### MetaX runtime notes
 
-- **Boxing wheel, no Triton**: The [self-contained boxing wheel](#build-from-source-metax-platform) (`FLAGOS_METAX_BOXING=1`) reuses PyTorch's CUDA boxing kernels and bundles the forked libtorch, running on official `torch+cpu` with no `mxcc` and no Triton. Ops are routed to `cuda` via `backends_cuda.conf`; there is no `flagos_python`/FlagGems path in this build.
+- **Boxing wheel**: The [self-contained boxing wheel](#build-from-source-metax-platform) (`FLAGOS_METAX_BOXING=1`) reuses PyTorch's CUDA boxing kernels and bundles the forked libtorch, running on official `torch+cpu` with no `mxcc`. By default ops route to `cuda` via `backends_cuda.conf` (no Triton, no extra deps). Setting `FLAGOS_USE_FLAGGEMS=1` opts into the FlagGems `flagos_python` path (`backends_metax_flaggems.conf`), which requires target-side `triton-metax` + `flag_gems`; ops triton-metax cannot run fall back to the `cuda` boxing kernel.
 - **`flash_attn`**: Prebuilt MetaX `flash_attn` wheels may ABI-mismatch newer PyTorch versions. Disable or patch before loading Qwen3/transformers if import fails.
 
 ### C++ Stub-Only Mode

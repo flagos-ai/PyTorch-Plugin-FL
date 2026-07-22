@@ -31,7 +31,12 @@ def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
     platform = _detect_platform()
-    markers_to_skip = _PLATFORM_SKIP_MARKERS.get(platform, ())
+    markers_to_skip = list(_PLATFORM_SKIP_MARKERS.get(platform, ()))
+    # In MetaX boxing mode the hand-written mxcc backend is NOT compiled: ops run
+    # through the CUDA boxing kernels (and optionally the FlagGems Python path).
+    # Tests asserting a `-> metax` dispatch (mark.metax) cannot pass, so skip them.
+    if platform == "metax" and os.environ.get("FLAGOS_METAX_BOXING", "0") == "1":
+        markers_to_skip.append("metax")
     for item in items:
         for marker_name in markers_to_skip:
             if item.get_closest_marker(marker_name):

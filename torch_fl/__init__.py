@@ -10,13 +10,17 @@ def _select_backend_config() -> None:
     Python-path kernel. Both kernel sets are compiled into the wheel, so the
     choice is purely runtime:
 
-      * FLAGOS_USE_FLAGGEMS=1  -> backends_flaggems.conf (FlagGems where available)
-      * unset / 0              -> backends_cuda.conf      (pure CUDA)
+      * FLAGOS_USE_FLAGGEMS=1                  -> backends_flaggems.conf
+      * FLAGOS_USE_FLAGGEMS=1 + METAX_BOXING=1 -> backends_metax_flaggems.conf
+      * unset / 0                              -> backends_cuda.conf (pure boxing)
 
-    An explicit FLAGOS_BACKEND_CONFIG always wins (advanced/testing use), and
-    the per-op FLAGOS_OP_<name> overrides in common.cc still apply on top. This
-    must run before the first op dispatch triggers BackendTable() init; setting
-    it at import time (before any flagos tensor op) is well before that.
+    The MetaX flaggems conf mirrors backends_flaggems.conf but routes the ops
+    triton-metax cannot run (mm/bmm/mean.dim) back to the cuda boxing kernel
+    (maca libtorch_cuda) instead of flagos_python. An explicit
+    FLAGOS_BACKEND_CONFIG always wins (advanced/testing use), and the per-op
+    FLAGOS_OP_<name> overrides in common.cc still apply on top. This must run
+    before the first op dispatch triggers BackendTable() init; setting it at
+    import time (before any flagos tensor op) is well before that.
     """
     if os.environ.get("FLAGOS_BACKEND_CONFIG"):
         return
@@ -28,7 +32,13 @@ def _select_backend_config() -> None:
         "false",
         "FALSE",
     )
-    conf_name = "backends_flaggems.conf" if use_flaggems else "backends_cuda.conf"
+    metax_boxing = os.environ.get("FLAGOS_METAX_BOXING", "0") == "1"
+    if use_flaggems and metax_boxing:
+        conf_name = "backends_metax_flaggems.conf"
+    elif use_flaggems:
+        conf_name = "backends_flaggems.conf"
+    else:
+        conf_name = "backends_cuda.conf"
     conf_path = os.path.join(os.path.dirname(__file__), conf_name)
     if os.path.exists(conf_path):
         os.environ["FLAGOS_BACKEND_CONFIG"] = conf_path
@@ -285,6 +295,13 @@ def _patch_flaggems_codegen_config():
       (which has `pow`); otherwise it falls back to tl.math (no `pow`).
       Disable with FLAGOS_DISABLE_CUDA_SHIM=1.
 
+    - MetaX (boxing + FlagGems): set GEMS_VENDOR=metax so FlagGems uses the
+      MetaX codegen config (triton-metax backend, prefer_block_pointer=False to
+      avoid the triton-metax block-pointer bug), and patch torch.cuda (device
+      props + stream/availability) so FlagGems' Triton kernels run on the
+      CPU-frozen torch wheel against maca's libtorch_cuda.so. Auto-selected when
+      FLAGOS_METAX_BOXING=1 (or FLAGOS_METAX_COMPAT=1) and a MetaX card is present.
+
     - Ascend (fallback): set GEMS_VENDOR=ascend so FlagGems uses the ASCEND
       codegen config (prefer_block_pointer=False, avoiding a triton-ascend
       tl.make_block_ptr bug), and register torch.flagos as a torch.npu shim so
@@ -293,10 +310,29 @@ def _patch_flaggems_codegen_config():
     import os
     import sys
 
+    # --- MetaX branch (boxing + FlagGems) ---
+    # Triggered by FLAGOS_METAX_COMPAT=1 or FLAGOS_METAX_BOXING=1. Must come
+    # before the ascend fallback so MetaX never wrongly gets GEMS_VENDOR=ascend.
+    _metax_requested = (
+        os.environ.get("FLAGOS_METAX_COMPAT", "0") == "1"
+        or os.environ.get("FLAGOS_METAX_BOXING", "0") == "1"
+    )
+    if _metax_requested and os.environ.get("GEMS_VENDOR") not in ("nvidia", "ascend"):
+        from torch_fl.accelerator.metax._metax_compat import (
+            is_metax_available,
+            patch_torch_cuda_for_metax,
+        )
+
+        if is_metax_available():
+            os.environ.setdefault("GEMS_VENDOR", "metax")
+            patch_torch_cuda_for_metax()
+            return
+
     # --- Generic NVIDIA CUDA branch (default) ---
     if (
         os.environ.get("FLAGOS_DISABLE_CUDA_SHIM", "0") != "1"
         and os.environ.get("FLAGOS_METAX_COMPAT", "0") != "1"
+        and os.environ.get("FLAGOS_METAX_BOXING", "0") != "1"
         and os.environ.get("GEMS_VENDOR") != "ascend"
     ):
         from torch_fl.accelerator.cuda._cuda_compat import (

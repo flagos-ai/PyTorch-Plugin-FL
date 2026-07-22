@@ -302,12 +302,13 @@ def build_deps():
                 "-DFLAGGEMS_KERNEL=OFF",
             ]
         )
-        # FLAGGEMS_PYTHON now defaults ON (single-wheel CUDA runtime switch).
-        # MetaX has not historically built the Python path; keep it opt-in there
-        # unless explicitly requested via the FLAGGEMS_PYTHON env var (handled
-        # by the generic pass-through below).
-        if os.environ.get("FLAGGEMS_PYTHON") is None:
-            cmake_args.append("-DFLAGGEMS_PYTHON=OFF")
+        # FLAGGEMS_PYTHON defaults ON, same as CUDA: the boxing wheel also compiles
+        # the FlagGems Python-path kernels (flagos_python backend) so FlagGems can
+        # be toggled at runtime via FLAGOS_USE_FLAGGEMS, exactly like CUDA. Only the
+        # C++ FlagGems path (FLAGGEMS_KERNEL, liboperators.so) stays off. python_op_
+        # caller links torch_python_library (already in the metax link set) and adds
+        # nothing to the bundled wheel size. Set FLAGGEMS_PYTHON=0 for a slim
+        # pure-boxing build; the generic pass-through below honors an explicit value.
 
     # Kernel build options from environment
     for kernel_opt in (
