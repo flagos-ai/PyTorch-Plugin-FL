@@ -306,6 +306,15 @@ def build_deps():
                 "-DFLAGGEMS_KERNEL=OFF",
             ]
         )
+    elif ACCELERATOR == "tsingmicro":
+        cmake_args.extend(
+            [
+                "-DCUDA_KERNEL=OFF",
+                "-DFLAGGEMS_KERNEL=OFF",
+                "-DMETAX_KERNEL=OFF",
+                "-DASCEND_KERNEL=OFF",
+            ]
+        )
 
     # Kernel build options from environment
     for kernel_opt in (

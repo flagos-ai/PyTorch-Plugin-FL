@@ -12,7 +12,10 @@ namespace c10::flagos {
 // Use caching allocator by default, fall back to passthrough if disabled.
 static at::Allocator* get_device_allocator() {
   if (CachingDeviceAllocator::is_enabled()) {
-    return GetCachingAllocator();
+    auto* caching = GetCachingAllocator();
+    if (caching) {
+      return caching;
+    }
   }
   // Fallback: direct passthrough allocator (no caching).
   static DeviceAllocator passthrough_alloc;

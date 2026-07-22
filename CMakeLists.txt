@@ -14,7 +14,7 @@
 
 cmake_minimum_required(VERSION 3.18 FATAL_ERROR)
 
-set(ACCELERATOR "cuda" CACHE STRING "Accelerator platform: cuda, metax, or ascend")
+set(ACCELERATOR "cuda" CACHE STRING "Accelerator platform: cuda, metax, ascend, or tsingmicro")
 
 # Kernel build options (can be overridden via -D flags from setup.py)
 option(CUDA_KERNEL "Build CUDA kernel implementations" ON)
@@ -30,6 +30,8 @@ elseif(ACCELERATOR STREQUAL "metax")
   set(METAX_KERNEL ON CACHE BOOL "Build MetaX kernel implementations" FORCE)
   set(CUDA_KERNEL OFF CACHE BOOL "Build CUDA kernel implementations" FORCE)
   set(FLAGGEMS_KERNEL OFF CACHE BOOL "Build FlagGems kernel implementations" FORCE)
+  project(TORCH_FLAGOS CXX C)
+elseif(ACCELERATOR STREQUAL "tsingmicro")
   project(TORCH_FLAGOS CXX C)
 else()
   # project(... CUDA) runs nvcc compiler-id before find_package(CUDAToolkit); conda
@@ -58,7 +60,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-if(NOT ACCELERATOR STREQUAL "metax" AND NOT ACCELERATOR STREQUAL "ascend")
+if(NOT ACCELERATOR STREQUAL "metax" AND NOT ACCELERATOR STREQUAL "ascend" AND NOT ACCELERATOR STREQUAL "tsingmicro")
   set(CMAKE_CUDA_STANDARD 17)
   set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 endif()
@@ -104,6 +106,27 @@ if(ACCELERATOR STREQUAL "ascend")
   target_link_libraries(cuda_runtime_compat INTERFACE ascendcl)
 
   set(CUDA_RUNTIME_LIB cuda_runtime_compat)
+
+  add_library(torch::cudart INTERFACE IMPORTED)
+  if(NOT TARGET CUDA::nvToolsExt)
+    add_library(CUDA::nvToolsExt INTERFACE IMPORTED)
+  endif()
+elseif(ACCELERATOR STREQUAL "tsingmicro")
+  # TsingMicro Kuiper SDK
+  set(KUIPER_ROOT "/usr/local/kuiper" CACHE PATH "Kuiper SDK root")
+  message(STATUS "TsingMicro Kuiper SDK path: ${KUIPER_ROOT}")
+
+  add_library(cuda_runtime_compat INTERFACE IMPORTED)
+  set_target_properties(cuda_runtime_compat PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "${KUIPER_ROOT}/include"
+  )
+  target_link_directories(cuda_runtime_compat INTERFACE "${KUIPER_ROOT}/lib")
+  target_link_libraries(cuda_runtime_compat INTERFACE hpgr)
+
+  set(CUDA_RUNTIME_LIB cuda_runtime_compat)
+
+  # Embed Kuiper library path in RPATH so LD_LIBRARY_PATH is not needed at runtime.
+  list(APPEND CMAKE_INSTALL_RPATH "${KUIPER_ROOT}/lib")
 
   add_library(torch::cudart INTERFACE IMPORTED)
   if(NOT TARGET CUDA::nvToolsExt)

@@ -10,8 +10,9 @@
 namespace c10::flagos {
 
 static bool register_hook_flag [[maybe_unused]] = []() {
-  at::RegisterPrivateUse1HooksInterface(new HooksInterface());
-
+  if (!at::isPrivateUse1HooksRegistered()) {
+    at::RegisterPrivateUse1HooksInterface(new HooksInterface());
+  }
   return true;
 }();
 
