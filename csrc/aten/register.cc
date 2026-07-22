@@ -235,6 +235,10 @@ void WrapperRecordStream(at::Tensor& self, at::Stream s) {
     return;
   }
   auto* alloc = c10::flagos::GetCachingAllocator();
+  if (!alloc) {
+    // No-op when caching allocator is not available on this platform.
+    return;
+  }
   // Convert at::Stream to flagos Stream_t.
   // The stream id encodes the underlying device stream pointer.
   Stream_t stream = reinterpret_cast<Stream_t>(s.id());
@@ -742,6 +746,10 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("index_put_", WrapperIndexPut_);
   m.impl("_index_put_impl_", WrapperIndexPutImpl_);
   m.impl("record_stream", WrapperRecordStream);
+
+#ifndef USE_TSINGMICRO
+  // Compute ops: skipped for tsingmicro (no native kernels).
+  // These ops fall through to the CPU fallback registered below.
   m.impl("mm", WrapperMm);
   m.impl("mm.out", WrapperMmOut);
   m.impl("add.Tensor", WrapperAddTensor);
@@ -820,6 +828,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("_foreach_mul_.List", WrapperForeachMul_TensorList);
   m.impl("_foreach_neg", WrapperForeachNeg);
   m.impl("_foreach_reciprocal", WrapperForeachReciprocal);
+#endif // !USE_TSINGMICRO
 }
 
 // Register fallback for all unimplemented operators
