@@ -10,6 +10,7 @@
 #include "../../../generated/ops.h"
 #include <ATen/core/Tensor.h>
 #include <ATen/ExpandUtils.h>
+#include <ATen/ops/empty.h>
 #include <c10/core/Scalar.h>
 #include <algorithm>
 #include <vector>
@@ -1727,6 +1728,181 @@ at::Tensor ProdKernelAscend(const at::Tensor& self, ::std::optional<at::ScalarTy
 }
 
 REGISTER_IMPL_TO_DISPATCHER(ProdFn, prod_dispatcher, Backend::kAscend, ProdKernelAscend)
+
+at::Tensor MmKernelAscend(const at::Tensor& self, const at::Tensor& mat2) {
+  namespace ascend = at::native::flagos::ascend;
+  int8_t cube_math_type = ascend::OpPreparation::get_cube_math_type(true);
+  std::vector<int64_t> out_shape = self.sizes().vec();
+  out_shape.back() = mat2.size(-1);
+  auto out = ascend::OpPreparation::apply_tensor_without_format(out_shape, self.options());
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_mat2(mat2);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD(aclnnMm, acl_self.get(), acl_mat2.get(), acl_out.get(), cube_math_type);
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(MmFn, mm_dispatcher, Backend::kAscend, MmKernelAscend)
+
+at::Tensor& MmOutKernelAscend(const at::Tensor& self, const at::Tensor& mat2, at::Tensor& out) {
+  namespace ascend = at::native::flagos::ascend;
+  int8_t cube_math_type = ascend::OpPreparation::get_cube_math_type(true);
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_mat2(mat2);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD(aclnnMm, acl_self.get(), acl_mat2.get(), acl_out.get(), cube_math_type);
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(MmOutFn, mm_out_dispatcher, Backend::kAscend, MmOutKernelAscend)
+
+at::Tensor BmmKernelAscend(const at::Tensor& self, const at::Tensor& mat2) {
+  namespace ascend = at::native::flagos::ascend;
+  int8_t cube_math_type = ascend::OpPreparation::get_cube_math_type(true);
+  std::vector<int64_t> out_shape = self.sizes().vec();
+  out_shape.back() = mat2.size(-1);
+  auto out = ascend::OpPreparation::apply_tensor_without_format(out_shape, self.options());
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_mat2(mat2);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD(aclnnBatchMatMul, acl_self.get(), acl_mat2.get(), acl_out.get(), cube_math_type);
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(BmmFn, bmm_dispatcher, Backend::kAscend, BmmKernelAscend)
+
+at::Tensor& BmmOutKernelAscend(const at::Tensor& self, const at::Tensor& mat2, at::Tensor& out) {
+  namespace ascend = at::native::flagos::ascend;
+  int8_t cube_math_type = ascend::OpPreparation::get_cube_math_type(true);
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_mat2(mat2);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD(aclnnBatchMatMul, acl_self.get(), acl_mat2.get(), acl_out.get(), cube_math_type);
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(BmmOutFn, bmm_out_dispatcher, Backend::kAscend, BmmOutKernelAscend)
+
+at::Tensor CatKernelAscend(const at::ITensorListRef& tensors, int64_t dim) {
+  namespace ascend = at::native::flagos::ascend;
+
+  auto materialized = tensors.materialize();
+  TORCH_CHECK(!materialized.empty(), "cat: expected a non-empty list of tensors");
+
+  std::vector<at::Tensor> valid_tensors;
+  for (const auto& t : materialized) {
+    if (t.get().numel() > 0) {
+      valid_tensors.push_back(t.get());
+    }
+  }
+
+  if (valid_tensors.empty()) {
+    return materialized[0].get().clone();
+  }
+  if (valid_tensors.size() == 1) {
+    return valid_tensors[0].clone();
+  }
+
+  auto& first = valid_tensors[0];
+  auto ndim = first.dim();
+  if (dim < 0) dim += ndim;
+
+  std::vector<int64_t> out_sizes(first.sizes().begin(), first.sizes().end());
+  for (size_t i = 1; i < valid_tensors.size(); ++i) {
+    out_sizes[dim] += valid_tensors[i].size(dim);
+  }
+
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      out_sizes, first.options());
+
+  std::vector<ascend::AclTensorWrapper> wrappers;
+  wrappers.reserve(valid_tensors.size());
+  for (auto& t : valid_tensors) {
+    wrappers.emplace_back(t);
+  }
+
+  std::vector<const aclTensor*> acl_tensors;
+  acl_tensors.reserve(valid_tensors.size());
+  for (auto& w : wrappers) {
+    acl_tensors.push_back(w.get());
+  }
+
+  aclTensorList* tensor_list = aclCreateTensorList(
+      acl_tensors.data(), acl_tensors.size());
+
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD(aclnnCat, tensor_list, dim, acl_out.get());
+
+  (void)tensor_list;  // aclTensor* owned by wrappers; do not aclDestroyTensorList
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(CatFn, cat_dispatcher, Backend::kAscend, CatKernelAscend)
+
+at::Tensor ZerosKernelAscend(at::IntArrayRef size, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
+  auto options = at::TensorOptions()
+    .dtype(dtype.value_or(at::kFloat))
+    .layout(layout.value_or(at::kStrided))
+    .device(device.value_or(at::Device(at::kPrivateUse1, 0)))
+    .pinned_memory(pin_memory.value_or(false));
+  auto result = at::empty(size, options);
+  result.zero_();
+  return result;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(ZerosFn, zeros_dispatcher, Backend::kAscend, ZerosKernelAscend)
+
+at::Tensor ScalarTensorKernelAscend(const at::Scalar& s, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
+  auto options = at::TensorOptions()
+    .dtype(dtype.value_or(at::ScalarType::Float))
+    .layout(layout.value_or(at::kStrided))
+    .device(device.value_or(at::Device(at::kPrivateUse1, 0)))
+    .pinned_memory(pin_memory.value_or(false));
+  auto result = at::empty({}, options);
+  result.fill_(s);
+  return result;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(ScalarTensorFn, scalar_tensor_dispatcher, Backend::kAscend, ScalarTensorKernelAscend)
+
+at::Tensor OnesLikeKernelAscend(const at::Tensor& self, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory, ::std::optional<at::MemoryFormat> memory_format) {
+  auto options = at::TensorOptions()
+    .dtype(dtype.value_or(self.scalar_type()))
+    .layout(layout.value_or(self.layout()))
+    .device(device.value_or(self.device()))
+    .pinned_memory(pin_memory.value_or(false));
+  auto fmt = memory_format.value_or(at::MemoryFormat::Contiguous);
+  if (fmt == at::MemoryFormat::Preserve) {
+    fmt = self.suggest_memory_format();
+  }
+  auto result = at::empty(self.sizes(), options, fmt);
+  result.fill_(1);
+  return result;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(OnesLikeFn, ones_like_dispatcher, Backend::kAscend, OnesLikeKernelAscend)
+
+at::Tensor NewOnesKernelAscend(const at::Tensor& self, at::IntArrayRef size, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
+  auto options = at::TensorOptions()
+    .dtype(dtype.value_or(self.scalar_type()))
+    .layout(layout.value_or(self.layout()))
+    .device(device.value_or(self.device()))
+    .pinned_memory(pin_memory.value_or(false));
+  auto result = at::empty(size, options);
+  result.fill_(1);
+  return result;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(NewOnesFn, new_ones_dispatcher, Backend::kAscend, NewOnesKernelAscend)
 
 at::Tensor AddmmKernelAscend(const at::Tensor& self, const at::Tensor& mat1, const at::Tensor& mat2, const at::Scalar& beta, const at::Scalar& alpha) {
   namespace ascend = at::native::flagos::ascend;

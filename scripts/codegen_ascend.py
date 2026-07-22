@@ -246,6 +246,20 @@ OPS = {
     "prod":               ("prod", "Prod"),
 
     # ---- gemm family (cubeMathType) ----
+    # mm/bmm: functional + .out variants. aclnn mm=aclnnMm, bmm=aclnnBatchMatMul.
+    #   The .out variant is a generic codegen capability (any op whose .out kernel
+    #   just writes into a caller-shaped out& can reuse T_MATMUL_OUT-style pairs).
+    "mm":                 ("matmul", "Mm"),
+    "mm.out":             ("matmul_out", "Mm"),
+    "bmm":                ("matmul", "BatchMatMul"),
+    "bmm.out":            ("matmul_out", "BatchMatMul"),
+    # cat: TensorList concat (aclCreateTensorList).
+    "cat":                ("cat", "Cat"),
+    # factory ops: at::empty + device-side zero_/fill_ (no direct aclnn call).
+    "zeros":              ("zeros", None),
+    "scalar_tensor":      ("scalar_tensor", None),
+    "ones_like":          ("ones_like", None),
+    "new_ones":           ("new_ones", None),
     "addmm":              ("gemm_addmm", "Addmm"),
     "baddbmm":            ("gemm_baddbmm", "Baddbmm"),
     "mv":                 ("mv", "Mv"),
@@ -325,9 +339,6 @@ SKIP = {
     # le.Tensor stays handwritten: aclnnLe symbol is absent, needs runtime
     # multi-version probing (aclnnLe / aclnnLeTensor / aclnnLessEqual).
     "le.Tensor",
-    # mm/bmm stay handwritten: they also register out-variants (Mm/BmmOutFn)
-    # that codegen does not emit.
-    "mm", "bmm",
 }
 
 # --------------------------------------------------------------------------
@@ -944,6 +955,48 @@ at::Tensor {kernel}(const at::Tensor& self, const at::Tensor& batch1, const at::
 REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
 """
 
+# matmul: (self, mat2) -> matmul result.  aclnn<Name>(self, mat2, out, cubeMathType)
+#   mm:  2-D x 2-D -> (self.rows, mat2.cols)
+#   bmm: 3-D x 3-D -> (batch, self.rows, mat2.cols)  [aclnnBatchMatMul]
+# out_shape widens the batch dims of self then appends mat2's trailing dim, so a
+# single template covers both the 2-D and batched cases.
+T_MATMUL = """\
+at::Tensor {kernel}(const at::Tensor& self, const at::Tensor& mat2) {{
+  namespace ascend = at::native::flagos::ascend;
+  int8_t cube_math_type = ascend::OpPreparation::get_cube_math_type(true);
+  std::vector<int64_t> out_shape = self.sizes().vec();
+  out_shape.back() = mat2.size(-1);
+  auto out = ascend::OpPreparation::apply_tensor_without_format(out_shape, self.options());
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_mat2(mat2);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_mat2.get(), acl_out.get(), cube_math_type);
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# matmul_out: .out variant of matmul.  Writes self @ mat2 into caller-provided out&.
+#   Shares the aclnn call with T_MATMUL; the framework has already shaped `out`.
+T_MATMUL_OUT = """\
+at::Tensor& {kernel}(const at::Tensor& self, const at::Tensor& mat2, at::Tensor& out) {{
+  namespace ascend = at::native::flagos::ascend;
+  int8_t cube_math_type = ascend::OpPreparation::get_cube_math_type(true);
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_mat2(mat2);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_mat2.get(), acl_out.get(), cube_math_type);
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
 # mv: (self (n,m), vec (m,)) -> (n,).  aclnn<Name>(self, vec, out, cubeMathType)
 T_MV = """\
 at::Tensor {kernel}(const at::Tensor& self, const at::Tensor& vec) {{
@@ -976,6 +1029,143 @@ at::Tensor {kernel}(const at::Tensor& self, const at::Tensor& tensor) {{
 
   EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_tensor.get(), acl_out.get());
   return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# cat: (ITensorListRef tensors, dim) -> concatenation along dim.
+#   aclnn<Name>(aclTensorList, dim, out). Filters numel==0 tensors (avoids
+#   dim-mismatch) and short-circuits the 0/1-valid-tensor cases like the ref.
+#   NOTE: aclCreateTensorList's aclTensor* are still owned by the AclTensorWrapper
+#   RAII objects, so we must NOT call aclDestroyTensorList.
+T_CAT = """\
+at::Tensor {kernel}(const at::ITensorListRef& tensors, int64_t dim) {{
+  namespace ascend = at::native::flagos::ascend;
+
+  auto materialized = tensors.materialize();
+  TORCH_CHECK(!materialized.empty(), "cat: expected a non-empty list of tensors");
+
+  std::vector<at::Tensor> valid_tensors;
+  for (const auto& t : materialized) {{
+    if (t.get().numel() > 0) {{
+      valid_tensors.push_back(t.get());
+    }}
+  }}
+
+  if (valid_tensors.empty()) {{
+    return materialized[0].get().clone();
+  }}
+  if (valid_tensors.size() == 1) {{
+    return valid_tensors[0].clone();
+  }}
+
+  auto& first = valid_tensors[0];
+  auto ndim = first.dim();
+  if (dim < 0) dim += ndim;
+
+  std::vector<int64_t> out_sizes(first.sizes().begin(), first.sizes().end());
+  for (size_t i = 1; i < valid_tensors.size(); ++i) {{
+    out_sizes[dim] += valid_tensors[i].size(dim);
+  }}
+
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      out_sizes, first.options());
+
+  std::vector<ascend::AclTensorWrapper> wrappers;
+  wrappers.reserve(valid_tensors.size());
+  for (auto& t : valid_tensors) {{
+    wrappers.emplace_back(t);
+  }}
+
+  std::vector<const aclTensor*> acl_tensors;
+  acl_tensors.reserve(valid_tensors.size());
+  for (auto& w : wrappers) {{
+    acl_tensors.push_back(w.get());
+  }}
+
+  aclTensorList* tensor_list = aclCreateTensorList(
+      acl_tensors.data(), acl_tensors.size());
+
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, tensor_list, dim, acl_out.get());
+
+  (void)tensor_list;  // aclTensor* owned by wrappers; do not aclDestroyTensorList
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# --- factory ops: at::empty(...) on the PrivateUse1 device + device-side fill ---
+# These build TensorOptions on-host then fill via zero_/fill_, which are themselves
+# device-side aclnn kernels (aclnnInplaceZero / aclnnInplaceFillScalar), so the
+# whole op stays on-device with no h2d. No aclnn override (fill is the dispatcher).
+
+# zeros: (IntArrayRef size, dtype?, layout?, device?, pin?) -> zero tensor.
+T_ZEROS = """\
+at::Tensor {kernel}(at::IntArrayRef size, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {{
+  auto options = at::TensorOptions()
+    .dtype(dtype.value_or(at::kFloat))
+    .layout(layout.value_or(at::kStrided))
+    .device(device.value_or(at::Device(at::kPrivateUse1, 0)))
+    .pinned_memory(pin_memory.value_or(false));
+  auto result = at::empty(size, options);
+  result.zero_();
+  return result;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# scalar_tensor: (Scalar s, dtype?, layout?, device?, pin?) -> 0-dim tensor filled s.
+T_SCALAR_TENSOR = """\
+at::Tensor {kernel}(const at::Scalar& s, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {{
+  auto options = at::TensorOptions()
+    .dtype(dtype.value_or(at::ScalarType::Float))
+    .layout(layout.value_or(at::kStrided))
+    .device(device.value_or(at::Device(at::kPrivateUse1, 0)))
+    .pinned_memory(pin_memory.value_or(false));
+  auto result = at::empty({{}}, options);
+  result.fill_(s);
+  return result;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# ones_like: (self, dtype?, layout?, device?, pin?, memory_format?) -> ones w/ self's meta.
+T_ONES_LIKE = """\
+at::Tensor {kernel}(const at::Tensor& self, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory, ::std::optional<at::MemoryFormat> memory_format) {{
+  auto options = at::TensorOptions()
+    .dtype(dtype.value_or(self.scalar_type()))
+    .layout(layout.value_or(self.layout()))
+    .device(device.value_or(self.device()))
+    .pinned_memory(pin_memory.value_or(false));
+  auto fmt = memory_format.value_or(at::MemoryFormat::Contiguous);
+  if (fmt == at::MemoryFormat::Preserve) {{
+    fmt = self.suggest_memory_format();
+  }}
+  auto result = at::empty(self.sizes(), options, fmt);
+  result.fill_(1);
+  return result;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# new_ones: (self, IntArrayRef size, dtype?, layout?, device?, pin?) -> ones w/ self's meta.
+T_NEW_ONES = """\
+at::Tensor {kernel}(const at::Tensor& self, at::IntArrayRef size, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {{
+  auto options = at::TensorOptions()
+    .dtype(dtype.value_or(self.scalar_type()))
+    .layout(layout.value_or(self.layout()))
+    .device(device.value_or(self.device()))
+    .pinned_memory(pin_memory.value_or(false));
+  auto result = at::empty(size, options);
+  result.fill_(1);
+  return result;
 }}
 
 REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
@@ -2115,6 +2305,9 @@ CATEGORIES = {
     "gemm_baddbmm":        T_GEMM_BADDBMM,
     "gemm_addmv":          T_GEMM_ADDMV,
     "gemm_addr":           T_GEMM_ADDR,
+    "matmul":              T_MATMUL,
+    "matmul_out":          T_MATMUL_OUT,
+    "cat":                 T_CAT,
     "mv":                  T_MV,
     "dot":                 T_DOT,
     "bce":                 T_BCE,
@@ -2155,7 +2348,16 @@ CATEGORIES = {
     "embedding":           T_EMBEDDING,
     "embedding_dense_backward": T_EMBEDDING_DENSE_BACKWARD,
     "constant_pad_nd":     T_CONSTANT_PAD_ND,
+    "zeros":               T_ZEROS,
+    "scalar_tensor":       T_SCALAR_TENSOR,
+    "ones_like":           T_ONES_LIKE,
+    "new_ones":            T_NEW_ONES,
 }
+
+# Categories whose kernels do NOT issue a direct aclnn call (they build tensors
+# on-host and fill via zero_/fill_, which are themselves device-side aclnn ops).
+# The symbol-validation guard is skipped for these; their OPS override is unused.
+NO_ACLNN_CATEGORIES = {"zeros", "scalar_tensor", "ones_like", "new_ones"}
 
 FILE_HEADER = """\
 // Copyright (c) 2026, BAAI. All rights reserved.
@@ -2170,6 +2372,7 @@ FILE_HEADER = """\
 #include "../../../generated/ops.h"
 #include <ATen/core/Tensor.h>
 #include <ATen/ExpandUtils.h>
+#include <ATen/ops/empty.h>
 #include <c10/core/Scalar.h>
 #include <algorithm>
 #include <vector>
@@ -2231,7 +2434,7 @@ def main():
             continue
         base = op.split(".")[0]
         acl = aclnn_name(base, override)
-        if syms is not None:
+        if syms is not None and cat not in NO_ACLNN_CATEGORIES:
             if (acl not in syms) or (acl + "GetWorkspaceSize" not in syms):
                 skipped.append((op, f"{acl} not in libopapi.so"))
                 continue
