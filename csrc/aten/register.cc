@@ -16,6 +16,7 @@
 #include "generated/ops.h"
 
 #include <ATen/core/LegacyTypeDispatch.h>
+#include <ATen/SDPBackend.h>
 #include <torch/library.h>
 #include <c10/core/ScalarType.h>
 #include <c10/util/Optional.h>
@@ -113,6 +114,14 @@ at::Tensor WrapperView(const at::Tensor& self, c10::SymIntArrayRef size) {
   return at::native::flagos::view(self, size);
 }
 
+at::Tensor WrapperExpand(const at::Tensor& self, c10::SymIntArrayRef size, bool implicit) {
+  return at::native::flagos::expand(self, size, implicit);
+}
+
+at::Tensor WrapperNarrow(const at::Tensor& self, int64_t dim, int64_t start, int64_t length) {
+  return at::native::flagos::narrow(self, dim, start, length);
+}
+
 at::Tensor WrapperContiguous(
     const at::Tensor& self, at::MemoryFormat memory_format) {
   return at::native::flagos::contiguous(self, memory_format);
@@ -178,6 +187,24 @@ void WrapperRecordStream(at::Tensor& self, at::Stream s) {
   alloc->record_stream(self.storage().data_ptr(), stream);
 }
 
+// _fused_sdp_choice: tells PyTorch's scaled_dot_product_attention which fused
+// backend to use for PrivateUse1 tensors. Returning efficient_attention (2)
+// routes to _scaled_dot_product_efficient_attention, which has an Ascend
+// aclnnFlashAttentionScore kernel. Without this, SDPA falls back to the math
+// decomposition path (_safe_softmax etc.), which is slower and needs many more
+// ops registered.
+int64_t WrapperFusedSdpChoice(
+    const at::Tensor& query,
+    const at::Tensor& key,
+    const at::Tensor& value,
+    const std::optional<at::Tensor>& attn_mask,
+    double dropout_p,
+    bool is_causal,
+    std::optional<double> scale,
+    bool enable_gqa) {
+  return static_cast<int64_t>(at::SDPBackend::efficient_attention);
+}
+
 // ============================================================
 // Generated wrappers for 71 CUDA operators
 // ============================================================
@@ -203,12 +230,15 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl(
       "set_.source_Storage_storage_offset", WrapperSetSourceStorageOffset);
   m.impl("view", WrapperView);
+  m.impl("expand", WrapperExpand);
+  m.impl("narrow", WrapperNarrow);
   m.impl("contiguous", WrapperContiguous);
   m.impl("clone", WrapperClone);
   m.impl("_to_copy", WrapperToCopy);
   m.impl("index_put_", WrapperIndexPut_);
   m.impl("_index_put_impl_", WrapperIndexPutImpl_);
   m.impl("record_stream", WrapperRecordStream);
+  m.impl("_fused_sdp_choice", WrapperFusedSdpChoice);
 
   // ============================================================
   // Generated m.impl registrations for 71 CUDA operators

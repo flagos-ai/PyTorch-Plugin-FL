@@ -29,4 +29,24 @@ at::Tensor _reshape_alias(
 
 at::Tensor view(const at::Tensor& self, c10::SymIntArrayRef size);
 
+at::Tensor expand(const at::Tensor& self, c10::SymIntArrayRef size, bool implicit);
+
+at::Tensor narrow(const at::Tensor& self, int64_t dim, int64_t start, int64_t length);
+
+at::Tensor transpose_int(const at::Tensor& self, int64_t dim0, int64_t dim1);
+
+at::Tensor permute(const at::Tensor& self, at::IntArrayRef dims);
+
+at::Tensor select_int(const at::Tensor& self, int64_t dim, int64_t index);
+
+at::Tensor slice_tensor(const at::Tensor& self, int64_t dim, ::std::optional<int64_t> start, ::std::optional<int64_t> end, int64_t step);
+
+at::Tensor squeeze(const at::Tensor& self);
+
+at::Tensor squeeze_dim(const at::Tensor& self, int64_t dim);
+
+at::Tensor unsqueeze(const at::Tensor& self, int64_t dim);
+
+at::Tensor unsafe_view(const at::Tensor& self, at::IntArrayRef size);
+
 } // namespace at::native::flagos

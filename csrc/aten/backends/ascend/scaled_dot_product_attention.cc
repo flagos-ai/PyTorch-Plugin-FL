@@ -6,6 +6,31 @@
 
 #include <ATen/ATen.h>
 #include <torch/library.h>
+#include <ATen/native/transformers/attention.h>
+#include <ATen/SDPBackend.h>
+
+// _fused_sdp_choice stub for PrivateUse1. PyTorch's scaled_dot_product_attention
+// queries _fused_sdp_choice_stub via is_device_supported(PrivateUse1) to pick a
+// fused backend. Registering this stub makes the device "supported" and returns
+// efficient_attention (2), routing to _scaled_dot_product_efficient_attention
+// (our aclnnFlashAttentionScore kernel) instead of the math decomposition.
+// Must live in at::native for REGISTER_PRIVATEUSE1_DISPATCH (the macro references
+// the unqualified stub symbol and declares its registrar in the enclosing ns).
+namespace at::native {
+static int64_t fused_sdp_choice_ascend(
+    const at::Tensor& query,
+    const at::Tensor& key,
+    const at::Tensor& value,
+    const std::optional<at::Tensor>& attn_mask,
+    double dropout_p,
+    bool is_causal,
+    std::optional<double> scale,
+    bool enable_gqa) {
+  return static_cast<int64_t>(at::SDPBackend::efficient_attention);
+}
+
+REGISTER_PRIVATEUSE1_DISPATCH(_fused_sdp_choice_stub, &fused_sdp_choice_ascend);
+} // namespace at::native
 
 namespace at::native::flagos::ascend {
 
