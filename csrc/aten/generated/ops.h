@@ -2579,12 +2579,6 @@ DECLARE_DISPATCHER(CudnnConvolutionAddReluFn, cudnn_convolution_add_relu_dispatc
 using CudnnConvolutionAddReluOutFn = at::Tensor & (*)(const at::Tensor &, const at::Tensor &, const at::Tensor &, const ::std::optional<at::Scalar> &, const ::std::optional<at::Tensor> &, at::IntArrayRef, at::IntArrayRef, at::IntArrayRef, int64_t, at::Tensor &);
 DECLARE_DISPATCHER(CudnnConvolutionAddReluOutFn, cudnn_convolution_add_relu_out_dispatcher)
 
-using CudnnConvolutionBiasFusedFn = at::Tensor (*)(const at::Tensor &, const at::Tensor &, const at::Tensor &, at::IntArrayRef, at::IntArrayRef, at::IntArrayRef, int64_t, bool, bool, bool);
-DECLARE_DISPATCHER(CudnnConvolutionBiasFusedFn, cudnn_convolution_bias_fused_dispatcher)
-
-using CudnnConvolutionBiasFusedOutFn = at::Tensor & (*)(const at::Tensor &, const at::Tensor &, const at::Tensor &, at::IntArrayRef, at::IntArrayRef, at::IntArrayRef, int64_t, bool, bool, bool, at::Tensor &);
-DECLARE_DISPATCHER(CudnnConvolutionBiasFusedOutFn, cudnn_convolution_bias_fused_out_dispatcher)
-
 using CudnnConvolutionReluFn = at::Tensor (*)(const at::Tensor &, const at::Tensor &, const ::std::optional<at::Tensor> &, at::IntArrayRef, at::IntArrayRef, at::IntArrayRef, int64_t);
 DECLARE_DISPATCHER(CudnnConvolutionReluFn, cudnn_convolution_relu_dispatcher)
 

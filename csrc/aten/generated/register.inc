@@ -2575,12 +2575,6 @@ at::Tensor WrapperCudnnConvolutionAddRelu(const at::Tensor & self, const at::Ten
 at::Tensor & WrapperCudnnConvolutionAddReluOut(const at::Tensor & self, const at::Tensor & weight, const at::Tensor & z, const ::std::optional<at::Scalar> & alpha, const ::std::optional<at::Tensor> & bias, at::IntArrayRef stride, at::IntArrayRef padding, at::IntArrayRef dilation, int64_t groups, at::Tensor & out) {
   return at::native::flagos::cudnn_convolution_add_relu_out_dispatcher(self, weight, z, alpha, bias, stride, padding, dilation, groups, out);
 }
-at::Tensor WrapperCudnnConvolutionBiasFused(const at::Tensor & self, const at::Tensor & weight, const at::Tensor & bias, at::IntArrayRef padding, at::IntArrayRef stride, at::IntArrayRef dilation, int64_t groups, bool benchmark, bool deterministic, bool allow_tf32) {
-  return at::native::flagos::cudnn_convolution_bias_fused_dispatcher(self, weight, bias, padding, stride, dilation, groups, benchmark, deterministic, allow_tf32);
-}
-at::Tensor & WrapperCudnnConvolutionBiasFusedOut(const at::Tensor & self, const at::Tensor & weight, const at::Tensor & bias, at::IntArrayRef padding, at::IntArrayRef stride, at::IntArrayRef dilation, int64_t groups, bool benchmark, bool deterministic, bool allow_tf32, at::Tensor & out) {
-  return at::native::flagos::cudnn_convolution_bias_fused_out_dispatcher(self, weight, bias, padding, stride, dilation, groups, benchmark, deterministic, allow_tf32, out);
-}
 at::Tensor WrapperCudnnConvolutionRelu(const at::Tensor & self, const at::Tensor & weight, const ::std::optional<at::Tensor> & bias, at::IntArrayRef stride, at::IntArrayRef padding, at::IntArrayRef dilation, int64_t groups) {
   return at::native::flagos::cudnn_convolution_relu_dispatcher(self, weight, bias, stride, padding, dilation, groups);
 }
@@ -6970,8 +6964,6 @@ at::Tensor & WrapperZerosLikeOut(const at::Tensor & self, ::std::optional<at::Me
   m.impl("cudnn_convolution.out", WrapperCudnnConvolutionOut);
   m.impl("cudnn_convolution_add_relu", WrapperCudnnConvolutionAddRelu);
   m.impl("cudnn_convolution_add_relu.out", WrapperCudnnConvolutionAddReluOut);
-  m.impl("cudnn_convolution_bias_fused", WrapperCudnnConvolutionBiasFused);
-  m.impl("cudnn_convolution_bias_fused.out", WrapperCudnnConvolutionBiasFusedOut);
   m.impl("cudnn_convolution_relu", WrapperCudnnConvolutionRelu);
   m.impl("cudnn_convolution_relu.out", WrapperCudnnConvolutionReluOut);
   m.impl("cudnn_convolution_transpose", WrapperCudnnConvolutionTranspose);

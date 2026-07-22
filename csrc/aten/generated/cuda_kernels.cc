@@ -373,7 +373,6 @@
 #include <ATen/ops/cudnn_batch_norm_backward.h>
 #include <ATen/ops/cudnn_convolution.h>
 #include <ATen/ops/cudnn_convolution_add_relu.h>
-#include <ATen/ops/cudnn_convolution_bias_fused.h>
 #include <ATen/ops/cudnn_convolution_relu.h>
 #include <ATen/ops/cudnn_convolution_transpose.h>
 #include <ATen/ops/cudnn_grid_sampler.h>
@@ -7825,20 +7824,6 @@ at::Tensor & CudnnConvolutionAddReluOutKernelCuda(const at::Tensor & self, const
   at::Tensor bias_t = bias.has_value() ? *bias : at::Tensor();
   DeviceBoxingGuard guard(self, weight, z, out, bias_t);
   at::cudnn_convolution_add_relu_outf(self, weight, z, alpha, bias, stride, padding, dilation, groups, out);
-  UnboxToFlagos(out);
-  return out;
-}
-
-at::Tensor CudnnConvolutionBiasFusedKernelCuda(const at::Tensor & self, const at::Tensor & weight, const at::Tensor & bias, at::IntArrayRef padding, at::IntArrayRef stride, at::IntArrayRef dilation, int64_t groups, bool benchmark, bool deterministic, bool allow_tf32) {
-  DeviceBoxingGuard guard(self, weight, bias);
-  auto result = at::cudnn_convolution_bias_fused(self, weight, bias, padding, stride, dilation, groups, benchmark, deterministic, allow_tf32);
-  UnboxToFlagos(result);
-  return result;
-}
-
-at::Tensor & CudnnConvolutionBiasFusedOutKernelCuda(const at::Tensor & self, const at::Tensor & weight, const at::Tensor & bias, at::IntArrayRef padding, at::IntArrayRef stride, at::IntArrayRef dilation, int64_t groups, bool benchmark, bool deterministic, bool allow_tf32, at::Tensor & out) {
-  DeviceBoxingGuard guard(self, weight, bias, out);
-  at::cudnn_convolution_bias_fused_outf(self, weight, bias, padding, stride, dilation, groups, benchmark, deterministic, allow_tf32, out);
   UnboxToFlagos(out);
   return out;
 }
@@ -17353,8 +17338,6 @@ REGISTER_IMPL_TO_DISPATCHER(CudnnConvolutionFn, cudnn_convolution_dispatcher, Ba
 REGISTER_IMPL_TO_DISPATCHER(CudnnConvolutionOutFn, cudnn_convolution_out_dispatcher, Backend::kCuda, CudnnConvolutionOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(CudnnConvolutionAddReluFn, cudnn_convolution_add_relu_dispatcher, Backend::kCuda, CudnnConvolutionAddReluKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(CudnnConvolutionAddReluOutFn, cudnn_convolution_add_relu_out_dispatcher, Backend::kCuda, CudnnConvolutionAddReluOutKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(CudnnConvolutionBiasFusedFn, cudnn_convolution_bias_fused_dispatcher, Backend::kCuda, CudnnConvolutionBiasFusedKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(CudnnConvolutionBiasFusedOutFn, cudnn_convolution_bias_fused_out_dispatcher, Backend::kCuda, CudnnConvolutionBiasFusedOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(CudnnConvolutionReluFn, cudnn_convolution_relu_dispatcher, Backend::kCuda, CudnnConvolutionReluKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(CudnnConvolutionReluOutFn, cudnn_convolution_relu_out_dispatcher, Backend::kCuda, CudnnConvolutionReluOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(CudnnConvolutionTransposeFn, cudnn_convolution_transpose_dispatcher, Backend::kCuda, CudnnConvolutionTransposeKernelCuda)
