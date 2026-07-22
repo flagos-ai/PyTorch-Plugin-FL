@@ -512,16 +512,30 @@ def _get_setup_kwargs():
             "lib/*.dylib*",
             "lib/*.dll",
             "lib/*.lib",
-            "backends.conf",
-            # Runtime op-routing configs selected via FLAGOS_USE_FLAGGEMS.
-            "backends_cuda.conf",
-            "backends_flaggems.conf",
+            # MetaX self-contained wheel: forked libtorch C++ .so bundled here so
+            # the process loads the MetaX C++ runtime without a separate metax
+            # torch wheel (see scripts/bundle_maca_libtorch.sh).
+            "lib_maca/*.so*",
+            # All backend configs, not just the default: runtime op-routing
+            # configs selected via FLAGOS_USE_FLAGGEMS (backends_flaggems.conf)
+            # and boxing modes via FLAGOS_BACKEND_CONFIG (backends_cuda.conf /
+            # backends_metax.conf).
+            "backends*.conf",
+            "codegen_skip_ops.txt",
         ]
     }
 
+    version = "0.1.0"
+    if ACCELERATOR == "metax":
+        # Local version segment tags the wheel as a MetaX build (self-contained
+        # forked libtorch). Overridable via FLAGOS_WHEEL_LOCAL for a concrete
+        # MACA/driver version, e.g. FLAGOS_WHEEL_LOCAL=metax3.8.1.
+        local = os.environ.get("FLAGOS_WHEEL_LOCAL", "metax")
+        version = f"{version}+{local}"
+
     return dict(
         name="torch_fl",
-        version="0.1.0",
+        version=version,
         description="FlagGems operators as a custom PyTorch device (flagos)",
         author="FlagGems Team",
         packages=find_packages(

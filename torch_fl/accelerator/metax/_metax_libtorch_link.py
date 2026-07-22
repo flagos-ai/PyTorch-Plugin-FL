@@ -57,12 +57,36 @@ def _active_torch_lib():
     return lib if os.path.isdir(lib) else None
 
 
-def _discover_maca_torch_lib():
-    """Locate the MetaX torch wheel's lib dir.
+def _bundled_maca_lib():
+    """Forked libtorch bundled inside this wheel (self-contained MetaX build).
 
-    Priority: explicit env var, then sibling conda envs whose torch is a
-    ``+metax``/``+maca`` build.
+    ``scripts/bundle_maca_libtorch.sh`` copies the MetaX libtorch .so into
+    ``torch_fl/lib_maca/``.  When present this is the preferred source: the
+    target machine then needs only the official ``torch+cpu`` wheel plus the
+    ``/opt/maca`` driver runtime, no separate MetaX torch wheel.
     """
+    here = os.path.dirname(os.path.abspath(__file__))
+    # this file: torch_fl/accelerator/metax/_metax_libtorch_link.py
+    pkg_root = os.path.dirname(os.path.dirname(here))  # -> torch_fl/
+    libdir = os.path.join(pkg_root, "lib_maca")
+    if os.path.isdir(libdir) and os.path.exists(
+        os.path.join(libdir, "libtorch_cuda.so")
+    ):
+        return libdir
+    return None
+
+
+def _discover_maca_torch_lib():
+    """Locate the MetaX libtorch .so dir.
+
+    Priority: forked libtorch bundled in this wheel (lib_maca/), then an
+    explicit env var, then sibling conda envs whose torch is a
+    ``+metax``/``+maca`` build (fallback for multi-env dev setups).
+    """
+    bundled = _bundled_maca_lib()
+    if bundled:
+        return bundled
+
     env = os.environ.get("FLAGOS_MACA_TORCH_LIB")
     if env and os.path.isdir(env):
         return env

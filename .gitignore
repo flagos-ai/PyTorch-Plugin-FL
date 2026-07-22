@@ -3,6 +3,7 @@ build/
 dist/
 cmake-build*/
 torch_fl/lib/
+torch_fl/lib_maca/
 torch_fl/.nfs*
 
 # Python
