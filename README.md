@@ -25,7 +25,7 @@ A custom PyTorch device plugin based on the PrivateUse1 extension mechanism, reg
 
 - Hardware Runtime Dependencies:
     - CUDA toolkit 12.8 (required only on CUDA platform)
-    - MetaX cu-bridge library (required only on MetaX platform)
+    - MetaX cu-bridge library (required only on MetaX platform; from the [MetaX developer portal](https://developer.metax-tech.com/softnova))
     - CANN toolkit (required only on Ascend platform)
 - PyTorch 2.11.0
 - FlagGems (version 5.0.2 or higher, requires DFLAGGEMS_BUILD_C_EXTENSIONS enabled). For source installation, refer to: [FlagGems Installation](https://flagos-ai.github.io/FlagGems/getting-started/install/)
@@ -51,6 +51,9 @@ MetaX builds compile device kernels with `mxcc`/`cucc` from `csrc/aten/backends/
 - PyTorch wheel compatible with your MetaX stack (see [Runtime notes](#metax-runtime-notes) below)
 - FlagGems 5.0.2+ (optional; required only when routing ops to `flagos_python`)
 
+> **Getting the MetaX MACA SDK and `torch+metax` wheel**
+> Both are distributed through the MetaX developer portal (SoftNova): <https://developer.metax-tech.com/softnova>. Registration/login is required. Download the MACA SDK (driver + cu-bridge + `mxcc`/`cucc`) matching your card and driver version, and the `torch+metax` (`maca-pytorch`) wheel built for the same MACA version and your Python version. Install the SDK to `/opt/maca` (or point `METAX_PATH` at the install location).
+
 ```bash
 git clone https://github.com/flagos-ai/PyTorch-Plugin-FL.git && cd PyTorch-Plugin-FL
 
@@ -75,7 +78,7 @@ The source build above compiles hand-written `mxcc` kernels and links against a 
 
 No separate `torch+metax` wheel and no manual `LD_LIBRARY_PATH` are required — `import torch_fl` symlinks the stock wheel's `torch/lib` to the bundled forked libtorch, whose RPATH resolves the MetaX runtime under `/opt/maca`.
 
-**Build the wheel** (on a machine with the MetaX SDK and a `torch+metax` wheel available as the libtorch source):
+**Build the wheel** (on a machine with the MetaX SDK and a `torch+metax` wheel available as the libtorch source — both from the [MetaX developer portal](https://developer.metax-tech.com/softnova)):
 
 ```bash
 git clone https://github.com/flagos-ai/PyTorch-Plugin-FL.git && cd PyTorch-Plugin-FL
