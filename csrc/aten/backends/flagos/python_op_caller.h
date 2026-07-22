@@ -100,6 +100,31 @@ at::Tensor CallPythonOp_Factory(const char* func_name,
                                 const std::vector<c10::IValue>& args,
                                 std::optional<at::ScalarType> dtype);
 
+// Like-factory caller (zeros_like/ones_like/full_like/...). `args` are the
+// non-TensorOptions positionals -- the input tensor `self` (whose shape/device
+// gems reads via torch.empty_like) plus any value positional (full_like's
+// fill_value). The tensor-options are injected as kwargs: device=flagos (so
+// gems' internal empty_like stays on PrivateUse1), layout=strided,
+// memory_format=None, pin_memory=None, and dtype forwarded (nullopt -> None,
+// meaning "same as self"). Distinct from CallPythonOp_Factory whose first arg
+// is a shape array; here it's the source tensor.
+at::Tensor CallPythonOp_LikeFactory(const char* func_name,
+                                    const std::vector<c10::IValue>& args,
+                                    std::optional<at::ScalarType> dtype);
+
+// Random in-place caller (uniform_/exponential_/bernoulli_.float). `args` are
+// the aten positionals with the trailing `Generator?` arg dropped (self, plus
+// scalar params like from/to/lambd/p). gems only reads philox seed+offset from
+// the generator, computing the actual randoms in a Triton kernel that writes
+// into the (flagos) `self` tensor -- so the generator's device need not match.
+// A CUDA generator is required because gems' philox code expects the 16-byte
+// CUDA-style RNG state (a flagos/CPU generator's 5056-byte MT19937 state fails
+// the `c0, c1 = state.view(int64)` unpack). We hold ONE module-level CUDA
+// Generator and advance its offset each call (gems set_state's it back), so
+// repeated calls yield distinct streams. Relies on the GIL for serialization.
+at::Tensor CallPythonOp_RandomInplace(const char* func_name,
+                                      const std::vector<c10::IValue>& args);
+
 // Like CallPythonOp_Generic, but the Python op returns a tuple/list of N tensors
 // (e.g. sort -> (values, indices), var_mean -> (var, mean)). Returns the N
 // tensors in order. Used by the codegen tuple_return kernels.

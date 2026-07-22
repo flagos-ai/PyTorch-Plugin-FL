@@ -281,6 +281,12 @@ at::Tensor BaddbmmKernelPython(const at::Tensor & self, const at::Tensor & batch
   return result;
 }
 
+at::Tensor & BernoulliInplaceFloatKernelPython(at::Tensor & self, double p, ::std::optional<at::Generator> generator) {
+  auto result = CallPythonOp_RandomInplace("flag_gems.ops.bernoulli_.bernoulli_", {self, p});
+  self.copy_(result);
+  return self;
+}
+
 at::Tensor BincountKernelPython(const at::Tensor & self, const ::std::optional<at::Tensor> & weights, int64_t minlength) {
   auto result = CallPythonOp_Generic("flag_gems.fused.bincount.bincount", {self, weights, minlength});
   UnboxToFlagos(result);
@@ -674,6 +680,12 @@ at::Tensor & Expm1InplaceKernelPython(at::Tensor & self) {
   return self;
 }
 
+at::Tensor & ExponentialInplaceKernelPython(at::Tensor & self, double lambd, ::std::optional<at::Generator> generator) {
+  auto result = CallPythonOp_RandomInplace("flag_gems.ops.exponential_.exponential_", {self, lambd});
+  self.copy_(result);
+  return self;
+}
+
 at::Tensor EyeKernelPython(int64_t n, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
   auto result = CallPythonOp_Factory("flag_gems.ops.eye.eye", {n}, dtype);
   UnboxToFlagos(result);
@@ -771,6 +783,12 @@ at::Tensor & FminOutKernelPython(const at::Tensor & self, const at::Tensor & oth
 
 at::Tensor FullKernelPython(at::IntArrayRef size, const at::Scalar & fill_value, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
   auto result = CallPythonOp_Factory("flag_gems.ops.full.full", {size, fill_value}, dtype);
+  UnboxToFlagos(result);
+  return result;
+}
+
+at::Tensor FullLikeKernelPython(const at::Tensor & self, const at::Scalar & fill_value, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory, ::std::optional<at::MemoryFormat> memory_format) {
+  auto result = CallPythonOp_LikeFactory("flag_gems.ops.full_like.full_like", {self, fill_value}, dtype);
   UnboxToFlagos(result);
   return result;
 }
@@ -1305,6 +1323,12 @@ at::Tensor OnesKernelPython(at::IntArrayRef size, ::std::optional<at::ScalarType
   return result;
 }
 
+at::Tensor OnesLikeKernelPython(const at::Tensor & self, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory, ::std::optional<at::MemoryFormat> memory_format) {
+  auto result = CallPythonOp_LikeFactory("flag_gems.ops.ones_like.ones_like", {self}, dtype);
+  UnboxToFlagos(result);
+  return result;
+}
+
 at::Tensor & PixelUnshuffleOutKernelPython(const at::Tensor & self, int64_t downscale_factor, at::Tensor & out) {
   CallPythonOp_Generic("flag_gems.ops.pixel_unshuffle.pixel_unshuffle_out", {self, downscale_factor, out});
   return out;
@@ -1783,6 +1807,12 @@ at::Tensor UnfoldBackwardKernelPython(const at::Tensor & grad_in, at::IntArrayRe
   return result;
 }
 
+at::Tensor & UniformInplaceKernelPython(at::Tensor & self, double from, double to, ::std::optional<at::Generator> generator) {
+  auto result = CallPythonOp_RandomInplace("flag_gems.ops.uniform.uniform_", {self, from, to});
+  self.copy_(result);
+  return self;
+}
+
 ::std::tuple<at::Tensor,at::Tensor,at::Tensor> UniqueConsecutiveKernelPython(const at::Tensor & self, bool return_inverse, bool return_counts, ::std::optional<int64_t> dim) {
   auto result = CallPythonOp_GenericTuple("flag_gems.ops.unique_consecutive.unique_consecutive", {self, return_inverse, return_counts, dim}, 3);
   UnboxToFlagos(result[0]);
@@ -1840,6 +1870,12 @@ at::Tensor ZerosKernelPython(at::IntArrayRef size, ::std::optional<at::ScalarTyp
   return result;
 }
 
+at::Tensor ZerosLikeKernelPython(const at::Tensor & self, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory, ::std::optional<at::MemoryFormat> memory_format) {
+  auto result = CallPythonOp_LikeFactory("flag_gems.ops.zeros_like.zeros_like", {self}, dtype);
+  UnboxToFlagos(result);
+  return result;
+}
+
 } // namespace
 
 REGISTER_IMPL_TO_DISPATCHER(PrivConvDepthwise2dFn, priv_conv_depthwise2d_dispatcher, Backend::kFlagOsPython, PrivConvDepthwise2dKernelPython)
@@ -1885,6 +1921,7 @@ REGISTER_IMPL_TO_DISPATCHER(AtanInplaceFn, atan_inplace_dispatcher, Backend::kFl
 REGISTER_IMPL_TO_DISPATCHER(AvgPool2dFn, avg_pool2d_dispatcher, Backend::kFlagOsPython, AvgPool2dKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(AvgPool2dBackwardFn, avg_pool2d_backward_dispatcher, Backend::kFlagOsPython, AvgPool2dBackwardKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(BaddbmmFn, baddbmm_dispatcher, Backend::kFlagOsPython, BaddbmmKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(BernoulliInplaceFloatFn, bernoulli_inplace_float_dispatcher, Backend::kFlagOsPython, BernoulliInplaceFloatKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(BincountFn, bincount_dispatcher, Backend::kFlagOsPython, BincountKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(BitwiseAndScalarFn, bitwise_and_scalar_dispatcher, Backend::kFlagOsPython, BitwiseAndScalarKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(BitwiseAndScalarTensorFn, bitwise_and_scalar_tensor_dispatcher, Backend::kFlagOsPython, BitwiseAndScalarTensorKernelPython)
@@ -1951,6 +1988,7 @@ REGISTER_IMPL_TO_DISPATCHER(ExpInplaceFn, exp_inplace_dispatcher, Backend::kFlag
 REGISTER_IMPL_TO_DISPATCHER(Expm1Fn, expm1_dispatcher, Backend::kFlagOsPython, Expm1KernelPython)
 REGISTER_IMPL_TO_DISPATCHER(Expm1OutFn, expm1_out_dispatcher, Backend::kFlagOsPython, Expm1OutKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(Expm1InplaceFn, expm1_inplace_dispatcher, Backend::kFlagOsPython, Expm1InplaceKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(ExponentialInplaceFn, exponential_inplace_dispatcher, Backend::kFlagOsPython, ExponentialInplaceKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(EyeFn, eye_dispatcher, Backend::kFlagOsPython, EyeKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(EyeMFn, eye_m_dispatcher, Backend::kFlagOsPython, EyeMKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(FillScalarFn, fill_scalar_dispatcher, Backend::kFlagOsPython, FillScalarKernelPython)
@@ -1968,6 +2006,7 @@ REGISTER_IMPL_TO_DISPATCHER(FloorDivideInplaceTensorFn, floor_divide_inplace_ten
 REGISTER_IMPL_TO_DISPATCHER(FminFn, fmin_dispatcher, Backend::kFlagOsPython, FminKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(FminOutFn, fmin_out_dispatcher, Backend::kFlagOsPython, FminOutKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(FullFn, full_dispatcher, Backend::kFlagOsPython, FullKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(FullLikeFn, full_like_dispatcher, Backend::kFlagOsPython, FullLikeKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(GeScalarFn, ge_scalar_dispatcher, Backend::kFlagOsPython, GeScalarKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(GeTensorFn, ge_tensor_dispatcher, Backend::kFlagOsPython, GeTensorKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(GeluFn, gelu_dispatcher, Backend::kFlagOsPython, GeluKernelPython)
@@ -2054,6 +2093,7 @@ REGISTER_IMPL_TO_DISPATCHER(NllLossBackwardFn, nll_loss_backward_dispatcher, Bac
 REGISTER_IMPL_TO_DISPATCHER(NllLossForwardFn, nll_loss_forward_dispatcher, Backend::kFlagOsPython, NllLossForwardKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(NonzeroFn, nonzero_dispatcher, Backend::kFlagOsPython, NonzeroKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(OnesFn, ones_dispatcher, Backend::kFlagOsPython, OnesKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(OnesLikeFn, ones_like_dispatcher, Backend::kFlagOsPython, OnesLikeKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(PixelUnshuffleOutFn, pixel_unshuffle_out_dispatcher, Backend::kFlagOsPython, PixelUnshuffleOutKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(PolarFn, polar_dispatcher, Backend::kFlagOsPython, PolarKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(PowScalarFn, pow_scalar_dispatcher, Backend::kFlagOsPython, PowScalarKernelPython)
@@ -2134,6 +2174,7 @@ REGISTER_IMPL_TO_DISPATCHER(TrilFn, tril_dispatcher, Backend::kFlagOsPython, Tri
 REGISTER_IMPL_TO_DISPATCHER(TriuFn, triu_dispatcher, Backend::kFlagOsPython, TriuKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(TriuInplaceFn, triu_inplace_dispatcher, Backend::kFlagOsPython, TriuInplaceKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(UnfoldBackwardFn, unfold_backward_dispatcher, Backend::kFlagOsPython, UnfoldBackwardKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(UniformInplaceFn, uniform_inplace_dispatcher, Backend::kFlagOsPython, UniformInplaceKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(UniqueConsecutiveFn, unique_consecutive_dispatcher, Backend::kFlagOsPython, UniqueConsecutiveKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(UpsampleBicubic2dFn, upsample_bicubic2d_dispatcher, Backend::kFlagOsPython, UpsampleBicubic2dKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(VarCorrectionFn, var_correction_dispatcher, Backend::kFlagOsPython, VarCorrectionKernelPython)
@@ -2143,6 +2184,7 @@ REGISTER_IMPL_TO_DISPATCHER(WhereSelfFn, where_self_dispatcher, Backend::kFlagOs
 REGISTER_IMPL_TO_DISPATCHER(WhereSelfOutFn, where_self_out_dispatcher, Backend::kFlagOsPython, WhereSelfOutKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(ZeroInplaceFn, zero_inplace_dispatcher, Backend::kFlagOsPython, ZeroInplaceKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(ZerosFn, zeros_dispatcher, Backend::kFlagOsPython, ZerosKernelPython)
+REGISTER_IMPL_TO_DISPATCHER(ZerosLikeFn, zeros_like_dispatcher, Backend::kFlagOsPython, ZerosLikeKernelPython)
 
 } // namespace at::native::flagos
 

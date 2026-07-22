@@ -386,6 +386,60 @@ at::Tensor CallPythonOp_Factory(const char* func_name,
   return PythonToTensor(result);
 }
 
+at::Tensor CallPythonOp_LikeFactory(const char* func_name,
+                                    const std::vector<c10::IValue>& args,
+                                    std::optional<at::ScalarType> dtype) {
+  auto& cache = GetCache();
+  cache.EnsureInitialized();
+  py::gil_scoped_acquire gil;
+  auto func = cache.GetFunc(func_name);
+  py::tuple py_args = BuildPyArgs(args, func_name);
+
+  static py::module_ torch_mod = py::module_::import("torch");
+  // device=flagos:0 -> gems' internal torch.empty_like(self, device=...) stays
+  // on PrivateUse1 (no CUDA round-trip). dtype=None means "same as self".
+  py::object flagos_dev = torch_mod.attr("device")(
+      torch_mod.attr("_C").attr("_get_privateuse1_backend_name")(), 0);
+  py::object result = func(
+      *py_args,
+      "dtype"_a = OptionalDtypeToPython(dtype),
+      "layout"_a = torch_mod.attr("strided"),
+      "device"_a = flagos_dev,
+      "pin_memory"_a = py::none(),
+      "memory_format"_a = py::none());
+  return PythonToTensor(result);
+}
+
+namespace {
+// One CUDA generator shared by all random in-place gems calls. gems reads only
+// philox seed+offset from it and set_state's the advanced offset back, so
+// successive calls draw distinct streams. Guarded by the GIL (every caller
+// holds it). Lazily created on first use; seeded from torch's global default so
+// torch.manual_seed(...) before the first random op is reflected.
+py::object& CudaRngGenerator() {
+  static py::object gen;
+  if (!gen) {
+    py::module_ torch_mod = py::module_::import("torch");
+    gen = torch_mod.attr("Generator")("cuda");
+    // Seed from the global default generator's current seed for reproducibility.
+    int64_t seed = torch_mod.attr("initial_seed")().cast<int64_t>();
+    gen.attr("manual_seed")(seed);
+  }
+  return gen;
+}
+} // namespace
+
+at::Tensor CallPythonOp_RandomInplace(const char* func_name,
+                                      const std::vector<c10::IValue>& args) {
+  auto& cache = GetCache();
+  cache.EnsureInitialized();
+  py::gil_scoped_acquire gil;
+  auto func = cache.GetFunc(func_name);
+  py::tuple py_args = BuildPyArgs(args, func_name);
+  py::object result = func(*py_args, "generator"_a = CudaRngGenerator());
+  return PythonToTensor(result);
+}
+
 std::vector<at::Tensor> CallPythonOp_GenericKwTuple(
     const char* func_name, const std::vector<c10::IValue>& args,
     const std::vector<PyKwarg>& kwargs, int64_t n) {

@@ -361,8 +361,18 @@ _FLAGGEMS_PY_CATEGORIES = {"functional_pure", "inplace", "tuple_return",
 # TensorOptions field names carried by every factory schema after the shape/
 # scalar positionals. The factory caller injects these itself (device=flagos,
 # layout=strided, dtype forwarded, pin_memory=None), so they're stripped from
-# the positional list the codegen passes.
+# the positional list the codegen passes. `memory_format` rides along on the
+# *_like factories (like_factory caller injects it as None too).
 _FLAGGEMS_TENSOROPT_FIELDS = {"dtype", "layout", "device", "pin_memory"}
+_FLAGGEMS_LIKE_OPT_FIELDS = _FLAGGEMS_TENSOROPT_FIELDS | {"memory_format"}
+
+# Random in-place ops we route to gems by injecting a CUDA generator (the
+# RandomInplace caller). Whitelisted rather than type-detected because normal_
+# is also inplace+Generator? but gems hardcodes generator=None internally (never
+# forwards the one we pass -> IndexError on the empty PrivateUse1 default
+# generator). Only ops verified to actually thread the generator through belong
+# here. See the plan / [[flaggems-gap-analysis]].
+_FLAGGEMS_RANDOM_INPLACE = {"uniform_", "exponential_", "bernoulli_.float"}
 
 # Ops manually held out of the FlagGems Python path (populated during the
 # compile/import/numerical convergence loop with the reason as a comment).
@@ -384,14 +394,27 @@ FLAGGEMS_PYTHON_SKIP = {
     # Same device assert ("Input tensor must be on CUDA device"): gems
     # _safe_softmax rejects the PrivateUse1 tensor before running.
     "_safe_softmax",
-    # Random factories: gems reaches for default_generators[device], but the
-    # PrivateUse1 device has no default generator (IndexError), and randperm
-    # asserts an explicit int dtype. Same root cause as the Generator? blocked
-    # group -- can't be expressed without a per-device generator. See
-    # [[flaggems-gap-analysis]].
+    # Random factories with NO generator parameter: gems' signature omits
+    # `generator`, so its internal philox_backend_seed_offset(increment) reaches
+    # for default_generators[device], but the PrivateUse1 device has no default
+    # generator (IndexError); randperm also asserts an explicit int dtype. Cannot
+    # be expressed without a per-device generator -- unlike uniform_/exponential_/
+    # bernoulli_ which DO take a generator we inject (see _FLAGGEMS_RANDOM_INPLACE).
+    # rand_like/randn_like share this root (same internal call, no generator arg);
+    # they're rejected by the _like whitelist absence, listed here for the record.
+    # See [[flaggems-gap-analysis]].
     "rand",
     "randn",
     "randperm",
+    "rand_like",
+    "randn_like",
+    # normal family: gems' normal_ calls normal_distribution(..., generator=None)
+    # with a hardcoded None, dropping the generator we pass, so it hits the empty
+    # default_generators (IndexError). Upstream gems bug -- can't fix from here.
+    "normal_",
+    "normal.Tensor_Tensor",
+    "normal.Tensor_float",
+    "normal.float_Tensor",
 }
 
 
@@ -449,6 +472,50 @@ def discover_flaggems_ops(codegen_ops, funcs):
         # kwargs: aten trailing args gems declares keyword-only (dtype/alpha/...).
         # Filled by the arity_short branch below; each entry is (name, aten_type).
         kwargs = []
+        # *_like factory: functional op whose schema is a source tensor (+ maybe
+        # a value positional) followed by TensorOptions + memory_format, all
+        # keyword-only in gems. The like_factory caller injects device=flagos/
+        # layout/memory_format/pin_memory and forwards dtype; only the non-option
+        # positionals are passed. gems reads shape/device from the source tensor.
+        if cat == "functional_pure" and op.endswith("_like"):
+            all_pairs = [(str(a.type), a.name) for a in aten_args]
+            positional = [(t, n) for t, n in all_pairs
+                          if n not in _FLAGGEMS_LIKE_OPT_FIELDS]
+            has_opts = any(n in _FLAGGEMS_LIKE_OPT_FIELDS for _t, n in all_pairs)
+            byname = _flaggems_gems_byname_params(fn)
+            # gems must accept dtype/layout/device by name and take exactly the
+            # non-option positionals (the source tensor, plus full_like's
+            # fill_value). npos may exceed via defaulted trailing kwonlys.
+            if (not has_opts
+                    or not {"dtype", "layout", "device"} <= byname
+                    or npos < len(positional)
+                    or (npos > len(positional)
+                        and not _flaggems_extra_trailing_ok(fn, len(positional)))):
+                continue
+            if not all(_flaggems_type_ok(t) for t, _ in positional):
+                continue
+            qualname = f"{fn.__module__}.{fn.__name__}"
+            result[op] = (qualname, "like_factory", positional)
+            continue
+        # Random in-place: whitelisted inplace op with a trailing Generator? arg.
+        # The RandomInplace caller drops the generator positional and injects a
+        # CUDA generator by name; only self + scalar positionals are passed.
+        if cat == "inplace" and op in _FLAGGEMS_RANDOM_INPLACE:
+            all_pairs = [(str(a.type), a.name) for a in aten_args]
+            positional = [(t, n) for t, n in all_pairs if t != "Generator?"]
+            has_gen = any(t == "Generator?" for t, _n in all_pairs)
+            # gems must take exactly self + the scalar params (generator is
+            # keyword-only in gems, supplied by name).
+            if (not has_gen
+                    or npos < len(positional)
+                    or (npos > len(positional)
+                        and not _flaggems_extra_trailing_ok(fn, len(positional)))):
+                continue
+            if not all(_flaggems_type_ok(t) for t, _ in positional):
+                continue
+            qualname = f"{fn.__module__}.{fn.__name__}"
+            result[op] = (qualname, "random_inplace", positional)
+            continue
         if cat == "factory":
             # Factory: split off the TensorOptions fields (dtype/layout/device/
             # pin_memory); the factory caller injects device=flagos,
@@ -655,6 +722,40 @@ def gen_flaggems_python_kernel(op, fn_type, ret_type, args, gems_func, category,
             f'{pos_init}, {dtype_expr});\n'
             f"  UnboxToFlagos(result);\n"
             f"  return result;"
+        )
+        return f"{ret_type} {kn}({args_decl(args)}) {{\n{body}\n}}"
+
+    if category == "like_factory":
+        # *_like: pass the source tensor (+ full_like's fill_value); the caller
+        # injects device=flagos/layout/memory_format/pin_memory and forwards
+        # dtype (nullopt -> None means "same as self"). `kwargs` here carries the
+        # non-option positional (aten_type, name) list.
+        positional = kwargs or []
+        pos_names = [n for _t, n in positional]
+        dtype_name = next((a.name for a in aten_args if a.name == "dtype"), None)
+        dtype_expr = dtype_name if dtype_name else "::std::nullopt"
+        pos_init = "{" + ", ".join(pos_names) + "}"
+        body = (
+            f'  auto result = CallPythonOp_LikeFactory("{gems_func}", '
+            f'{pos_init}, {dtype_expr});\n'
+            f"  UnboxToFlagos(result);\n"
+            f"  return result;"
+        )
+        return f"{ret_type} {kn}({args_decl(args)}) {{\n{body}\n}}"
+
+    if category == "random_inplace":
+        # Random in-place: pass self + scalar params (generator dropped); the
+        # caller injects a CUDA generator by name. gems writes into self and
+        # returns it; copy_ the result back to self for the aten alias contract.
+        positional = kwargs or []
+        pos_names = [n for _t, n in positional]
+        self_name = pos_names[0]
+        pos_init = "{" + ", ".join(pos_names) + "}"
+        ret_line = "" if ret_type == "void" else f"\n  return {self_name};"
+        body = (
+            f'  auto result = CallPythonOp_RandomInplace("{gems_func}", '
+            f'{pos_init});\n'
+            f"  {self_name}.copy_(result);{ret_line}"
         )
         return f"{ret_type} {kn}({args_decl(args)}) {{\n{body}\n}}"
 
