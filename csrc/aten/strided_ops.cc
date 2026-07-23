@@ -12,6 +12,7 @@
 #include <ATen/ops/permute_native.h>
 #include <ATen/ops/select_native.h>
 #include <ATen/ops/slice_native.h>
+#include <ATen/ops/narrow_native.h>
 #include <ATen/ops/squeeze_native.h>
 #include <ATen/ops/unsqueeze_native.h>
 #include <ATen/ops/_unsafe_view_native.h>
@@ -56,14 +57,18 @@ at::Tensor expand(const at::Tensor& self, c10::SymIntArrayRef size, bool implici
   return at::native::expand(self, C10_AS_INTARRAYREF_SLOW(size), implicit);
 }
 
-at::Tensor narrow(const at::Tensor& self, int64_t dim, int64_t start, int64_t length) {
-  return self.narrow(dim, start, length);
-}
-
 // NOTE: all view ops call at::native:: directly (not the tensor member method).
 // The member methods re-dispatch through PrivateUse1, which routes back here and
 // causes infinite recursion -> stack overflow. at::native:: are the raw stride
 // implementations that operate on metadata without re-dispatching.
+at::Tensor narrow(const at::Tensor& self, int64_t dim, int64_t start, int64_t length) {
+  // at::native::narrow_symint computes the slice bounds and calls at::slice_symint,
+  // which re-dispatches to the registered flagos slice_tensor (pure metadata, no
+  // recursion). Calling self.narrow(...) here would re-enter this same kernel via
+  // PrivateUse1 -> infinite recursion -> stack overflow (SIGSEGV).
+  return at::native::narrow_symint(self, dim, start, length);
+}
+
 at::Tensor transpose_int(const at::Tensor& self, int64_t dim0, int64_t dim1) {
   return at::native::transpose(self, dim0, dim1);
 }
