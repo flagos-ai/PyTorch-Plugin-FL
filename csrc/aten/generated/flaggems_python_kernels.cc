@@ -616,12 +616,6 @@ at::Tensor EmbeddingKernelPython(const at::Tensor & weight, const at::Tensor & i
   return result;
 }
 
-at::Tensor EmbeddingDenseBackwardKernelPython(const at::Tensor & grad_output, const at::Tensor & indices, int64_t num_weights, int64_t padding_idx, bool scale_grad_by_freq) {
-  auto result = CallPythonOp_Generic("flag_gems.ops.embedding_dense_backward.embedding_dense_backward", {grad_output, indices, num_weights, padding_idx, scale_grad_by_freq});
-  UnboxToFlagos(result);
-  return result;
-}
-
 at::Tensor EqScalarKernelPython(const at::Tensor & self, const at::Scalar & other) {
   auto result = CallPythonOp_Generic("flag_gems.ops.eq.eq_scalar", {self, other});
   UnboxToFlagos(result);
@@ -2055,7 +2049,6 @@ REGISTER_IMPL_TO_DISPATCHER(EluFn, elu_dispatcher, Backend::kFlagOsPython, EluKe
 REGISTER_IMPL_TO_DISPATCHER(EluInplaceFn, elu_inplace_dispatcher, Backend::kFlagOsPython, EluInplaceKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(EluBackwardFn, elu_backward_dispatcher, Backend::kFlagOsPython, EluBackwardKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(EmbeddingFn, embedding_dispatcher, Backend::kFlagOsPython, EmbeddingKernelPython)
-REGISTER_IMPL_TO_DISPATCHER(EmbeddingDenseBackwardFn, embedding_dense_backward_dispatcher, Backend::kFlagOsPython, EmbeddingDenseBackwardKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(EqScalarFn, eq_scalar_dispatcher, Backend::kFlagOsPython, EqScalarKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(EqTensorFn, eq_tensor_dispatcher, Backend::kFlagOsPython, EqTensorKernelPython)
 REGISTER_IMPL_TO_DISPATCHER(ErfFn, erf_dispatcher, Backend::kFlagOsPython, ErfKernelPython)

@@ -426,6 +426,12 @@ FLAGGEMS_PYTHON_SKIP = {
     # Same device assert ("Input tensor must be on CUDA device"): gems
     # _safe_softmax rejects the PrivateUse1 tensor before running.
     "_safe_softmax",
+    # gems embedding_dense_backward raises ValueError("Inputs must be cuda
+    # tensors...") when grad_output.device.type != flag_gems.device ("cuda").
+    # flagos is PrivateUse1 ("flagos"), so it never matches -- surfaced by qwen3
+    # TRAINING (the backward pass; forward `embedding` has no such assert and
+    # stays routed). Falls back to the cuda embedding_dense_backward kernel.
+    "embedding_dense_backward",
     # gems i0_/zero/zero.out (listed in _FLAGGEMS_ARITY_OVERRIDE for arity) hit an
     # `assert tensor.is_cuda, "...must be on CUDA device"` in their kernel launch
     # -- flagos is genuinely PrivateUse1 (is_cuda False), so it can never pass.
