@@ -36,6 +36,53 @@ _cuda = None  # cached libcuda.so handle
 _cudart = None  # cached libcudart.so handle (for synchronize)
 _props_cache = {}
 
+# device_index -> torch.Generator(device="cuda"), one per device. See
+# _get_cuda_generator / _CudaDefaultGenerators below.
+_cuda_generators = {}
+
+
+def _get_cuda_generator(idx):
+    """Lazily build one CUDA generator per device (the flaggems RNG source).
+
+    flag_gems' ``philox_backend_seed_offset`` (nvidia ``device_name="cuda"``)
+    reads ``torch.cuda.default_generators[device]`` and unpacks its 16-byte
+    state as 2x int64 ``(seed, offset)`` -- the CUDA generator's philox layout.
+    We install these as ``torch.cuda.default_generators`` so gems' generator-less
+    RNG ops find a real, seedable generator instead of the empty tuple the
+    CPU-torch wheel ships (which used to force the philox monkeypatch).
+
+    Lazy because at import time the external ``libtorch_cuda.so`` is not yet
+    wired into ATen -- ``torch.Generator(device="cuda")`` raises "Cannot get
+    CUDA generator without ATen_cuda library". By the time any RNG op runs, cuda
+    is live and construction succeeds. Seeded from ``torch.initial_seed()`` so a
+    ``torch.manual_seed(...)`` issued before first use is honoured.
+    """
+    gen = _cuda_generators.get(idx)
+    if gen is None:
+        gen = torch.Generator(device="cuda")
+        gen.manual_seed(torch.initial_seed())
+        _cuda_generators[idx] = gen
+    return gen
+
+
+class _CudaDefaultGenerators:
+    """list-like stand-in for ``torch.cuda.default_generators``.
+
+    Indexing yields a real (lazily created) per-device CUDA generator; ``len``
+    reports the device count so flag_gems' ``len(default_generators) == 0``
+    guard is False and it uses the generator instead of erroring.
+    """
+
+    def __getitem__(self, idx):
+        return _get_cuda_generator(int(idx))
+
+    def __len__(self):
+        try:
+            n = torch.cuda.device_count()
+        except Exception:
+            n = 0
+        return max(n, 1)
+
 
 # ---- CUDA Driver API (libcuda.so) constants ----
 # CUdevice_attribute enum values (cuda.h). Confirmed against A100 (sm_80).
@@ -321,6 +368,38 @@ def patch_torch_cuda_for_flagos():
         pass
     try:
         torch._C._cuda_synchronize = lambda: _synchronize()
+    except Exception:
+        pass
+
+    # Seeding / RNG source: the CPU-torch wheel ships an EMPTY
+    # torch.cuda.default_generators, and torch.manual_seed() -> [nothing on
+    # cuda], so flag_gems' generator-less RNG ops (rand/randn/uniform_/...) had
+    # no seedable source and were not reproducible. Install per-device CUDA
+    # generators (philox 2x int64 state, exactly what gems'
+    # philox_backend_seed_offset unpacks) and route cuda seeding to them, so
+    # torch.manual_seed(s) -> torch.cuda.manual_seed_all(s) reseeds them and
+    # gems RNG becomes reproducible. This is the SAME shape the metax branch
+    # uses; it replaces the old _patch_flaggems_philox monkeypatch.
+    def _manual_seed(seed):
+        seed = int(seed)
+        idx = _current_device()
+        try:
+            _get_cuda_generator(idx).manual_seed(seed)
+        except Exception:
+            pass
+
+    def _manual_seed_all(seed):
+        seed = int(seed)
+        try:
+            for i in range(max(_device_count(), 1)):
+                _get_cuda_generator(i).manual_seed(seed)
+        except Exception:
+            pass
+
+    torch.cuda.manual_seed = _manual_seed
+    torch.cuda.manual_seed_all = _manual_seed_all
+    try:
+        torch.cuda.default_generators = _CudaDefaultGenerators()
     except Exception:
         pass
 

@@ -417,9 +417,10 @@ at::Tensor CallPythonOp_RandomInplace(const char* func_name,
   py::gil_scoped_acquire gil;
   auto func = cache.GetFunc(func_name);
   py::tuple py_args = BuildPyArgs(args, func_name);
-  // generator=None: torch_fl's philox monkeypatch injects the fallback CUDA
-  // generator (same path as rand/randn/multinomial). Passing an explicit
-  // generator object here raced with triton's cold-cache first-compile.
+  // generator=None: gems reads its seed+offset from the per-device CUDA
+  // generators the compat shim installs as torch.cuda.default_generators (same
+  // path as rand/randn/multinomial). Passing an explicit generator object here
+  // raced with triton's cold-cache first-compile.
   py::object result = func(*py_args);
   return PythonToTensor(result);
 }

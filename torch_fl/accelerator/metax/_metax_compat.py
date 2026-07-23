@@ -142,6 +142,45 @@ _metax_props_cache = {}
 _mcruntime = None
 _patched = False
 
+# device_index -> torch.Generator(device="cuda"), the flaggems RNG source.
+_cuda_generators = {}
+
+
+def _get_cuda_generator(idx):
+    """Lazily build one CUDA generator per device (the flaggems RNG source).
+
+    MetaX's flag_gems backend uses ``device_name="cuda"``, so its
+    ``philox_backend_seed_offset`` reads ``torch.cuda.default_generators[dev]``
+    and unpacks the state as 2x int64 ``(seed, offset)`` -- the CUDA generator's
+    philox layout. The flagos PrivateUse1 generator is a CPUGeneratorImpl whose
+    state is the ~5KB mt19937 blob (632x int64), which would blow up that unpack
+    with "too many values to unpack". So we must expose CUDA generators here,
+    NOT the flagos ones, and seed those.
+    """
+    gen = _cuda_generators.get(idx)
+    if gen is None:
+        gen = torch.Generator(device="cuda")
+        gen.manual_seed(torch.initial_seed())
+        _cuda_generators[idx] = gen
+    return gen
+
+
+class _CudaDefaultGenerators:
+    """list-like stand-in for ``torch.cuda.default_generators`` (see
+    _get_cuda_generator). Indexing yields a per-device CUDA generator; ``len``
+    reports the device count so flag_gems' empty-tuple guard is False."""
+
+    def __getitem__(self, idx):
+        return _get_cuda_generator(int(idx))
+
+    def __len__(self):
+        try:
+            _flagos = torch.flagos if hasattr(torch, "flagos") else None
+            n = _flagos.device_count() if _flagos is not None else 0
+        except Exception:
+            n = 0
+        return max(n, 1)
+
 
 def _device_index(device: Union[torch.device, int, str, None]) -> int:
     """Extract a device index from the various forms torch.cuda accepts."""
@@ -323,34 +362,36 @@ def patch_torch_cuda_for_metax():
 
     # Seeding: with is_available()=True, torch.manual_seed() calls
     # torch.cuda.manual_seed_all(), which walks torch.cuda.default_generators
-    # -- an empty tuple on the CPU wheel -> IndexError. Route CUDA seeding to the
-    # flagos per-device generators so user code that calls torch.manual_seed()
-    # (very common in tests/training) works unchanged.
-    if _flagos is not None and hasattr(_flagos, "default_generators"):
-
-        def _manual_seed_all(seed):
-            seed = int(seed)
-            try:
-                for i in range(_flagos.device_count()):
-                    _flagos.default_generators[i].manual_seed(seed)
-            except Exception:
-                pass
-
-        def _manual_seed(seed):
-            idx = _current_device()
-            try:
-                _flagos.default_generators[idx].manual_seed(int(seed))
-            except Exception:
-                pass
-
-        torch.cuda.manual_seed_all = _manual_seed_all
-        torch.cuda.manual_seed = _manual_seed
-        # torch.cuda.default_generators is read directly by some paths; point it
-        # at the flagos accessor so indexing yields a real generator.
+    # -- an empty tuple on the CPU wheel -> IndexError. Install per-device CUDA
+    # generators (philox 2x int64 state, exactly what MetaX's cuda-named
+    # flag_gems philox_backend_seed_offset unpacks) and route cuda seeding to
+    # them, so torch.manual_seed() makes flaggems RNG reproducible. NOTE: this
+    # must be CUDA generators, NOT flagos.default_generators (CPUGeneratorImpl,
+    # ~5KB mt19937 state) -- pointing default_generators at those would make
+    # gems' `c0, c1 = state.view(int64)` fail with "too many values to unpack".
+    def _manual_seed_all(seed):
+        seed = int(seed)
         try:
-            torch.cuda.default_generators = _flagos.default_generators
+            n = _flagos.device_count() if _flagos is not None else 1
+            for i in range(max(n, 1)):
+                _get_cuda_generator(i).manual_seed(seed)
         except Exception:
             pass
+
+    def _manual_seed(seed):
+        seed = int(seed)
+        idx = _current_device()
+        try:
+            _get_cuda_generator(idx).manual_seed(seed)
+        except Exception:
+            pass
+
+    torch.cuda.manual_seed_all = _manual_seed_all
+    torch.cuda.manual_seed = _manual_seed
+    try:
+        torch.cuda.default_generators = _CudaDefaultGenerators()
+    except Exception:
+        pass
 
     # FlagGems/Triton autotuners benchmark kernels with torch.cuda.Event, which
     # fails on the CPU torch wheel ("invalid device ordinal"). Time with a wall

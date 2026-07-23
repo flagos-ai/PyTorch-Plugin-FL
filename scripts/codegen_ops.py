@@ -442,15 +442,16 @@ FLAGGEMS_PYTHON_SKIP = {
     "zero",
     "zero.out",
     # rand/randn/rand_like/randn_like/randperm/multinomial are now ROUTED (not
-    # skipped):
-    #   * rand/randn (factory) and rand_like/randn_like (like_factory) have no
-    #     generator param; gems' internal philox_backend_seed_offset(increment)
-    #     reaches for the empty torch.cuda.default_generators (IndexError under
-    #     CPU-torch + cuda shim). Unblocked by _patch_flaggems_philox() in
-    #     torch_fl/__init__.py, which injects a held CUDA generator as fallback.
-    #   * randperm (factory) / multinomial (functional_pure) DO take a generator
-    #     (`generator` / `gen`); the caller injects CudaRngGenerator() by name
-    #     (see _FLAGGEMS_RNG_GEN).
+    # skipped). gems' internal philox_backend_seed_offset(increment) reads
+    # torch_device_fn.default_generators[device] (torch.cuda for the nvidia/metax
+    # branches) and unpacks its state as 2x int64 (seed, offset). The compat shim
+    # (torch_fl/accelerator/cuda/_cuda_compat.py, .../metax/_metax_compat.py)
+    # installs per-device CUDA generators as torch.cuda.default_generators and
+    # routes torch.manual_seed there, so those ops find a real, seedable
+    # generator with the philox layout gems expects -- no per-op generator
+    # injection and no philox monkeypatch. (randperm's dominant randomness comes
+    # from an internal torch.randint that routes to the native `= cuda` path, so
+    # it inherits the native default-CUDA-generator's non-reproducibility.)
     # normal family stays skipped: gems' normal_ calls normal_distribution(...,
     # generator=None) with a hardcoded None, dropping any generator we pass, so it
     # hits the empty default_generators (IndexError). Upstream gems bug -- can't
