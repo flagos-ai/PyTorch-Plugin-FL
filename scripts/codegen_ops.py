@@ -1019,10 +1019,25 @@ def optional_tensor_names(args: List[Tuple[str, str]]) -> List[str]:
 
 def gen_functional_pure(op, fn_type, ret_type, args, func=None):
     kn = kernel_name(fn_type)
-    guard = ", ".join(tensor_arg_names(args))
     api = f"at::{at_api_base(op)}"
+
+    # Box plain Tensor inputs AND optional<Tensor> inputs (e.g. conv/linear bias).
+    # An optional<Tensor> that lives on flagos must be boxed to CUDA too, or the
+    # backend op receives a mix of boxed (input/weight) and unboxed (bias)
+    # tensors -> "tensor does not have a device" / segfault. DeviceBoxingGuard
+    # only accepts at::Tensor, so materialize each optional into a holder first
+    # (same pattern as gen_out_variant / gen_tuple_return).
+    plain = tensor_arg_names(args)
+    opt_names = optional_tensor_names(args)
+    holder_lines = ""
+    guard_names = list(plain)
+    for on in opt_names:
+        holder_lines += f"  at::Tensor {on}_t = {on}.has_value() ? *{on} : at::Tensor();\n"
+        guard_names.append(f"{on}_t")
+    guard = ", ".join(guard_names)
+
     return f"""{ret_type} {kn}({args_decl(args)}) {{
-  DeviceBoxingGuard guard({guard});
+{holder_lines}  DeviceBoxingGuard guard({guard});
   auto result = {api}({call_args(args)});
   UnboxToFlagos(result);
   return result;

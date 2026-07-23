@@ -1164,7 +1164,8 @@ at::Tensor & PrivConjPhysicalOutKernelCuda(const at::Tensor & self, at::Tensor &
 }
 
 at::Tensor PrivConvDepthwise2dKernelCuda(const at::Tensor & self, const at::Tensor & weight, at::IntArrayRef kernel_size, const ::std::optional<at::Tensor> & bias, at::IntArrayRef stride, at::IntArrayRef padding, at::IntArrayRef dilation) {
-  DeviceBoxingGuard guard(self, weight);
+  at::Tensor bias_t = bias.has_value() ? *bias : at::Tensor();
+  DeviceBoxingGuard guard(self, weight, bias_t);
   auto result = at::_conv_depthwise2d(self, weight, kernel_size, bias, stride, padding, dilation);
   UnboxToFlagos(result);
   return result;
@@ -1214,7 +1215,8 @@ at::Tensor PrivConvertWeightToInt4packKernelCuda(const at::Tensor & self, int64_
 }
 
 at::Tensor PrivConvolutionKernelCuda(const at::Tensor & input, const at::Tensor & weight, const ::std::optional<at::Tensor> & bias, at::IntArrayRef stride, at::IntArrayRef padding, at::IntArrayRef dilation, bool transposed, at::IntArrayRef output_padding, int64_t groups, bool benchmark, bool deterministic, bool cudnn_enabled, bool allow_tf32) {
-  DeviceBoxingGuard guard(input, weight);
+  at::Tensor bias_t = bias.has_value() ? *bias : at::Tensor();
+  DeviceBoxingGuard guard(input, weight, bias_t);
   auto result = at::_convolution(input, weight, bias, stride, padding, dilation, transposed, output_padding, groups, benchmark, deterministic, cudnn_enabled, allow_tf32);
   UnboxToFlagos(result);
   return result;
@@ -1250,7 +1252,9 @@ at::Tensor PrivCsltCompressKernelCuda(const at::Tensor & input) {
 }
 
 at::Tensor PrivCsltSparseMmKernelCuda(const at::Tensor & compressed_A, const at::Tensor & dense_B, const ::std::optional<at::Tensor> & bias, const ::std::optional<at::Tensor> & alpha, ::std::optional<at::ScalarType> out_dtype, bool transpose_result, int64_t alg_id, int64_t split_k, int64_t split_k_mode) {
-  DeviceBoxingGuard guard(compressed_A, dense_B);
+  at::Tensor bias_t = bias.has_value() ? *bias : at::Tensor();
+  at::Tensor alpha_t = alpha.has_value() ? *alpha : at::Tensor();
+  DeviceBoxingGuard guard(compressed_A, dense_B, bias_t, alpha_t);
   auto result = at::_cslt_sparse_mm(compressed_A, dense_B, bias, alpha, out_dtype, transpose_result, alg_id, split_k, split_k_mode);
   UnboxToFlagos(result);
   return result;
@@ -1455,14 +1459,16 @@ at::Tensor & PrivEfficientzerotensorOutKernelCuda(at::IntArrayRef size, at::Tens
 }
 
 at::Tensor PrivEmbeddingBagBackwardKernelCuda(const at::Tensor & grad, const at::Tensor & indices, const at::Tensor & offsets, const at::Tensor & offset2bag, const at::Tensor & bag_size, const at::Tensor & maximum_indices, int64_t num_weights, bool scale_grad_by_freq, int64_t mode, bool sparse, const ::std::optional<at::Tensor> & per_sample_weights, int64_t padding_idx) {
-  DeviceBoxingGuard guard(grad, indices, offsets, offset2bag, bag_size, maximum_indices);
+  at::Tensor per_sample_weights_t = per_sample_weights.has_value() ? *per_sample_weights : at::Tensor();
+  DeviceBoxingGuard guard(grad, indices, offsets, offset2bag, bag_size, maximum_indices, per_sample_weights_t);
   auto result = at::_embedding_bag_backward(grad, indices, offsets, offset2bag, bag_size, maximum_indices, num_weights, scale_grad_by_freq, mode, sparse, per_sample_weights, padding_idx);
   UnboxToFlagos(result);
   return result;
 }
 
 at::Tensor PrivEmbeddingBagDenseBackwardKernelCuda(const at::Tensor & grad, const at::Tensor & indices, const at::Tensor & offset2bag, const at::Tensor & bag_size, const at::Tensor & maximum_indices, int64_t num_weights, bool scale_grad_by_freq, int64_t mode, const ::std::optional<at::Tensor> & per_sample_weights, int64_t padding_idx) {
-  DeviceBoxingGuard guard(grad, indices, offset2bag, bag_size, maximum_indices);
+  at::Tensor per_sample_weights_t = per_sample_weights.has_value() ? *per_sample_weights : at::Tensor();
+  DeviceBoxingGuard guard(grad, indices, offset2bag, bag_size, maximum_indices, per_sample_weights_t);
   auto result = at::_embedding_bag_dense_backward(grad, indices, offset2bag, bag_size, maximum_indices, num_weights, scale_grad_by_freq, mode, per_sample_weights, padding_idx);
   UnboxToFlagos(result);
   return result;
@@ -3999,7 +4005,9 @@ at::Tensor & PrivGridSampler2dCpuFallbackOutKernelCuda(const at::Tensor & input,
 }
 
 at::Tensor PrivGroupedMmKernelCuda(const at::Tensor & self, const at::Tensor & mat2, const ::std::optional<at::Tensor> & offs, const ::std::optional<at::Tensor> & bias, ::std::optional<at::ScalarType> out_dtype) {
-  DeviceBoxingGuard guard(self, mat2);
+  at::Tensor offs_t = offs.has_value() ? *offs : at::Tensor();
+  at::Tensor bias_t = bias.has_value() ? *bias : at::Tensor();
+  DeviceBoxingGuard guard(self, mat2, offs_t, bias_t);
   auto result = at::_grouped_mm(self, mat2, offs, bias, out_dtype);
   UnboxToFlagos(result);
   return result;
@@ -4290,7 +4298,8 @@ at::Tensor & PrivMaskedSoftmaxBackwardOutKernelCuda(const at::Tensor & grad_outp
 }
 
 at::Tensor PrivMixedDtypesLinearKernelCuda(const at::Tensor & input, const at::Tensor & weight, const at::Tensor & scale, const ::std::optional<at::Tensor> & bias, ::std::optional<c10::string_view> activation) {
-  DeviceBoxingGuard guard(input, weight, scale);
+  at::Tensor bias_t = bias.has_value() ? *bias : at::Tensor();
+  DeviceBoxingGuard guard(input, weight, scale, bias_t);
   auto result = at::_mixed_dtypes_linear(input, weight, scale, bias, activation);
   UnboxToFlagos(result);
   return result;
@@ -4557,7 +4566,8 @@ at::Tensor & PrivNewZerosWithSameFeatureMetaOutKernelCuda(const at::Tensor & sel
 }
 
 at::Tensor PrivNnpackSpatialConvolutionKernelCuda(const at::Tensor & input, const at::Tensor & weight, const ::std::optional<at::Tensor> & bias, at::IntArrayRef padding, at::IntArrayRef stride) {
-  DeviceBoxingGuard guard(input, weight);
+  at::Tensor bias_t = bias.has_value() ? *bias : at::Tensor();
+  DeviceBoxingGuard guard(input, weight, bias_t);
   auto result = at::_nnpack_spatial_convolution(input, weight, bias, padding, stride);
   UnboxToFlagos(result);
   return result;
@@ -4745,7 +4755,10 @@ at::Tensor & PrivSampleDirichletOutKernelCuda(const at::Tensor & self, ::std::op
 }
 
 at::Tensor PrivScaledGroupedMmKernelCuda(const at::Tensor & self, const at::Tensor & mat2, const at::Tensor & scale_a, const at::Tensor & scale_b, const ::std::optional<at::Tensor> & offs, const ::std::optional<at::Tensor> & bias, const ::std::optional<at::Tensor> & scale_result, ::std::optional<at::ScalarType> out_dtype, bool use_fast_accum) {
-  DeviceBoxingGuard guard(self, mat2, scale_a, scale_b);
+  at::Tensor offs_t = offs.has_value() ? *offs : at::Tensor();
+  at::Tensor bias_t = bias.has_value() ? *bias : at::Tensor();
+  at::Tensor scale_result_t = scale_result.has_value() ? *scale_result : at::Tensor();
+  DeviceBoxingGuard guard(self, mat2, scale_a, scale_b, offs_t, bias_t, scale_result_t);
   auto result = at::_scaled_grouped_mm(self, mat2, scale_a, scale_b, offs, bias, scale_result, out_dtype, use_fast_accum);
   UnboxToFlagos(result);
   return result;
@@ -4763,7 +4776,9 @@ at::Tensor PrivScaledGroupedMmV2KernelCuda(const at::Tensor & self, const at::Te
 }
 
 at::Tensor PrivScaledMmKernelCuda(const at::Tensor & self, const at::Tensor & mat2, const at::Tensor & scale_a, const at::Tensor & scale_b, const ::std::optional<at::Tensor> & bias, const ::std::optional<at::Tensor> & scale_result, ::std::optional<at::ScalarType> out_dtype, bool use_fast_accum) {
-  DeviceBoxingGuard guard(self, mat2, scale_a, scale_b);
+  at::Tensor bias_t = bias.has_value() ? *bias : at::Tensor();
+  at::Tensor scale_result_t = scale_result.has_value() ? *scale_result : at::Tensor();
+  DeviceBoxingGuard guard(self, mat2, scale_a, scale_b, bias_t, scale_result_t);
   auto result = at::_scaled_mm(self, mat2, scale_a, scale_b, bias, scale_result, out_dtype, use_fast_accum);
   UnboxToFlagos(result);
   return result;
@@ -4790,7 +4805,9 @@ at::Tensor PrivScaledMmV2KernelCuda(const at::Tensor & self, const at::Tensor & 
 }
 
 at::Tensor PrivSegmentReduceBackwardKernelCuda(const at::Tensor & grad, const at::Tensor & output, const at::Tensor & data, c10::string_view reduce, const ::std::optional<at::Tensor> & lengths, const ::std::optional<at::Tensor> & offsets, int64_t axis, const ::std::optional<at::Scalar> & initial) {
-  DeviceBoxingGuard guard(grad, output, data);
+  at::Tensor lengths_t = lengths.has_value() ? *lengths : at::Tensor();
+  at::Tensor offsets_t = offsets.has_value() ? *offsets : at::Tensor();
+  DeviceBoxingGuard guard(grad, output, data, lengths_t, offsets_t);
   auto result = at::_segment_reduce_backward(grad, output, data, reduce, lengths, offsets, axis, initial);
   UnboxToFlagos(result);
   return result;
@@ -4833,7 +4850,8 @@ at::Tensor & PrivSegmentReduceBackwardOutKernelCuda(const at::Tensor & grad, con
 }
 
 at::Tensor PrivSlowConv2dForwardKernelCuda(const at::Tensor & self, const at::Tensor & weight, at::IntArrayRef kernel_size, const ::std::optional<at::Tensor> & bias, at::IntArrayRef stride, at::IntArrayRef padding) {
-  DeviceBoxingGuard guard(self, weight);
+  at::Tensor bias_t = bias.has_value() ? *bias : at::Tensor();
+  DeviceBoxingGuard guard(self, weight, bias_t);
   auto result = at::_slow_conv2d_forward(self, weight, kernel_size, bias, stride, padding);
   UnboxToFlagos(result);
   return result;
@@ -4982,7 +5000,8 @@ at::Tensor PrivSparseSemiStructuredApplyDenseKernelCuda(const at::Tensor & input
 }
 
 at::Tensor PrivSparseSemiStructuredLinearKernelCuda(const at::Tensor & input, const at::Tensor & weight, const at::Tensor & meta, const ::std::optional<at::Tensor> & bias, ::std::optional<c10::string_view> activation, ::std::optional<at::ScalarType> out_dtype) {
-  DeviceBoxingGuard guard(input, weight, meta);
+  at::Tensor bias_t = bias.has_value() ? *bias : at::Tensor();
+  DeviceBoxingGuard guard(input, weight, meta, bias_t);
   auto result = at::_sparse_semi_structured_linear(input, weight, meta, bias, activation, out_dtype);
   UnboxToFlagos(result);
   return result;
@@ -5347,7 +5366,8 @@ at::Tensor & PrivToSparseCsrOutKernelCuda(const at::Tensor & self, ::std::option
 }
 
 at::Tensor PrivTransformerEncoderLayerFwdKernelCuda(const at::Tensor & src, int64_t embed_dim, int64_t num_heads, const at::Tensor & qkv_weight, const at::Tensor & qkv_bias, const at::Tensor & proj_weight, const at::Tensor & proj_bias, bool use_gelu, bool norm_first, double eps, const at::Tensor & norm_weight_1, const at::Tensor & norm_bias_1, const at::Tensor & norm_weight_2, const at::Tensor & norm_bias_2, const at::Tensor & ffn_weight_1, const at::Tensor & ffn_bias_1, const at::Tensor & ffn_weight_2, const at::Tensor & ffn_bias_2, const ::std::optional<at::Tensor> & mask, ::std::optional<int64_t> mask_type) {
-  DeviceBoxingGuard guard(src, qkv_weight, qkv_bias, proj_weight, proj_bias, norm_weight_1, norm_bias_1, norm_weight_2, norm_bias_2, ffn_weight_1, ffn_bias_1, ffn_weight_2, ffn_bias_2);
+  at::Tensor mask_t = mask.has_value() ? *mask : at::Tensor();
+  DeviceBoxingGuard guard(src, qkv_weight, qkv_bias, proj_weight, proj_bias, norm_weight_1, norm_bias_1, norm_weight_2, norm_bias_2, ffn_weight_1, ffn_bias_1, ffn_weight_2, ffn_bias_2, mask_t);
   auto result = at::_transformer_encoder_layer_fwd(src, embed_dim, num_heads, qkv_weight, qkv_bias, proj_weight, proj_bias, use_gelu, norm_first, eps, norm_weight_1, norm_bias_1, norm_weight_2, norm_bias_2, ffn_weight_1, ffn_bias_1, ffn_weight_2, ffn_bias_2, mask, mask_type);
   UnboxToFlagos(result);
   return result;
@@ -5369,7 +5389,8 @@ at::Tensor & PrivTrilinearOutKernelCuda(const at::Tensor & i1, const at::Tensor 
 }
 
 at::Tensor PrivTritonMultiHeadAttentionKernelCuda(const at::Tensor & query, const at::Tensor & key, const at::Tensor & value, int64_t embed_dim, int64_t num_head, const at::Tensor & qkv_weight, const at::Tensor & qkv_bias, const at::Tensor & proj_weight, const at::Tensor & proj_bias, const ::std::optional<at::Tensor> & mask) {
-  DeviceBoxingGuard guard(query, key, value, qkv_weight, qkv_bias, proj_weight, proj_bias);
+  at::Tensor mask_t = mask.has_value() ? *mask : at::Tensor();
+  DeviceBoxingGuard guard(query, key, value, qkv_weight, qkv_bias, proj_weight, proj_bias, mask_t);
   auto result = at::_triton_multi_head_attention(query, key, value, embed_dim, num_head, qkv_weight, qkv_bias, proj_weight, proj_bias, mask);
   UnboxToFlagos(result);
   return result;
@@ -6500,7 +6521,8 @@ at::Tensor & BartlettWindowPeriodicOutKernelCuda(int64_t window_length, bool per
 }
 
 at::Tensor BatchNormBackwardElemtKernelCuda(const at::Tensor & grad_out, const at::Tensor & input, const at::Tensor & mean, const at::Tensor & invstd, const ::std::optional<at::Tensor> & weight, const at::Tensor & sum_dy, const at::Tensor & sum_dy_xmu, const at::Tensor & count) {
-  DeviceBoxingGuard guard(grad_out, input, mean, invstd, sum_dy, sum_dy_xmu, count);
+  at::Tensor weight_t = weight.has_value() ? *weight : at::Tensor();
+  DeviceBoxingGuard guard(grad_out, input, mean, invstd, sum_dy, sum_dy_xmu, count, weight_t);
   auto result = at::batch_norm_backward_elemt(grad_out, input, mean, invstd, weight, sum_dy, sum_dy_xmu, count);
   UnboxToFlagos(result);
   return result;
@@ -6537,7 +6559,9 @@ at::Tensor & BatchNormBackwardElemtOutKernelCuda(const at::Tensor & grad_out, co
 }
 
 at::Tensor BatchNormElemtKernelCuda(const at::Tensor & input, const ::std::optional<at::Tensor> & weight, const ::std::optional<at::Tensor> & bias, const at::Tensor & mean, const at::Tensor & invstd, double eps) {
-  DeviceBoxingGuard guard(input, mean, invstd);
+  at::Tensor weight_t = weight.has_value() ? *weight : at::Tensor();
+  at::Tensor bias_t = bias.has_value() ? *bias : at::Tensor();
+  DeviceBoxingGuard guard(input, mean, invstd, weight_t, bias_t);
   auto result = at::batch_norm_elemt(input, weight, bias, mean, invstd, eps);
   UnboxToFlagos(result);
   return result;
@@ -6676,7 +6700,8 @@ at::Tensor & BernoulliInplaceFloatKernelCuda(at::Tensor & self, double p, ::std:
 }
 
 at::Tensor BinaryCrossEntropyKernelCuda(const at::Tensor & self, const at::Tensor & target, const ::std::optional<at::Tensor> & weight, int64_t reduction) {
-  DeviceBoxingGuard guard(self, target);
+  at::Tensor weight_t = weight.has_value() ? *weight : at::Tensor();
+  DeviceBoxingGuard guard(self, target, weight_t);
   auto result = at::binary_cross_entropy(self, target, weight, reduction);
   UnboxToFlagos(result);
   return result;
@@ -6691,7 +6716,8 @@ at::Tensor & BinaryCrossEntropyOutKernelCuda(const at::Tensor & self, const at::
 }
 
 at::Tensor BinaryCrossEntropyBackwardKernelCuda(const at::Tensor & grad_output, const at::Tensor & self, const at::Tensor & target, const ::std::optional<at::Tensor> & weight, int64_t reduction) {
-  DeviceBoxingGuard guard(grad_output, self, target);
+  at::Tensor weight_t = weight.has_value() ? *weight : at::Tensor();
+  DeviceBoxingGuard guard(grad_output, self, target, weight_t);
   auto result = at::binary_cross_entropy_backward(grad_output, self, target, weight, reduction);
   UnboxToFlagos(result);
   return result;
@@ -6706,7 +6732,9 @@ at::Tensor & BinaryCrossEntropyBackwardGradInputKernelCuda(const at::Tensor & gr
 }
 
 at::Tensor BinaryCrossEntropyWithLogitsKernelCuda(const at::Tensor & self, const at::Tensor & target, const ::std::optional<at::Tensor> & weight, const ::std::optional<at::Tensor> & pos_weight, int64_t reduction) {
-  DeviceBoxingGuard guard(self, target);
+  at::Tensor weight_t = weight.has_value() ? *weight : at::Tensor();
+  at::Tensor pos_weight_t = pos_weight.has_value() ? *pos_weight : at::Tensor();
+  DeviceBoxingGuard guard(self, target, weight_t, pos_weight_t);
   auto result = at::binary_cross_entropy_with_logits(self, target, weight, pos_weight, reduction);
   UnboxToFlagos(result);
   return result;
@@ -6722,7 +6750,8 @@ at::Tensor & BinaryCrossEntropyWithLogitsOutKernelCuda(const at::Tensor & self, 
 }
 
 at::Tensor BincountKernelCuda(const at::Tensor & self, const ::std::optional<at::Tensor> & weights, int64_t minlength) {
-  DeviceBoxingGuard guard(self);
+  at::Tensor weights_t = weights.has_value() ? *weights : at::Tensor();
+  DeviceBoxingGuard guard(self, weights_t);
   auto result = at::bincount(self, weights, minlength);
   UnboxToFlagos(result);
   return result;
@@ -7305,7 +7334,9 @@ at::Tensor ClampKernelCuda(const at::Tensor & self, const ::std::optional<at::Sc
 }
 
 at::Tensor ClampTensorKernelCuda(const at::Tensor & self, const ::std::optional<at::Tensor> & min, const ::std::optional<at::Tensor> & max) {
-  DeviceBoxingGuard guard(self);
+  at::Tensor min_t = min.has_value() ? *min : at::Tensor();
+  at::Tensor max_t = max.has_value() ? *max : at::Tensor();
+  DeviceBoxingGuard guard(self, min_t, max_t);
   auto result = at::clamp(self, min, max);
   UnboxToFlagos(result);
   return result;
@@ -7334,7 +7365,9 @@ at::Tensor & ClampInplaceKernelCuda(at::Tensor & self, const ::std::optional<at:
 }
 
 at::Tensor & ClampInplaceTensorKernelCuda(at::Tensor & self, const ::std::optional<at::Tensor> & min, const ::std::optional<at::Tensor> & max) {
-  DeviceBoxingGuard guard(self);
+  at::Tensor min_t = min.has_value() ? *min : at::Tensor();
+  at::Tensor max_t = max.has_value() ? *max : at::Tensor();
+  DeviceBoxingGuard guard(self, min_t, max_t);
   self.clamp_(min, max);
   return self;
 }
@@ -7489,7 +7522,8 @@ at::Tensor & ConstantPadNdOutKernelCuda(const at::Tensor & self, at::IntArrayRef
 }
 
 at::Tensor ConvDepthwise3dKernelCuda(const at::Tensor & self, const at::Tensor & weight, at::IntArrayRef kernel_size, const ::std::optional<at::Tensor> & bias, at::IntArrayRef stride, at::IntArrayRef padding, at::IntArrayRef dilation) {
-  DeviceBoxingGuard guard(self, weight);
+  at::Tensor bias_t = bias.has_value() ? *bias : at::Tensor();
+  DeviceBoxingGuard guard(self, weight, bias_t);
   auto result = at::conv_depthwise3d(self, weight, kernel_size, bias, stride, padding, dilation);
   UnboxToFlagos(result);
   return result;
@@ -7518,7 +7552,8 @@ at::Tensor & ConvTbcOutKernelCuda(const at::Tensor & self, const at::Tensor & we
 }
 
 at::Tensor ConvolutionKernelCuda(const at::Tensor & input, const at::Tensor & weight, const ::std::optional<at::Tensor> & bias, at::IntArrayRef stride, at::IntArrayRef padding, at::IntArrayRef dilation, bool transposed, at::IntArrayRef output_padding, int64_t groups) {
-  DeviceBoxingGuard guard(input, weight);
+  at::Tensor bias_t = bias.has_value() ? *bias : at::Tensor();
+  DeviceBoxingGuard guard(input, weight, bias_t);
   auto result = at::convolution(input, weight, bias, stride, padding, dilation, transposed, output_padding, groups);
   UnboxToFlagos(result);
   return result;
@@ -7569,7 +7604,8 @@ at::Tensor & ConvolutionOutKernelCuda(const at::Tensor & input, const at::Tensor
 }
 
 at::Tensor ConvolutionOverrideableKernelCuda(const at::Tensor & input, const at::Tensor & weight, const ::std::optional<at::Tensor> & bias, at::IntArrayRef stride, at::IntArrayRef padding, at::IntArrayRef dilation, bool transposed, at::IntArrayRef output_padding, int64_t groups) {
-  DeviceBoxingGuard guard(input, weight);
+  at::Tensor bias_t = bias.has_value() ? *bias : at::Tensor();
+  DeviceBoxingGuard guard(input, weight, bias_t);
   auto result = at::convolution_overrideable(input, weight, bias, stride, padding, dilation, transposed, output_padding, groups);
   UnboxToFlagos(result);
   return result;
@@ -7814,7 +7850,8 @@ at::Tensor & CudnnConvolutionOutKernelCuda(const at::Tensor & self, const at::Te
 }
 
 at::Tensor CudnnConvolutionAddReluKernelCuda(const at::Tensor & self, const at::Tensor & weight, const at::Tensor & z, const ::std::optional<at::Scalar> & alpha, const ::std::optional<at::Tensor> & bias, at::IntArrayRef stride, at::IntArrayRef padding, at::IntArrayRef dilation, int64_t groups) {
-  DeviceBoxingGuard guard(self, weight, z);
+  at::Tensor bias_t = bias.has_value() ? *bias : at::Tensor();
+  DeviceBoxingGuard guard(self, weight, z, bias_t);
   auto result = at::cudnn_convolution_add_relu(self, weight, z, alpha, bias, stride, padding, dilation, groups);
   UnboxToFlagos(result);
   return result;
@@ -7829,7 +7866,8 @@ at::Tensor & CudnnConvolutionAddReluOutKernelCuda(const at::Tensor & self, const
 }
 
 at::Tensor CudnnConvolutionReluKernelCuda(const at::Tensor & self, const at::Tensor & weight, const ::std::optional<at::Tensor> & bias, at::IntArrayRef stride, at::IntArrayRef padding, at::IntArrayRef dilation, int64_t groups) {
-  DeviceBoxingGuard guard(self, weight);
+  at::Tensor bias_t = bias.has_value() ? *bias : at::Tensor();
+  DeviceBoxingGuard guard(self, weight, bias_t);
   auto result = at::cudnn_convolution_relu(self, weight, bias, stride, padding, dilation, groups);
   UnboxToFlagos(result);
   return result;
@@ -11353,7 +11391,8 @@ at::Tensor & MinimumOutKernelCuda(const at::Tensor & self, const at::Tensor & ot
 }
 
 at::Tensor MiopenConvolutionKernelCuda(const at::Tensor & self, const at::Tensor & weight, const ::std::optional<at::Tensor> & bias, at::IntArrayRef padding, at::IntArrayRef stride, at::IntArrayRef dilation, int64_t groups, bool benchmark, bool deterministic) {
-  DeviceBoxingGuard guard(self, weight);
+  at::Tensor bias_t = bias.has_value() ? *bias : at::Tensor();
+  DeviceBoxingGuard guard(self, weight, bias_t);
   auto result = at::miopen_convolution(self, weight, bias, padding, stride, dilation, groups, benchmark, deterministic);
   UnboxToFlagos(result);
   return result;
@@ -11368,21 +11407,24 @@ at::Tensor & MiopenConvolutionOutKernelCuda(const at::Tensor & self, const at::T
 }
 
 at::Tensor MiopenConvolutionAddReluKernelCuda(const at::Tensor & self, const at::Tensor & weight, const at::Tensor & z, const ::std::optional<at::Scalar> & alpha, const ::std::optional<at::Tensor> & bias, at::IntArrayRef stride, at::IntArrayRef padding, at::IntArrayRef dilation, int64_t groups) {
-  DeviceBoxingGuard guard(self, weight, z);
+  at::Tensor bias_t = bias.has_value() ? *bias : at::Tensor();
+  DeviceBoxingGuard guard(self, weight, z, bias_t);
   auto result = at::miopen_convolution_add_relu(self, weight, z, alpha, bias, stride, padding, dilation, groups);
   UnboxToFlagos(result);
   return result;
 }
 
 at::Tensor MiopenConvolutionReluKernelCuda(const at::Tensor & self, const at::Tensor & weight, const ::std::optional<at::Tensor> & bias, at::IntArrayRef stride, at::IntArrayRef padding, at::IntArrayRef dilation, int64_t groups) {
-  DeviceBoxingGuard guard(self, weight);
+  at::Tensor bias_t = bias.has_value() ? *bias : at::Tensor();
+  DeviceBoxingGuard guard(self, weight, bias_t);
   auto result = at::miopen_convolution_relu(self, weight, bias, stride, padding, dilation, groups);
   UnboxToFlagos(result);
   return result;
 }
 
 at::Tensor MiopenConvolutionTransposeKernelCuda(const at::Tensor & self, const at::Tensor & weight, const ::std::optional<at::Tensor> & bias, at::IntArrayRef padding, at::IntArrayRef output_padding, at::IntArrayRef stride, at::IntArrayRef dilation, int64_t groups, bool benchmark, bool deterministic) {
-  DeviceBoxingGuard guard(self, weight);
+  at::Tensor bias_t = bias.has_value() ? *bias : at::Tensor();
+  DeviceBoxingGuard guard(self, weight, bias_t);
   auto result = at::miopen_convolution_transpose(self, weight, bias, padding, output_padding, stride, dilation, groups, benchmark, deterministic);
   UnboxToFlagos(result);
   return result;
@@ -11397,7 +11439,8 @@ at::Tensor & MiopenConvolutionTransposeOutKernelCuda(const at::Tensor & self, co
 }
 
 at::Tensor MiopenDepthwiseConvolutionKernelCuda(const at::Tensor & self, const at::Tensor & weight, const ::std::optional<at::Tensor> & bias, at::IntArrayRef padding, at::IntArrayRef stride, at::IntArrayRef dilation, int64_t groups, bool benchmark, bool deterministic) {
-  DeviceBoxingGuard guard(self, weight);
+  at::Tensor bias_t = bias.has_value() ? *bias : at::Tensor();
+  DeviceBoxingGuard guard(self, weight, bias_t);
   auto result = at::miopen_depthwise_convolution(self, weight, bias, padding, stride, dilation, groups, benchmark, deterministic);
   UnboxToFlagos(result);
   return result;
@@ -11451,7 +11494,8 @@ at::Tensor & MkldnnAdaptiveAvgPool2dBackwardOutKernelCuda(const at::Tensor & gra
 }
 
 at::Tensor MkldnnConvolutionKernelCuda(const at::Tensor & self, const at::Tensor & weight, const ::std::optional<at::Tensor> & bias, at::IntArrayRef padding, at::IntArrayRef stride, at::IntArrayRef dilation, int64_t groups) {
-  DeviceBoxingGuard guard(self, weight);
+  at::Tensor bias_t = bias.has_value() ? *bias : at::Tensor();
+  DeviceBoxingGuard guard(self, weight, bias_t);
   auto result = at::mkldnn_convolution(self, weight, bias, padding, stride, dilation, groups);
   UnboxToFlagos(result);
   return result;
@@ -11695,7 +11739,8 @@ at::Tensor & MulInplaceTensorKernelCuda(at::Tensor & self, const at::Tensor & ot
 }
 
 at::Tensor MultiMarginLossKernelCuda(const at::Tensor & self, const at::Tensor & target, const at::Scalar & p, const at::Scalar & margin, const ::std::optional<at::Tensor> & weight, int64_t reduction) {
-  DeviceBoxingGuard guard(self, target);
+  at::Tensor weight_t = weight.has_value() ? *weight : at::Tensor();
+  DeviceBoxingGuard guard(self, target, weight_t);
   auto result = at::multi_margin_loss(self, target, p, margin, weight, reduction);
   UnboxToFlagos(result);
   return result;
@@ -11710,7 +11755,8 @@ at::Tensor & MultiMarginLossOutKernelCuda(const at::Tensor & self, const at::Ten
 }
 
 at::Tensor MultiMarginLossBackwardKernelCuda(const at::Tensor & grad_output, const at::Tensor & self, const at::Tensor & target, const at::Scalar & p, const at::Scalar & margin, const ::std::optional<at::Tensor> & weight, int64_t reduction) {
-  DeviceBoxingGuard guard(grad_output, self, target);
+  at::Tensor weight_t = weight.has_value() ? *weight : at::Tensor();
+  DeviceBoxingGuard guard(grad_output, self, target, weight_t);
   auto result = at::multi_margin_loss_backward(grad_output, self, target, p, margin, weight, reduction);
   UnboxToFlagos(result);
   return result;
@@ -12142,7 +12188,8 @@ at::Tensor & NextafterInplaceKernelCuda(at::Tensor & self, const at::Tensor & ot
 }
 
 at::Tensor NllLoss2dBackwardKernelCuda(const at::Tensor & grad_output, const at::Tensor & self, const at::Tensor & target, const ::std::optional<at::Tensor> & weight, int64_t reduction, int64_t ignore_index, const at::Tensor & total_weight) {
-  DeviceBoxingGuard guard(grad_output, self, target, total_weight);
+  at::Tensor weight_t = weight.has_value() ? *weight : at::Tensor();
+  DeviceBoxingGuard guard(grad_output, self, target, total_weight, weight_t);
   auto result = at::nll_loss2d_backward(grad_output, self, target, weight, reduction, ignore_index, total_weight);
   UnboxToFlagos(result);
   return result;
@@ -12175,7 +12222,8 @@ at::Tensor & NllLoss2dBackwardGradInputKernelCuda(const at::Tensor & grad_output
 }
 
 at::Tensor NllLossBackwardKernelCuda(const at::Tensor & grad_output, const at::Tensor & self, const at::Tensor & target, const ::std::optional<at::Tensor> & weight, int64_t reduction, int64_t ignore_index, const at::Tensor & total_weight) {
-  DeviceBoxingGuard guard(grad_output, self, target, total_weight);
+  at::Tensor weight_t = weight.has_value() ? *weight : at::Tensor();
+  DeviceBoxingGuard guard(grad_output, self, target, total_weight, weight_t);
   auto result = at::nll_loss_backward(grad_output, self, target, weight, reduction, ignore_index, total_weight);
   UnboxToFlagos(result);
   return result;
@@ -13879,7 +13927,8 @@ at::Tensor & ScatterReduceInplaceTwoKernelCuda(at::Tensor & self, int64_t dim, c
 }
 
 at::Tensor SearchsortedScalarKernelCuda(const at::Tensor & sorted_sequence, const at::Scalar & self, bool out_int32, bool right, ::std::optional<c10::string_view> side, const ::std::optional<at::Tensor> & sorter) {
-  DeviceBoxingGuard guard(sorted_sequence);
+  at::Tensor sorter_t = sorter.has_value() ? *sorter : at::Tensor();
+  DeviceBoxingGuard guard(sorted_sequence, sorter_t);
   auto result = at::searchsorted(sorted_sequence, self, out_int32, right, side, sorter);
   UnboxToFlagos(result);
   return result;
@@ -13894,7 +13943,8 @@ at::Tensor & SearchsortedScalarOutKernelCuda(const at::Tensor & sorted_sequence,
 }
 
 at::Tensor SearchsortedTensorKernelCuda(const at::Tensor & sorted_sequence, const at::Tensor & self, bool out_int32, bool right, ::std::optional<c10::string_view> side, const ::std::optional<at::Tensor> & sorter) {
-  DeviceBoxingGuard guard(sorted_sequence, self);
+  at::Tensor sorter_t = sorter.has_value() ? *sorter : at::Tensor();
+  DeviceBoxingGuard guard(sorted_sequence, self, sorter_t);
   auto result = at::searchsorted(sorted_sequence, self, out_int32, right, side, sorter);
   UnboxToFlagos(result);
   return result;
@@ -13909,7 +13959,10 @@ at::Tensor & SearchsortedTensorOutKernelCuda(const at::Tensor & sorted_sequence,
 }
 
 at::Tensor SegmentReduceKernelCuda(const at::Tensor & data, c10::string_view reduce, const ::std::optional<at::Tensor> & lengths, const ::std::optional<at::Tensor> & indices, const ::std::optional<at::Tensor> & offsets, int64_t axis, bool unsafe, const ::std::optional<at::Scalar> & initial) {
-  DeviceBoxingGuard guard(data);
+  at::Tensor lengths_t = lengths.has_value() ? *lengths : at::Tensor();
+  at::Tensor indices_t = indices.has_value() ? *indices : at::Tensor();
+  at::Tensor offsets_t = offsets.has_value() ? *offsets : at::Tensor();
+  DeviceBoxingGuard guard(data, lengths_t, indices_t, offsets_t);
   auto result = at::segment_reduce(data, reduce, lengths, indices, offsets, axis, unsafe, initial);
   UnboxToFlagos(result);
   return result;
@@ -14226,7 +14279,8 @@ at::Tensor & SliceScatterOutKernelCuda(const at::Tensor & self, const at::Tensor
 }
 
 at::Tensor SlowConvDilated2dKernelCuda(const at::Tensor & self, const at::Tensor & weight, at::IntArrayRef kernel_size, const ::std::optional<at::Tensor> & bias, at::IntArrayRef stride, at::IntArrayRef padding, at::IntArrayRef dilation) {
-  DeviceBoxingGuard guard(self, weight);
+  at::Tensor bias_t = bias.has_value() ? *bias : at::Tensor();
+  DeviceBoxingGuard guard(self, weight, bias_t);
   auto result = at::slow_conv_dilated2d(self, weight, kernel_size, bias, stride, padding, dilation);
   UnboxToFlagos(result);
   return result;
@@ -14241,7 +14295,8 @@ at::Tensor & SlowConvDilated2dOutKernelCuda(const at::Tensor & self, const at::T
 }
 
 at::Tensor SlowConvDilated3dKernelCuda(const at::Tensor & self, const at::Tensor & weight, at::IntArrayRef kernel_size, const ::std::optional<at::Tensor> & bias, at::IntArrayRef stride, at::IntArrayRef padding, at::IntArrayRef dilation) {
-  DeviceBoxingGuard guard(self, weight);
+  at::Tensor bias_t = bias.has_value() ? *bias : at::Tensor();
+  DeviceBoxingGuard guard(self, weight, bias_t);
   auto result = at::slow_conv_dilated3d(self, weight, kernel_size, bias, stride, padding, dilation);
   UnboxToFlagos(result);
   return result;
@@ -14256,7 +14311,8 @@ at::Tensor & SlowConvDilated3dOutKernelCuda(const at::Tensor & self, const at::T
 }
 
 at::Tensor SlowConvTranspose2dKernelCuda(const at::Tensor & self, const at::Tensor & weight, at::IntArrayRef kernel_size, const ::std::optional<at::Tensor> & bias, at::IntArrayRef stride, at::IntArrayRef padding, at::IntArrayRef output_padding, at::IntArrayRef dilation) {
-  DeviceBoxingGuard guard(self, weight);
+  at::Tensor bias_t = bias.has_value() ? *bias : at::Tensor();
+  DeviceBoxingGuard guard(self, weight, bias_t);
   auto result = at::slow_conv_transpose2d(self, weight, kernel_size, bias, stride, padding, output_padding, dilation);
   UnboxToFlagos(result);
   return result;
@@ -14271,7 +14327,8 @@ at::Tensor & SlowConvTranspose2dOutKernelCuda(const at::Tensor & self, const at:
 }
 
 at::Tensor SlowConvTranspose3dKernelCuda(const at::Tensor & self, const at::Tensor & weight, at::IntArrayRef kernel_size, const ::std::optional<at::Tensor> & bias, at::IntArrayRef stride, at::IntArrayRef padding, at::IntArrayRef output_padding, at::IntArrayRef dilation) {
-  DeviceBoxingGuard guard(self, weight);
+  at::Tensor bias_t = bias.has_value() ? *bias : at::Tensor();
+  DeviceBoxingGuard guard(self, weight, bias_t);
   auto result = at::slow_conv_transpose3d(self, weight, kernel_size, bias, stride, padding, output_padding, dilation);
   UnboxToFlagos(result);
   return result;

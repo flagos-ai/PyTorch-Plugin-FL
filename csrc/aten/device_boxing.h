@@ -16,6 +16,11 @@ namespace at::native::flagos {
 // Change a tensor's device type in-place (metadata only, no data copy).
 // Modifies dispatch key set, DataPtr device, and device_opt_.
 inline void SetTensorDevice(const at::Tensor& t, c10::DeviceType type) {
+  // Undefined tensors (e.g. an unrequested grad in a *_backward output tuple,
+  // like the bias grad of convolution_backward when output_mask[2]==false) have
+  // no TensorImpl; touching device() would dereference null -> "tensor does not
+  // have a device". Nothing to rebox, so skip.
+  if (!t.defined()) return;
   auto* impl = t.unsafeGetTensorImpl();
   auto idx = impl->device().index();
   auto new_device = c10::Device(type, idx);
