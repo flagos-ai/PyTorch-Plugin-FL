@@ -114,14 +114,13 @@ at::Tensor CallPythonOp_LikeFactory(const char* func_name,
 
 // Random in-place caller (uniform_/exponential_/bernoulli_.float). `args` are
 // the aten positionals with the trailing `Generator?` arg dropped (self, plus
-// scalar params like from/to/lambd/p). gems only reads philox seed+offset from
-// the generator, computing the actual randoms in a Triton kernel that writes
-// into the (flagos) `self` tensor -- so the generator's device need not match.
-// A CUDA generator is required because gems' philox code expects the 16-byte
-// CUDA-style RNG state (a flagos/CPU generator's 5056-byte MT19937 state fails
-// the `c0, c1 = state.view(int64)` unpack). We hold ONE module-level CUDA
-// Generator and advance its offset each call (gems set_state's it back), so
-// repeated calls yield distinct streams. Relies on the GIL for serialization.
+// scalar params like from/to/lambd/p). We call gems with generator=None and let
+// torch_fl's philox monkeypatch (_patch_flaggems_philox) supply the fallback
+// CUDA generator -- the SAME mechanism the generator-less rng ops
+// (rand/randn/multinomial/...) rely on. Injecting an explicit CUDA generator
+// object here instead raced with triton's first-compile of exponential_/uniform_
+// on a cold kernel cache ("Unable to cast <int> to '?'"); routing through the
+// monkeypatch is race-free and keeps all rng ops on one code path.
 at::Tensor CallPythonOp_RandomInplace(const char* func_name,
                                       const std::vector<c10::IValue>& args);
 

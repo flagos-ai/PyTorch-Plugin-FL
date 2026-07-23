@@ -410,25 +410,6 @@ at::Tensor CallPythonOp_LikeFactory(const char* func_name,
   return PythonToTensor(result);
 }
 
-namespace {
-// One CUDA generator shared by all random in-place gems calls. gems reads only
-// philox seed+offset from it and set_state's the advanced offset back, so
-// successive calls draw distinct streams. Guarded by the GIL (every caller
-// holds it). Lazily created on first use; seeded from torch's global default so
-// torch.manual_seed(...) before the first random op is reflected.
-py::object& CudaRngGenerator() {
-  static py::object gen;
-  if (!gen) {
-    py::module_ torch_mod = py::module_::import("torch");
-    gen = torch_mod.attr("Generator")("cuda");
-    // Seed from the global default generator's current seed for reproducibility.
-    int64_t seed = torch_mod.attr("initial_seed")().cast<int64_t>();
-    gen.attr("manual_seed")(seed);
-  }
-  return gen;
-}
-} // namespace
-
 at::Tensor CallPythonOp_RandomInplace(const char* func_name,
                                       const std::vector<c10::IValue>& args) {
   auto& cache = GetCache();
@@ -436,7 +417,10 @@ at::Tensor CallPythonOp_RandomInplace(const char* func_name,
   py::gil_scoped_acquire gil;
   auto func = cache.GetFunc(func_name);
   py::tuple py_args = BuildPyArgs(args, func_name);
-  py::object result = func(*py_args, "generator"_a = CudaRngGenerator());
+  // generator=None: torch_fl's philox monkeypatch injects the fallback CUDA
+  // generator (same path as rand/randn/multinomial). Passing an explicit
+  // generator object here raced with triton's cold-cache first-compile.
+  py::object result = func(*py_args);
   return PythonToTensor(result);
 }
 

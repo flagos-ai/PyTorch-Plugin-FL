@@ -255,14 +255,28 @@ def _patch_flaggems_philox():
         import torch
         from flag_gems.utils import random_utils
 
-        _fallback = torch.Generator(device="cuda")
-        _fallback.manual_seed(torch.initial_seed())
         _orig = random_utils.philox_backend_seed_offset
+
+        # The fallback CUDA generator is created LAZILY on first use, NOT here:
+        # at import time (when this patch installs) the external libtorch_cuda.so
+        # is not yet wired into ATen, so torch.Generator(device="cuda") raises
+        # "Cannot get CUDA generator without ATen_cuda library". By the time any
+        # gems RNG op actually runs, cuda is live and the generator constructs
+        # fine (same lazy pattern the old caller-side CudaRngGenerator used).
+        _fallback_box = {}
+
+        def _get_fallback():
+            gen = _fallback_box.get("gen")
+            if gen is None:
+                gen = torch.Generator(device="cuda")
+                gen.manual_seed(torch.initial_seed())
+                _fallback_box["gen"] = gen
+            return gen
 
         def _patched(increment, generator=None):
             if (generator is None
                     and len(random_utils.torch_device_fn.default_generators) == 0):
-                generator = _fallback
+                generator = _get_fallback()
             return _orig(increment, generator=generator)
 
         # rand.py etc. do `from ..utils.random_utils import
