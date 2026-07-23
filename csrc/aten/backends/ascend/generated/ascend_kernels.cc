@@ -969,6 +969,22 @@ at::Tensor SubScalarKernelAscend(const at::Tensor& self, const at::Scalar& other
 
 REGISTER_IMPL_TO_DISPATCHER(SubScalarFn, sub_scalar_dispatcher, Backend::kAscend, SubScalarKernelAscend)
 
+at::Tensor RsubScalarKernelAscend(const at::Tensor& self, const at::Scalar& other, const at::Scalar& alpha) {
+  namespace ascend = at::native::flagos::ascend;
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options());
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclScalarWrapper acl_other(other, self.scalar_type());
+  ascend::AclScalarWrapper acl_alpha(alpha, self.scalar_type());
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD(aclnnRsubs, acl_self.get(), acl_other.get(), acl_alpha.get(), acl_out.get());
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(RsubScalarFn, rsub_scalar_dispatcher, Backend::kAscend, RsubScalarKernelAscend)
+
 at::Tensor EqScalarKernelAscend(const at::Tensor& self, const at::Scalar& other) {
   namespace ascend = at::native::flagos::ascend;
   auto out = ascend::OpPreparation::apply_tensor_without_format(
@@ -1861,6 +1877,19 @@ at::Tensor ZerosKernelAscend(at::IntArrayRef size, ::std::optional<at::ScalarTyp
 
 REGISTER_IMPL_TO_DISPATCHER(ZerosFn, zeros_dispatcher, Backend::kAscend, ZerosKernelAscend)
 
+at::Tensor OnesKernelAscend(at::IntArrayRef size, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
+  auto options = at::TensorOptions()
+    .dtype(dtype.value_or(at::kFloat))
+    .layout(layout.value_or(at::kStrided))
+    .device(device.value_or(at::Device(at::kPrivateUse1, 0)))
+    .pinned_memory(pin_memory.value_or(false));
+  auto result = at::empty(size, options);
+  result.fill_(1);
+  return result;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(OnesFn, ones_dispatcher, Backend::kAscend, OnesKernelAscend)
+
 at::Tensor ScalarTensorKernelAscend(const at::Scalar& s, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
   auto options = at::TensorOptions()
     .dtype(dtype.value_or(at::ScalarType::Float))
@@ -1890,6 +1919,51 @@ at::Tensor OnesLikeKernelAscend(const at::Tensor& self, ::std::optional<at::Scal
 }
 
 REGISTER_IMPL_TO_DISPATCHER(OnesLikeFn, ones_like_dispatcher, Backend::kAscend, OnesLikeKernelAscend)
+
+at::Tensor EmptyLikeKernelAscend(const at::Tensor& self, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory, ::std::optional<at::MemoryFormat> memory_format) {
+  auto options = at::TensorOptions()
+    .dtype(dtype.value_or(self.scalar_type()))
+    .layout(layout.value_or(self.layout()))
+    .device(device.value_or(self.device()))
+    .pinned_memory(pin_memory.value_or(false));
+  auto fmt = memory_format.value_or(at::MemoryFormat::Preserve);
+  if (fmt == at::MemoryFormat::Preserve) {
+    fmt = self.suggest_memory_format();
+  }
+  return at::empty(self.sizes(), options, fmt);
+}
+
+REGISTER_IMPL_TO_DISPATCHER(EmptyLikeFn, empty_like_dispatcher, Backend::kAscend, EmptyLikeKernelAscend)
+
+at::Tensor FullKernelAscend(at::IntArrayRef size, const at::Scalar& fill, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
+  auto options = at::TensorOptions()
+    .dtype(dtype.value_or(at::kFloat))
+    .layout(layout.value_or(at::kStrided))
+    .device(device.value_or(at::Device(at::kPrivateUse1, 0)))
+    .pinned_memory(pin_memory.value_or(false));
+  auto result = at::empty(size, options);
+  result.fill_(fill);
+  return result;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(FullFn, full_dispatcher, Backend::kAscend, FullKernelAscend)
+
+at::Tensor FullLikeKernelAscend(const at::Tensor& self, const at::Scalar& fill, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory, ::std::optional<at::MemoryFormat> memory_format) {
+  auto options = at::TensorOptions()
+    .dtype(dtype.value_or(self.scalar_type()))
+    .layout(layout.value_or(self.layout()))
+    .device(device.value_or(self.device()))
+    .pinned_memory(pin_memory.value_or(false));
+  auto fmt = memory_format.value_or(at::MemoryFormat::Preserve);
+  if (fmt == at::MemoryFormat::Preserve) {
+    fmt = self.suggest_memory_format();
+  }
+  auto result = at::empty(self.sizes(), options, fmt);
+  result.fill_(fill);
+  return result;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(FullLikeFn, full_like_dispatcher, Backend::kAscend, FullLikeKernelAscend)
 
 at::Tensor NewOnesKernelAscend(const at::Tensor& self, at::IntArrayRef size, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
   auto options = at::TensorOptions()
@@ -2650,6 +2724,25 @@ at::Tensor AllKernelAscend(const at::Tensor& self) {
 
 REGISTER_IMPL_TO_DISPATCHER(AllFn, all_dispatcher, Backend::kAscend, AllKernelAscend)
 
+at::Tensor AnyKernelAscend(const at::Tensor& self) {
+  namespace ascend = at::native::flagos::ascend;
+  auto input = self.contiguous().reshape({-1});
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      {}, self.options().dtype(at::kBool));
+
+  ascend::AclTensorWrapper acl_self(input);
+  ascend::AclTensorWrapper acl_out(out);
+
+  int64_t dim_val = 0;
+  std::vector<int64_t> dims{dim_val};
+  ascend::AclIntArrayWrapper acl_dim(dims);
+
+  EXEC_ASCEND_CMD(aclnnAny, acl_self.get(), acl_dim.get(), false, acl_out.get());
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(AnyFn, any_dispatcher, Backend::kAscend, AnyKernelAscend)
+
 at::Tensor SumDimIntlistKernelAscend(const at::Tensor& self, at::OptionalIntArrayRef dim, bool keepdim, std::optional<at::ScalarType> dtype) {
   namespace ascend = at::native::flagos::ascend;
   auto out_dtype = dtype.has_value() ? dtype.value() : self.scalar_type();
@@ -2679,6 +2772,55 @@ at::Tensor SumDimIntlistKernelAscend(const at::Tensor& self, at::OptionalIntArra
 }
 
 REGISTER_IMPL_TO_DISPATCHER(SumDimIntlistFn, sum_dim_intlist_dispatcher, Backend::kAscend, SumDimIntlistKernelAscend)
+
+at::Tensor SumKernelAscend(const at::Tensor& self, std::optional<at::ScalarType> dtype) {
+  namespace ascend = at::native::flagos::ascend;
+  // Integral/bool inputs promote to int64 when no dtype given (matches torch).
+  at::ScalarType out_dtype = dtype.has_value()
+      ? dtype.value()
+      : (c10::isIntegralType(self.scalar_type(), /*includeBool=*/true)
+             ? at::kLong : self.scalar_type());
+  int64_t ndim = self.dim();
+  std::vector<int64_t> norm_dims;
+  for (int64_t d = 0; d < ndim; ++d) norm_dims.push_back(d);
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      {}, self.options().dtype(out_dtype));
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_out(out);
+  ascend::AclIntArrayWrapper acl_dim(norm_dims);
+  aclDataType acl_dtype = ascend::ToAclDataType(out_dtype);
+
+  EXEC_ASCEND_CMD(aclnnReduceSum, acl_self.get(), acl_dim.get(), false, acl_dtype, acl_out.get());
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(SumFn, sum_dispatcher, Backend::kAscend, SumKernelAscend)
+
+at::Tensor MaxKernelAscend(const at::Tensor& self) {
+  namespace ascend = at::native::flagos::ascend;
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      {}, self.options());
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD(aclnnMax, acl_self.get(), acl_out.get());
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(MaxFn, max_dispatcher, Backend::kAscend, MaxKernelAscend)
+
+at::Tensor MinKernelAscend(const at::Tensor& self) {
+  namespace ascend = at::native::flagos::ascend;
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      {}, self.options());
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD(aclnnMin, acl_self.get(), acl_out.get());
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(MinFn, min_dispatcher, Backend::kAscend, MinKernelAscend)
 
 at::Tensor MeanDimKernelAscend(const at::Tensor& self, at::OptionalIntArrayRef dim, bool keepdim, std::optional<at::ScalarType> dtype) {
   namespace ascend = at::native::flagos::ascend;

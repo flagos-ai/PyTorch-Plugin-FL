@@ -14,6 +14,13 @@ def _select_backend_config() -> None:
       * FLAGOS_USE_FLAGGEMS=1 + METAX_BOXING=1 -> backends_metax_flaggems.conf
       * unset / 0                              -> backends_cuda.conf (pure boxing)
 
+    On an Ascend NPU box (detected via /dev/davinci*), the ACL C++ backend is the
+    only usable one, so the choice is instead:
+
+      * FLAGOS_USE_FLAGGEMS=1 -> backends_ascend_flagos_py.conf (FlagGems Triton
+                                 where triton-ascend can run, else ascend aclnn)
+      * unset / 0             -> backends_ascend.conf (pure aclnn C++)
+
     The MetaX flaggems conf mirrors backends_flaggems.conf but routes the ops
     triton-metax cannot run (mm/bmm/mean.dim) back to the cuda boxing kernel
     (maca libtorch_cuda) instead of flagos_python. An explicit
@@ -33,13 +40,41 @@ def _select_backend_config() -> None:
         "FALSE",
     )
     metax_boxing = os.environ.get("FLAGOS_METAX_BOXING", "0") == "1"
+
+    conf_dir = os.path.dirname(__file__)
+
+    # Ascend builds compile the ACL C++ backend (Backend::kAscend), not the CUDA
+    # boxing kernels, so the cuda/flaggems confs (which route ops to `cuda`) can
+    # never apply. Since every wheel ships all backends*.conf files, the conf set
+    # can't distinguish the build; use the runtime hardware signal instead. An
+    # Ascend NPU exposes /dev/davinci* device nodes -- their presence means this
+    # is an Ascend box, where the only usable routing is the ascend conf. (A CUDA
+    # build could not run here anyway, so this never mis-fires on a CUDA host.)
+    ascend_default = os.path.join(conf_dir, "backends_ascend.conf")
+    ascend_flaggems = os.path.join(conf_dir, "backends_ascend_flagos_py.conf")
+    try:
+        is_ascend_build = os.path.exists(ascend_default) and any(
+            name.startswith("davinci") for name in os.listdir("/dev")
+        )
+    except OSError:
+        is_ascend_build = False
+
+    if is_ascend_build:
+        conf_path = (
+            ascend_flaggems if (use_flaggems and os.path.exists(ascend_flaggems))
+            else ascend_default
+        )
+        if os.path.exists(conf_path):
+            os.environ["FLAGOS_BACKEND_CONFIG"] = conf_path
+        return
+
     if use_flaggems and metax_boxing:
         conf_name = "backends_metax_flaggems.conf"
     elif use_flaggems:
         conf_name = "backends_flaggems.conf"
     else:
         conf_name = "backends_cuda.conf"
-    conf_path = os.path.join(os.path.dirname(__file__), conf_name)
+    conf_path = os.path.join(conf_dir, conf_name)
     if os.path.exists(conf_path):
         os.environ["FLAGOS_BACKEND_CONFIG"] = conf_path
 

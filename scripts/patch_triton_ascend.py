@@ -176,6 +176,29 @@ def patch_utils(triton_path):
     return patch_file(fp, replacements)
 
 
+def patch_npu_utils(triton_path):
+    """Patch backends/ascend/npu_utils.cpp for CANN 9.0.0 enum names.
+
+    triton-ascend 3.2.0's npu_utils.cpp references rtLimitType_t enumerators
+    from a newer CANN release. CANN 9.0.0 (rt_external_base.h) names the SIMT
+    per-warp stack limit RT_LIMIT_TYPE_SIMT_STACK_SIZE, not the newer
+    RT_LIMIT_TYPE_SIMT_WARP_STACK_SIZE, so the JIT compile of npu_utils.cpp
+    fails with "could not convert brace-enclosed initializer list". Map the
+    "WARP_STACK_SIZE" key onto the enumerator that CANN 9.0.0 actually
+    provides. Idempotent: the newer name only ever appears here.
+    """
+    fp = os.path.join(triton_path, "backends", "ascend", "npu_utils.cpp")
+
+    replacements = [
+        (
+            "rtLimitType_t::RT_LIMIT_TYPE_SIMT_WARP_STACK_SIZE",
+            "rtLimitType_t::RT_LIMIT_TYPE_SIMT_STACK_SIZE",
+        ),
+    ]
+
+    return patch_file(fp, replacements)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Patch triton-ascend for torch_fl compatibility"
@@ -197,11 +220,14 @@ def main():
         )
         sys.exit(1)
 
-    print("\n[1/2] Patching backends/ascend/driver.py ...")
+    print("\n[1/3] Patching backends/ascend/driver.py ...")
     patch_driver(triton_path)
 
-    print("\n[2/2] Patching backends/ascend/utils.py ...")
+    print("\n[2/3] Patching backends/ascend/utils.py ...")
     patch_utils(triton_path)
+
+    print("\n[3/3] Patching backends/ascend/npu_utils.cpp (CANN 9.0.0 enum) ...")
+    patch_npu_utils(triton_path)
 
     print("\nDone. triton-ascend is now compatible with torch_fl.")
     print("NOTE: Clear triton kernel cache if you had previously compiled kernels:")

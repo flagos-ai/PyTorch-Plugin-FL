@@ -149,6 +149,7 @@ OPS = {
     # ---- binary_scalar_alpha: aclnn<Name>s(self, other, alpha, out) ----
     "add.Scalar":         ("binary_scalar_alpha", "Adds"),
     "sub.Scalar":         ("binary_scalar_alpha", "Subs"),
+    "rsub.Scalar":        ("binary_scalar_alpha", "Rsubs"),
 
     # ---- binary_scalar_cmp: bool out, aclnn<Name>(self, other, out) ----
     "eq.Scalar":          ("binary_scalar_cmp", "EqScalar"),
@@ -257,8 +258,12 @@ OPS = {
     "cat":                ("cat", "Cat"),
     # factory ops: at::empty + device-side zero_/fill_ (no direct aclnn call).
     "zeros":              ("zeros", None),
+    "ones":               ("ones", None),
     "scalar_tensor":      ("scalar_tensor", None),
     "ones_like":          ("ones_like", None),
+    "empty_like":         ("empty_like", None),
+    "full":               ("full", None),
+    "full_like":          ("full_like", None),
     "new_ones":           ("new_ones", None),
     "addmm":              ("gemm_addmm", "Addmm"),
     "baddbmm":            ("gemm_baddbmm", "Baddbmm"),
@@ -322,7 +327,11 @@ OPS = {
     "where.self":         ("where", "SWhere"),
     "_softmax":           ("softmax_fwd", "Softmax"),
     "all":                ("reduce_all", "All"),
+    "any":                ("reduce_all", "Any"),
     "sum.dim_IntList":    ("reduce_sum_dtype", "ReduceSum"),
+    "sum":                ("reduce_sum_all", "ReduceSum"),
+    "max":                ("reduce_minmax_all", "Max"),
+    "min":                ("reduce_minmax_all", "Min"),
     "mean.dim":           ("reduce_mean_dtype", "MeanV2"),
 
     # ---- conv/pool family (each carries an output-shape formula) ----
@@ -1155,6 +1164,84 @@ at::Tensor {kernel}(const at::Tensor& self, ::std::optional<at::ScalarType> dtyp
 REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
 """
 
+# empty_like: (self, dtype?, layout?, device?, pin?, memory_format?) -> uninit tensor
+#   with self's meta. Same shape as ones_like but no fill_ (contents undefined).
+#   FlagGems' pointwise_dynamic allocates its outputs via torch.empty_like, so this
+#   must exist on the ascend backend for any op routed to flagos_python.
+T_EMPTY_LIKE = """\
+at::Tensor {kernel}(const at::Tensor& self, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory, ::std::optional<at::MemoryFormat> memory_format) {{
+  auto options = at::TensorOptions()
+    .dtype(dtype.value_or(self.scalar_type()))
+    .layout(layout.value_or(self.layout()))
+    .device(device.value_or(self.device()))
+    .pinned_memory(pin_memory.value_or(false));
+  auto fmt = memory_format.value_or(at::MemoryFormat::Preserve);
+  if (fmt == at::MemoryFormat::Preserve) {{
+    fmt = self.suggest_memory_format();
+  }}
+  return at::empty(self.sizes(), options, fmt);
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# full: (IntArrayRef size, Scalar fill, dtype?, layout?, device?, pin?) -> filled tensor.
+#   Default dtype: if a fill value is integral and no dtype given, torch uses long;
+#   but transformers' generate always passes an explicit dtype, and value_or(kFloat)
+#   matches zeros/ones behaviour, so keep it simple and consistent with T_ZEROS.
+T_FULL = """\
+at::Tensor {kernel}(at::IntArrayRef size, const at::Scalar& fill, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {{
+  auto options = at::TensorOptions()
+    .dtype(dtype.value_or(at::kFloat))
+    .layout(layout.value_or(at::kStrided))
+    .device(device.value_or(at::Device(at::kPrivateUse1, 0)))
+    .pinned_memory(pin_memory.value_or(false));
+  auto result = at::empty(size, options);
+  result.fill_(fill);
+  return result;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# full_like: (self, Scalar fill, dtype?, layout?, device?, pin?, memory_format?) -> self-shaped, filled.
+T_FULL_LIKE = """\
+at::Tensor {kernel}(const at::Tensor& self, const at::Scalar& fill, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory, ::std::optional<at::MemoryFormat> memory_format) {{
+  auto options = at::TensorOptions()
+    .dtype(dtype.value_or(self.scalar_type()))
+    .layout(layout.value_or(self.layout()))
+    .device(device.value_or(self.device()))
+    .pinned_memory(pin_memory.value_or(false));
+  auto fmt = memory_format.value_or(at::MemoryFormat::Preserve);
+  if (fmt == at::MemoryFormat::Preserve) {{
+    fmt = self.suggest_memory_format();
+  }}
+  auto result = at::empty(self.sizes(), options, fmt);
+  result.fill_(fill);
+  return result;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# ones: (IntArrayRef size, dtype?, layout?, device?, pin?) -> tensor of ones.
+#   Same shape as T_ZEROS; fill_(1) instead of zero_(). transformers' generate()
+#   uses torch.ones(batch_size, device=...) for unfinished_sequences bookkeeping.
+T_ONES = """\
+at::Tensor {kernel}(at::IntArrayRef size, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {{
+  auto options = at::TensorOptions()
+    .dtype(dtype.value_or(at::kFloat))
+    .layout(layout.value_or(at::kStrided))
+    .device(device.value_or(at::Device(at::kPrivateUse1, 0)))
+    .pinned_memory(pin_memory.value_or(false));
+  auto result = at::empty(size, options);
+  result.fill_(1);
+  return result;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
 # new_ones: (self, IntArrayRef size, dtype?, layout?, device?, pin?) -> ones w/ self's meta.
 T_NEW_ONES = """\
 at::Tensor {kernel}(const at::Tensor& self, at::IntArrayRef size, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {{
@@ -1593,6 +1680,52 @@ at::Tensor {kernel}(const at::Tensor& self, at::OptionalIntArrayRef dim, bool ke
   aclDataType acl_dtype = ascend::ToAclDataType(out_dtype);
 
   EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_dim.get(), keepdim, acl_dtype, acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# reduce_sum_all: sum(self, ScalarType? dtype) -> full reduction to a 0-d tensor.
+#   Reuses aclnnReduceSum over every axis with keepdim=false. transformers'
+#   fast_all() calls tensor.sum() on the causal-mask bool tensor.
+T_REDUCE_SUM_ALL = """\
+at::Tensor {kernel}(const at::Tensor& self, std::optional<at::ScalarType> dtype) {{
+  namespace ascend = at::native::flagos::ascend;
+  // Integral/bool inputs promote to int64 when no dtype given (matches torch).
+  at::ScalarType out_dtype = dtype.has_value()
+      ? dtype.value()
+      : (c10::isIntegralType(self.scalar_type(), /*includeBool=*/true)
+             ? at::kLong : self.scalar_type());
+  int64_t ndim = self.dim();
+  std::vector<int64_t> norm_dims;
+  for (int64_t d = 0; d < ndim; ++d) norm_dims.push_back(d);
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      {{}}, self.options().dtype(out_dtype));
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_out(out);
+  ascend::AclIntArrayWrapper acl_dim(norm_dims);
+  aclDataType acl_dtype = ascend::ToAclDataType(out_dtype);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_dim.get(), false, acl_dtype, acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# reduce_minmax_all: max(self) / min(self) -> 0-d tensor over ALL elements.
+#   aclnn<Max/Min>(self, out); out keeps self's dtype. transformers' generate()
+#   loop calls unfinished_sequences.max() to test the stop condition.
+T_REDUCE_MINMAX_ALL = """\
+at::Tensor {kernel}(const at::Tensor& self) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      {{}}, self.options());
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_out.get());
   return out;
 }}
 
@@ -2325,6 +2458,8 @@ CATEGORIES = {
     "softmax_fwd":         T_SOFTMAX_FWD,
     "reduce_all":          T_REDUCE_ALL,
     "reduce_sum_dtype":    T_REDUCE_SUM_DTYPE,
+    "reduce_sum_all":      T_REDUCE_SUM_ALL,
+    "reduce_minmax_all":   T_REDUCE_MINMAX_ALL,
     "reduce_mean_dtype":   T_REDUCE_MEAN_DTYPE,
     "adaptive_avg_pool2d": T_ADAPTIVE_AVG_POOL2D,
     "avg_pool2d":          T_AVG_POOL2D,
@@ -2349,15 +2484,20 @@ CATEGORIES = {
     "embedding_dense_backward": T_EMBEDDING_DENSE_BACKWARD,
     "constant_pad_nd":     T_CONSTANT_PAD_ND,
     "zeros":               T_ZEROS,
+    "ones":                T_ONES,
     "scalar_tensor":       T_SCALAR_TENSOR,
     "ones_like":           T_ONES_LIKE,
+    "empty_like":          T_EMPTY_LIKE,
+    "full":                T_FULL,
+    "full_like":           T_FULL_LIKE,
     "new_ones":            T_NEW_ONES,
 }
 
 # Categories whose kernels do NOT issue a direct aclnn call (they build tensors
 # on-host and fill via zero_/fill_, which are themselves device-side aclnn ops).
 # The symbol-validation guard is skipped for these; their OPS override is unused.
-NO_ACLNN_CATEGORIES = {"zeros", "scalar_tensor", "ones_like", "new_ones"}
+NO_ACLNN_CATEGORIES = {"zeros", "ones", "scalar_tensor", "ones_like", "empty_like",
+                       "full", "full_like", "new_ones"}
 
 FILE_HEADER = """\
 // Copyright (c) 2026, BAAI. All rights reserved.

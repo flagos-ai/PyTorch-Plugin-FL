@@ -49,4 +49,8 @@ at::Tensor unsqueeze(const at::Tensor& self, int64_t dim);
 
 at::Tensor unsafe_view(const at::Tensor& self, at::IntArrayRef size);
 
+at::Tensor t(const at::Tensor& self);
+
+::std::vector<at::Tensor> unbind_int(const at::Tensor& self, int64_t dim);
+
 } // namespace at::native::flagos
