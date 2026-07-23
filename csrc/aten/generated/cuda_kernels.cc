@@ -7157,7 +7157,7 @@ at::Tensor & BucketizeTensorOutKernelCuda(const at::Tensor & self, const at::Ten
 }
 
 at::Tensor CatKernelCuda(const at::ITensorListRef & tensors, int64_t dim) {
-  auto tensors_vec = MaterializeToTensorVec(tensors);
+  auto tensors_vec = DropLegacyEmptyForCat(MaterializeToTensorVec(tensors));
   TensorListBoxingGuard guard;
   guard.box(tensors_vec);
   auto result = at::cat(tensors_vec, dim);
@@ -7166,7 +7166,7 @@ at::Tensor CatKernelCuda(const at::ITensorListRef & tensors, int64_t dim) {
 }
 
 at::Tensor & CatOutKernelCuda(const at::ITensorListRef & tensors, int64_t dim, at::Tensor & out) {
-  auto tensors_vec = MaterializeToTensorVec(tensors);
+  auto tensors_vec = DropLegacyEmptyForCat(MaterializeToTensorVec(tensors));
   TensorListBoxingGuard guard;
   guard.box(tensors_vec);
   guard.box({out});

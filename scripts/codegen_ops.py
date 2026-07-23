@@ -1164,6 +1164,11 @@ def gen_foreach(op, fn_type, ret_type, args, func=None):
     # Detect TensorList args (ITensorListRef in torch 2.13)
     tensorlist_args = [(t, n) for t, n in args if "TensorList" in t]
 
+    # cat must drop legacy-empty (1-D size-0) inputs before dispatch: maca's
+    # forked libtorch_cuda cat kernel mishandles them on its vectorized fast
+    # path (see DropLegacyEmptyForCat in device_boxing.h).
+    is_cat = at_api_base(op) == "cat"
+
     # Materialize ITensorListRef → std::vector<Tensor>
     # The vector implicitly converts to TensorList (ArrayRef) for PyTorch API
     materialize_lines = ""
@@ -1171,7 +1176,15 @@ def gen_foreach(op, fn_type, ret_type, args, func=None):
     for t, n in args:
         if "ITensorListRef" in t or "TensorList" in t:
             mat_name = f"{n}_vec"
-            materialize_lines += f"  auto {mat_name} = MaterializeToTensorVec({n});\n"
+            if is_cat:
+                materialize_lines += (
+                    f"  auto {mat_name} = "
+                    f"DropLegacyEmptyForCat(MaterializeToTensorVec({n}));\n"
+                )
+            else:
+                materialize_lines += (
+                    f"  auto {mat_name} = MaterializeToTensorVec({n});\n"
+                )
             call_arg_names.append(mat_name)
         else:
             call_arg_names.append(n)
@@ -1221,6 +1234,10 @@ def gen_foreach_out(op, fn_type, ret_type, args, func=None):
     kn = kernel_name(fn_type)
     api = f"at::{at_api_base(op)}_outf"
 
+    # cat.out must drop legacy-empty (1-D size-0) inputs, same as cat (see
+    # DropLegacyEmptyForCat in device_boxing.h / gen_foreach).
+    is_cat = at_api_base(op) == "cat"
+
     # Every mutable single Tensor& arg (non-list, non-const) must be boxed. For
     # void ops this includes an in-out like found_inf; for single-return ops it
     # is the lone `out`. Tuple-returning multi-Tensor& out RNN ops are skip-listed.
@@ -1236,7 +1253,15 @@ def gen_foreach_out(op, fn_type, ret_type, args, func=None):
     for t, n in args:
         if "ITensorListRef" in t or "TensorList" in t:
             mat_name = f"{n}_vec"
-            materialize_lines += f"  auto {mat_name} = MaterializeToTensorVec({n});\n"
+            if is_cat:
+                materialize_lines += (
+                    f"  auto {mat_name} = "
+                    f"DropLegacyEmptyForCat(MaterializeToTensorVec({n}));\n"
+                )
+            else:
+                materialize_lines += (
+                    f"  auto {mat_name} = MaterializeToTensorVec({n});\n"
+                )
             box_lines += f"  guard.box({mat_name});\n"
             call_arg_names.append(mat_name)
         else:
