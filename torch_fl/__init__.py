@@ -614,9 +614,12 @@ def _patch_ddp_for_flagos():
         finally:
             torch._dynamo.utils.get_optimize_ddp_mode = _orig_mode
 
-        # Replace default accum_grad_hooks with flagos-compatible version.
-        # dist.all_reduce is routed through ProcessGroupFlagOS which does
-        # the privateuseone→cuda view conversion internally.
+        # Replace DDP's python_reducer accum hooks. The stock hooks use
+        # torch.distributed._functional_collectives (torch.ops._c10d_functional.*),
+        # whose dispatcher path is not registered for privateuseone. We instead
+        # go through dist.all_reduce on the group, which routes to
+        # ProcessGroupFlagOS and does the privateuseone->cuda view conversion.
+        # Mirrors DDP.compiled_accum_grad_hook, including _comm_hooks support.
         for h in self._accum_grad_hooks:
             h.remove()
         self._accum_grad_hooks.clear()
@@ -626,8 +629,13 @@ def _patch_ddp_for_flagos():
                 return
             if param.grad is None:
                 return
-            _dist.all_reduce(param.grad, op=_dist.ReduceOp.SUM)
-            param.grad.div_(_dist.get_world_size())
+            pg = ddp_model.process_group
+            if ddp_model._comm_hooks:
+                for hook, state in ddp_model._comm_hooks:
+                    hook(state, (param.grad, param))
+            else:
+                param.grad.div_(pg.size())
+                _dist.all_reduce(param.grad, op=_dist.ReduceOp.SUM, group=pg)
 
         for param in self._module_parameters:
             if param.requires_grad:

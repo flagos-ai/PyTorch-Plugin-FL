@@ -9,6 +9,67 @@ FlagCX，并在 FlagCX 不可用时回退到各硬件厂商（vendor）的原生
 
 ---
 
+## 0. 架构演进（当前实现，取代第 4 节）
+
+第 1–8 节记录的是最初基于 monkeypatch（`_resolve_backend` /
+`_patch_dist_collectives` / `_register_privateuseone_backend`）的设计，**已被取代**，
+保留作为背景。当前实现改为一个原生的 ProcessGroup 后端：
+
+- **`torch_fl/comm/process_group.py :: ProcessGroupFlagOS`**
+  继承 `torch.distributed.ProcessGroup`，覆盖全部集合通信虚函数
+  （allreduce / allgather / reduce_scatter / alltoall / broadcast / gather /
+  scatter / reduce / send / recv / barrier 等）。每个虚函数把 privateuseone
+  张量转成内层后端所需的设备视图（`_C._flagos_to_cuda_view`）后委托给
+  `self._inner`，返回内层后端的 Work。内层后端优先级：FlagCX → HCCL(ascend)
+  → NCCL(nvidia/metax)。
+
+- **注册**：`import torch_fl` 时调用 `register_flagos_backend()`，执行
+  `Backend.register_backend("flagos", creator, devices=["privateuseone"])`
+  并设 `default_device_backend_map["privateuseone"] = "flagos"`。之后标准
+  `torch.distributed.init_process_group("flagos")`（或
+  `device_id=torch.device("privateuseone:0")` 自动探测）即可，无需任何
+  `torch.distributed.*` 猴补丁。
+
+- **DDP**：`import torch_fl` 时 patch
+  `torch.nn.parallel.DistributedDataParallel.__init__`。当模型在
+  privateuseone 上时，强制 `python_reducer`（绕开 C++ Reducer 的 CUDA 断言），
+  并把默认的 accum-grad hook（走 functional collective，privateuseone 无 dispatch）
+  替换为经 `dist.all_reduce` → ProcessGroupFlagOS 的版本。
+
+### 0.1 FlagCX 真实接入契约（GitHub main，v0.13.0，2026-07 核对）
+
+务必按此契约对接，勿臆测：
+
+1. `import flagcx` 时，其 C++ 侧（`backend_flagcx.cpp` 构造函数中）**自行**调用
+   `torch.distributed.Backend.register_backend("flagcx", createFlagcxBackend,
+   devices=(devName,), extended_api=True)`。`devName` 由编译期 adaptor 决定：
+   nvidia/metax/du/klx → `"cuda"`，ascend → `"npu"`，musa → `"musa"` 等。
+   **注册的 device 是 cuda（或厂商加速器），不是 privateuseone。**
+2. backend 名固定 `FLAGCX_BACKEND_NAME = "flagcx"`。
+3. `dist.ProcessGroupFlagCX` 仅在 `USE_NVIDIA_ADAPTOR || USE_METAX_ADAPTOR`
+   且 torch>=2.5 时经 pybind 暴露，继承
+   `torch._C._distributed_c10d.Backend`。
+4. 其构造是 `extended_api=True` 形式：creator
+   `flagcx.createFlagcxBackend(DistributedBackendOptions, Options)`，
+   **不是** `(store, rank, world_size, opts)`。因此 `ProcessGroupFlagOS`
+   在 `_try_build_flagcx` 里用 `torch._C._distributed_c10d._DistributedBackendOptions`
+   填充 store / group_rank / group_size / group_id / global_ranks_in_group /
+   timeout，再传给 creator。`Options`（`enable_tuner` / `tune_group_idx`）取自
+   `ProcessGroupFlagCX.Options`。
+5. FlagCX plugin 的 `__init__.py` 还用 `replace_prefix`（`cuda→flagcx_dev`）
+   hack PrefixStore，并在 torch>=2.7 覆盖 `batch_isend_irecv`。这些是 flagcx
+   自身行为，与 ProcessGroupFlagOS 无关。
+6. flagcx 未安装时，`_try_build_flagcx` 返回 False，自动回退 HCCL/NCCL。
+
+### 0.2 待实机验证（需 GPU + 已编译 flagcx）
+
+- `_DistributedBackendOptions` → `createFlagcxBackend` 的实例化在真实多卡下是否成功。
+- FlagCX 是否可能直接接受 privateuseone 张量（若是，设 `_needs_view=False`，
+  省掉 view 转换）。
+- ascend 的 `_flagos_to_npu_view`（`csrc/module.cc` 尚未实现；ascend 建议直接用 flagcx）。
+
+---
+
 ## 1. 背景与现状
 
 ### 1.1 零拷贝桥接
