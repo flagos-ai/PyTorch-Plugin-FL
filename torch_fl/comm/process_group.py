@@ -9,16 +9,19 @@ and converts privateuseone tensors to the backend's expected device view inside
 each collective virtual method. The Work objects returned are from the inner
 backend, so callers (including the DDP Reducer) get properly typed futures.
 
-FlagCX path (no view conversion needed)
-    When flagcx is installed and its adaptor natively handles privateuseone
-    tensors, ``_needs_view = False`` and tensors are passed through unchanged.
-    TODO: verify this assumption on a flagcx-enabled machine.
+Vendor selection is table-driven by GEMS_VENDOR (see ``_VENDOR_PROFILES``).
+For every vendor the inner-backend priority is FlagCX first, then the vendor's
+native backend (NCCL for CUDA-ABI vendors, HCCL for Ascend).
 
-NCCL/HCCL path (view conversion)
-    Privateuseone tensors are reinterpreted as CUDA tensors via a zero-copy
-    shared-storage view (``_C._flagos_to_cuda_view``), then handed to NCCL.
-    The underlying buffer is the same physical memory, so NCCL's write-back
-    is visible to the privateuseone side immediately.
+View conversion
+    flagos tensors on CUDA-ABI vendors (nvidia/metax/iluvatar/kunlunxin/du)
+    share physical GPU memory with CUDA, so they are reinterpreted as CUDA
+    tensors via a zero-copy shared-storage view (``_C._flagos_to_cuda_view``)
+    before being handed to NCCL / FlagCX-cuda. The underlying buffer is the
+    same physical memory, so the backend's write-back is visible to the flagos
+    side immediately. Vendors whose flagos tensor is NOT a cuda alias
+    (ascend/musa/cambricon) have ``view=None`` in their profile and currently
+    require the FlagCX path; see ``_resolve_view``.
 """
 
 import os
@@ -27,6 +30,73 @@ import warnings
 import torch
 import torch.distributed as dist
 from torch._C import _distributed_c10d as _c10d
+
+
+# ---------------------------------------------------------------------------
+# Vendor profiles
+#
+# GEMS_VENDOR selects the hardware backend (see torch_fl/__init__.py
+# _patch_flaggems_codegen_config). Each vendor differs in three comm-relevant
+# ways, captured here so _build_inner stays table-driven — adding a new vendor
+# means adding one row, not editing branch logic:
+#
+#   flagcx_dev   The device name FlagCX registers its "flagcx" backend under
+#                (must match backend_flagcx.hpp flagcxBackendConstructor). For
+#                CUDA-ABI vendors this is "cuda"; Ascend uses "cann", MUSA
+#                "musa", Cambricon "mlu", etc.
+#   view         Name of the torch_fl._C helper that reinterprets a flagos
+#                (privateuseone) tensor as the physical tensor the comm backend
+#                expects, or None when the flagos tensor is NOT a zero-copy
+#                alias of that device (then no safe view exists yet).
+#   native       Callable(self, store, rank, world_size, timeout) -> bool that
+#                tries to build the vendor's *native* inner backend (used when
+#                FlagCX is unavailable). Returns True on success.
+#
+# cuda_alias vendors: flagos shares physical GPU memory with CUDA, so a flagos
+# tensor can be viewed as a cuda tensor zero-copy (_flagos_to_cuda_view) and
+# handed to NCCL/FlagCX-cuda directly. This is the property that makes the
+# CPU-torch + external libtorch_cuda scheme work.
+# ---------------------------------------------------------------------------
+
+class _VendorProfile:
+    __slots__ = ("flagcx_dev", "view", "native")
+
+    def __init__(self, flagcx_dev, view, native):
+        self.flagcx_dev = flagcx_dev
+        self.view = view          # attr name on torch_fl._C, or None
+        self.native = native      # method name on ProcessGroupFlagOS, or None
+
+
+# NOTE: `view`/`native` are looked up lazily so importing this module never
+# requires torch_fl._C or a specific backend to be present.
+_VENDOR_PROFILES = {
+    # CUDA-ABI vendors: flagos == cuda alias, native fallback is NCCL.
+    "nvidia":  _VendorProfile("cuda", "_flagos_to_cuda_view", "_try_build_nccl"),
+    "metax":   _VendorProfile("cuda", "_flagos_to_cuda_view", "_try_build_nccl"),
+    "iluvatar": _VendorProfile("cuda", "_flagos_to_cuda_view", "_try_build_nccl"),
+    "kunlunxin": _VendorProfile("cuda", "_flagos_to_cuda_view", "_try_build_nccl"),
+    "du":      _VendorProfile("cuda", "_flagos_to_cuda_view", "_try_build_nccl"),
+    # Ascend: flagos is NOT a cuda alias; native fallback is HCCL. The flagos->
+    # npu view is not implemented yet, so only the FlagCX(cann) path is viable.
+    "ascend":  _VendorProfile("cann", None, "_try_build_hccl"),
+    # MUSA / Cambricon: FlagCX only (no cuda alias, no native fallback wired).
+    "musa":    _VendorProfile("musa", None, None),
+    "cambricon": _VendorProfile("mlu", None, None),
+}
+
+_DEFAULT_VENDOR = "nvidia"
+
+
+def _get_profile(vendor: str) -> "_VendorProfile":
+    prof = _VENDOR_PROFILES.get(vendor)
+    if prof is None:
+        warnings.warn(
+            f"[ProcessGroupFlagOS] unknown GEMS_VENDOR={vendor!r}; assuming a "
+            f"CUDA-ABI vendor (flagcx devName='cuda', NCCL fallback). Add a "
+            f"_VENDOR_PROFILES entry if this is wrong."
+        )
+        prof = _VENDOR_PROFILES[_DEFAULT_VENDOR]
+    return prof
 
 
 # ---------------------------------------------------------------------------
@@ -74,78 +144,88 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
     def _build_inner(self, store, rank, world_size, timeout):
         """Create the inner backend and return the view-conversion function.
 
-        Priority: FlagCX (heterogeneous) -> HCCL (ascend) -> NCCL (nvidia/metax).
-        The returned callable maps a privateuseone tensor to the device view the
-        inner backend expects (or is unused when the backend handles flagos
-        tensors natively).
+        Table-driven by GEMS_VENDOR (see _VENDOR_PROFILES). For every vendor the
+        priority is: FlagCX (heterogeneous unified comm) first, then the vendor's
+        native backend (NCCL / HCCL). The returned callable maps a flagos
+        (privateuseone) tensor to the physical device view the chosen inner
+        backend expects; it is the identity for tensors already off flagos.
         """
-        import torch_fl._C as _C
-
-        vendor = os.environ.get("GEMS_VENDOR", "nvidia")
+        vendor = os.environ.get("GEMS_VENDOR", _DEFAULT_VENDOR)
+        prof = _get_profile(vendor)
 
         # --- Try FlagCX first (heterogeneous unified comm) ---
-        # FlagCX self-registers the "flagcx" backend for the "cuda" device on
-        # ``import flagcx`` (via Backend.register_backend, extended_api=True).
-        # Its ProcessGroup is created through createFlagcxBackend(opts, extra),
-        # NOT a plain (store, rank, world_size) ctor, so we build the
+        # FlagCX self-registers the "flagcx" backend for prof.flagcx_dev on
+        # ``import flagcx`` (Backend.register_backend, extended_api=True). Its
+        # ProcessGroup is created via createFlagcxBackend(opts, extra), NOT a
+        # plain (store, rank, world_size) ctor, so we build the
         # _DistributedBackendOptions the same way c10d does.
         if self._try_build_flagcx(store, rank, world_size, timeout):
-            # FlagCX operates on cuda tensors; flagos shares physical GPU
-            # memory with cuda, so hand it a zero-copy cuda view.
-            # TODO: if a future FlagCX adaptor accepts privateuseone directly,
-            # set self._needs_view = False and return an identity view here.
-            return _C._flagos_to_cuda_view
+            return self._resolve_view(prof, vendor, backend="flagcx")
 
-        # --- Ascend: HCCL via torch_npu ---
-        if vendor == "ascend":
-            try:
-                import torch_npu.distributed  # noqa
-                hccl_cls = getattr(torch.distributed, "ProcessGroupHCCL", None)
-                if hccl_cls is None:
-                    hccl_cls = getattr(torch_npu.distributed, "ProcessGroupHCCL", None)
-                if hccl_cls is not None:
-                    self._inner = hccl_cls(store, rank, world_size)
-                    self._needs_view = True
-                    # TODO: implement _flagos_to_npu_view in csrc/module.cc
-                    if not hasattr(_C, "_flagos_to_npu_view"):
-                        raise NotImplementedError(
-                            "_flagos_to_npu_view not yet implemented. "
-                            "Use FlagCX on Ascend to avoid this path."
-                        )
-                    return _C._flagos_to_npu_view
-            except ImportError:
-                warnings.warn("[ProcessGroupFlagOS] torch_npu not found; cannot use HCCL.")
+        # --- Native vendor backend fallback (NCCL / HCCL) ---
+        if prof.native is not None:
+            native_fn = getattr(self, prof.native)
+            if native_fn(store, rank, world_size, timeout):
+                return self._resolve_view(prof, vendor, backend="native")
 
-        # --- NCCL fallback (nvidia / metax) ---
+        raise RuntimeError(
+            f"ProcessGroupFlagOS: no suitable inner backend for "
+            f"GEMS_VENDOR={vendor!r}. Install/import flagcx (heterogeneous), or "
+            f"provide the vendor-native backend "
+            f"({'none wired' if prof.native is None else prof.native}). For a "
+            f"CPU-only torch wheel + external libtorch_cuda, build the "
+            f"_flagos_nccl extension (torch_fl/comm/_nccl_ext/build.py)."
+        )
+
+    def _resolve_view(self, prof, vendor, backend):
+        """Return the flagos->comm-device view callable for this profile.
+
+        cuda-alias vendors (view set) return the zero-copy _flagos_to_cuda_view.
+        Vendors without a view (ascend/musa/cambricon) have no safe zero-copy
+        reinterpretation implemented yet; using such a backend would pass a raw
+        flagos tensor to a comm lib that cannot handle it, so fail loudly with a
+        pointer to the missing helper rather than corrupt memory.
+        """
+        if prof.view is None:
+            raise NotImplementedError(
+                f"[ProcessGroupFlagOS] GEMS_VENDOR={vendor!r} selected inner "
+                f"backend {backend!r}, but no flagos->device view is implemented "
+                f"for it (flagos tensors are not a zero-copy alias of "
+                f"'{prof.flagcx_dev}'). Implement the corresponding "
+                f"_flagos_to_*_view in torch_fl/csrc/module.cc, or use a FlagCX "
+                f"adaptor that consumes privateuseone tensors natively."
+            )
+        import torch_fl._C as _C
+        view_fn = getattr(_C, prof.view, None)
+        if view_fn is None:
+            raise RuntimeError(
+                f"[ProcessGroupFlagOS] torch_fl._C.{prof.view} not found "
+                f"(required for GEMS_VENDOR={vendor!r})."
+            )
+        return view_fn
+
+    # ------------------------------------------------------------------
+    # Native vendor backends (used when FlagCX is unavailable)
+    # ------------------------------------------------------------------
+
+    def _try_build_nccl(self, store, rank, world_size, timeout) -> bool:
+        """Build a ProcessGroupNCCL (native binding, else _flagos_nccl ext).
+
+        Returns True and sets self._inner on success. Covers all CUDA-ABI
+        vendors (nvidia/metax/iluvatar/kunlunxin/du).
+        """
         nccl_cls = getattr(torch.distributed, "ProcessGroupNCCL", None)
         if nccl_cls is not None:
             opts = nccl_cls.Options()
             if timeout is not None:
                 opts._timeout = timeout
             self._inner = nccl_cls(store, rank, world_size, opts)
-            self._needs_view = True
-            return _C._flagos_to_cuda_view
+            return True
 
         # A CPU-only torch wheel does not expose ProcessGroupNCCL (built without
         # USE_C10D_NCCL), but an externally preloaded libtorch_cuda.so still
-        # carries the full NCCL backend. Our _flagos_nccl extension constructs
+        # carries the full NCCL backend. The _flagos_nccl extension constructs
         # one and returns it as a c10d.Backend (see torch_fl/comm/_nccl_ext/).
-        if self._try_build_nccl_ext(store, rank, world_size, timeout):
-            self._needs_view = True
-            return _C._flagos_to_cuda_view
-
-        raise RuntimeError(
-            "ProcessGroupFlagOS: no suitable inner backend found. Install "
-            "flagcx, build the _flagos_nccl extension (CPU-torch + external "
-            "libtorch_cuda), or use a PyTorch built with NCCL support."
-        )
-
-    def _try_build_nccl_ext(self, store, rank, world_size, timeout) -> bool:
-        """Build a ProcessGroupNCCL via the _flagos_nccl C++ extension.
-
-        Returns True and sets self._inner on success; False if the extension is
-        absent (so the caller can raise a clear error).
-        """
         try:
             from torch_fl.comm._nccl_ext import _flagos_nccl
         except ImportError:
@@ -161,11 +241,32 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
             store, rank, world_size, timeout_ms, False)
         return True
 
+    def _try_build_hccl(self, store, rank, world_size, timeout) -> bool:
+        """Build a ProcessGroupHCCL via torch_npu (Ascend native fallback).
+
+        Returns True and sets self._inner on success, False if torch_npu / HCCL
+        is unavailable. Note: the flagos->npu view is not implemented, so
+        _resolve_view will still reject this path until that helper lands; the
+        FlagCX(cann) path is the supported route on Ascend.
+        """
+        try:
+            import torch_npu.distributed  # noqa: F401
+        except ImportError:
+            warnings.warn("[ProcessGroupFlagOS] torch_npu not found; cannot "
+                          "use HCCL.")
+            return False
+        hccl_cls = getattr(torch.distributed, "ProcessGroupHCCL", None) or \
+            getattr(torch_npu.distributed, "ProcessGroupHCCL", None)
+        if hccl_cls is None:
+            return False
+        self._inner = hccl_cls(store, rank, world_size)
+        return True
+
     def _try_build_flagcx(self, store, rank, world_size, timeout) -> bool:
         """Instantiate a FlagCX inner backend if flagcx is importable.
 
-        Returns True and sets ``self._inner`` / ``self._needs_view`` on success,
-        False if flagcx is unavailable. Any hard failure is surfaced as a
+        Returns True and sets ``self._inner`` on success, False if flagcx is
+        unavailable. Any hard failure is surfaced as a
         warning and treated as unavailable so we fall through to NCCL/HCCL.
         """
         try:
@@ -204,7 +305,6 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
             extra = extra_cls() if extra_cls is not None else None
 
             self._inner = creator(opts, extra) if extra is not None else creator(opts)
-            self._needs_view = True
             return True
         except Exception as e:
             warnings.warn(f"[ProcessGroupFlagOS] FlagCX init failed ({e}); "
