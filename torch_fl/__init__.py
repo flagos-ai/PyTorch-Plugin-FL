@@ -549,6 +549,99 @@ from torch_fl.integration import (  # noqa: E402
     use_flaggems,
 )
 
+# ---------------------------------------------------------------------------
+# Distributed: register "flagos" ProcessGroup backend for privateuseone
+# ---------------------------------------------------------------------------
+
+def _register_distributed_backend():
+    """Register ProcessGroupFlagOS as the 'flagos' torch.distributed backend.
+
+    After this call:
+      - ``torch.distributed.init_process_group("flagos")`` works
+      - ``torch.distributed.init_process_group(
+            device_id=torch.device("privateuseone:0"))`` auto-selects "flagos"
+      - All ``torch.distributed.*`` collectives work on flagos tensors without
+        any monkeypatching — the ProcessGroup itself does the view conversion.
+    """
+    try:
+        from torch_fl.comm import register_flagos_backend
+        register_flagos_backend()
+    except Exception as e:
+        import warnings
+        warnings.warn(f"[torch_fl] Failed to register 'flagos' dist backend: {e}")
+
+
+_register_distributed_backend()
+
+
+# ---------------------------------------------------------------------------
+# DDP auto-patch: torch.nn.parallel.DistributedDataParallel
+# ---------------------------------------------------------------------------
+
+def _patch_ddp_for_flagos():
+    """Patch DDP to transparently support flagos (privateuseone) models.
+
+    PyTorch's C++ Reducer has CUDA-specific assertions that fail for
+    privateuseone tensors. This patch detects when the wrapped module lives on
+    a flagos device and transparently:
+      1. Forces ``python_reducer`` mode (bypasses the C++ Reducer).
+      2. Replaces default accum-grad hooks with flagos-compatible ones that
+         call ``dist.all_reduce`` (routed through ProcessGroupFlagOS).
+
+    Users call standard DDP — no ``flagos_dist.DistributedDataParallel`` needed:
+        model = torch.nn.parallel.DistributedDataParallel(model)
+    """
+    import functools
+    import torch.distributed as _dist
+    from torch.nn.parallel import DistributedDataParallel as _DDP
+
+    _orig_init = _DDP.__init__
+
+    @functools.wraps(_orig_init)
+    def _patched_init(self, module, **kwargs):
+        device_types = {p.device.type for p in module.parameters()}
+        if "privateuseone" not in device_types:
+            return _orig_init(self, module, **kwargs)
+
+        # Force python_reducer to avoid C++ Reducer CUDA assertions
+        import torch._dynamo.utils
+        _orig_mode = torch._dynamo.utils.get_optimize_ddp_mode
+        torch._dynamo.utils.get_optimize_ddp_mode = lambda: "python_reducer"
+        try:
+            kwargs.setdefault("gradient_as_bucket_view", True)
+            kwargs.setdefault("broadcast_buffers", False)
+            _orig_init(self, module, **kwargs)
+        finally:
+            torch._dynamo.utils.get_optimize_ddp_mode = _orig_mode
+
+        # Replace default accum_grad_hooks with flagos-compatible version.
+        # dist.all_reduce is routed through ProcessGroupFlagOS which does
+        # the privateuseone→cuda view conversion internally.
+        for h in self._accum_grad_hooks:
+            h.remove()
+        self._accum_grad_hooks.clear()
+
+        def _accum_grad_hook(param, *, ddp_model=self):
+            if not ddp_model.require_backward_grad_sync:
+                return
+            if param.grad is None:
+                return
+            _dist.all_reduce(param.grad, op=_dist.ReduceOp.SUM)
+            param.grad.div_(_dist.get_world_size())
+
+        for param in self._module_parameters:
+            if param.requires_grad:
+                self._accum_grad_hooks.append(
+                    param.register_post_accumulate_grad_hook(
+                        functools.partial(_accum_grad_hook, ddp_model=self)
+                    )
+                )
+
+    _DDP.__init__ = _patched_init
+
+
+_patch_ddp_for_flagos()
+
 __all__ = [
     "flagos",
     "distributed",
