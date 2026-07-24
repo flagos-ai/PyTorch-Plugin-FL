@@ -196,6 +196,43 @@ pytest tests/integration/test_qwen3_train.py -v -s --model /path/to/Qwen3-0.6B
 > 3. It was built with `FLAGGEMS_BACKEND=FLAGOS`
 > 4. The triton kernel cache was cleared (`rm -rf ~/.triton/cache/`)
 
+### Build from Source (PPU Platform)
+
+PPU (`PPU_SDK`) presents itself as a **CUDA-compatible** device, so it reuses the
+CUDA build directly — no dedicated `ACCELERATOR=ppu` branch is needed. The PPU
+`torch` wheel is already a full CUDA-enabled build (`torch.version.cuda == '13.0'`,
+`torch.cuda.is_available() == True`), and `PPU_SDK/CUDA_SDK` is a complete CUDA 13
+toolkit (nvcc, headers, `libcudart.so.13`). This makes PPU the simplest case of the
+boxing route:
+
+- **No stock `+cpu` wheel and no external `libtorch_cuda.so`** are required — the
+  PPU torch wheel ships its own CUDA runtime, loaded normally by `import torch`.
+- PPU registers ops under the independent `CUDA` dispatch key (not `PrivateUse1`),
+  so the generated CUDA boxing kernels (`csrc/aten/generated/cuda_kernels.cc`,
+  PrivateUse1 → CUDA) are reused unchanged.
+
+```bash
+git clone https://github.com/flagos-ai/PyTorch-Plugin-FL.git && cd PyTorch-Plugin-FL
+
+# Pure CUDA-boxing build (no FlagGems). CUDA_HOME points at the PPU CUDA_SDK;
+# FLAGOS_SKIP_CUDA_ASSETS=1 skips bundling an external libtorch_cuda.so AND skips
+# the pinned nvidia-*-cu12 runtime deps (PPU supplies CUDA 13 via PPU_SDK/CUDA_SDK).
+ACCELERATOR=cuda \
+  CUDA_HOME=/usr/local/PPU_SDK/CUDA_SDK \
+  CUDA_KERNEL=ON FLAGGEMS_KERNEL=OFF FLAGGEMS_PYTHON=OFF \
+  FLAGOS_SKIP_CUDA_ASSETS=1 \
+  pip install --no-build-isolation -vvv -e .
+```
+
+At runtime, set `FLAGOS_DISABLE_CUDA_ASSETS=1` so the import-time preload of a
+bundled `libtorch_cuda.so` is a no-op (there is none — PPU torch provides it):
+
+```bash
+FLAGOS_DISABLE_CUDA_ASSETS=1 python -c "import torch_fl, torch; \
+  x = torch.randn(4, 4, device='flagos'); \
+  print((x @ x).cpu())"
+```
+
 ### Build Environment Variables
 
 | Variable | Description |

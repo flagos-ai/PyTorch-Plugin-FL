@@ -589,7 +589,14 @@ def _install_requires():
     # For a CUDA wheel we bundle libtorch_cuda.so and preload it at import; it
     # needs the NVIDIA runtime libs present, so make them hard deps. Ascend/MetaX
     # builds do not (they supply their own runtime), so keep it CUDA-only.
-    if ACCELERATOR == "cuda":
+    #
+    # FLAGOS_SKIP_CUDA_ASSETS=1 means we do NOT bundle libtorch_cuda.so (the same
+    # switch _bundle_cuda_assets() honors). That is the PPU case: the active torch
+    # is already a CUDA-enabled build (CUDA 13, PPU_SDK/CUDA_SDK supplies the
+    # runtime), so the pinned nvidia-*-cu12 wheels are both mismatched and
+    # unnecessary. Skip them so `pip install` does not drag in cu12 packages.
+    skip_assets = os.environ.get("FLAGOS_SKIP_CUDA_ASSETS", "0") == "1"
+    if ACCELERATOR == "cuda" and not skip_assets:
         reqs += _CUDA_RUNTIME_DEPS
     return reqs
 

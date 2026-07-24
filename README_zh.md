@@ -157,6 +157,41 @@ pytest tests/integration/test_qwen3_train.py -v -s --model /path/to/Qwen3-0.6B
 > 3. 安装时指定了 `FLAGGEMS_BACKEND=FLAGOS`
 > 4. 已清理 triton kernel 缓存（`rm -rf ~/.triton/cache/`）
 
+### 从源码安装（PPU 平台）
+
+PPU（`PPU_SDK`）以 **CUDA 兼容** 形态呈现，因此直接复用 CUDA 构建，无需单独的
+`ACCELERATOR=ppu` 分支。PPU 的 `torch` wheel 本身就是完整的 CUDA 版本
+（`torch.version.cuda == '13.0'`、`torch.cuda.is_available() == True`），而
+`PPU_SDK/CUDA_SDK` 是完整的 CUDA 13 toolkit（nvcc、头文件、`libcudart.so.13`）。
+这使 PPU 成为 boxing 路线里最省事的情况：
+
+- **无需 stock `+cpu` wheel、也无需外挂 `libtorch_cuda.so`**——PPU torch 自带 CUDA
+  运行时，随 `import torch` 正常加载。
+- PPU 的算子注册在独立的 `CUDA` dispatch key（而非 `PrivateUse1`），因此生成的 CUDA
+  boxing 内核（`csrc/aten/generated/cuda_kernels.cc`，PrivateUse1 → CUDA）零改动复用。
+
+```bash
+git clone https://github.com/flagos-ai/PyTorch-Plugin-FL.git && cd PyTorch-Plugin-FL
+
+# 纯 CUDA-boxing 构建（不接 FlagGems）。CUDA_HOME 指向 PPU 的 CUDA_SDK；
+# FLAGOS_SKIP_CUDA_ASSETS=1 既跳过外挂 libtorch_cuda.so 的打包，也跳过固定的
+# nvidia-*-cu12 运行时依赖（PPU 由 PPU_SDK/CUDA_SDK 提供 CUDA 13）。
+ACCELERATOR=cuda \
+  CUDA_HOME=/usr/local/PPU_SDK/CUDA_SDK \
+  CUDA_KERNEL=ON FLAGGEMS_KERNEL=OFF FLAGGEMS_PYTHON=OFF \
+  FLAGOS_SKIP_CUDA_ASSETS=1 \
+  pip install --no-build-isolation -vvv -e .
+```
+
+运行时设置 `FLAGOS_DISABLE_CUDA_ASSETS=1`，使 import 期对打包版 `libtorch_cuda.so`
+的预载成为 no-op（本就没有打包——由 PPU torch 自身提供）：
+
+```bash
+FLAGOS_DISABLE_CUDA_ASSETS=1 python -c "import torch_fl, torch; \
+  x = torch.randn(4, 4, device='flagos'); \
+  print((x @ x).cpu())"
+```
+
 ### 构建环境变量
 
 | 变量 | 说明 |
