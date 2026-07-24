@@ -1,0 +1,60 @@
+// Minimal C++ extension that exposes c10d::ProcessGroupNCCL to Python on a
+// CPU-only torch build.
+//
+// Why this exists: the pip `torch==2.10.0+cpu` wheel is compiled WITHOUT
+// USE_C10D_NCCL, so its Python bindings never expose `ProcessGroupNCCL`
+// (torch.distributed.is_nccl_available() == False). But the externally
+// preloaded libtorch_cuda.so (a standard cu128 build) DOES contain the full
+// c10d::ProcessGroupNCCL implementation (all 173 symbols, ctor is defined).
+//
+// We only need to *construct* a ProcessGroupNCCL and hand it back as an
+// intrusive_ptr<Backend>. The c10d.Backend base class already exposes every
+// collective method (allreduce/broadcast/allgather/reduce_scatter/alltoall/
+// gather/scatter/send/recv/barrier) to Python via pybind, and those are C++
+// virtuals -> calling them on the returned object dispatches to the NCCL impl.
+// So ProcessGroupFlagOS can use it as an inner backend with zero extra binding.
+//
+// Build: compiled with -DUSE_C10D_NCCL so the ProcessGroupNCCL.hpp header (and
+// the NCCL_HAS_* feature macros derived from nccl.h) matches the ABI the
+// external libtorch_cuda.so was built with (both target nccl 2.28 / cu12).
+
+#include <torch/extension.h>
+#include <torch/csrc/distributed/c10d/ProcessGroupNCCL.hpp>
+#include <torch/csrc/distributed/c10d/Store.hpp>
+
+#include <chrono>
+#include <memory>
+
+namespace {
+
+// Build a ProcessGroupNCCL and up-cast to the Backend base so Python sees the
+// already-bound c10d.Backend interface.
+c10::intrusive_ptr<c10d::Backend> make_nccl_backend(
+    c10::intrusive_ptr<c10d::Store> store,
+    int64_t rank,
+    int64_t size,
+    int64_t timeout_ms,
+    bool high_priority_stream) {
+  auto opts = c10d::ProcessGroupNCCL::Options::create(high_priority_stream);
+  if (timeout_ms > 0) {
+    opts->timeout = std::chrono::milliseconds(timeout_ms);
+  }
+  auto pg = c10::make_intrusive<c10d::ProcessGroupNCCL>(
+      std::move(store), static_cast<int>(rank), static_cast<int>(size),
+      std::move(opts));
+  return pg;
+}
+
+}  // namespace
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+  m.doc() = "flagos internal: expose ProcessGroupNCCL for CPU-torch + external "
+            "libtorch_cuda";
+  m.def("make_nccl_backend", &make_nccl_backend,
+        pybind11::arg("store"),
+        pybind11::arg("rank"),
+        pybind11::arg("size"),
+        pybind11::arg("timeout_ms") = 0,
+        pybind11::arg("high_priority_stream") = false,
+        "Construct a c10d::ProcessGroupNCCL, returned as a c10d.Backend.");
+}

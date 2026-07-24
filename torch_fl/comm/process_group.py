@@ -118,17 +118,48 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
 
         # --- NCCL fallback (nvidia / metax) ---
         nccl_cls = getattr(torch.distributed, "ProcessGroupNCCL", None)
-        if nccl_cls is None:
-            raise RuntimeError(
-                "ProcessGroupFlagOS: no suitable inner backend found. "
-                "Install flagcx, or ensure PyTorch was built with NCCL support."
-            )
-        opts = nccl_cls.Options()
+        if nccl_cls is not None:
+            opts = nccl_cls.Options()
+            if timeout is not None:
+                opts._timeout = timeout
+            self._inner = nccl_cls(store, rank, world_size, opts)
+            self._needs_view = True
+            return _C._flagos_to_cuda_view
+
+        # A CPU-only torch wheel does not expose ProcessGroupNCCL (built without
+        # USE_C10D_NCCL), but an externally preloaded libtorch_cuda.so still
+        # carries the full NCCL backend. Our _flagos_nccl extension constructs
+        # one and returns it as a c10d.Backend (see torch_fl/comm/_nccl_ext/).
+        if self._try_build_nccl_ext(store, rank, world_size, timeout):
+            self._needs_view = True
+            return _C._flagos_to_cuda_view
+
+        raise RuntimeError(
+            "ProcessGroupFlagOS: no suitable inner backend found. Install "
+            "flagcx, build the _flagos_nccl extension (CPU-torch + external "
+            "libtorch_cuda), or use a PyTorch built with NCCL support."
+        )
+
+    def _try_build_nccl_ext(self, store, rank, world_size, timeout) -> bool:
+        """Build a ProcessGroupNCCL via the _flagos_nccl C++ extension.
+
+        Returns True and sets self._inner on success; False if the extension is
+        absent (so the caller can raise a clear error).
+        """
+        try:
+            from torch_fl.comm._nccl_ext import _flagos_nccl
+        except ImportError:
+            try:
+                import _flagos_nccl  # loose build layout
+            except ImportError:
+                return False
+        timeout_ms = 0
         if timeout is not None:
-            opts._timeout = timeout
-        self._inner = nccl_cls(store, rank, world_size, opts)
-        self._needs_view = True
-        return _C._flagos_to_cuda_view
+            timeout_ms = int(timeout.total_seconds() * 1000) \
+                if hasattr(timeout, "total_seconds") else int(timeout)
+        self._inner = _flagos_nccl.make_nccl_backend(
+            store, rank, world_size, timeout_ms, False)
+        return True
 
     def _try_build_flagcx(self, store, rank, world_size, timeout) -> bool:
         """Instantiate a FlagCX inner backend if flagcx is importable.
