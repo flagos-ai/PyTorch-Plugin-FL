@@ -599,8 +599,10 @@ def _patch_ddp_for_flagos():
 
     @functools.wraps(_orig_init)
     def _patched_init(self, module, **kwargs):
+        # torch_fl renames PrivateUse1 to "flagos", so parameter tensors report
+        # device.type == "flagos" (not the raw "privateuseone").
         device_types = {p.device.type for p in module.parameters()}
-        if "privateuseone" not in device_types:
+        if not device_types & {"flagos", "privateuseone"}:
             return _orig_init(self, module, **kwargs)
 
         # Force python_reducer to avoid C++ Reducer CUDA assertions

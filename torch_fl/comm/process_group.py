@@ -164,11 +164,12 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
             if timeout is not None:
                 opts.timeout = timeout
 
-            # extra Options: enable_tuner / tune_group_idx (see backend_flagcx.cpp)
-            extra_cls = getattr(
-                getattr(torch.distributed, "ProcessGroupFlagCX", None),
-                "Options", None,
-            )
+            # extra Options: enable_tuner / tune_group_idx (see backend_flagcx.cpp).
+            # ProcessGroupFlagCX lives on the flagcx module (flagcx._C), not on
+            # torch.distributed.
+            pg_cls = getattr(flagcx, "ProcessGroupFlagCX", None) or \
+                getattr(torch.distributed, "ProcessGroupFlagCX", None)
+            extra_cls = getattr(pg_cls, "Options", None)
             extra = extra_cls() if extra_cls is not None else None
 
             self._inner = creator(opts, extra) if extra is not None else creator(opts)
