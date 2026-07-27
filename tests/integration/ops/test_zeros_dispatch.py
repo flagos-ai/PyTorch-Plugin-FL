@@ -85,15 +85,6 @@ class TestZerosDispatch:
         assert result.returncode == 0
         assert "[flagos dispatch] zeros -> cuda" in result.stderr
 
-    @pytest.mark.cuda
-    def test_flaggems_backend_raises_error(self):
-        result = _run_subprocess(
-            {"FLAGOS_OP_zeros": "flaggems"},
-            check=False,
-        )
-        assert result.returncode != 0
-        assert "backend not registered" in result.stderr
-
 
 class TestZerosAscendDispatch:
     """Verify Ascend backend correctness."""

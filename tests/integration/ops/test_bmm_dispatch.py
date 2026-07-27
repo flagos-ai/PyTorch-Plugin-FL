@@ -253,13 +253,13 @@ class TestBmmDispatchLog:
         )
 
     @pytest.mark.flaggems
-    def test_dispatch_log_flagos_default(self):
-        """Default config routes bmm to flagos."""
+    def test_dispatch_log_flaggems_runtime(self):
+        """With the FlagGems runtime path on, bmm routes to flagos_python."""
         result = _run_bmm_subprocess(
-            {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_bmm": "flaggems"}
+            {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_USE_FLAGGEMS": "1"}
         )
-        assert "[flagos dispatch] bmm -> flagos" in result.stderr, (
-            f"Expected flagos dispatch log, got:\n{result.stderr}"
+        assert "[flagos dispatch] bmm -> flagos_python" in result.stderr, (
+            f"Expected flagos_python dispatch log, got:\n{result.stderr}"
         )
 
     @pytest.mark.cuda
@@ -273,14 +273,14 @@ class TestBmmDispatchLog:
         )
 
     @pytest.mark.flaggems
-    def test_dispatch_log_bmm_out_flagos_default(self):
-        """Default config routes bmm.out to flagos."""
+    def test_dispatch_log_bmm_out_flaggems_runtime(self):
+        """With the FlagGems runtime path on, bmm.out routes to flagos_python."""
         result = _run_bmm_subprocess(
-            {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_bmm__out": "flaggems"},
+            {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_USE_FLAGGEMS": "1"},
             use_out=True,
         )
-        assert "[flagos dispatch] bmm.out -> flagos" in result.stderr, (
-            f"Expected flagos dispatch log, got:\n{result.stderr}"
+        assert "[flagos dispatch] bmm.out -> flagos_python" in result.stderr, (
+            f"Expected flagos_python dispatch log, got:\n{result.stderr}"
         )
 
     @pytest.mark.cuda

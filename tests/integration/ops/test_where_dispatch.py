@@ -126,15 +126,6 @@ class TestWhereDispatch:
         assert result.returncode == 0, f"Failed:\n{result.stderr}"
         assert "[flagos dispatch] where.self -> metax" in result.stderr
 
-    @pytest.mark.anyplatform
-    def test_flaggems_backend_raises_error(self):
-        result = _run_subprocess(
-            {"FLAGOS_OP_where__self": "flaggems"},
-            check=False,
-        )
-        assert result.returncode != 0
-        assert "backend not registered" in result.stderr
-
 
 class TestWhereAscendDispatch:
     """Verify Ascend backend correctness."""

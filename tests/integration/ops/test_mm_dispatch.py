@@ -195,13 +195,13 @@ class TestMmDispatchLog:
         )
 
     @pytest.mark.flaggems
-    def test_dispatch_log_flagos_flaggems_override(self):
-        """FLAGOS_OP_mm=flaggems routes mm to flagos backend."""
+    def test_dispatch_log_flaggems_runtime(self):
+        """With the FlagGems runtime path on, mm routes to flagos_python."""
         result = _run_mm_subprocess(
-            {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_mm": "flaggems"}
+            {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_USE_FLAGGEMS": "1"}
         )
-        assert "[flagos dispatch] mm -> flagos" in result.stderr, (
-            f"Expected flagos dispatch log, got:\n{result.stderr}"
+        assert "[flagos dispatch] mm -> flagos_python" in result.stderr, (
+            f"Expected flagos_python dispatch log, got:\n{result.stderr}"
         )
 
     @pytest.mark.cuda
@@ -224,16 +224,19 @@ class TestMmDispatchLog:
             f"Expected ascend dispatch log, got:\n{result.stderr}"
         )
 
-    @pytest.mark.cuda
     @pytest.mark.flaggems
-    def test_dispatch_log_mm_out_flagos_flaggems_override(self):
-        """FLAGOS_OP_mm__out=flaggems routes mm.out to flagos backend."""
+    def test_dispatch_log_mm_out_flaggems_runtime(self):
+        """With the FlagGems runtime path on, mm.out falls back to the vendor kernel.
+
+        FlagGems has no Triton kernel for mm.out, so backends_flaggems.conf keeps
+        it on cuda: verifies per-op graceful fallback under the runtime switch.
+        """
         result = _run_mm_subprocess(
-            {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_mm__out": "flaggems"},
+            {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_USE_FLAGGEMS": "1"},
             use_out=True,
         )
-        assert "[flagos dispatch] mm.out -> flagos" in result.stderr, (
-            f"Expected flagos dispatch log, got:\n{result.stderr}"
+        assert "[flagos dispatch] mm.out -> cuda" in result.stderr, (
+            f"Expected cuda fallback dispatch log, got:\n{result.stderr}"
         )
 
     @pytest.mark.cuda

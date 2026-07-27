@@ -105,15 +105,6 @@ class TestNewOnesDispatch:
         assert result.returncode == 0, f"Failed:\n{result.stderr}"
         assert "[flagos dispatch] new_ones -> metax" in result.stderr
 
-    @pytest.mark.anyplatform
-    def test_flaggems_backend_raises_error(self):
-        result = _run_subprocess(
-            {"FLAGOS_OP_new_ones": "flaggems"},
-            check=False,
-        )
-        assert result.returncode != 0
-        assert "backend not registered" in result.stderr
-
 
 class TestNewOnesAscendDispatch:
     """Verify Ascend backend correctness."""

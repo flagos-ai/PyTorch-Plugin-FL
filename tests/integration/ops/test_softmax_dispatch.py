@@ -113,12 +113,13 @@ class TestSoftmaxDispatch:
         assert "[flagos dispatch] _softmax -> flagos_python" in result.stderr
 
     @pytest.mark.flaggems
-    def test_dispatch_log_flagos(self):
+    def test_dispatch_log_flaggems_runtime(self):
+        """With the FlagGems runtime path on, _softmax routes to flagos_python."""
         result = _run_softmax_subprocess(
-            {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP__softmax": "flaggems"}
+            {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_USE_FLAGGEMS": "1"}
         )
         assert result.returncode == 0, f"Failed:\n{result.stderr}"
-        assert "[flagos dispatch] _softmax -> flagos" in result.stderr
+        assert "[flagos dispatch] _softmax -> flagos_python" in result.stderr
 
     @pytest.mark.cuda
     def test_dispatch_log_cuda(self):

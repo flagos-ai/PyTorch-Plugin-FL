@@ -124,16 +124,6 @@ class TestCosDispatch:
         assert result.returncode == 0, f"Failed:\n{result.stderr}"
         assert "[flagos dispatch] cos -> metax" in result.stderr
 
-    @pytest.mark.anyplatform
-    def test_flaggems_backend_raises_error(self):
-        """Selecting flaggems backend must fail — not implemented."""
-        result = _run_cos_subprocess(
-            {"FLAGOS_OP_cos": "flaggems"},
-            check=False,
-        )
-        assert result.returncode != 0
-        assert "backend not registered" in result.stderr
-
 
 class TestCosAscendDispatch:
     """Verify Ascend backend correctness."""

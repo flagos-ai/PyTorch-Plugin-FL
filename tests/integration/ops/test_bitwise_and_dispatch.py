@@ -114,15 +114,6 @@ class TestBitwiseAndDispatch:
         assert result.returncode == 0, f"Failed:\n{result.stderr}"
         assert "[flagos dispatch] bitwise_and.Tensor -> metax" in result.stderr
 
-    @pytest.mark.anyplatform
-    def test_flaggems_backend_raises_error(self):
-        result = _run_subprocess(
-            {"FLAGOS_OP_bitwise_and__Tensor": "flaggems"},
-            check=False,
-        )
-        assert result.returncode != 0
-        assert "backend not registered" in result.stderr
-
 
 class TestBitwiseAndAscendDispatch:
     """Verify Ascend backend correctness."""

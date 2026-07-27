@@ -124,16 +124,6 @@ class TestSinDispatch:
         assert result.returncode == 0, f"Failed:\n{result.stderr}"
         assert "[flagos dispatch] sin -> metax" in result.stderr
 
-    @pytest.mark.anyplatform
-    def test_flaggems_backend_raises_error(self):
-        """Selecting flaggems backend must fail — not implemented."""
-        result = _run_sin_subprocess(
-            {"FLAGOS_OP_sin": "flaggems"},
-            check=False,
-        )
-        assert result.returncode != 0
-        assert "backend not registered" in result.stderr
-
 
 class TestSinAscendDispatch:
     """Verify Ascend backend correctness."""

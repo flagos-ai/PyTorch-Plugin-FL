@@ -476,13 +476,18 @@ class TestCatDispatchLog:
         )
 
     @pytest.mark.flaggems
-    def test_dispatch_log_flagos_default(self):
-        """Default config routes cat to flagos."""
+    def test_dispatch_log_flaggems_runtime(self):
+        """With the FlagGems runtime path on, cat falls back to the vendor kernel.
+
+        FlagGems has no Triton kernel for cat, so backends_flaggems.conf keeps it
+        on cuda: this verifies the runtime switch degrades gracefully per-op
+        rather than forcing an unavailable backend.
+        """
         result = _run_cat_subprocess(
-            {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_cat": "flaggems"}
+            {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_USE_FLAGGEMS": "1"}
         )
-        assert "[flagos dispatch] cat -> flagos" in result.stderr, (
-            f"Expected flagos dispatch log, got:\n{result.stderr}"
+        assert "[flagos dispatch] cat -> cuda" in result.stderr, (
+            f"Expected cuda fallback dispatch log, got:\n{result.stderr}"
         )
 
     @pytest.mark.cuda

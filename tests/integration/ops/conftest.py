@@ -35,10 +35,27 @@ def _detect_platform() -> str:
 
 # Markers to skip per platform (tests for other backends are not compiled/available).
 _PLATFORM_SKIP_MARKERS: dict[str, tuple[str, ...]] = {
-    "metax": ("cuda", "ascend", "flaggems"),
+    "metax": ("cuda", "ascend"),
     "ascend": ("cuda", "metax"),
     "default": ("metax", "ascend"),
 }
+
+
+def _flaggems_enabled() -> bool:
+    """True when the FlagGems runtime path is switched on (FLAGOS_USE_FLAGGEMS=1).
+
+    FlagGems and the vendor kernels are BOTH compiled into every wheel; which one
+    an op runs on is chosen at runtime by this env var (see torch_fl.__init__
+    ._select_backend_config -> backends_flaggems.conf). Tests marked ``flaggems``
+    assert a ``-> flagos_python`` (or vendor-fallback) routing that only holds
+    when the switch is on, so they are skipped otherwise.
+    """
+    return os.environ.get("FLAGOS_USE_FLAGGEMS", "0").lower() not in (
+        "0",
+        "",
+        "off",
+        "false",
+    )
 
 
 def pytest_collection_modifyitems(
@@ -51,7 +68,17 @@ def pytest_collection_modifyitems(
     # Tests asserting a `-> metax` dispatch (mark.metax) cannot pass, so skip them.
     if platform == "metax" and os.environ.get("FLAGOS_METAX_BOXING", "0") == "1":
         markers_to_skip.append("metax")
+    flaggems_on = _flaggems_enabled()
     for item in items:
+        # The flaggems runtime path is a runtime switch, not a build/platform gate:
+        # skip its tests only when the switch is off, on any platform.
+        if item.get_closest_marker("flaggems") and not flaggems_on:
+            item.add_marker(
+                pytest.mark.skip(
+                    reason="FlagGems runtime path is off (set FLAGOS_USE_FLAGGEMS=1)"
+                )
+            )
+            continue
         for marker_name in markers_to_skip:
             if item.get_closest_marker(marker_name):
                 item.add_marker(
@@ -70,7 +97,10 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "cuda: requires CUDA platform")
     config.addinivalue_line("markers", "metax: requires MetaX platform")
     config.addinivalue_line("markers", "ascend: requires Ascend platform")
-    config.addinivalue_line("markers", "flaggems: requires FlagGems (Triton) backend")
+    config.addinivalue_line(
+        "markers",
+        "flaggems: requires the FlagGems runtime path on (FLAGOS_USE_FLAGGEMS=1)",
+    )
     config.addinivalue_line(
         "markers", "flaggems_python: requires FlagGems Python wrapper backend"
     )

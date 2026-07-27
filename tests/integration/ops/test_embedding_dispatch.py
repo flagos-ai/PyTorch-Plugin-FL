@@ -168,13 +168,18 @@ class TestEmbeddingDispatchLog:
         assert "[flagos dispatch] embedding -> flagos_python" in result.stderr
 
     @pytest.mark.flaggems
-    def test_dispatch_log_flagos_default(self):
-        """Default routes embedding to flagos."""
+    def test_dispatch_log_flaggems_runtime(self):
+        """With the FlagGems runtime path on, embedding routes to flagos_python.
+
+        FlagGems and the vendor kernels are both compiled in; FLAGOS_USE_FLAGGEMS=1
+        selects backends_flaggems.conf at import, where embedding has a FlagGems
+        Triton kernel and thus routes to flagos_python.
+        """
         result = _run_embedding_subprocess(
-            {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_embedding": "flaggems"}
+            {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_USE_FLAGGEMS": "1"}
         )
-        assert "[flagos dispatch] embedding -> flagos" in result.stderr, (
-            f"Expected flagos log, got:\n{result.stderr}"
+        assert "[flagos dispatch] embedding -> flagos_python" in result.stderr, (
+            f"Expected flagos_python log, got:\n{result.stderr}"
         )
 
     @pytest.mark.cuda
