@@ -39,7 +39,7 @@ Modeled on ``torch_fl/accelerator/metax/_metax_compat.py``.
 import ctypes
 import os
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Union
 
 import torch
@@ -291,8 +291,7 @@ def patch_torch_cuda_for_flagos():
 
     if not is_nvidia_cuda_available():
         warnings.warn(
-            "torch_fl: no NVIDIA GPU reachable via libcuda.so; "
-            "skipping torch.cuda shim"
+            "torch_fl: no NVIDIA GPU reachable via libcuda.so; skipping torch.cuda shim"
         )
         return False
 
@@ -441,8 +440,15 @@ def _patch_triton_do_bench():
     import time
     import statistics
 
-    def _do_bench(fn, warmup=25, rep=100, grad_to_none=None, quantiles=None,
-                  return_mode="mean", **kwargs):
+    def _do_bench(
+        fn,
+        warmup=25,
+        rep=100,
+        grad_to_none=None,
+        quantiles=None,
+        return_mode="mean",
+        **kwargs,
+    ):
         # Warmup
         fn()
         _synchronize()

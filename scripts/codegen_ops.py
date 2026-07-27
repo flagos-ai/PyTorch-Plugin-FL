@@ -52,6 +52,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 from collections import defaultdict
 
+
 # TensorList C++ spelling (IListRef vs ArrayRef) must match what PyTorch itself
 # registered for the op, or dispatcher registration crashes at import with
 # "Mismatch in kernel C++ signatures".
@@ -155,9 +156,11 @@ def enumerate_all_cuda_ops(nf, funcs, cuda_index):
             continue
 
         # composite_implicit (and NOT structured_delegate) -> decomposed above us
-        if (func.has_composite_implicit_autograd_kernel
-                and getattr(func, "structured_delegate", None) is None
-                and not func.has_composite_explicit_autograd_kernel):
+        if (
+            func.has_composite_implicit_autograd_kernel
+            and getattr(func, "structured_delegate", None) is None
+            and not func.has_composite_explicit_autograd_kernel
+        ):
             continue
 
         if op in MANUAL_REGISTERED_OPS:
@@ -171,11 +174,10 @@ def enumerate_all_cuda_ops(nf, funcs, cuda_index):
         kept.append(op)
     return kept, skipped
 
+
 try:
     import torchgen
     from torchgen.gen import parse_native_yaml
-    from torchgen.api import cpp
-    from torchgen.api.types import CppSignatureGroup
     from torchgen import local
 except ImportError:
     print("Error: torchgen not found. Install torch>=2.0 and pyyaml.", file=sys.stderr)
@@ -186,6 +188,7 @@ except ImportError:
 # Naming conventions (schema-driven, PyTorch-aligned)
 # ============================================================================
 
+
 def schema_to_cpp_name(op_name: str) -> Tuple[str, str]:
     """
     (fn_type PascalCase, dispatcher_name snake_case) from a schema op name.
@@ -195,15 +198,15 @@ def schema_to_cpp_name(op_name: str) -> Tuple[str, str]:
       "mm.out"               -> ("MmOutFn", "mm_out_dispatcher")
       "_foreach_add_.Scalar" -> ("ForeachAddInplaceScalarFn", "foreach_add_inplace_scalar_dispatcher")
     """
-    parts = op_name.split('.')
+    parts = op_name.split(".")
     base = parts[0]
     variant = parts[1] if len(parts) > 1 else None
 
-    is_foreach = base.startswith('_foreach_')
-    stripped = base.lstrip('_')
+    is_foreach = base.startswith("_foreach_")
+    stripped = base.lstrip("_")
     n_lead = len(base) - len(stripped)  # leading underscores: _conv vs conv
-    is_inplace = stripped.endswith('_')
-    base_clean = stripped.rstrip('_') if is_inplace else stripped
+    is_inplace = stripped.endswith("_")
+    base_clean = stripped.rstrip("_") if is_inplace else stripped
 
     # Disambiguation token for leading underscores (private/internal ops).
     # foreach ops keep the conventional single leading '_' implicit (unique via
@@ -215,43 +218,43 @@ def schema_to_cpp_name(op_name: str) -> Tuple[str, str]:
 
     # --- PascalCase type name ---
     if is_foreach:
-        core = base_clean[len('foreach_'):]
-        type_base = 'Foreach' + ''.join(w.capitalize() for w in core.split('_') if w)
+        core = base_clean[len("foreach_") :]
+        type_base = "Foreach" + "".join(w.capitalize() for w in core.split("_") if w)
     else:
-        type_base = ''.join(w.capitalize() for w in base_clean.split('_') if w)
+        type_base = "".join(w.capitalize() for w in base_clean.split("_") if w)
     if is_inplace:
-        type_base += 'Inplace'
+        type_base += "Inplace"
     # A trailing underscore on the variant (e.g. "out_") marks a mutating variant
     # distinct from the non-mutating one ("out"); preserve it so range.out and
     # range.out_ do not collapse to the same name.
-    variant_mut = variant.endswith('_') if variant else False
+    variant_mut = variant.endswith("_") if variant else False
     if variant:
-        type_base += ''.join(w.capitalize() for w in variant.split('_') if w)
+        type_base += "".join(w.capitalize() for w in variant.split("_") if w)
     if variant_mut:
-        type_base += 'Mut'
-    fn_type = priv_pascal + type_base + 'Fn'
+        type_base += "Mut"
+    fn_type = priv_pascal + type_base + "Fn"
 
     # --- snake_case dispatcher name ---
     disp = priv_snake + base_clean  # foreach already normalized (leading _ stripped)
     if is_inplace:
-        disp += '_inplace'
+        disp += "_inplace"
     if variant:
-        disp += '_' + variant.lower().rstrip('_')
+        disp += "_" + variant.lower().rstrip("_")
     if variant_mut:
-        disp += '_mut'
-    dispatcher_name = disp + '_dispatcher'
+        disp += "_mut"
+    dispatcher_name = disp + "_dispatcher"
 
     return fn_type, dispatcher_name
 
 
 def kernel_name(fn_type: str) -> str:
     """AddTensorFn -> AddTensorKernelCuda"""
-    return fn_type[:-2] + 'KernelCuda'
+    return fn_type[:-2] + "KernelCuda"
 
 
 def python_kernel_name(fn_type: str) -> str:
     """AddTensorFn -> AddTensorKernelPython"""
-    return fn_type[:-2] + 'KernelPython'
+    return fn_type[:-2] + "KernelPython"
 
 
 # ============================================================================
@@ -276,13 +279,26 @@ def python_kernel_name(fn_type: str) -> str:
 # is indistinguishable from an ordinary int at runtime -> ops passing a dtype to
 # the FlagGems function are dropped from the safe set (would silently mis-call).
 _FLAGGEMS_GENERIC_OK = {
-    "Tensor", "Tensor?", "Scalar", "Scalar?", "int", "int?",
-    "float", "float?", "bool", "bool?", "SymInt", "SymInt?", "str", "str?",
+    "Tensor",
+    "Tensor?",
+    "Scalar",
+    "Scalar?",
+    "int",
+    "int?",
+    "float",
+    "float?",
+    "bool",
+    "bool?",
+    "SymInt",
+    "SymInt?",
+    "str",
+    "str?",
 }
 
 
 def _flaggems_type_ok(t: str) -> bool:
     import re
+
     t = t.strip()
     if t in _FLAGGEMS_GENERIC_OK:
         return True
@@ -299,6 +315,7 @@ def _flaggems_gems_npos(fn):
     """Number of positional params of a flag_gems function, or None if it has
     *args/**kwargs (uninspectable arity -> unsafe)."""
     import inspect
+
     try:
         sig = inspect.signature(fn)
     except (ValueError, TypeError):
@@ -318,6 +335,7 @@ def _flaggems_kwonly_names(fn):
     gems accepts only by name -- the codegen forwards the matching aten trailing
     args as kwargs (dtype/alpha/correction/...)."""
     import inspect
+
     try:
         params = inspect.signature(fn).parameters.values()
     except (ValueError, TypeError):
@@ -330,8 +348,20 @@ def _flaggems_kwonly_names(fn):
 # kwarg so the caller converts it to a torch.dtype by name, sidestepping the
 # "IValue stores ScalarType as int" ambiguity that blocks the positional path.
 _FLAGGEMS_KWARG_OK = {
-    "ScalarType", "ScalarType?", "Scalar", "Scalar?", "int", "int?",
-    "float", "float?", "bool", "bool?", "str", "str?", "SymInt", "SymInt?",
+    "ScalarType",
+    "ScalarType?",
+    "Scalar",
+    "Scalar?",
+    "int",
+    "int?",
+    "float",
+    "float?",
+    "bool",
+    "bool?",
+    "str",
+    "str?",
+    "SymInt",
+    "SymInt?",
 }
 
 
@@ -347,12 +377,12 @@ def _flaggems_extra_trailing_ok(fn, ncall):
     `out` tensor slot). Returns False if uninspectable.
     """
     import inspect
+
     try:
         params = list(inspect.signature(fn).parameters.values())
     except (ValueError, TypeError):
         return False
-    pos = [p for p in params
-           if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+    pos = [p for p in params if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
     if len(pos) < ncall:
         return False
     # Every gems param beyond the ones we pass must have a default.
@@ -369,8 +399,13 @@ def _flaggems_extra_trailing_ok(fn, ncall):
 
 
 # Categories the FlagGems Python path knows how to generate kernels for.
-_FLAGGEMS_PY_CATEGORIES = {"functional_pure", "inplace", "tuple_return",
-                           "out_variant", "factory"}
+_FLAGGEMS_PY_CATEGORIES = {
+    "functional_pure",
+    "inplace",
+    "tuple_return",
+    "out_variant",
+    "factory",
+}
 
 # gems ops whose wrapper is `(*args, **kwargs)` so inspect.signature can't
 # recover the arity -> _flaggems_gems_npos() returns None and the main loop's
@@ -501,8 +536,10 @@ def discover_flaggems_ops(codegen_ops, funcs):
         import torch_fl  # noqa: F401
         import flag_gems
     except Exception as e:
-        print(f"  [flaggems] import failed ({e}); no python ops discovered",
-              file=sys.stderr)
+        print(
+            f"  [flaggems] import failed ({e}); no python ops discovered",
+            file=sys.stderr,
+        )
         return {}
 
     result = {}
@@ -544,18 +581,23 @@ def discover_flaggems_ops(codegen_ops, funcs):
         # positionals are passed. gems reads shape/device from the source tensor.
         if cat == "functional_pure" and op.endswith("_like"):
             all_pairs = [(str(a.type), a.name) for a in aten_args]
-            positional = [(t, n) for t, n in all_pairs
-                          if n not in _FLAGGEMS_LIKE_OPT_FIELDS]
+            positional = [
+                (t, n) for t, n in all_pairs if n not in _FLAGGEMS_LIKE_OPT_FIELDS
+            ]
             has_opts = any(n in _FLAGGEMS_LIKE_OPT_FIELDS for _t, n in all_pairs)
             byname = _flaggems_gems_byname_params(fn)
             # gems must accept dtype/layout/device by name and take exactly the
             # non-option positionals (the source tensor, plus full_like's
             # fill_value). npos may exceed via defaulted trailing kwonlys.
-            if (not has_opts
-                    or not {"dtype", "layout", "device"} <= byname
-                    or npos < len(positional)
-                    or (npos > len(positional)
-                        and not _flaggems_extra_trailing_ok(fn, len(positional)))):
+            if (
+                not has_opts
+                or not {"dtype", "layout", "device"} <= byname
+                or npos < len(positional)
+                or (
+                    npos > len(positional)
+                    and not _flaggems_extra_trailing_ok(fn, len(positional))
+                )
+            ):
                 continue
             if not all(_flaggems_type_ok(t) for t, _ in positional):
                 continue
@@ -571,10 +613,14 @@ def discover_flaggems_ops(codegen_ops, funcs):
             has_gen = any(t == "Generator?" for t, _n in all_pairs)
             # gems must take exactly self + the scalar params (generator is
             # keyword-only in gems, supplied by name).
-            if (not has_gen
-                    or npos < len(positional)
-                    or (npos > len(positional)
-                        and not _flaggems_extra_trailing_ok(fn, len(positional)))):
+            if (
+                not has_gen
+                or npos < len(positional)
+                or (
+                    npos > len(positional)
+                    and not _flaggems_extra_trailing_ok(fn, len(positional))
+                )
+            ):
                 continue
             if not all(_flaggems_type_ok(t) for t, _ in positional):
                 continue
@@ -589,9 +635,11 @@ def discover_flaggems_ops(codegen_ops, funcs):
             all_pairs = [(str(a.type), a.name) for a in aten_args]
             positional = [(t, n) for t, n in all_pairs if t != "Generator?"]
             has_gen = any(t == "Generator?" for t, _n in all_pairs)
-            if (not has_gen
-                    or npos != len(positional)
-                    or not all(_flaggems_type_ok(t) for t, _ in positional)):
+            if (
+                not has_gen
+                or npos != len(positional)
+                or not all(_flaggems_type_ok(t) for t, _ in positional)
+            ):
                 continue
             qualname = f"{fn.__module__}.{fn.__name__}"
             result[op] = (qualname, "rng_dropgen", positional)
@@ -604,18 +652,23 @@ def discover_flaggems_ops(codegen_ops, funcs):
             # dtype/layout/device by name (kwonly on every gems factory) and its
             # positional count to match the non-option args.
             all_pairs = [(str(a.type), a.name) for a in aten_args]
-            positional = [(t, n) for t, n in all_pairs
-                          if n not in _FLAGGEMS_TENSOROPT_FIELDS]
+            positional = [
+                (t, n) for t, n in all_pairs if n not in _FLAGGEMS_TENSOROPT_FIELDS
+            ]
             has_opts = any(n in _FLAGGEMS_TENSOROPT_FIELDS for _t, n in all_pairs)
             byname = _flaggems_gems_byname_params(fn)
             # gems must accept dtype/layout/device by name, and take exactly the
             # shape/scalar positionals (npos may exceed via a defaulted step, e.g.
             # arange.start's gems has an extra `step` default -> allow >=).
-            if (not has_opts
-                    or not {"dtype", "layout", "device"} <= byname
-                    or npos < len(positional)
-                    or (npos > len(positional)
-                        and not _flaggems_extra_trailing_ok(fn, len(positional)))):
+            if (
+                not has_opts
+                or not {"dtype", "layout", "device"} <= byname
+                or npos < len(positional)
+                or (
+                    npos > len(positional)
+                    and not _flaggems_extra_trailing_ok(fn, len(positional))
+                )
+            ):
                 continue
             if not all(_flaggems_type_ok(t) for t, _ in positional):
                 continue
@@ -625,13 +678,15 @@ def discover_flaggems_ops(codegen_ops, funcs):
         if cat == "out_variant":
             non_out = [(str(a.type), a.name) for a in aten_args if a not in out_args]
             with_out = non_out + [(str(a.type), a.name) for a in out_args]
-            if npos == len(non_out) or (npos > len(non_out)
-                                        and _flaggems_extra_trailing_ok(fn, len(non_out))):
+            if npos == len(non_out) or (
+                npos > len(non_out) and _flaggems_extra_trailing_ok(fn, len(non_out))
+            ):
                 # gems takes only the non-out args (plus optional trailing
                 # defaults), returns a fresh tensor; kernel copy_'s it into out.
                 passed = non_out
-            elif npos == len(with_out) or (npos > len(with_out)
-                                           and _flaggems_extra_trailing_ok(fn, len(with_out))):
+            elif npos == len(with_out) or (
+                npos > len(with_out) and _flaggems_extra_trailing_ok(fn, len(with_out))
+            ):
                 # gems takes `out` positionally and writes into it; pass the out
                 # tensor(s) too (plus optional trailing defaults like
                 # memory_format=None). Distinguished from mm.out, whose gems out
@@ -647,7 +702,8 @@ def discover_flaggems_ops(codegen_ops, funcs):
         else:
             all_args = [(str(a.type), a.name) for a in aten_args]
             if npos == len(all_args) or (
-                    npos > len(all_args) and _flaggems_extra_trailing_ok(fn, len(all_args))):
+                npos > len(all_args) and _flaggems_extra_trailing_ok(fn, len(all_args))
+            ):
                 passed = all_args
             elif npos < len(all_args):
                 # gems takes fewer positional args: the trailing aten args must be
@@ -665,15 +721,18 @@ def discover_flaggems_ops(codegen_ops, funcs):
         # _softmax_backward_data / linalg_vector_norm where gems takes dtype as a
         # positional-or-keyword param. See [[flaggems-gap-analysis]] type_gate_dtype.
         promotable = _flaggems_gems_byname_params(fn)
-        promote_idx = [i for i, (t, name) in enumerate(passed)
-                       if t.startswith("ScalarType") and name in promotable]
+        promote_idx = [
+            i
+            for i, (t, name) in enumerate(passed)
+            if t.startswith("ScalarType") and name in promotable
+        ]
         # Only promote if the ScalarType args form a strict SUFFIX of the
         # positional list. Promoting a middle arg would shift the following
         # positionals into gems's dtype slot (wrong). All current ops have dtype
         # last, so this holds; the guard rejects any future middle-dtype op.
         if promote_idx and promote_idx == list(range(promote_idx[0], len(passed))):
-            promoted = passed[promote_idx[0]:]
-            passed = passed[:promote_idx[0]]
+            promoted = passed[promote_idx[0] :]
+            passed = passed[: promote_idx[0]]
             kwargs = promoted + kwargs
         elif promote_idx:
             continue  # non-suffix ScalarType -> can't safely reorder
@@ -692,12 +751,14 @@ def _flaggems_gems_byname_params(fn):
     a ScalarType positional aten arg into a by-name kwarg the caller can convert
     to a torch.dtype."""
     import inspect
+
     try:
         params = inspect.signature(fn).parameters.values()
     except (ValueError, TypeError):
         return set()
-    return {p.name for p in params
-            if p.kind in (p.KEYWORD_ONLY, p.POSITIONAL_OR_KEYWORD)}
+    return {
+        p.name for p in params if p.kind in (p.KEYWORD_ONLY, p.POSITIONAL_OR_KEYWORD)
+    }
 
 
 def _flaggems_split_kwargs(fn, npos, all_passed):
@@ -736,13 +797,15 @@ def _flaggems_kwarg_cpp(kwargs):
                 # std::optional<ScalarType>: None when absent, else tagged dtype.
                 parts.append(
                     f'PyKwarg{{"{name}", {name}.has_value() ? '
-                    f'c10::IValue(static_cast<int64_t>(*{name})) : c10::IValue(), '
-                    f'/*is_dtype=*/true, /*is_none=*/!{name}.has_value()}}')
+                    f"c10::IValue(static_cast<int64_t>(*{name})) : c10::IValue(), "
+                    f"/*is_dtype=*/true, /*is_none=*/!{name}.has_value()}}"
+                )
             else:
                 parts.append(
                     f'PyKwarg{{"{name}", '
-                    f'c10::IValue(static_cast<int64_t>({name})), '
-                    f'/*is_dtype=*/true}}')
+                    f"c10::IValue(static_cast<int64_t>({name})), "
+                    f"/*is_dtype=*/true}}"
+                )
         else:
             # Scalar/int/bool/str/SymInt (and their optionals): IValue can carry
             # these directly. c10::IValue has implicit ctors for each.
@@ -750,8 +813,9 @@ def _flaggems_kwarg_cpp(kwargs):
     return "{" + ", ".join(parts) + "}"
 
 
-def gen_flaggems_python_kernel(op, fn_type, ret_type, args, gems_func, category,
-                               func, kwargs=None):
+def gen_flaggems_python_kernel(
+    op, fn_type, ret_type, args, gems_func, category, func, kwargs=None
+):
     """Generate a <Name>KernelPython forwarding to the FlagGems Python op.
 
     Signature matches the generated `*Fn` typedef exactly. The body packs the
@@ -775,8 +839,7 @@ def gen_flaggems_python_kernel(op, fn_type, ret_type, args, gems_func, category,
         # dtype. `kwargs` here carries the positional (aten_type, name) list.
         positional = kwargs or []
         pos_names = [n for _t, n in positional]
-        dtype_name = next(
-            (a.name for a in aten_args if a.name == "dtype"), None)
+        dtype_name = next((a.name for a in aten_args if a.name == "dtype"), None)
         dtype_expr = dtype_name if dtype_name else "::std::nullopt"
         pos_init = "{" + ", ".join(pos_names) + "}"
         infer = ""
@@ -799,7 +862,7 @@ def gen_flaggems_python_kernel(op, fn_type, ret_type, args, gems_func, category,
         body = (
             f"{infer}"
             f'  auto result = CallPythonOp_Factory("{gems_func}", '
-            f'{pos_init}, {dtype_expr});\n'
+            f"{pos_init}, {dtype_expr});\n"
             f"  UnboxToFlagos(result);\n"
             f"  return result;"
         )
@@ -817,7 +880,7 @@ def gen_flaggems_python_kernel(op, fn_type, ret_type, args, gems_func, category,
         pos_init = "{" + ", ".join(pos_names) + "}"
         body = (
             f'  auto result = CallPythonOp_LikeFactory("{gems_func}", '
-            f'{pos_init}, {dtype_expr});\n'
+            f"{pos_init}, {dtype_expr});\n"
             f"  UnboxToFlagos(result);\n"
             f"  return result;"
         )
@@ -834,7 +897,7 @@ def gen_flaggems_python_kernel(op, fn_type, ret_type, args, gems_func, category,
         ret_line = "" if ret_type == "void" else f"\n  return {self_name};"
         body = (
             f'  auto result = CallPythonOp_RandomInplace("{gems_func}", '
-            f'{pos_init});\n'
+            f"{pos_init});\n"
             f"  {self_name}.copy_(result);{ret_line}"
         )
         return f"{ret_type} {kn}({args_decl(args)}) {{\n{body}\n}}"
@@ -859,13 +922,14 @@ def gen_flaggems_python_kernel(op, fn_type, ret_type, args, gems_func, category,
     # arg names as they appear in the generated C++ signature. Kwarg-forwarded
     # args are removed from the positional list (they go into the PyKwarg vector).
     if category == "out_variant":
-        passed_names = [a.name for a in aten_args
-                        if a not in out_args and a.name not in kw_names]
+        passed_names = [
+            a.name for a in aten_args if a not in out_args and a.name not in kw_names
+        ]
     elif category == "out_variant_gemsout":
         # gems takes the out tensor(s) positionally after the non-out args.
-        passed_names = ([a.name for a in aten_args
-                         if a not in out_args and a.name not in kw_names]
-                        + [a.name for a in out_args])
+        passed_names = [
+            a.name for a in aten_args if a not in out_args and a.name not in kw_names
+        ] + [a.name for a in out_args]
     else:
         passed_names = [a.name for a in aten_args if a.name not in kw_names]
     ivalues = "{" + ", ".join(passed_names) + "}"
@@ -874,36 +938,30 @@ def gen_flaggems_python_kernel(op, fn_type, ret_type, args, gems_func, category,
     if kwargs:
         kw_init = _flaggems_kwarg_cpp(kwargs)
         gen_call = f'CallPythonOp_GenericKw("{gems_func}", {ivalues}, {kw_init})'
-        tuple_call = (lambda n:
-                      f'CallPythonOp_GenericKwTuple("{gems_func}", {ivalues}, '
-                      f'{kw_init}, {n})')
+
+        def tuple_call(n):
+            return (
+                f'CallPythonOp_GenericKwTuple("{gems_func}", {ivalues}, {kw_init}, {n})'
+            )
     else:
         gen_call = f'CallPythonOp_Generic("{gems_func}", {ivalues})'
-        tuple_call = (lambda n:
-                      f'CallPythonOp_GenericTuple("{gems_func}", {ivalues}, {n})')
+
+        def tuple_call(n):
+            return f'CallPythonOp_GenericTuple("{gems_func}", {ivalues}, {n})'
 
     if category == "functional_pure":
         body = (
-            f'  auto result = {gen_call};\n'
-            f"  UnboxToFlagos(result);\n"
-            f"  return result;"
+            f"  auto result = {gen_call};\n  UnboxToFlagos(result);\n  return result;"
         )
     elif category == "inplace":
         self_name = passed_names[0]
         ret_line = "" if ret_type == "void" else f"\n  return {self_name};"
-        body = (
-            f'  auto result = {gen_call};\n'
-            f"  {self_name}.copy_(result);{ret_line}"
-        )
+        body = f"  auto result = {gen_call};\n  {self_name}.copy_(result);{ret_line}"
     elif category == "tuple_return":
         n = ret_type.count(",") + 1  # ::std::tuple<a,b> -> 2
         unbox = "\n".join(f"  UnboxToFlagos(result[{i}]);" for i in range(n))
         make = ", ".join(f"result[{i}]" for i in range(n))
-        body = (
-            f'  auto result = {tuple_call(n)};\n'
-            f"{unbox}\n"
-            f"  return {{{make}}};"
-        )
+        body = f"  auto result = {tuple_call(n)};\n{unbox}\n  return {{{make}}};"
     elif category == "out_variant":
         out_names = [a.name for a in out_args]
         if ret_type.startswith("::std::tuple"):
@@ -912,15 +970,11 @@ def gen_flaggems_python_kernel(op, fn_type, ret_type, args, gems_func, category,
                 f"  {out_names[i]}.copy_(result[{i}]);" for i in range(n)
             )
             make = ", ".join(out_names)
-            body = (
-                f'  auto result = {tuple_call(n)};\n'
-                f"{copies}\n"
-                f"  return {{{make}}};"
-            )
+            body = f"  auto result = {tuple_call(n)};\n{copies}\n  return {{{make}}};"
         else:
             out_name = out_names[0]
             body = (
-                f'  auto result = {gen_call};\n'
+                f"  auto result = {gen_call};\n"
                 f"  {out_name}.copy_(result);\n"
                 f"  return {out_name};"
             )
@@ -929,10 +983,7 @@ def gen_flaggems_python_kernel(op, fn_type, ret_type, args, gems_func, category,
         # place, then returns them; just discard the returned handle and return
         # the aten out arg(s). (Only single-out ops reach here today.)
         out_name = [a.name for a in out_args][0]
-        body = (
-            f'  {gen_call};\n'
-            f"  return {out_name};"
-        )
+        body = f"  {gen_call};\n  return {out_name};"
     else:
         raise ValueError(f"unsupported flaggems-python category {category} for {op}")
 
@@ -942,6 +993,7 @@ def gen_flaggems_python_kernel(op, fn_type, ret_type, args, gems_func, category,
 # ============================================================================
 # Category detection (torchgen metadata)
 # ============================================================================
+
 
 def detect_category(func) -> str:
     s = func.func
@@ -967,7 +1019,7 @@ def detect_category(func) -> str:
         return "foreach_tensorlist"
     if s.is_out_fn():
         return "out_variant"
-    if str(s.kind()).split('.')[-1] == "inplace":
+    if str(s.kind()).split(".")[-1] == "inplace":
         return "inplace"
     if len(s.returns) > 1:
         return "tuple_return"
@@ -981,6 +1033,7 @@ def detect_category(func) -> str:
 # Authoritative signatures via torchgen (faithful = exploded TensorOptions)
 # ============================================================================
 
+
 def unified_sig(func):
     """
     CppSignature (faithful) for ALL uses: typedef, kernel, and wrapper.
@@ -993,10 +1046,17 @@ def unified_sig(func):
     Must be called inside a `with local.parametrize(...)` context.
     """
     from torchgen.api.types import CppSignatureGroup
-    group = CppSignatureGroup.from_native_function(func, method=False, fallback_binding=False)
-    sig = group.faithful_signature if group.faithful_signature is not None else group.signature
+
+    group = CppSignatureGroup.from_native_function(
+        func, method=False, fallback_binding=False
+    )
+    sig = (
+        group.faithful_signature
+        if group.faithful_signature is not None
+        else group.signature
+    )
     ptr = sig.ptr_type()
-    ret_type = ptr.split('(*)', 1)[0].strip()
+    ret_type = ptr.split("(*)", 1)[0].strip()
     args = [(a.type, a.name) for a in sig.arguments()]
     return ptr, ret_type, args
 
@@ -1015,12 +1075,13 @@ def call_args(args: List[Tuple[str, str]]) -> str:
 
 def at_api_base(op_name: str) -> str:
     """schema op -> at:: function base name. 'mm.out'->'mm', '_foreach_add_.Scalar'->'_foreach_add_'."""
-    return op_name.split('.')[0]
+    return op_name.split(".")[0]
 
 
 # ============================================================================
 # Per-category kernel templates
 # ============================================================================
+
 
 def tensor_arg_names(args: List[Tuple[str, str]]) -> List[str]:
     """Plain (non-optional, non-list) at::Tensor args - safe for DeviceBoxingGuard."""
@@ -1028,7 +1089,12 @@ def tensor_arg_names(args: List[Tuple[str, str]]) -> List[str]:
     for t, n in args:
         if "Tensor" not in t:
             continue
-        if "optional" in t or "List" in t or "TensorList" in t or "ArrayRef<at::Tensor" in t:
+        if (
+            "optional" in t
+            or "List" in t
+            or "TensorList" in t
+            or "ArrayRef<at::Tensor" in t
+        ):
             continue
         out.append(n)
     return out
@@ -1053,7 +1119,9 @@ def gen_functional_pure(op, fn_type, ret_type, args, func=None):
     holder_lines = ""
     guard_names = list(plain)
     for on in opt_names:
-        holder_lines += f"  at::Tensor {on}_t = {on}.has_value() ? *{on} : at::Tensor();\n"
+        holder_lines += (
+            f"  at::Tensor {on}_t = {on}.has_value() ? *{on} : at::Tensor();\n"
+        )
         guard_names.append(f"{on}_t")
     guard = ", ".join(guard_names)
 
@@ -1097,13 +1165,14 @@ def gen_inplace(op, fn_type, ret_type, args, func=None):
     self_name = args[0][1]
     other_args = ", ".join(n for _, n in args[1:])
 
-    variants = [str(v).split('.')[-1] for v in func.variants] if func else []
+    variants = [str(v).split(".")[-1] for v in func.variants] if func else []
     has_method = "method" in variants
 
     if has_method:
         # Method syntax: self.add_(other, alpha)
         body_call = (
-            f"{self_name}.{base}({other_args});" if other_args
+            f"{self_name}.{base}({other_args});"
+            if other_args
             else f"{self_name}.{base}();"
         )
     else:
@@ -1141,7 +1210,9 @@ def gen_out_variant(op, fn_type, ret_type, args, func=None):
     holder_lines = ""
     guard_names = list(plain)
     for on in opt_names:
-        holder_lines += f"  at::Tensor {on}_t = {on}.has_value() ? *{on} : at::Tensor();\n"
+        holder_lines += (
+            f"  at::Tensor {on}_t = {on}.has_value() ? *{on} : at::Tensor();\n"
+        )
         guard_names.append(f"{on}_t")
     guard = ", ".join(guard_names)
 
@@ -1174,16 +1245,20 @@ def gen_tuple_return(op, fn_type, ret_type, args, func=None):
     opt_names = optional_tensor_names(args)
     plain = tensor_arg_names(args)
     api = f"at::{at_api_base(op)}"
-    ntuple = ret_type.count(',') + 1  # ::std::tuple<a,b> -> 2
+    ntuple = ret_type.count(",") + 1  # ::std::tuple<a,b> -> 2
 
     holder_lines = ""
     guard_names = list(plain)
     for on in opt_names:
-        holder_lines += f"  at::Tensor {on}_t = {on}.has_value() ? *{on} : at::Tensor();\n"
+        holder_lines += (
+            f"  at::Tensor {on}_t = {on}.has_value() ? *{on} : at::Tensor();\n"
+        )
         guard_names.append(f"{on}_t")
     guard = ", ".join(guard_names)
 
-    unbox_lines = "\n".join(f"  UnboxToFlagos(std::get<{i}>(result));" for i in range(ntuple))
+    unbox_lines = "\n".join(
+        f"  UnboxToFlagos(std::get<{i}>(result));" for i in range(ntuple)
+    )
     return f"""{ret_type} {kn}({args_decl(args)}) {{
 {holder_lines}  DeviceBoxingGuard guard({guard});
   auto result = {api}({call_args(args)});
@@ -1278,9 +1353,12 @@ def gen_foreach_out(op, fn_type, ret_type, args, func=None):
     # void ops this includes an in-out like found_inf; for single-return ops it
     # is the lone `out`. Tuple-returning multi-Tensor& out RNN ops are skip-listed.
     mutable_tensors = [
-        n for t, n in args
-        if "at::Tensor &" in t and "const" not in t
-        and "TensorList" not in t and "ITensorListRef" not in t
+        n
+        for t, n in args
+        if "at::Tensor &" in t
+        and "const" not in t
+        and "TensorList" not in t
+        and "ITensorListRef" not in t
     ]
 
     materialize_lines = ""
@@ -1334,7 +1412,9 @@ def gen_factory(op, fn_type, ret_type, args, func=None):
 
     dtype_default = f"{names[0]}.scalar_type()" if has_self else "at::kFloat"
     layout_default = f"{names[0]}.layout()" if has_self else "at::kStrided"
-    device_default = f"{names[0]}.device()" if has_self else "at::Device(at::kPrivateUse1, 0)"
+    device_default = (
+        f"{names[0]}.device()" if has_self else "at::Device(at::kPrivateUse1, 0)"
+    )
 
     options = (
         "  auto options = at::TensorOptions()\n"
@@ -1356,8 +1436,11 @@ def gen_factory(op, fn_type, ret_type, args, func=None):
     elif base in ("full", "new_full"):
         # fill value is the lone by-value Scalar arg (not Scalar[] / optional<Scalar>)
         fill_val = next(
-            (n for t, n in args
-             if "Scalar" in t and "ArrayRef" not in t and "optional" not in t),
+            (
+                n
+                for t, n in args
+                if "Scalar" in t and "ArrayRef" not in t and "optional" not in t
+            ),
             "0",
         )
         make = f"  auto result = at::empty({size_arg}, options);\n  result.fill_({fill_val});"
@@ -1370,9 +1453,7 @@ def gen_factory(op, fn_type, ret_type, args, func=None):
         #     THIS kernel -> infinite recursion -> stack overflow. Redirect the
         #     device arg to CUDA (hits the external libtorch_cuda.so kernel), then
         #     unbox the result back to flagos. Generalizes the old arange special-case. ---
-        device_arg = next(
-            (n for t, n in args if "optional<at::Device>" in t), None
-        )
+        device_arg = next((n for t, n in args if "optional<at::Device>" in t), None)
         if device_arg is not None:
             call_names = [
                 "::std::optional<at::Device>(_cuda_dev)" if n == device_arg else n
@@ -1440,6 +1521,7 @@ CATEGORY_GENERATORS = {
 # Wrapper functions (register.cc side)
 # ============================================================================
 
+
 def gen_wrapper(op, fn_type, dispatcher, ret_type, args):
     """Wrapper<Name> that forwards into the dispatcher (used by TORCH_LIBRARY_IMPL)."""
     wname = "Wrapper" + fn_type[:-2]
@@ -1456,6 +1538,7 @@ def gen_wrapper(op, fn_type, dispatcher, ret_type, args):
 # at:: header includes needed by cuda_kernels.cc
 # ============================================================================
 
+
 def api_headers(op_info: Dict) -> List[str]:
     """Header file names come from torchgen's authoritative func.root_name.
     (e.g. schema '__ilshift__.Scalar' -> root_name 'lshift' -> ATen/ops/lshift.h;
@@ -1470,6 +1553,7 @@ def api_headers(op_info: Dict) -> List[str]:
 # ============================================================================
 # Main
 # ============================================================================
+
 
 def main():
     repo_root = Path(__file__).parent.parent
@@ -1492,14 +1576,19 @@ def main():
     manual_skip = set()
     if skip_ops_path.exists():
         for line in skip_ops_path.read_text().splitlines():
-            line = line.split('#')[0].strip()
+            line = line.split("#")[0].strip()
             if line:
                 manual_skip.add(line)
 
-    all_cuda = os.environ.get("FLAGOS_CODEGEN_ALL", "").strip() not in ("", "0", "false")
+    all_cuda = os.environ.get("FLAGOS_CODEGEN_ALL", "").strip() not in (
+        "",
+        "0",
+        "false",
+    )
 
     if all_cuda:
         from torchgen.model import DispatchKey
+
         cuda_index = nf.backend_indices[DispatchKey.CUDA]
         ops, skipped = enumerate_all_cuda_ops(nf, funcs, cuda_index)
         ops = [o for o in ops if o not in manual_skip]
@@ -1511,10 +1600,10 @@ def main():
     else:
         ops = []
         for line in conf_path.read_text().splitlines():
-            line = line.split('#')[0].strip()
-            if not line or '=' not in line:
+            line = line.split("#")[0].strip()
+            if not line or "=" not in line:
                 continue
-            op, backend = line.split('=', 1)
+            op, backend = line.split("=", 1)
             if backend.strip() == "cuda":
                 ops.append(op.strip())
         print(f"Found {len(ops)} ops in backends_cuda.conf")
@@ -1546,14 +1635,20 @@ def main():
                 ptr_type, ret_type, args = unified_sig(func)
         except Exception as e:
             if all_cuda:
-                print(f"  SKIP {op}: {type(e).__name__}: {str(e)[:80]}", file=sys.stderr)
+                print(
+                    f"  SKIP {op}: {type(e).__name__}: {str(e)[:80]}", file=sys.stderr
+                )
                 continue
             raise
 
         categories[cat].append(op)
         op_info[op] = dict(
-            fn_type=fn_type, dispatcher=dispatcher, category=cat,
-            ptr_type=ptr_type, ret_type=ret_type, args=args,
+            fn_type=fn_type,
+            dispatcher=dispatcher,
+            category=cat,
+            ptr_type=ptr_type,
+            ret_type=ret_type,
+            args=args,
             func=func,
         )
 
@@ -1583,7 +1678,7 @@ def main():
         "#pragma once",
         "",
         "#include <ATen/core/Tensor.h>",
-        "#include \"../dispatcher.h\"",
+        '#include "../dispatcher.h"',
         "",
         "namespace at::native::flagos {",
         "",
@@ -1603,14 +1698,16 @@ def main():
         "// Copyright (c) 2026, BAAI. All rights reserved.",
         "// AUTO-GENERATED by scripts/codegen_ops.py - DO NOT EDIT",
         "",
-        "#include \"ops.h\"",
+        '#include "ops.h"',
         "",
         "namespace at::native::flagos {",
         "",
     ]
     for op in sorted(op_info):
         i = op_info[op]
-        lines.append(f'ADD_IMPL_TO_DISPATCHER({i["fn_type"]}, {i["dispatcher"]}, "{op}")')
+        lines.append(
+            f'ADD_IMPL_TO_DISPATCHER({i["fn_type"]}, {i["dispatcher"]}, "{op}")'
+        )
     lines.append("")
     lines.append("} // namespace at::native::flagos")
     (out_dir / "ops.cc").write_text("\n".join(lines) + "\n")
@@ -1622,8 +1719,8 @@ def main():
         "// Copyright (c) 2026, BAAI. All rights reserved.",
         "// AUTO-GENERATED by scripts/codegen_ops.py - DO NOT EDIT",
         "",
-        "#include \"ops.h\"",
-        "#include \"../device_boxing.h\"",
+        '#include "ops.h"',
+        '#include "../device_boxing.h"',
         "",
         "#include <vector>",
         "#include <tuple>",
@@ -1646,7 +1743,9 @@ def main():
     for op in sorted(op_info):
         i = op_info[op]
         kn = kernel_name(i["fn_type"])
-        lines.append(f'REGISTER_IMPL_TO_DISPATCHER({i["fn_type"]}, {i["dispatcher"]}, Backend::kCuda, {kn})')
+        lines.append(
+            f"REGISTER_IMPL_TO_DISPATCHER({i['fn_type']}, {i['dispatcher']}, Backend::kCuda, {kn})"
+        )
     lines.append("")
     lines.append("} // namespace at::native::flagos")
     (out_dir / "cuda_kernels.cc").write_text("\n".join(lines) + "\n")
@@ -1666,9 +1765,9 @@ def main():
         "",
         "#ifdef FLAGOS_FLAGGEMS_PYTHON",
         "",
-        "#include \"ops.h\"",
-        "#include \"../device_boxing.h\"",
-        "#include \"../backends/flagos/python_op_caller.h\"",
+        '#include "ops.h"',
+        '#include "../device_boxing.h"',
+        '#include "../backends/flagos/python_op_caller.h"',
         "",
         "namespace at::native::flagos {",
         "namespace {",
@@ -1677,9 +1776,18 @@ def main():
     for op in py_ops:
         i = op_info[op]
         gems_func, category, kwargs = flaggems_py[op]
-        lines.append(gen_flaggems_python_kernel(
-            op, i["fn_type"], i["ret_type"], i["args"], gems_func, category,
-            i["func"], kwargs))
+        lines.append(
+            gen_flaggems_python_kernel(
+                op,
+                i["fn_type"],
+                i["ret_type"],
+                i["args"],
+                gems_func,
+                category,
+                i["func"],
+                kwargs,
+            )
+        )
         lines.append("")
     lines.append("} // namespace")
     lines.append("")
@@ -1687,8 +1795,8 @@ def main():
         i = op_info[op]
         pkn = python_kernel_name(i["fn_type"])
         lines.append(
-            f'REGISTER_IMPL_TO_DISPATCHER({i["fn_type"]}, {i["dispatcher"]}, '
-            f'Backend::kFlagOsPython, {pkn})'
+            f"REGISTER_IMPL_TO_DISPATCHER({i['fn_type']}, {i['dispatcher']}, "
+            f"Backend::kFlagOsPython, {pkn})"
         )
     lines.append("")
     lines.append("} // namespace at::native::flagos")
@@ -1710,7 +1818,9 @@ def main():
     impl_lines = []
     for op in sorted(op_info):
         i = op_info[op]
-        wrapper, wname = gen_wrapper(op, i["fn_type"], i["dispatcher"], i["ret_type"], i["args"])
+        wrapper, wname = gen_wrapper(
+            op, i["fn_type"], i["dispatcher"], i["ret_type"], i["args"]
+        )
         lines.append(wrapper)
         impl_lines.append(f'  m.impl("{op}", {wname});')
     lines.append("#endif  // FLAGOS_GEN_WRAPPERS")
@@ -1757,7 +1867,9 @@ def main():
             backend = "flagos_python" if op in flaggems_py else "cuda"
             fg_lines.append(f"{op} = {backend}")
         fg_conf_path.write_text("\n".join(fg_lines) + "\n")
-        print(f"   regenerated {fg_conf_path.name} with {len(flaggems_py)} flagos_python routes")
+        print(
+            f"   regenerated {fg_conf_path.name} with {len(flaggems_py)} flagos_python routes"
+        )
 
         # backends_metax_flaggems.conf: identical to backends_flaggems.conf, but
         # the ops triton-metax / flag_gems cannot run on the flagos device are
@@ -1781,18 +1893,40 @@ def main():
         #     libtorch_cuda). Derived from flag_gems ops that guard on device.type.
         # Grow this set as testing reveals more triton-metax / flag_gems gaps.
         metax_triton_fallback = {
-            "mm", "mm.out", "bmm", "bmm.out", "mean.dim",
+            "mm",
+            "mm.out",
+            "bmm",
+            "bmm.out",
+            "mean.dim",
             # flag_gems ops that guard on device.type == "cuda" (recurse or raise
             # on the flagos device); route to cuda boxing instead of flagos_python.
-            "mul.Tensor", "conv_transpose2d", "scaled_mm", "as_strided_copy",
-            "embedding_dense_backward", "i0", "i0.out", "i0_",
-            "reflection_pad2d", "reflection_pad2d.out",
-            "reflection_pad3d", "reflection_pad3d.out",
-            "soft_margin_loss", "special_i0e", "special_i0e.out",
-            "special_i1", "special_i1.out", "prelu",
-            "_prelu_kernel_backward", "arcsinh", "im2col",
-            "lift_fresh_copy", "resolve_conj", "t_copy", "zero",
-            "special_gammainc", "special_scaled_modified_bessel_k1",
+            "mul.Tensor",
+            "conv_transpose2d",
+            "scaled_mm",
+            "as_strided_copy",
+            "embedding_dense_backward",
+            "i0",
+            "i0.out",
+            "i0_",
+            "reflection_pad2d",
+            "reflection_pad2d.out",
+            "reflection_pad3d",
+            "reflection_pad3d.out",
+            "soft_margin_loss",
+            "special_i0e",
+            "special_i0e.out",
+            "special_i1",
+            "special_i1.out",
+            "prelu",
+            "_prelu_kernel_backward",
+            "arcsinh",
+            "im2col",
+            "lift_fresh_copy",
+            "resolve_conj",
+            "t_copy",
+            "zero",
+            "special_gammainc",
+            "special_scaled_modified_bessel_k1",
             "_upsample_nearest_exact1d",
         }
         mfg_conf_path = repo_root / "torch_fl/backends_metax_flaggems.conf"

@@ -42,7 +42,11 @@ def parse_typedef_and_dispatcher(header_path: Path) -> Optional[tuple]:
     text = header_path.read_text()
 
     # Match: using XxxFn = ...;
-    typedef_match = re.search(r'using\s+(\w+Fn)\s*=\s*(.+?)\s*\(\*\)\s*\(([^)]*(?:\([^)]*\)[^)]*)*)\)\s*;', text, re.DOTALL)
+    typedef_match = re.search(
+        r"using\s+(\w+Fn)\s*=\s*(.+?)\s*\(\*\)\s*\(([^)]*(?:\([^)]*\)[^)]*)*)\)\s*;",
+        text,
+        re.DOTALL,
+    )
     if not typedef_match:
         return None
 
@@ -51,7 +55,9 @@ def parse_typedef_and_dispatcher(header_path: Path) -> Optional[tuple]:
     args_raw = typedef_match.group(3).strip()
 
     # Match: DECLARE_DISPATCHER(XxxFn, xxx_dispatcher)
-    decl_match = re.search(rf'DECLARE_DISPATCHER\s*\(\s*{re.escape(fn_type)}\s*,\s*(\w+)\s*\)', text)
+    decl_match = re.search(
+        rf"DECLARE_DISPATCHER\s*\(\s*{re.escape(fn_type)}\s*,\s*(\w+)\s*\)", text
+    )
     if not decl_match:
         return None
 
@@ -63,7 +69,9 @@ def parse_typedef_and_dispatcher(header_path: Path) -> Optional[tuple]:
     return (fn_type, dispatcher_name, signature)
 
 
-def parse_add_impl_op_name(cc_path: Path, fn_type: str, dispatcher_name: str) -> Optional[str]:
+def parse_add_impl_op_name(
+    cc_path: Path, fn_type: str, dispatcher_name: str
+) -> Optional[str]:
     """
     Parse csrc/aten/xxx.cc for:
       ADD_IMPL_TO_DISPATCHER(FooFn, foo_dispatcher, "op.name")
@@ -124,7 +132,7 @@ def extract_all_name_maps(aten_dir: Path) -> Dict[str, dict]:
             "dispatcher_name": dispatcher_name,
             "signature": signature,
             "header_file": header.name,
-            "cc_file": cc_path.name if cc_path.exists() else None
+            "cc_file": cc_path.name if cc_path.exists() else None,
         }
 
     return name_map
@@ -148,6 +156,7 @@ def main():
 
     # Save to JSON for codegen to consume
     import json
+
     out_path = repo_root / "csrc/aten/generated/name_map.json"
     out_path.parent.mkdir(exist_ok=True)
     out_path.write_text(json.dumps(name_map, indent=2))

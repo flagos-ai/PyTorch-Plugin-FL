@@ -29,6 +29,7 @@ import os
 # torch_fl MUST be imported before torch (preloads libtorch_cuda.so).
 import torch_fl  # noqa: F401
 import torch
+
 try:
     import flagcx  # noqa: F401  self-registers "flagcx" backend (nvidia adaptor)
 except ImportError:
@@ -47,7 +48,9 @@ def worker(rank: int, world_size: int):
     torch.cuda.set_device(rank)  # flagos:i shares physical GPU i
 
     dist.init_process_group(
-        backend="flagos", rank=rank, world_size=world_size,
+        backend="flagos",
+        rank=rank,
+        world_size=world_size,
     )
 
     # --- all_reduce ---
@@ -55,7 +58,9 @@ def worker(rank: int, world_size: int):
     dist.all_reduce(t, op=dist.ReduceOp.SUM)
     expected = sum(range(1, world_size + 1))
     ok_ar = torch.allclose(t.cpu(), torch.full((4,), float(expected)))
-    print(f"[rank {rank}] all_reduce -> {t[0].item()} (expect {expected}) {'OK' if ok_ar else 'FAIL'}")
+    print(
+        f"[rank {rank}] all_reduce -> {t[0].item()} (expect {expected}) {'OK' if ok_ar else 'FAIL'}"
+    )
 
     # --- broadcast ---
     b = torch.arange(4, device=dev, dtype=torch.float32) + rank * 10
@@ -75,8 +80,10 @@ def worker(rank: int, world_size: int):
     torch.manual_seed(0)
     model = nn.Sequential(nn.Linear(8, 8), nn.ReLU(), nn.Linear(8, 1)).to(dev)
     ddp = DistributedDataParallel(model)
-    print(f"[rank {rank}] DDP _use_python_reducer={ddp._use_python_reducer} "
-          f"hooks={len(ddp._accum_grad_hooks)}")
+    print(
+        f"[rank {rank}] DDP _use_python_reducer={ddp._use_python_reducer} "
+        f"hooks={len(ddp._accum_grad_hooks)}"
+    )
 
     x = torch.randn(16, 8, device=dev)
     loss = ddp(x).sum()

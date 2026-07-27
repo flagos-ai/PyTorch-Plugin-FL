@@ -57,6 +57,7 @@ DEVICE = "flagos:0"
 # Correctness: newly-registered ops match CPU reference
 # ---------------------------------------------------------------------------
 
+
 class TestUnaryElementwiseNewOps:
     """functional_pure unary ops that were NOT in the original 71-op conf."""
 
@@ -214,7 +215,9 @@ class TestFactoryNewOps:
     def test_linspace_deterministic(self):
         ls = torch.linspace(0, 1, 11, device=DEVICE)
         assert ls.device.type == "flagos"
-        torch.testing.assert_close(ls.cpu(), torch.linspace(0, 1, 11), rtol=1e-4, atol=1e-4)
+        torch.testing.assert_close(
+            ls.cpu(), torch.linspace(0, 1, 11), rtol=1e-4, atol=1e-4
+        )
 
     @pytest.mark.cuda
     def test_randn_shape_and_stats(self):
@@ -270,6 +273,7 @@ class TestForeachNewOps:
 # Routing: sampled new ops dispatch to cuda, not cpu_fallback
 # ---------------------------------------------------------------------------
 
+
 class TestNewOpDispatchRouting:
     """Confirm representative new ops route through the CUDA dispatcher.
 
@@ -281,15 +285,16 @@ class TestNewOpDispatchRouting:
     ROUTED_OPS = [
         ("tanh", "a = torch.randn(4,4,device='flagos:0'); torch.tanh(a)"),
         ("sigmoid", "a = torch.randn(4,4,device='flagos:0'); torch.sigmoid(a)"),
-        ("addmm", "m=torch.randn(4,4,device='flagos:0'); "
-                  "x=torch.randn(4,4,device='flagos:0'); "
-                  "y=torch.randn(4,4,device='flagos:0'); torch.addmm(m,x,y)"),
+        (
+            "addmm",
+            "m=torch.randn(4,4,device='flagos:0'); "
+            "x=torch.randn(4,4,device='flagos:0'); "
+            "y=torch.randn(4,4,device='flagos:0'); torch.addmm(m,x,y)",
+        ),
         ("tril", "a = torch.randn(4,4,device='flagos:0'); torch.tril(a)"),
     ]
 
-    @pytest.mark.parametrize(
-        "op,snippet", ROUTED_OPS, ids=[o[0] for o in ROUTED_OPS]
-    )
+    @pytest.mark.parametrize("op,snippet", ROUTED_OPS, ids=[o[0] for o in ROUTED_OPS])
     @pytest.mark.cuda
     def test_dispatches_to_cuda(self, op, snippet):
         env = os.environ.copy()
@@ -297,7 +302,9 @@ class TestNewOpDispatchRouting:
         code = f"import torch_fl, torch; {snippet}"
         result = subprocess.run(
             [sys.executable, "-c", code],
-            env=env, capture_output=True, text=True,
+            env=env,
+            capture_output=True,
+            text=True,
         )
         assert f"[flagos dispatch] {op} -> cuda" in result.stderr, (
             f"expected {op} -> cuda, got:\n{result.stderr}"

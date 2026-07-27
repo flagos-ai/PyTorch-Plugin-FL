@@ -153,9 +153,7 @@ def _preload_cuda_assets() -> None:
     # 2) torch's own CPU libs (libtorch_cuda depends on libc10 / libtorch_cpu).
     torch_spec = importlib.util.find_spec("torch")
     if torch_spec is not None and torch_spec.submodule_search_locations:
-        torch_lib = os.path.join(
-            list(torch_spec.submodule_search_locations)[0], "lib"
-        )
+        torch_lib = os.path.join(list(torch_spec.submodule_search_locations)[0], "lib")
         for name in ("libc10.so", "libtorch_cpu.so"):
             _try(os.path.join(torch_lib, name))
 
@@ -567,6 +565,7 @@ from torch_fl.integration import (  # noqa: E402
 # Distributed: register "flagos" ProcessGroup backend for privateuseone
 # ---------------------------------------------------------------------------
 
+
 def _register_distributed_backend():
     """Register ProcessGroupFlagOS as the 'flagos' torch.distributed backend.
 
@@ -579,9 +578,11 @@ def _register_distributed_backend():
     """
     try:
         from torch_fl.comm import register_flagos_backend
+
         register_flagos_backend()
     except Exception as e:
         import warnings
+
         warnings.warn(f"[torch_fl] Failed to register 'flagos' dist backend: {e}")
 
 
@@ -591,6 +592,7 @@ _register_distributed_backend()
 # ---------------------------------------------------------------------------
 # DDP auto-patch: torch.nn.parallel.DistributedDataParallel
 # ---------------------------------------------------------------------------
+
 
 def _patch_ddp_for_flagos():
     """Patch DDP to transparently support flagos (privateuseone) models.
@@ -621,6 +623,7 @@ def _patch_ddp_for_flagos():
 
         # Force python_reducer to avoid C++ Reducer CUDA assertions
         import torch._dynamo.utils
+
         _orig_mode = torch._dynamo.utils.get_optimize_ddp_mode
         torch._dynamo.utils.get_optimize_ddp_mode = lambda: "python_reducer"
         try:

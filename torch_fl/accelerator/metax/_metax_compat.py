@@ -432,8 +432,15 @@ def _patch_triton_do_bench():
     import statistics
     import time
 
-    def _do_bench(fn, warmup=25, rep=100, grad_to_none=None, quantiles=None,
-                  return_mode="mean", **kwargs):
+    def _do_bench(
+        fn,
+        warmup=25,
+        rep=100,
+        grad_to_none=None,
+        quantiles=None,
+        return_mode="mean",
+        **kwargs,
+    ):
         fn()
         _metax_synchronize()
         n_rep = 5

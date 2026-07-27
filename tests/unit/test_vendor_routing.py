@@ -36,6 +36,7 @@ pg = pytest.importorskip("torch_fl.comm.process_group")
 # Profile table
 # ---------------------------------------------------------------------------
 
+
 def test_all_vendors_have_consistent_profiles():
     for name, prof in pg._VENDOR_PROFILES.items():
         assert prof.flagcx_dev, f"{name} missing flagcx_dev"
@@ -46,7 +47,8 @@ def test_all_vendors_have_consistent_profiles():
             assert prof.native == "_try_build_nccl", name
         else:
             assert prof.view is None, (
-                f"{name} is not a cuda alias but claims view {prof.view!r}")
+                f"{name} is not a cuda alias but claims view {prof.view!r}"
+            )
 
 
 def test_unknown_vendor_falls_back_to_default_profile():
@@ -65,6 +67,7 @@ def test_known_cuda_vendors():
 # ---------------------------------------------------------------------------
 # _build_inner routing (with fakes)
 # ---------------------------------------------------------------------------
+
 
 def _make(monkeypatch, vendor, *, flagcx_ok, native_ok, view_present=True):
     """Configure a fake ProcessGroupFlagOS and stub out its build helpers.
@@ -114,8 +117,7 @@ def _make(monkeypatch, vendor, *, flagcx_ok, native_ok, view_present=True):
 
 
 def test_flagcx_preferred_over_native(monkeypatch):
-    obj, calls, sentinel = _make(monkeypatch, "nvidia", flagcx_ok=True,
-                                 native_ok=True)
+    obj, calls, sentinel = _make(monkeypatch, "nvidia", flagcx_ok=True, native_ok=True)
     view = obj._build_inner(None, 0, 1, None)
     assert calls["flagcx"] and not calls["native"]
     assert view is sentinel  # cuda view resolved from the (faked) torch_fl._C
@@ -123,7 +125,7 @@ def test_flagcx_preferred_over_native(monkeypatch):
 
 def test_native_used_when_flagcx_unavailable(monkeypatch):
     obj, calls, _ = _make(monkeypatch, "nvidia", flagcx_ok=False, native_ok=True)
-    view = obj._build_inner(None, 0, 1, None)
+    obj._build_inner(None, 0, 1, None)
     assert calls["flagcx"] and calls["native"]
     assert obj._inner is not None
 
@@ -136,8 +138,9 @@ def test_no_backend_raises(monkeypatch):
 
 def test_musa_flagcx_only_no_native_fallback(monkeypatch):
     # musa has native=None: if flagcx fails there is nothing to fall back to.
-    obj, calls, _ = _make(monkeypatch, "musa", flagcx_ok=False, native_ok=True,
-                          view_present=False)
+    obj, calls, _ = _make(
+        monkeypatch, "musa", flagcx_ok=False, native_ok=True, view_present=False
+    )
     with pytest.raises(RuntimeError, match="none wired"):
         obj._build_inner(None, 0, 1, None)
     assert not calls["native"]
@@ -146,8 +149,9 @@ def test_musa_flagcx_only_no_native_fallback(monkeypatch):
 def test_musa_flagcx_ok_but_no_view_raises(monkeypatch):
     # musa flagcx path succeeds, but no flagos->musa view is implemented yet ->
     # must fail loudly rather than pass a raw flagos tensor to the backend.
-    obj, calls, _ = _make(monkeypatch, "musa", flagcx_ok=True, native_ok=False,
-                          view_present=False)
+    obj, calls, _ = _make(
+        monkeypatch, "musa", flagcx_ok=True, native_ok=False, view_present=False
+    )
     with pytest.raises(NotImplementedError, match="no flagos->device view"):
         obj._build_inner(None, 0, 1, None)
 
@@ -155,8 +159,9 @@ def test_musa_flagcx_ok_but_no_view_raises(monkeypatch):
 def test_ascend_uses_hccl_native(monkeypatch):
     # ascend flagcx fails -> native hccl succeeds -> but view is None -> raise
     # NotImplementedError (documents that only the FlagCX(cann) path is viable).
-    obj, calls, _ = _make(monkeypatch, "ascend", flagcx_ok=False, native_ok=True,
-                          view_present=False)
+    obj, calls, _ = _make(
+        monkeypatch, "ascend", flagcx_ok=False, native_ok=True, view_present=False
+    )
     with pytest.raises(NotImplementedError, match="no flagos->device view"):
         obj._build_inner(None, 0, 1, None)
     assert calls["native"]  # hccl was attempted

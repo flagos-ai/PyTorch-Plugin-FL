@@ -106,7 +106,9 @@ def _discover_maca_torch_lib():
         return env
 
     # Scan conda envs next to the current prefix for a MetaX torch build.
-    prefix = os.environ.get("CONDA_PREFIX") or os.path.dirname(os.path.dirname(os.__file__))
+    prefix = os.environ.get("CONDA_PREFIX") or os.path.dirname(
+        os.path.dirname(os.__file__)
+    )
     envs_root = os.path.dirname(prefix)  # .../envs
     if not os.path.isdir(envs_root):
         return None

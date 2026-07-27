@@ -40,6 +40,7 @@ import os
 import torch_fl  # noqa: F401
 import torch_fl.distributed as flagos_dist
 import torch
+
 try:
     import flagcx  # noqa: F401  self-registers "flagcx" backend if present
 except ImportError:
@@ -60,8 +61,7 @@ def _hash_grads(model):
     return total, n
 
 
-def worker(rank: int, world_size: int, model_path: str, steps: int,
-           seq_len: int):
+def worker(rank: int, world_size: int, model_path: str, steps: int, seq_len: int):
     os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
     os.environ.setdefault("MASTER_PORT", "29537")
 
@@ -88,13 +88,16 @@ def worker(rank: int, world_size: int, model_path: str, steps: int,
     flagos_dist.move_buffers_to_device(model, dev)
 
     ddp = DistributedDataParallel(model)
-    print(f"[rank {rank}] DDP _use_python_reducer={ddp._use_python_reducer} "
-          f"hooks={len(ddp._accum_grad_hooks)}")
+    print(
+        f"[rank {rank}] DDP _use_python_reducer={ddp._use_python_reducer} "
+        f"hooks={len(ddp._accum_grad_hooks)}"
+    )
     assert ddp._use_python_reducer, "flagos DDP must use python_reducer"
     assert len(ddp._accum_grad_hooks) > 0, "no accum-grad hooks installed"
 
     optimizer = torch.optim.AdamW(
-        [p for p in ddp.parameters() if p.requires_grad], lr=1e-4)
+        [p for p in ddp.parameters() if p.requires_grad], lr=1e-4
+    )
 
     # Each rank sees a DIFFERENT batch (real DDP data parallelism), so the
     # per-rank grads differ before sync and MUST agree after all_reduce.
@@ -116,9 +119,11 @@ def worker(rank: int, world_size: int, model_path: str, steps: int,
         vals = [g.item() for g in gathered]
         synced = max(abs(v - vals[0]) for v in vals) < 1e-3
         if rank == 0:
-            print(f"[step {step}] loss={loss.item():.4f} "
-                  f"grad_sum(per-rank)={[f'{v:.3f}' for v in vals]} "
-                  f"synced={'OK' if synced else 'FAIL'}")
+            print(
+                f"[step {step}] loss={loss.item():.4f} "
+                f"grad_sum(per-rank)={[f'{v:.3f}' for v in vals]} "
+                f"synced={'OK' if synced else 'FAIL'}"
+            )
         assert synced, f"grads diverge across ranks at step {step}: {vals}"
 
         optimizer.step()
@@ -128,8 +133,10 @@ def worker(rank: int, world_size: int, model_path: str, steps: int,
     dist.barrier()
     if rank == 0:
         finite = all(torch.isfinite(torch.tensor(x)) for x in losses)
-        print(f"=== Qwen3 DDP: {steps} steps done, losses={['%.3f' % x for x in losses]}, "
-              f"all_finite={'OK' if finite else 'FAIL'} ===")
+        print(
+            f"=== Qwen3 DDP: {steps} steps done, losses={['%.3f' % x for x in losses]}, "
+            f"all_finite={'OK' if finite else 'FAIL'} ==="
+        )
     dist.destroy_process_group()
 
 

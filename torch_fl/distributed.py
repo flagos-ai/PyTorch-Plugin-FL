@@ -47,7 +47,6 @@ deprecated in favour of the standard class.
 
 import warnings
 
-import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as _DDP
 
@@ -55,6 +54,7 @@ from torch.nn.parallel import DistributedDataParallel as _DDP
 # ---------------------------------------------------------------------------
 # Public API: init_process_group (compat alias)
 # ---------------------------------------------------------------------------
+
 
 def init_process_group(backend: str = "auto", **kwargs):
     """Initialize distributed process group for flagos device.
@@ -77,6 +77,7 @@ def init_process_group(backend: str = "auto", **kwargs):
 # ---------------------------------------------------------------------------
 # Public API: DistributedDataParallel (deprecated — use standard DDP)
 # ---------------------------------------------------------------------------
+
 
 class DistributedDataParallel(_DDP):
     """Deprecated DDP wrapper for flagos models.
@@ -108,6 +109,7 @@ class DistributedDataParallel(_DDP):
 # ---------------------------------------------------------------------------
 # Public API: move_buffers_to_device
 # ---------------------------------------------------------------------------
+
 
 def move_buffers_to_device(module, device):
     """Recursively move all module buffers to the specified device.

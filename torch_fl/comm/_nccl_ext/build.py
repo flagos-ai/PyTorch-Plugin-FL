@@ -32,7 +32,6 @@ import glob
 import os
 import sys
 
-import torch
 from torch.utils.cpp_extension import BuildExtension, CppExtension
 from setuptools import setup
 
@@ -52,6 +51,7 @@ def _library_dirs():
         dirs.append(tf_lib)
     # pip nvidia-*-cu12 wheels provide libnccl.so etc.
     import importlib.util
+
     spec = importlib.util.find_spec("nvidia")
     if spec is not None and spec.submodule_search_locations:
         for base in spec.submodule_search_locations:
@@ -67,15 +67,19 @@ def main():
         # -DUSE_C10D_NCCL unlocks the ProcessGroupNCCL.hpp header, which was
         # #ifdef'd out of the CPU wheel. The NCCL_HAS_* feature macros are then
         # derived from the pip nccl.h (2.28) to match the external .so ABI.
-        define_macros=[("USE_C10D_NCCL", None),
-                       ("C10_CUDA_NO_CMAKE_CONFIGURE_FILE", None)],
+        define_macros=[
+            ("USE_C10D_NCCL", None),
+            ("C10_CUDA_NO_CMAKE_CONFIGURE_FILE", None),
+        ],
         include_dirs=[
             # CUDA toolkit headers (cuda.h, pulled in by ATen CUDA headers).
-            os.path.join(os.environ.get("CUDA_HOME", "/usr/local/cuda"),
-                         "include"),
+            os.path.join(os.environ.get("CUDA_HOME", "/usr/local/cuda"), "include"),
             # pip nccl header (nccl.h): <base>/nvidia/nccl/lib -> .../include
-            *[d[: -len("/lib")] + "/include"
-              for d in lib_dirs if d.endswith("nccl/lib")],
+            *[
+                d[: -len("/lib")] + "/include"
+                for d in lib_dirs
+                if d.endswith("nccl/lib")
+            ],
         ],
         library_dirs=lib_dirs,
         # c10_cuda / torch_cuda come from the external assets; nccl from pip.

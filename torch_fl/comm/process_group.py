@@ -72,29 +72,30 @@ from torch._C import _distributed_c10d as _c10d
 # CPU-torch + external libtorch_cuda scheme work.
 # ---------------------------------------------------------------------------
 
+
 class _VendorProfile:
     __slots__ = ("flagcx_dev", "view", "native")
 
     def __init__(self, flagcx_dev, view, native):
         self.flagcx_dev = flagcx_dev
-        self.view = view          # attr name on torch_fl._C, or None
-        self.native = native      # method name on ProcessGroupFlagOS, or None
+        self.view = view  # attr name on torch_fl._C, or None
+        self.native = native  # method name on ProcessGroupFlagOS, or None
 
 
 # NOTE: `view`/`native` are looked up lazily so importing this module never
 # requires torch_fl._C or a specific backend to be present.
 _VENDOR_PROFILES = {
     # CUDA-ABI vendors: flagos == cuda alias, native fallback is NCCL.
-    "nvidia":  _VendorProfile("cuda", "_flagos_to_cuda_view", "_try_build_nccl"),
-    "metax":   _VendorProfile("cuda", "_flagos_to_cuda_view", "_try_build_nccl"),
+    "nvidia": _VendorProfile("cuda", "_flagos_to_cuda_view", "_try_build_nccl"),
+    "metax": _VendorProfile("cuda", "_flagos_to_cuda_view", "_try_build_nccl"),
     "iluvatar": _VendorProfile("cuda", "_flagos_to_cuda_view", "_try_build_nccl"),
     "kunlunxin": _VendorProfile("cuda", "_flagos_to_cuda_view", "_try_build_nccl"),
-    "du":      _VendorProfile("cuda", "_flagos_to_cuda_view", "_try_build_nccl"),
+    "du": _VendorProfile("cuda", "_flagos_to_cuda_view", "_try_build_nccl"),
     # Ascend: flagos is NOT a cuda alias; native fallback is HCCL. The flagos->
     # npu view is not implemented yet, so only the FlagCX(cann) path is viable.
-    "ascend":  _VendorProfile("cann", None, "_try_build_hccl"),
+    "ascend": _VendorProfile("cann", None, "_try_build_hccl"),
     # MUSA / Cambricon: FlagCX only (no cuda alias, no native fallback wired).
-    "musa":    _VendorProfile("musa", None, None),
+    "musa": _VendorProfile("musa", None, None),
     "cambricon": _VendorProfile("mlu", None, None),
 }
 
@@ -117,6 +118,7 @@ def _get_profile(vendor: str) -> "_VendorProfile":
 # Tensor view helpers
 # ---------------------------------------------------------------------------
 
+
 def _to_comm(t: torch.Tensor, view_fn) -> torch.Tensor:
     """Convert a single tensor for the comm backend if it is on flagos."""
     if t.device.type in ("privateuseone", "flagos"):
@@ -137,6 +139,7 @@ def _tll(tensor_lists, view_fn):
 # ---------------------------------------------------------------------------
 # ProcessGroupFlagOS
 # ---------------------------------------------------------------------------
+
 
 class ProcessGroupFlagOS(dist.ProcessGroup):
     """ProcessGroup backend for flagos (PrivateUse1).
@@ -210,6 +213,7 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
                 f"adaptor that consumes privateuseone tensors natively."
             )
         import torch_fl._C as _C
+
         view_fn = getattr(_C, prof.view, None)
         if view_fn is None:
             raise RuntimeError(
@@ -249,10 +253,14 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
                 return False
         timeout_ms = 0
         if timeout is not None:
-            timeout_ms = int(timeout.total_seconds() * 1000) \
-                if hasattr(timeout, "total_seconds") else int(timeout)
+            timeout_ms = (
+                int(timeout.total_seconds() * 1000)
+                if hasattr(timeout, "total_seconds")
+                else int(timeout)
+            )
         self._inner = _flagos_nccl.make_nccl_backend(
-            store, rank, world_size, timeout_ms, False)
+            store, rank, world_size, timeout_ms, False
+        )
         return True
 
     def _try_build_hccl(self, store, rank, world_size, timeout) -> bool:
@@ -266,11 +274,11 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
         try:
             import torch_npu.distributed  # noqa: F401
         except ImportError:
-            warnings.warn("[ProcessGroupFlagOS] torch_npu not found; cannot "
-                          "use HCCL.")
+            warnings.warn("[ProcessGroupFlagOS] torch_npu not found; cannot use HCCL.")
             return False
-        hccl_cls = getattr(torch.distributed, "ProcessGroupHCCL", None) or \
-            getattr(torch_npu.distributed, "ProcessGroupHCCL", None)
+        hccl_cls = getattr(torch.distributed, "ProcessGroupHCCL", None) or getattr(
+            torch_npu.distributed, "ProcessGroupHCCL", None
+        )
         if hccl_cls is None:
             return False
         self._inner = hccl_cls(store, rank, world_size)
@@ -292,12 +300,15 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
         creator = getattr(flagcx, "createFlagcxBackend", None)
         if creator is None:
             # older builds only expose the class; skip and fall back
-            warnings.warn("[ProcessGroupFlagOS] flagcx present but "
-                          "createFlagcxBackend missing; falling back.")
+            warnings.warn(
+                "[ProcessGroupFlagOS] flagcx present but "
+                "createFlagcxBackend missing; falling back."
+            )
             return False
 
         try:
             from torch._C._distributed_c10d import _DistributedBackendOptions
+
             opts = _DistributedBackendOptions()
             opts.store = store
             opts.group_rank = rank
@@ -313,16 +324,19 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
             # extra Options: enable_tuner / tune_group_idx (see backend_flagcx.cpp).
             # ProcessGroupFlagCX lives on the flagcx module (flagcx._C), not on
             # torch.distributed.
-            pg_cls = getattr(flagcx, "ProcessGroupFlagCX", None) or \
-                getattr(torch.distributed, "ProcessGroupFlagCX", None)
+            pg_cls = getattr(flagcx, "ProcessGroupFlagCX", None) or getattr(
+                torch.distributed, "ProcessGroupFlagCX", None
+            )
             extra_cls = getattr(pg_cls, "Options", None)
             extra = extra_cls() if extra_cls is not None else None
 
             self._inner = creator(opts, extra) if extra is not None else creator(opts)
             return True
         except Exception as e:
-            warnings.warn(f"[ProcessGroupFlagOS] FlagCX init failed ({e}); "
-                          f"falling back to vendor-native backend.")
+            warnings.warn(
+                f"[ProcessGroupFlagOS] FlagCX init failed ({e}); "
+                f"falling back to vendor-native backend."
+            )
             return False
 
     # ------------------------------------------------------------------
@@ -369,8 +383,7 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
             opts,
         )
 
-    def allgather_into_tensor_coalesced(self, output_tensors, input_tensors,
-                                        opts=None):
+    def allgather_into_tensor_coalesced(self, output_tensors, input_tensors, opts=None):
         if opts is None:
             opts = _c10d.AllgatherOptions()
         return self._inner.allgather_into_tensor_coalesced(
@@ -399,8 +412,7 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
             opts,
         )
 
-    def reduce_scatter_tensor_coalesced(self, output_tensors, input_tensors,
-                                        opts=None):
+    def reduce_scatter_tensor_coalesced(self, output_tensors, input_tensors, opts=None):
         if opts is None:
             opts = _c10d.ReduceScatterOptions()
         return self._inner.reduce_scatter_tensor_coalesced(
@@ -418,14 +430,21 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
             opts,
         )
 
-    def alltoall_base(self, output_tensor, input_tensor,
-                      output_split_sizes, input_split_sizes, opts=None):
+    def alltoall_base(
+        self,
+        output_tensor,
+        input_tensor,
+        output_split_sizes,
+        input_split_sizes,
+        opts=None,
+    ):
         if opts is None:
             opts = _c10d.AllToAllOptions()
         return self._inner.alltoall_base(
             _to_comm(output_tensor, self._view_fn),
             _to_comm(input_tensor, self._view_fn),
-            output_split_sizes, input_split_sizes,
+            output_split_sizes,
+            input_split_sizes,
             opts,
         )
 
@@ -473,6 +492,7 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
 # ---------------------------------------------------------------------------
 # Backend creator function + public registration helper
 # ---------------------------------------------------------------------------
+
 
 def _create_flagos_pg(store, rank, world_size, timeout):
     """Creator function called by torch.distributed._new_process_group_helper."""

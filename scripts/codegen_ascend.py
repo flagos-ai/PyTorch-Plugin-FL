@@ -94,257 +94,225 @@ CONF = REPO / "torch_fl/backends_ascend.conf"
 # --------------------------------------------------------------------------
 OPS = {
     # ---- unary: aclnn<Name>(self, out), out = self.shape/dtype ----
-    "sqrt":         ("unary", None),
-    "exp":          ("unary", None),
-    "tanh":         ("unary", None),
-    "sigmoid":      ("unary", None),
-    "reciprocal":   ("unary", None),
-    "log":          ("unary", None),
-    "floor":        ("unary", None),
-    "ceil":         ("unary", None),
-    "erf":          ("unary", None),
-    "erfc":         ("unary", None),
-    "expm1":        ("unary", None),
-    "log2":         ("unary", None),
-    "log10":        ("unary", None),
-    "log1p":        ("unary", None),
-    "round":        ("unary", None),
-    "trunc":        ("unary", None),
-    "frac":         ("unary", None),
-    "sign":         ("unary", None),
-    "relu":         ("unary", None),
-    "cosh":         ("unary", None),
-    "sinh":         ("unary", None),
-    "asin":         ("unary", None),
-    "atan":         ("unary", None),
-    "asinh":        ("unary", None),
-    "acosh":        ("unary", None),
-    "atanh":        ("unary", None),
-    "logical_not":  ("unary", None),
-    "bitwise_not":  ("unary", None),
+    "sqrt": ("unary", None),
+    "exp": ("unary", None),
+    "tanh": ("unary", None),
+    "sigmoid": ("unary", None),
+    "reciprocal": ("unary", None),
+    "log": ("unary", None),
+    "floor": ("unary", None),
+    "ceil": ("unary", None),
+    "erf": ("unary", None),
+    "erfc": ("unary", None),
+    "expm1": ("unary", None),
+    "log2": ("unary", None),
+    "log10": ("unary", None),
+    "log1p": ("unary", None),
+    "round": ("unary", None),
+    "trunc": ("unary", None),
+    "frac": ("unary", None),
+    "sign": ("unary", None),
+    "relu": ("unary", None),
+    "cosh": ("unary", None),
+    "sinh": ("unary", None),
+    "asin": ("unary", None),
+    "atan": ("unary", None),
+    "asinh": ("unary", None),
+    "acosh": ("unary", None),
+    "atanh": ("unary", None),
+    "logical_not": ("unary", None),
+    "bitwise_not": ("unary", None),
     # migrated from handwritten seed kernels (bodies were identical to T_UNARY):
-    "abs":          ("unary", None),
-    "acos":         ("unary", None),
-    "cos":          ("unary", None),
-    "sin":          ("unary", None),
-    "neg":          ("unary", None),
-    "rsqrt":        ("unary", None),
-    "silu":         ("unary", None),
-
+    "abs": ("unary", None),
+    "acos": ("unary", None),
+    "cos": ("unary", None),
+    "sin": ("unary", None),
+    "neg": ("unary", None),
+    "rsqrt": ("unary", None),
+    "silu": ("unary", None),
     # ---- binary: aclnn<Name>(self, other, out), broadcast, preserve dtype ----
-    "div.Tensor":         ("binary", "Div"),
+    "div.Tensor": ("binary", "Div"),
     # migrated from handwritten seeds:
-    "mul.Tensor":         ("binary", "Mul"),
+    "mul.Tensor": ("binary", "Mul"),
     "bitwise_and.Tensor": ("binary", "BitwiseAndTensor"),
-    "pow.Tensor_Tensor":  ("binary", "PowTensorTensor"),
-    "atan2":              ("binary", None),
-    "maximum":            ("binary", None),
-    "minimum":            ("binary", None),
-    "bitwise_or.Tensor":  ("binary", "BitwiseOrTensor"),
+    "pow.Tensor_Tensor": ("binary", "PowTensorTensor"),
+    "atan2": ("binary", None),
+    "maximum": ("binary", None),
+    "minimum": ("binary", None),
+    "bitwise_or.Tensor": ("binary", "BitwiseOrTensor"),
     "bitwise_xor.Tensor": ("binary", "BitwiseXorTensor"),
-
     # ---- binary_alpha: aclnn<Name>(self, other, alpha, out) ----
-    "sub.Tensor":         ("binary_alpha", "Sub"),
-    "add.Tensor":         ("binary_alpha", "Add"),   # migrated seed
-
+    "sub.Tensor": ("binary_alpha", "Sub"),
+    "add.Tensor": ("binary_alpha", "Add"),  # migrated seed
     # ---- binary_scalar: aclnn<Name>(self, scalar, out), no alpha (migrated seeds) ----
-    "mul.Scalar":         ("binary_scalar", "Muls"),
-    "div.Scalar":         ("binary_scalar", "Divs"),
-
+    "mul.Scalar": ("binary_scalar", "Muls"),
+    "div.Scalar": ("binary_scalar", "Divs"),
     # ---- binary_cmp: bool out ----
-    "eq.Tensor":          ("binary_cmp", "EqTensor"),
-    "ne.Tensor":          ("binary_cmp", "NeTensor"),
-    "gt.Tensor":          ("binary_cmp", "GtTensor"),
-    "lt.Tensor":          ("binary_cmp", "LtTensor"),
-    "ge.Tensor":          ("binary_cmp", "GeTensor"),
-    "logical_and":        ("binary_cmp", None),
-    "logical_or":         ("binary_cmp", None),
-
+    "eq.Tensor": ("binary_cmp", "EqTensor"),
+    "ne.Tensor": ("binary_cmp", "NeTensor"),
+    "gt.Tensor": ("binary_cmp", "GtTensor"),
+    "lt.Tensor": ("binary_cmp", "LtTensor"),
+    "ge.Tensor": ("binary_cmp", "GeTensor"),
+    "logical_and": ("binary_cmp", None),
+    "logical_or": ("binary_cmp", None),
     # ---- binary_scalar_alpha: aclnn<Name>s(self, other, alpha, out) ----
-    "add.Scalar":         ("binary_scalar_alpha", "Adds"),
-    "sub.Scalar":         ("binary_scalar_alpha", "Subs"),
-
+    "add.Scalar": ("binary_scalar_alpha", "Adds"),
+    "sub.Scalar": ("binary_scalar_alpha", "Subs"),
     # ---- binary_scalar_cmp: bool out, aclnn<Name>(self, other, out) ----
-    "eq.Scalar":          ("binary_scalar_cmp", "EqScalar"),
-    "ne.Scalar":          ("binary_scalar_cmp", "NeScalar"),
-    "gt.Scalar":          ("binary_scalar_cmp", "GtScalar"),
-    "lt.Scalar":          ("binary_scalar_cmp", "LtScalar"),
-    "ge.Scalar":          ("binary_scalar_cmp", "GeScalar"),
-    "le.Scalar":          ("binary_scalar_cmp", "LeScalar"),
-
+    "eq.Scalar": ("binary_scalar_cmp", "EqScalar"),
+    "ne.Scalar": ("binary_scalar_cmp", "NeScalar"),
+    "gt.Scalar": ("binary_scalar_cmp", "GtScalar"),
+    "lt.Scalar": ("binary_scalar_cmp", "LtScalar"),
+    "ge.Scalar": ("binary_scalar_cmp", "GeScalar"),
+    "le.Scalar": ("binary_scalar_cmp", "LeScalar"),
     # ---- reduce_dims: (Tensor, IntArrayRef dim, bool keepdim), same dtype ----
-    "amax":               ("reduce_dims", None),
-    "amin":               ("reduce_dims", None),
-
+    "amax": ("reduce_dims", None),
+    "amin": ("reduce_dims", None),
     # ---- reduce_dim_bool: (Tensor, int64_t dim, bool keepdim), bool out ----
-    "any.dim":            ("reduce_dim_bool", "Any"),
-
+    "any.dim": ("reduce_dim_bool", "Any"),
     # ---- cumsum: (Tensor, int64_t dim, optional<ScalarType> dtype) ----
-    "cumsum":             ("cumsum", None),
-
+    "cumsum": ("cumsum", None),
     # ---- cumprod: like cumsum but aclnn takes dim as aclScalar*, not int64_t ----
-    "cumprod":            ("cumprod", None),
-
+    "cumprod": ("cumprod", None),
     # ---- unary_bool: (Tensor) -> bool out ----
-    "isinf":              ("unary_bool", "IsInf"),
-
+    "isinf": ("unary_bool", "IsInf"),
     # ---- unary_scalar: (Tensor, Scalar) -> same shape ----
-    "leaky_relu":         ("unary_scalar", None),
-    "clamp_min":          ("unary_scalar", None),
-    "clamp_max":          ("unary_scalar", None),
-    "fmod.Scalar":        ("unary_scalar", "FmodScalar"),
-    "pow.Tensor_Scalar":  ("unary_scalar", "PowTensorScalar"),   # migrated seed
-
+    "leaky_relu": ("unary_scalar", None),
+    "clamp_min": ("unary_scalar", None),
+    "clamp_max": ("unary_scalar", None),
+    "fmod.Scalar": ("unary_scalar", "FmodScalar"),
+    "pow.Tensor_Scalar": ("unary_scalar", "PowTensorScalar"),  # migrated seed
     # ---- unary_two_scalar: (Tensor, Scalar, Scalar) -> same shape ----
-    "softplus":           ("unary_two_scalar", None),
-    "threshold":          ("unary_two_scalar", None),
-
+    "softplus": ("unary_two_scalar", None),
+    "threshold": ("unary_two_scalar", None),
     # ---- unary_int: (Tensor, int64_t) -> same shape ----
-    "tril":               ("unary_int", None),
-    "triu":               ("unary_int", None),
-
+    "tril": ("unary_int", None),
+    "triu": ("unary_int", None),
     # ---- unary_dims: (Tensor, IntArrayRef) -> same shape ----
-    "flip":               ("unary_dims", None),
-
+    "flip": ("unary_dims", None),
     # ---- addcmul: (self, t1, t2, Scalar value) -> broadcast ----
-    "addcmul":            ("addcmul", None),
-    "addcdiv":            ("addcmul", None),
-
+    "addcmul": ("addcmul", None),
+    "addcdiv": ("addcmul", None),
     # ---- binary (tensor-tensor, preserve dtype) additions ----
-    "fmod.Tensor":        ("binary", "FmodTensor"),
-    "floor_divide":       ("binary", None),
-    "logical_xor":        ("binary_cmp", None),
-
+    "fmod.Tensor": ("binary", "FmodTensor"),
+    "floor_divide": ("binary", None),
+    "logical_xor": ("binary_cmp", None),
     # ---- act_backward: (grad_output, output) -> grad_input ----
-    "tanh_backward":      ("act_backward", None),
-    "sigmoid_backward":   ("act_backward", None),
-
+    "tanh_backward": ("act_backward", None),
+    "sigmoid_backward": ("act_backward", None),
     # ---- threshold_backward: (grad_output, self, Scalar threshold) ----
     "threshold_backward": ("threshold_backward", None),
-
     # ---- pow_scalar_tensor: (Scalar self, Tensor exponent) ----
-    "pow.Scalar":         ("pow_scalar_tensor", "PowScalarTensor"),
-
+    "pow.Scalar": ("pow_scalar_tensor", "PowScalarTensor"),
     # ---- reduce_max_dim: (Tensor, int64_t dim, bool keepdim) -> (values, indices) ----
-    "max.dim":            ("reduce_max_dim", "MaxDim"),
-    "min.dim":            ("reduce_max_dim", "MinDim"),
-
+    "max.dim": ("reduce_max_dim", "MaxDim"),
+    "min.dim": ("reduce_max_dim", "MinDim"),
     # ---- more unary_scalar activations ----
-    "celu":               ("unary_scalar", None),
-    "softshrink":         ("unary_scalar", None),
-    "hardshrink":         ("unary_scalar", None),
-
+    "celu": ("unary_scalar", None),
+    "softshrink": ("unary_scalar", None),
+    "hardshrink": ("unary_scalar", None),
     # ---- more unary_two_scalar (min/max clip) ----
-    "hardtanh":           ("unary_two_scalar", None),
-
+    "hardtanh": ("unary_two_scalar", None),
     # ---- elu: (Tensor, alpha, scale, input_scale) ----
-    "elu":                ("elu", None),
-
+    "elu": ("elu", None),
     # ---- loss: (self, target, reduction) -> scalar/elementwise ----
-    "mse_loss":           ("loss", "MseLoss"),
+    "mse_loss": ("loss", "MseLoss"),
     # smooth_l1_loss/l1_loss(*): smooth_l1 needs a by-value `float beta`. The
     # EXEC_ASCEND_CMD macro calls the aclnn entry through a variadic
     # `int(*)(...)` pointer; on AArch64 a by-value float passed through varargs
     # is promoted to double and lands in the wrong register class, so aclnn
     # reads beta as 0 (result collapses to pure L1). Left long-tail until the
     # macro grows a typed-call path for by-value floats.
-
     # ---- cummax/cummin: (Tensor, dim) -> tuple(values, indices) ----
-    "cummax":             ("cummax_cummin", "Cummax"),
-    "cummin":             ("cummax_cummin", "Cummin"),
-
+    "cummax": ("cummax_cummin", "Cummax"),
+    "cummin": ("cummax_cummin", "Cummin"),
     # ---- aminmax: (Tensor, optional dim, keepdim) -> tuple(min, max) ----
-    "aminmax":            ("aminmax", "Aminmax"),
-
+    "aminmax": ("aminmax", "Aminmax"),
     # ---- prod: (Tensor, optional dtype) -> scalar ----
-    "prod":               ("prod", "Prod"),
-
+    "prod": ("prod", "Prod"),
     # ---- gemm family (cubeMathType) ----
     # mm/bmm: functional + .out variants. aclnn mm=aclnnMm, bmm=aclnnBatchMatMul.
     #   The .out variant is a generic codegen capability (any op whose .out kernel
     #   just writes into a caller-shaped out& can reuse T_MATMUL_OUT-style pairs).
-    "mm":                 ("matmul", "Mm"),
-    "mm.out":             ("matmul_out", "Mm"),
-    "bmm":                ("matmul", "BatchMatMul"),
-    "bmm.out":            ("matmul_out", "BatchMatMul"),
+    "mm": ("matmul", "Mm"),
+    "mm.out": ("matmul_out", "Mm"),
+    "bmm": ("matmul", "BatchMatMul"),
+    "bmm.out": ("matmul_out", "BatchMatMul"),
     # cat: TensorList concat (aclCreateTensorList).
-    "cat":                ("cat", "Cat"),
+    "cat": ("cat", "Cat"),
     # factory ops: at::empty + device-side zero_/fill_ (no direct aclnn call).
-    "zeros":              ("zeros", None),
-    "scalar_tensor":      ("scalar_tensor", None),
-    "ones_like":          ("ones_like", None),
-    "new_ones":           ("new_ones", None),
-    "addmm":              ("gemm_addmm", "Addmm"),
-    "baddbmm":            ("gemm_baddbmm", "Baddbmm"),
-    "mv":                 ("mv", "Mv"),
-    "dot":                ("dot", "Dot"),
+    "zeros": ("zeros", None),
+    "scalar_tensor": ("scalar_tensor", None),
+    "ones_like": ("ones_like", None),
+    "new_ones": ("new_ones", None),
+    "addmm": ("gemm_addmm", "Addmm"),
+    "baddbmm": ("gemm_baddbmm", "Baddbmm"),
+    "mv": ("mv", "Mv"),
+    "dot": ("dot", "Dot"),
     # addmv: mat(n,m) x vec(m) -> (n,); aclnn arg order is (self,mat,vec,ALPHA,BETA).
-    "addmv":              ("gemm_addmv", "Addmv"),
+    "addmv": ("gemm_addmv", "Addmv"),
     # addr: outer(vec1(n), vec2(m)) -> (n,m); no cubeMathType.
-    "addr":               ("gemm_addr", "Addr"),
+    "addr": ("gemm_addr", "Addr"),
     # NOTE addbmm left out: hf32 cube accumulation over the batch dim inflates
     #   rel-err to ~1e-2 (single addmm is ~1e-4).
-
     # ---- CNN training closure: pool bwd + batch norm ----
-    "max_pool2d_with_indices_backward": ("max_pool2d_indices_backward", "MaxPool2dWithIndicesBackward"),
-    "native_batch_norm":          ("native_batch_norm", "BatchNorm"),
+    "max_pool2d_with_indices_backward": (
+        "max_pool2d_indices_backward",
+        "MaxPool2dWithIndicesBackward",
+    ),
+    "native_batch_norm": ("native_batch_norm", "BatchNorm"),
     "native_batch_norm_backward": ("native_batch_norm_backward", "BatchNormBackward"),
-    "avg_pool2d_backward":            ("avg_pool2d_backward", "AvgPool2dBackward"),
-    "_adaptive_avg_pool2d_backward":  ("adaptive_avg_pool2d_backward", "AdaptiveAvgPool2dBackward"),
-    "native_layer_norm_backward":     ("native_layer_norm_backward", "LayerNormBackward"),
-    "native_group_norm_backward":     ("native_group_norm_backward", "GroupNormBackward"),
-
+    "avg_pool2d_backward": ("avg_pool2d_backward", "AvgPool2dBackward"),
+    "_adaptive_avg_pool2d_backward": (
+        "adaptive_avg_pool2d_backward",
+        "AdaptiveAvgPool2dBackward",
+    ),
+    "native_layer_norm_backward": ("native_layer_norm_backward", "LayerNormBackward"),
+    "native_group_norm_backward": ("native_group_norm_backward", "GroupNormBackward"),
     # ---- Transformer indexing / masking (aclnn masked_fill is INPLACE-only) ----
-    "masked_fill.Scalar":  ("masked_fill_scalar", "InplaceMaskedFillScalar"),
-    "masked_fill.Tensor":  ("masked_fill_tensor", "InplaceMaskedFillTensor"),
-    "gather":              ("gather", "Gather"),
-    "index_select":        ("index_select", "IndexSelect"),
-
+    "masked_fill.Scalar": ("masked_fill_scalar", "InplaceMaskedFillScalar"),
+    "masked_fill.Tensor": ("masked_fill_tensor", "InplaceMaskedFillTensor"),
+    "gather": ("gather", "Gather"),
+    "index_select": ("index_select", "IndexSelect"),
     # ---- in-place zero/fill (aclnn Inplace* ops); device-side, no h2d.
     #   Factory ops (zeros/ones_like/new_ones/scalar_tensor) call these. ----
-    "zero_":               ("inplace_zero", "InplaceZero"),
-    "fill_.Scalar":        ("inplace_fill_scalar", "InplaceFillScalar"),
-    "fill_.Tensor":        ("inplace_fill_tensor", "InplaceFillTensor"),
-
+    "zero_": ("inplace_zero", "InplaceZero"),
+    "fill_.Scalar": ("inplace_fill_scalar", "InplaceFillScalar"),
+    "fill_.Tensor": ("inplace_fill_tensor", "InplaceFillTensor"),
     # ---- embedding + pad (single-aclnn-call, migrated from handwritten) ----
-    "embedding":               ("embedding", "Embedding"),
+    "embedding": ("embedding", "Embedding"),
     "embedding_dense_backward": ("embedding_dense_backward", "EmbeddingDenseBackward"),
-    "constant_pad_nd":         ("constant_pad_nd", "ConstantPadNd"),
-
+    "constant_pad_nd": ("constant_pad_nd", "ConstantPadNd"),
     # ---- BCE loss family: optional weight, int reduction (0=none/1=mean/2=sum) ----
-    "binary_cross_entropy":              ("bce", "BinaryCrossEntropy"),
-    "binary_cross_entropy_backward":     ("bce_backward", "BinaryCrossEntropyBackward"),
-    "binary_cross_entropy_with_logits":  ("bce_logits", "BinaryCrossEntropyWithLogits"),
-
+    "binary_cross_entropy": ("bce", "BinaryCrossEntropy"),
+    "binary_cross_entropy_backward": ("bce_backward", "BinaryCrossEntropyBackward"),
+    "binary_cross_entropy_with_logits": ("bce_logits", "BinaryCrossEntropyWithLogits"),
     # ---- norm family: tuple(out, mean, rstd), optional weight/bias ----
-    "native_layer_norm":  ("layer_norm", "LayerNorm"),
-    "native_group_norm":  ("group_norm", "GroupNorm"),
-
+    "native_layer_norm": ("layer_norm", "LayerNorm"),
+    "native_group_norm": ("group_norm", "GroupNorm"),
     # ---- gelu / softmax family (transformer backbone, fwd + bwd) ----
     # gelu: v1 aclnnGelu hardcodes tanh; use V2 (int64 approximate 0=none/1=tanh)
     # to honor PyTorch's default approximate="none" (erf form).
-    "gelu":                       ("gelu", "GeluV2"),
-    "gelu_backward":              ("gelu_backward", "GeluBackwardV2"),
+    "gelu": ("gelu", "GeluV2"),
+    "gelu_backward": ("gelu_backward", "GeluBackwardV2"),
     # _log_softmax mirrors handwritten softmax.cc (aclnnLogSoftmax(self,dim,out)).
-    "_log_softmax":               ("log_softmax", "LogSoftmax"),
+    "_log_softmax": ("log_softmax", "LogSoftmax"),
     # backward: aclnn names lack the aten "_data" suffix.
-    "_softmax_backward_data":     ("softmax_backward", "SoftmaxBackward"),
+    "_softmax_backward_data": ("softmax_backward", "SoftmaxBackward"),
     "_log_softmax_backward_data": ("softmax_backward", "LogSoftmaxBackward"),
-
     # ---- migrated seeds needing dedicated categories ----
-    "silu_backward":      ("act_backward_self", "SiluBackward"),
-    "where.self":         ("where", "SWhere"),
-    "_softmax":           ("softmax_fwd", "Softmax"),
-    "all":                ("reduce_all", "All"),
-    "sum.dim_IntList":    ("reduce_sum_dtype", "ReduceSum"),
-    "mean.dim":           ("reduce_mean_dtype", "MeanV2"),
-
+    "silu_backward": ("act_backward_self", "SiluBackward"),
+    "where.self": ("where", "SWhere"),
+    "_softmax": ("softmax_fwd", "Softmax"),
+    "all": ("reduce_all", "All"),
+    "sum.dim_IntList": ("reduce_sum_dtype", "ReduceSum"),
+    "mean.dim": ("reduce_mean_dtype", "MeanV2"),
     # ---- conv/pool family (each carries an output-shape formula) ----
-    "_adaptive_avg_pool2d":     ("adaptive_avg_pool2d", "AdaptiveAvgPool2d"),
-    "avg_pool2d":               ("avg_pool2d", "AvgPool2d"),
-    "max_pool2d_with_indices":  ("max_pool2d_indices", "MaxPool2dWithIndices"),
-    "convolution":              ("convolution", "Convolution"),
-    "convolution_backward":     ("convolution_backward", "ConvolutionBackward"),
+    "_adaptive_avg_pool2d": ("adaptive_avg_pool2d", "AdaptiveAvgPool2d"),
+    "avg_pool2d": ("avg_pool2d", "AvgPool2d"),
+    "max_pool2d_with_indices": ("max_pool2d_indices", "MaxPool2dWithIndices"),
+    "convolution": ("convolution", "Convolution"),
+    "convolution_backward": ("convolution_backward", "ConvolutionBackward"),
 }
 
 # Ops with a handwritten kAscend kernel — never regenerate (double-register).
@@ -396,9 +364,12 @@ _BINARY_PROLOGUE = """\
   auto other_b = other_c.expand(out_shape).contiguous();
 """
 
-T_BINARY = """\
+T_BINARY = (
+    """\
 at::Tensor {kernel}(const at::Tensor& self, const at::Tensor& other) {{
-""" + _BINARY_PROLOGUE + """\
+"""
+    + _BINARY_PROLOGUE
+    + """\
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       out_shape, self.options());
 
@@ -412,10 +383,14 @@ at::Tensor {kernel}(const at::Tensor& self, const at::Tensor& other) {{
 
 REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
 """
+)
 
-T_BINARY_ALPHA = """\
+T_BINARY_ALPHA = (
+    """\
 at::Tensor {kernel}(const at::Tensor& self, const at::Tensor& other, const at::Scalar& alpha) {{
-""" + _BINARY_PROLOGUE + """\
+"""
+    + _BINARY_PROLOGUE
+    + """\
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       out_shape, self.options());
 
@@ -430,10 +405,14 @@ at::Tensor {kernel}(const at::Tensor& self, const at::Tensor& other, const at::S
 
 REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
 """
+)
 
-T_BINARY_CMP = """\
+T_BINARY_CMP = (
+    """\
 at::Tensor {kernel}(const at::Tensor& self, const at::Tensor& other) {{
-""" + _BINARY_PROLOGUE + """\
+"""
+    + _BINARY_PROLOGUE
+    + """\
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       out_shape, self.options().dtype(at::kBool));
 
@@ -447,6 +426,7 @@ at::Tensor {kernel}(const at::Tensor& self, const at::Tensor& other) {{
 
 REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
 """
+)
 
 T_BINARY_SCALAR_ALPHA = """\
 at::Tensor {kernel}(const at::Tensor& self, const at::Scalar& other, const at::Scalar& alpha) {{
@@ -508,9 +488,12 @@ _REDUCE_DIMS_PROLOGUE = """\
 
 # reduce_dims: (Tensor, IntArrayRef dim, bool keepdim) -> reduced, same dtype.
 #   aclnn<Name>(self, dim, keepdim, out)   e.g. amax/amin
-T_REDUCE_DIMS = """\
+T_REDUCE_DIMS = (
+    """\
 at::Tensor {kernel}(const at::Tensor& self, at::IntArrayRef dim, bool keepdim) {{
-""" + _REDUCE_DIMS_PROLOGUE + """\
+"""
+    + _REDUCE_DIMS_PROLOGUE
+    + """\
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       out_shape, self.options());
 
@@ -524,6 +507,7 @@ at::Tensor {kernel}(const at::Tensor& self, at::IntArrayRef dim, bool keepdim) {
 
 REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
 """
+)
 
 # reduce_dim_bool: (Tensor, int64_t dim, bool keepdim) -> bool out.
 #   aclnn<Name>(self, dim_list, keepdim, out)   e.g. any.dim
@@ -1601,9 +1585,12 @@ _REDUCE_DTYPE_PROLOGUE = """\
 
 # reduce_sum_dtype: sum.dim_IntList(self, int[]? dim, keepdim, ScalarType? dtype).
 #   aclnnReduceSum(self, dims, keepdim, aclDataType, out)
-T_REDUCE_SUM_DTYPE = """\
+T_REDUCE_SUM_DTYPE = (
+    """\
 at::Tensor {kernel}(const at::Tensor& self, at::OptionalIntArrayRef dim, bool keepdim, std::optional<at::ScalarType> dtype) {{
-""" + _REDUCE_DTYPE_PROLOGUE + """\
+"""
+    + _REDUCE_DTYPE_PROLOGUE
+    + """\
   aclDataType acl_dtype = ascend::ToAclDataType(out_dtype);
 
   EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_dim.get(), keepdim, acl_dtype, acl_out.get());
@@ -1612,12 +1599,16 @@ at::Tensor {kernel}(const at::Tensor& self, at::OptionalIntArrayRef dim, bool ke
 
 REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
 """
+)
 
 # reduce_mean_dtype: mean.dim(self, int[]? dim, keepdim, ScalarType? dtype).
 #   aclnnMeanV2(self, dims, keepdim, int32 dtype, out)  -- MeanV2 for CANN 8.5.
-T_REDUCE_MEAN_DTYPE = """\
+T_REDUCE_MEAN_DTYPE = (
+    """\
 at::Tensor {kernel}(const at::Tensor& self, at::OptionalIntArrayRef dim, bool keepdim, std::optional<at::ScalarType> dtype) {{
-""" + _REDUCE_DTYPE_PROLOGUE + """\
+"""
+    + _REDUCE_DTYPE_PROLOGUE
+    + """\
   auto acl_dtype = static_cast<int32_t>(ascend::ToAclDataType(out_dtype));
 
   EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_dim.get(), keepdim, acl_dtype, acl_out.get());
@@ -1626,6 +1617,7 @@ at::Tensor {kernel}(const at::Tensor& self, at::OptionalIntArrayRef dim, bool ke
 
 REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
 """
+)
 
 # ==========================================================================
 # conv / pool family. These need an explicit output-shape formula (aclnn wants
@@ -1672,13 +1664,16 @@ REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
 # avg_pool2d: (self, kernel_size, stride, padding, ceil_mode, count_include_pad,
 #   divisor_override) -> Tensor. stride defaults to kernel_size when empty.
 #   aclnnAvgPool2d(self, k, s, p, ceil, countPad, divOverride, cubeMathType, out).
-T_AVG_POOL2D = """\
+T_AVG_POOL2D = (
+    """\
 at::Tensor {kernel}(const at::Tensor& self, at::IntArrayRef kernel_size, at::IntArrayRef stride, at::IntArrayRef padding, bool ceil_mode, bool count_include_pad, ::std::optional<int64_t> divisor_override) {{
   namespace ascend = at::native::flagos::ascend;
   std::vector<int64_t> k(kernel_size.begin(), kernel_size.end());
   std::vector<int64_t> s = stride.empty() ? k : std::vector<int64_t>(stride.begin(), stride.end());
   std::vector<int64_t> p(padding.begin(), padding.end());
-""" + _POOL_OUT_DIM + """\
+"""
+    + _POOL_OUT_DIM
+    + """\
   auto out_shape = self.sizes().vec();
   int64_t r = out_shape.size();
   out_shape[r - 2] = pool_out_dim(self.size(r - 2), k[0], s[0], p[0], 1, ceil_mode);
@@ -1702,18 +1697,22 @@ at::Tensor {kernel}(const at::Tensor& self, at::IntArrayRef kernel_size, at::Int
 
 REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
 """
+)
 
 # max_pool2d_with_indices: (self, k, stride, padding, dilation, ceil_mode) ->
 #   tuple(out, int64 indices). stride defaults to kernel_size when empty.
 #   aclnn<Name>(self, k, s, p, dil, ceil, out, indices).
-T_MAX_POOL2D_INDICES = """\
+T_MAX_POOL2D_INDICES = (
+    """\
 ::std::tuple<at::Tensor, at::Tensor> {kernel}(const at::Tensor& self, at::IntArrayRef kernel_size, at::IntArrayRef stride, at::IntArrayRef padding, at::IntArrayRef dilation, bool ceil_mode) {{
   namespace ascend = at::native::flagos::ascend;
   std::vector<int64_t> k(kernel_size.begin(), kernel_size.end());
   std::vector<int64_t> s = stride.empty() ? k : std::vector<int64_t>(stride.begin(), stride.end());
   std::vector<int64_t> p(padding.begin(), padding.end());
   std::vector<int64_t> dil(dilation.begin(), dilation.end());
-""" + _POOL_OUT_DIM + """\
+"""
+    + _POOL_OUT_DIM
+    + """\
   auto out_shape = self.sizes().vec();
   int64_t r = out_shape.size();
   out_shape[r - 2] = pool_out_dim(self.size(r - 2), k[0], s[0], p[0], dil[0], ceil_mode);
@@ -1739,6 +1738,7 @@ T_MAX_POOL2D_INDICES = """\
 
 REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
 """
+)
 
 # masked_fill.Scalar: (self, mask, value) -> Tensor (= self broadcast mask).
 #   aclnn only ships the INPLACE variant (aclnnInplaceMaskedFillScalar), so
@@ -2290,82 +2290,82 @@ REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
 """
 
 CATEGORIES = {
-    "unary":               T_UNARY,
-    "binary":              T_BINARY,
-    "binary_alpha":        T_BINARY_ALPHA,
-    "binary_cmp":          T_BINARY_CMP,
+    "unary": T_UNARY,
+    "binary": T_BINARY,
+    "binary_alpha": T_BINARY_ALPHA,
+    "binary_cmp": T_BINARY_CMP,
     "binary_scalar_alpha": T_BINARY_SCALAR_ALPHA,
-    "binary_scalar_cmp":   T_BINARY_SCALAR_CMP,
-    "reduce_dims":         T_REDUCE_DIMS,
-    "reduce_dim_bool":     T_REDUCE_DIM_BOOL,
-    "cumsum":              T_CUMSUM,
-    "cumprod":             T_CUMPROD,
-    "unary_bool":          T_UNARY_BOOL,
-    "unary_scalar":        T_UNARY_SCALAR,
-    "unary_two_scalar":    T_UNARY_TWO_SCALAR,
-    "unary_int":           T_UNARY_INT,
-    "unary_dims":          T_UNARY_DIMS,
-    "addcmul":             T_ADDCMUL,
-    "act_backward":        T_ACT_BACKWARD,
-    "threshold_backward":  T_THRESHOLD_BACKWARD,
-    "pow_scalar_tensor":   T_POW_SCALAR_TENSOR,
-    "reduce_max_dim":      T_REDUCE_MAX_DIM,
-    "elu":                 T_ELU,
-    "loss":                T_LOSS,
-    "cummax_cummin":       T_CUMMAX_CUMMIN,
-    "aminmax":             T_AMINMAX,
-    "prod":                T_PROD,
-    "gemm_addmm":          T_GEMM_ADDMM,
-    "gemm_baddbmm":        T_GEMM_BADDBMM,
-    "gemm_addmv":          T_GEMM_ADDMV,
-    "gemm_addr":           T_GEMM_ADDR,
-    "matmul":              T_MATMUL,
-    "matmul_out":          T_MATMUL_OUT,
-    "cat":                 T_CAT,
-    "mv":                  T_MV,
-    "dot":                 T_DOT,
-    "bce":                 T_BCE,
-    "bce_backward":        T_BCE_BACKWARD,
-    "bce_logits":          T_BCE_LOGITS,
-    "layer_norm":          T_LAYER_NORM,
-    "group_norm":          T_GROUP_NORM,
-    "gelu":                T_GELU,
-    "gelu_backward":       T_GELU_BACKWARD,
-    "log_softmax":         T_LOG_SOFTMAX,
-    "softmax_backward":    T_SOFTMAX_BACKWARD,
-    "binary_scalar":       T_BINARY_SCALAR,
-    "act_backward_self":   T_ACT_BACKWARD_SELF,
-    "where":               T_WHERE,
-    "softmax_fwd":         T_SOFTMAX_FWD,
-    "reduce_all":          T_REDUCE_ALL,
-    "reduce_sum_dtype":    T_REDUCE_SUM_DTYPE,
-    "reduce_mean_dtype":   T_REDUCE_MEAN_DTYPE,
+    "binary_scalar_cmp": T_BINARY_SCALAR_CMP,
+    "reduce_dims": T_REDUCE_DIMS,
+    "reduce_dim_bool": T_REDUCE_DIM_BOOL,
+    "cumsum": T_CUMSUM,
+    "cumprod": T_CUMPROD,
+    "unary_bool": T_UNARY_BOOL,
+    "unary_scalar": T_UNARY_SCALAR,
+    "unary_two_scalar": T_UNARY_TWO_SCALAR,
+    "unary_int": T_UNARY_INT,
+    "unary_dims": T_UNARY_DIMS,
+    "addcmul": T_ADDCMUL,
+    "act_backward": T_ACT_BACKWARD,
+    "threshold_backward": T_THRESHOLD_BACKWARD,
+    "pow_scalar_tensor": T_POW_SCALAR_TENSOR,
+    "reduce_max_dim": T_REDUCE_MAX_DIM,
+    "elu": T_ELU,
+    "loss": T_LOSS,
+    "cummax_cummin": T_CUMMAX_CUMMIN,
+    "aminmax": T_AMINMAX,
+    "prod": T_PROD,
+    "gemm_addmm": T_GEMM_ADDMM,
+    "gemm_baddbmm": T_GEMM_BADDBMM,
+    "gemm_addmv": T_GEMM_ADDMV,
+    "gemm_addr": T_GEMM_ADDR,
+    "matmul": T_MATMUL,
+    "matmul_out": T_MATMUL_OUT,
+    "cat": T_CAT,
+    "mv": T_MV,
+    "dot": T_DOT,
+    "bce": T_BCE,
+    "bce_backward": T_BCE_BACKWARD,
+    "bce_logits": T_BCE_LOGITS,
+    "layer_norm": T_LAYER_NORM,
+    "group_norm": T_GROUP_NORM,
+    "gelu": T_GELU,
+    "gelu_backward": T_GELU_BACKWARD,
+    "log_softmax": T_LOG_SOFTMAX,
+    "softmax_backward": T_SOFTMAX_BACKWARD,
+    "binary_scalar": T_BINARY_SCALAR,
+    "act_backward_self": T_ACT_BACKWARD_SELF,
+    "where": T_WHERE,
+    "softmax_fwd": T_SOFTMAX_FWD,
+    "reduce_all": T_REDUCE_ALL,
+    "reduce_sum_dtype": T_REDUCE_SUM_DTYPE,
+    "reduce_mean_dtype": T_REDUCE_MEAN_DTYPE,
     "adaptive_avg_pool2d": T_ADAPTIVE_AVG_POOL2D,
-    "avg_pool2d":          T_AVG_POOL2D,
-    "max_pool2d_indices":  T_MAX_POOL2D_INDICES,
-    "convolution":         T_CONVOLUTION,
+    "avg_pool2d": T_AVG_POOL2D,
+    "max_pool2d_indices": T_MAX_POOL2D_INDICES,
+    "convolution": T_CONVOLUTION,
     "convolution_backward": T_CONVOLUTION_BACKWARD,
     "max_pool2d_indices_backward": T_MAX_POOL2D_INDICES_BACKWARD,
-    "native_batch_norm":   T_NATIVE_BATCH_NORM,
+    "native_batch_norm": T_NATIVE_BATCH_NORM,
     "native_batch_norm_backward": T_NATIVE_BATCH_NORM_BACKWARD,
     "avg_pool2d_backward": T_AVG_POOL2D_BACKWARD,
     "adaptive_avg_pool2d_backward": T_ADAPTIVE_AVG_POOL2D_BACKWARD,
     "native_layer_norm_backward": T_NATIVE_LAYER_NORM_BACKWARD,
     "native_group_norm_backward": T_NATIVE_GROUP_NORM_BACKWARD,
-    "masked_fill_scalar":  T_MASKED_FILL_SCALAR,
-    "masked_fill_tensor":  T_MASKED_FILL_TENSOR,
-    "gather":              T_GATHER,
-    "index_select":        T_INDEX_SELECT,
-    "inplace_zero":        T_INPLACE_ZERO,
+    "masked_fill_scalar": T_MASKED_FILL_SCALAR,
+    "masked_fill_tensor": T_MASKED_FILL_TENSOR,
+    "gather": T_GATHER,
+    "index_select": T_INDEX_SELECT,
+    "inplace_zero": T_INPLACE_ZERO,
     "inplace_fill_scalar": T_INPLACE_FILL_SCALAR,
     "inplace_fill_tensor": T_INPLACE_FILL_TENSOR,
-    "embedding":           T_EMBEDDING,
+    "embedding": T_EMBEDDING,
     "embedding_dense_backward": T_EMBEDDING_DENSE_BACKWARD,
-    "constant_pad_nd":     T_CONSTANT_PAD_ND,
-    "zeros":               T_ZEROS,
-    "scalar_tensor":       T_SCALAR_TENSOR,
-    "ones_like":           T_ONES_LIKE,
-    "new_ones":            T_NEW_ONES,
+    "constant_pad_nd": T_CONSTANT_PAD_ND,
+    "zeros": T_ZEROS,
+    "scalar_tensor": T_SCALAR_TENSOR,
+    "ones_like": T_ONES_LIKE,
+    "new_ones": T_NEW_ONES,
 }
 
 # Categories whose kernels do NOT issue a direct aclnn call (they build tensors
@@ -2427,18 +2427,24 @@ def symbols(lib: Path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--category", default="all",
-                    choices=["all"] + list(CATEGORIES),
-                    help="restrict generation to one category (default: all)")
-    ap.add_argument("--no-conf", action="store_true",
-                    help="do not append covered ops to backends_ascend.conf")
+    ap.add_argument(
+        "--category",
+        default="all",
+        choices=["all"] + list(CATEGORIES),
+        help="restrict generation to one category (default: all)",
+    )
+    ap.add_argument(
+        "--no-conf",
+        action="store_true",
+        help="do not append covered ops to backends_ascend.conf",
+    )
     args = ap.parse_args()
 
     syms = symbols(libopapi_path())
 
     bodies = []
-    covered = []   # (op, aclnn, category)
-    skipped = []   # (op, reason)
+    covered = []  # (op, aclnn, category)
+    skipped = []  # (op, reason)
 
     for op, (cat, override) in OPS.items():
         if args.category != "all" and cat != args.category:
@@ -2454,8 +2460,9 @@ def main():
                 continue
         fn, disp = schema_to_cpp_name(op)
         kernel = fn[:-2] + "KernelAscend"  # SqrtFn -> SqrtKernelAscend
-        bodies.append(CATEGORIES[cat].format(
-            kernel=kernel, aclnn=acl, fn=fn, disp=disp))
+        bodies.append(
+            CATEGORIES[cat].format(kernel=kernel, aclnn=acl, fn=fn, disp=disp)
+        )
         covered.append((op, acl, cat))
 
     OUT_CC.parent.mkdir(parents=True, exist_ok=True)
@@ -2480,7 +2487,7 @@ def main():
         # Strip any prior codegen block so re-runs stay idempotent.
         marker = "\n# --- generated by codegen_ascend.py"
         if marker in existing:
-            existing = existing[:existing.index(marker)].rstrip() + "\n"
+            existing = existing[: existing.index(marker)].rstrip() + "\n"
         lines = []
         for op, _, _ in covered:
             if f"\n{op} = " not in ("\n" + existing):
