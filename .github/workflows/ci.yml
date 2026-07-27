@@ -16,7 +16,7 @@ name: CI
 
 on:
   push:
-    branches: [main, devops]
+    branches: [main, dev, devops]
     paths-ignore:
       - "**.md"
       - "docs/**"
@@ -24,49 +24,59 @@ on:
       - ".github/ISSUE_TEMPLATE/**"
       - ".github/PULL_REQUEST_TEMPLATE.md"
   pull_request:
-    branches: [main, devops]
+    branches: [main, dev, devops]
     paths-ignore:
       - "**.md"
       - "docs/**"
       - "LICENSE"
       - ".github/ISSUE_TEMPLATE/**"
       - ".github/PULL_REQUEST_TEMPLATE.md"
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  # ============================================================
-  # Job 1: Lint (ruff check, ruff format)
-  # ============================================================
   lint:
     uses: ./.github/workflows/lint.yml
 
-  # # ============================================================
-  # # Job 2: Build & install check (CUDA)
-  # # ============================================================
-  # build-cuda:
-  #   needs: lint
-  #   uses: ./.github/workflows/build-wheel-cuda.yml
+  discover-platforms:
+    name: Discover platforms
+    needs: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      platforms: ${{ steps.detect.outputs.platforms }}
+    steps:
+      - uses: actions/checkout@v4
 
-  # ============================================================
-  # Job 3: Build & install check (MetaX)
-  # ============================================================
+      - name: Detect configured platforms
+        id: detect
+        run: |
+          platforms=$(find .github/configs -maxdepth 1 -type f -name '*.yml' \
+            -exec basename {} .yml \; | sort | jq -R -s -c 'split("\n")[:-1]')
+          if [[ "$platforms" == "[]" ]]; then
+            echo "::error::No platform configs found"
+            exit 1
+          fi
+          echo "platforms=$platforms" >> "$GITHUB_OUTPUT"
+
+  platform-pipeline:
+    name: Platform pipeline (${{ matrix.platform }})
+    needs: discover-platforms
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJson(needs.discover-platforms.outputs.platforms) }}
+    uses: ./.github/workflows/all-tests-common.yml
+    with:
+      platform: ${{ matrix.platform }}
+
   build-metax:
     needs: lint
     uses: ./.github/workflows/build-wheel-metax.yml
 
-  # # ============================================================
-  # # Job 4: Integration tests (CUDA)
-  # # ============================================================
-  # integration-tests-cuda:
-  #   needs: build-cuda
-  #   uses: ./.github/workflows/integration-test-cuda.yml
-
-  # ============================================================
-  # Job 5: Integration tests (MetaX)
-  # ============================================================
   integration-tests-metax:
     needs: build-metax
     uses: ./.github/workflows/integration-test-metax.yml

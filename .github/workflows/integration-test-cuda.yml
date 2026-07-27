@@ -32,38 +32,10 @@ on:
 
 jobs:
   integration-tests:
-    name: Integration Tests (CUDA)
-    runs-on: [self-hosted, nvidia, gpu-8]
-    timeout-minutes: ${{ inputs.timeout-minutes }}
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Check GPU availability
-        run: nvidia-smi
-
-      - name: Install dependencies
-        run: |
-          pip install --upgrade pip
-          pip install -e . --no-build-isolation
-          pip install pytest
-
-      - name: Check FlagGems routing consistency (conf <-> codegen)
-        run: pytest tests/integration/ops/test_flaggems_conf_consistency.py -v --tb=short
-
-      - name: Run ops tests (vendor backend, main ops)
-        run: pytest tests/integration/ops/ -m main_ops -v -s --tb=short
-
-      - name: Run ops tests (FlagGems runtime path, main ops)
-        env:
-          FLAGOS_USE_FLAGGEMS: "1"
-        run: pytest tests/integration/ops/ -m "flaggems and main_ops" -v -s --tb=short
-
-      - name: Run general tests
-        run: pytest tests/integration/test_factory_ops.py -v --device cuda --tb=short
-
-      - name: Run inference tests
-        run: pytest tests/integration/test_qwen3_infer.py -v -s --device cuda --tb=short
-
-      - name: Run training tests
-        run: pytest tests/integration/test_qwen3_train.py -v -s --device cuda --tb=short
+    uses: ./.github/workflows/all-tests-common.yml
+    with:
+      platform: cuda
+      run_build: false
+      run_integration_tests: true
+      upload_artifact: false
+      timeout_minutes: ${{ inputs['timeout-minutes'] }}
