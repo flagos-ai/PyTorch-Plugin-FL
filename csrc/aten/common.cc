@@ -35,25 +35,26 @@ std::string DefaultConfigPath() {
       platform = "ascend";
 #endif
       if (platform) {
-        // dir is <prefix>/torch_fl/lib, config is at <prefix>/torch_fl/
-        std::string candidate = dir + "/../backends_" + platform + ".conf";
+        // dir is <prefix>/torch_fl/lib, configs are at <prefix>/torch_fl/configs/
+        std::string candidate =
+            dir + "/../configs/backends_" + platform + ".conf";
         std::ifstream test(candidate);
         if (test.is_open()) return candidate;
       }
 
-      // Try package-relative: <dir>/../backends.conf
-      std::string candidate = dir + "/../backends.conf";
+      // Try package-relative: <dir>/../configs/backends.conf
+      std::string candidate = dir + "/../configs/backends.conf";
       std::ifstream test(candidate);
       if (test.is_open()) return candidate;
-      // Try: <dir>/backends.conf
-      candidate = dir + "/backends.conf";
+      // Try: <dir>/configs/backends.conf
+      candidate = dir + "/configs/backends.conf";
       test.open(candidate);
       if (test.is_open()) return candidate;
     }
   }
 #endif
   // Fallback to build-time path
-  return FLAGOS_SOURCE_ROOT "/torch_fl/backends.conf";
+  return FLAGOS_SOURCE_ROOT "/torch_fl/configs/backends.conf";
 }
 
 std::unordered_map<std::string, Backend> LoadBackendConfig() {

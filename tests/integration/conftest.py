@@ -37,7 +37,7 @@ def _ensure_backend_config() -> None:
     accel = os.environ.get("ACCELERATOR", "").lower()
     use_metax = accel in ("metax", "maca") or Path("/dev/mxcd").exists()
     if use_metax:
-        cfg = _REPO_ROOT / "torch_fl" / "backends_metax.conf"
+        cfg = _REPO_ROOT / "torch_fl" / "configs" / "backends_metax.conf"
         if cfg.is_file():
             os.environ["FLAGOS_BACKEND_CONFIG"] = str(cfg)
 

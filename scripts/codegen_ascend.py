@@ -47,7 +47,7 @@ Reuses:
 
 Generates:
   - csrc/aten/backends/ascend/generated/ascend_kernels.cc
-  - appends newly-covered ops to torch_fl/backends_ascend.conf
+  - appends newly-covered ops to torch_fl/configs/backends_ascend.conf
 
 Validation:
   - each derived aclnn<Name>/<Name>GetWorkspaceSize symbol must exist in
@@ -81,7 +81,7 @@ from codegen_ops import schema_to_cpp_name  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 OUT_CC = REPO / "csrc/aten/backends/ascend/generated/ascend_kernels.cc"
-CONF = REPO / "torch_fl/backends_ascend.conf"
+CONF = REPO / "torch_fl/configs/backends_ascend.conf"
 
 # --------------------------------------------------------------------------
 # Op registry: schema op name -> (category, aclnn-name override or None).

@@ -82,7 +82,7 @@ ACCELERATOR=metax METAX_KERNEL=ON FLAGGEMS_PYTHON=1 FLAGGEMS_KERNEL=0 CUDA_KERNE
   pip install --no-build-isolation -vvv -e .
 ```
 
-> 在 MetaX 上，PyPI 通用版 Triton（`nvidia` 后端）无法为 MetaX 硬件 JIT 内核。请使用 `torch_fl/backends_metax.conf` 或 `torch_fl/backends_metax_flagos_py.conf`，将不兼容算子路由到 metax C++ kernel（见[MetaX 后端配置](#metax-后端配置)）。
+> 在 MetaX 上，PyPI 通用版 Triton（`nvidia` 后端）无法为 MetaX 硬件 JIT 内核。请使用 `torch_fl/configs/backends_metax.conf` 或 `torch_fl/configs/backends_metax_flagos_py.conf`，将不兼容算子路由到 metax C++ kernel（见[MetaX 后端配置](#metax-后端配置)）。
 
 ### 从源码安装（Ascend 平台）
 
@@ -298,7 +298,7 @@ export LD_PRELOAD=/opt/maca/lib/libsymbol_cu.so
 export FLAGOS_METAX_CUDART_SHIM=1
 export FLAGOS_METAX_COMPAT=1
 export GEMS_VENDOR=metax
-export FLAGOS_BACKEND_CONFIG=torch_fl/backends_metax_flagos_py.conf
+export FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_metax_flagos_py.conf
 export FLAGGEMS_SOURCE_DIR=$(python -c "import os,flag_gems;print(os.path.dirname(flag_gems.__file__))")
 ```
 
@@ -338,7 +338,7 @@ torch_fl.get_registered_ops()        # 已注册的算子列表
 
 ### 配置文件
 
-默认路径 `torch_fl/backends.conf`，可通过 `FLAGOS_BACKEND_CONFIG` 环境变量覆盖：
+默认路径 `torch_fl/configs/backends.conf`，可通过 `FLAGOS_BACKEND_CONFIG` 环境变量覆盖：
 
 ```ini
 # 格式: op_name = backend
@@ -364,8 +364,8 @@ export FLAGOS_OP_mm__out=cuda
 
 | 文件 | 用途 |
 |------|------|
-| `torch_fl/backends_metax.conf` | 所列算子全部 → `metax` C++ kernel。pytest 检测到 MetaX（`/dev/mxcd`）且未设置 `FLAGOS_BACKEND_CONFIG` 时自动选用。 |
-| `torch_fl/backends_metax_flagos_py.conf` | **集成测试推荐。** 混合路由：多数计算算子 → `flagos_python`；将 Triton 不兼容算子（`mm`/`bmm`/`mean.dim`）以及分配/工厂算子（`zeros`、`scalar_tensor`、`embedding` 等）保留在 `metax`。 |
+| `torch_fl/configs/backends_metax.conf` | 所列算子全部 → `metax` C++ kernel。pytest 检测到 MetaX（`/dev/mxcd`）且未设置 `FLAGOS_BACKEND_CONFIG` 时自动选用。 |
+| `torch_fl/configs/backends_metax_flagos_py.conf` | **集成测试推荐。** 混合路由：多数计算算子 → `flagos_python`；将 Triton 不兼容算子（`mm`/`bmm`/`mean.dim`）以及分配/工厂算子（`zeros`、`scalar_tensor`、`embedding` 等）保留在 `metax`。 |
 
 示例（`backends_metax_flagos_py.conf`）：
 
@@ -427,7 +427,7 @@ pytest tests/integration/ops/ -v -m flaggems_python
 pytest tests/integration/ops/ -v -m anyplatform
 
 # FlagGems Python wrapper (flagos_python) 端到端测试
-FLAGOS_BACKEND_CONFIG=torch_fl/backends_flagos_py.conf \
+FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_flagos_py.conf \
   pytest tests/integration/ops/ -v
 ```
 
@@ -442,7 +442,7 @@ export LD_PRELOAD=/opt/maca/lib/libsymbol_cu.so
 export FLAGOS_METAX_CUDART_SHIM=1
 export FLAGOS_METAX_COMPAT=1
 export GEMS_VENDOR=metax
-export FLAGOS_BACKEND_CONFIG=torch_fl/backends_metax_flagos_py.conf
+export FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_metax_flagos_py.conf
 export FLAGGEMS_SOURCE_DIR=$(python -c "import os,flag_gems;print(os.path.dirname(flag_gems.__file__))")
 
 # 基础算子测试（含 Qwen3 推理路径：cos/sin/rsqrt/silu 等）
@@ -458,26 +458,26 @@ pytest tests/integration/test_qwen3_infer.py -v -s --model /path/to/Qwen3-0.6B
 pytest tests/integration/test_qwen3_train.py -v -s --steps 10
 
 # 纯 metax C++ kernel 模式（不走 flagos_python）
-FLAGOS_BACKEND_CONFIG=torch_fl/backends_metax.conf \
+FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_metax.conf \
   FLAGOS_DISABLE_FLAGGEMS_PY=1 \
   pytest tests/integration/test_ops.py -v
 ```
 
-未设置 `FLAGOS_BACKEND_CONFIG` 时，`tests/integration/conftest.py` 会在 MetaX 硬件上自动选择 `torch_fl/backends_metax.conf`。
+未设置 `FLAGOS_BACKEND_CONFIG` 时，`tests/integration/conftest.py` 会在 MetaX 硬件上自动选择 `torch_fl/configs/backends_metax.conf`。
 
 ### Ascend 平台
 
 ```bash
 # 算子测试
-FLAGOS_BACKEND_CONFIG=torch_fl/backends_ascend.conf \
+FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_ascend.conf \
   pytest tests/integration/ops/ -v -m "anyplatform or ascend"
 
 # Qwen3 推理测试
-FLAGOS_BACKEND_CONFIG=torch_fl/backends_ascend.conf \
+FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_ascend.conf \
   pytest tests/integration/test_qwen3_infer.py -v -s
 
 # Qwen3 训练测试（单卡）
-FLAGOS_BACKEND_CONFIG=torch_fl/backends_ascend.conf \
+FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_ascend.conf \
   pytest tests/integration/test_qwen3_train.py -v -s --steps 10
 ```
 

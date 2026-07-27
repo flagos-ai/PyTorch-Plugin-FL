@@ -36,7 +36,7 @@ aclnn 命名与调用高度规律：
 | 输出张量分配 | `op_preparation.h`（`apply_tensor_without_format` = `at::empty(device=PrivateUse1)`） | ✅ 可用 |
 | 内部 Dispatcher | `csrc/aten/dispatcher.h`（`REGISTER_IMPL_TO_DISPATCHER(..., Backend::kAscend, ...)`） | ✅ 可用 |
 | 手写算子 | `backends/ascend/*.cc`（33 个：mm/bmm/add/mul/cat/embedding/softmax/sum/nll_loss/index/…） | ⚠️ 头文件失效，需修 |
-| 后端选择配置 | `torch_fl/backends_ascend.conf`（逐 op `flaggems\|ascend`） | ✅ 可用 |
+| 后端选择配置 | `torch_fl/configs/backends_ascend.conf`（逐 op `flaggems\|ascend`） | ✅ 可用 |
 | codegen 框架 | `scripts/codegen_ops.py` + `generated/name_map.json`（权威符号命名源） | ✅ 可复用其骨架 |
 | 运行时（stream/allocator/device） | `csrc/runtime/accelerator/ascend/` | ✅ 已有 |
 

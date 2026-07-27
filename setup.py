@@ -543,8 +543,8 @@ def _get_setup_kwargs():
             # All backend configs, not just the default: runtime op-routing
             # configs selected via FLAGOS_USE_FLAGGEMS (backends_flaggems.conf)
             # and boxing modes via FLAGOS_BACKEND_CONFIG (backends_cuda.conf /
-            # backends_metax.conf).
-            "backends*.conf",
+            # backends_metax.conf). Now consolidated under configs/.
+            "configs/backends*.conf",
             "codegen_skip_ops.txt",
         ]
     }

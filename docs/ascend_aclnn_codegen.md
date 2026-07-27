@@ -36,7 +36,7 @@ CUDA 侧 `scripts/codegen_ops.py` 生成 `generated/cuda_kernels.cc`，内核体
   把内核挂到已存在的 dispatcher 的 `kAscend` 槽。
 - **符号名一致**：生成器复用 `codegen_ops.py:schema_to_cpp_name()`，保证 `XxxFn`/`xxx_dispatcher`
   与 CUDA codegen 完全对齐（否则 link 不上）。
-- **运行时选择**：`torch_fl/backends_ascend.conf` 里 `op = ascend` 的行，让 `GetBackendForOp`
+- **运行时选择**：`torch_fl/configs/backends_ascend.conf` 里 `op = ascend` 的行，让 `GetBackendForOp`
   在运行时把该 op 路由到 `kAscend` 槽。codegen 会顺带把生成的算子写进这个 conf。
 
 ## 3. 落点与构建
@@ -282,7 +282,7 @@ sub/div/pow 等所有"标量走 Tensor overload"的路径。
 ## 7. 验证闭环
 
 `ACCELERATOR=ascend ASCEND_KERNEL=1 FLAGGEMS_PYTHON=1 CUDA_KERNEL=0 FLAGGEMS_KERNEL=0`
-构建，`FLAGOS_BACKEND_CONFIG=torch_fl/backends_ascend.conf`，逐 op 与 CPU 对拍。
+构建，`FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_ascend.conf`，逐 op 与 CPU 对拍。
 51/51 通过（unary max_err≤4.4e-5，binary≤4.7e-6，比较类精确匹配）。
 
 **注意**：编译时必须显式传全套 env（`ACCELERATOR=ascend …`），否则 setup.py 默认

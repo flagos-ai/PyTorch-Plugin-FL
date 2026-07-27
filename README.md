@@ -322,7 +322,7 @@ export LD_PRELOAD=/opt/maca/lib/libsymbol_cu.so
 export FLAGOS_METAX_CUDART_SHIM=1
 export FLAGOS_METAX_COMPAT=1
 export GEMS_VENDOR=metax
-export FLAGOS_BACKEND_CONFIG=torch_fl/backends_metax_flagos_py.conf
+export FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_metax_flagos_py.conf
 export FLAGGEMS_SOURCE_DIR=$(python -c "import os,flag_gems;print(os.path.dirname(flag_gems.__file__))")
 ```
 
@@ -361,7 +361,7 @@ You can configure whether to use FlagGems or CUDA backend at per-operator granul
 
 ### Configuration File
 
-Default path is `torch_fl/backends.conf`, can be overridden via `FLAGOS_BACKEND_CONFIG` environment variable:
+Default path is `torch_fl/configs/backends.conf`, can be overridden via `FLAGOS_BACKEND_CONFIG` environment variable:
 
 ```ini
 # Format: op_name = backend
@@ -387,8 +387,8 @@ export FLAGOS_OP_mm__out=cuda
 
 | File | Purpose |
 |------|---------|
-| `torch_fl/backends_metax.conf` | All listed ops → `metax` C++ kernels. Default when pytest detects MetaX (`/dev/mxcd`) and `FLAGOS_BACKEND_CONFIG` is unset. |
-| `torch_fl/backends_metax_flagos_py.conf` | **Recommended for integration tests.** Hybrid routing: most compute ops → `flagos_python`; keep Triton-incompatible ops (`mm`/`bmm`/`mean.dim`) and factory/allocation ops (`zeros`, `scalar_tensor`, `embedding`, …) on `metax`. |
+| `torch_fl/configs/backends_metax.conf` | All listed ops → `metax` C++ kernels. Default when pytest detects MetaX (`/dev/mxcd`) and `FLAGOS_BACKEND_CONFIG` is unset. |
+| `torch_fl/configs/backends_metax_flagos_py.conf` | **Recommended for integration tests.** Hybrid routing: most compute ops → `flagos_python`; keep Triton-incompatible ops (`mm`/`bmm`/`mean.dim`) and factory/allocation ops (`zeros`, `scalar_tensor`, `embedding`, …) on `metax`. |
 
 Example (`backends_metax_flagos_py.conf`):
 
@@ -450,7 +450,7 @@ pytest tests/integration/ops/ -v -m flaggems_python
 pytest tests/integration/ops/ -v -m anyplatform
 
 # FlagGems Python wrapper (flagos_python) end-to-end tests
-FLAGOS_BACKEND_CONFIG=torch_fl/backends_flagos_py.conf \
+FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_flagos_py.conf \
   pytest tests/integration/ops/ -v
 ```
 
@@ -465,7 +465,7 @@ export LD_PRELOAD=/opt/maca/lib/libsymbol_cu.so
 export FLAGOS_METAX_CUDART_SHIM=1
 export FLAGOS_METAX_COMPAT=1
 export GEMS_VENDOR=metax
-export FLAGOS_BACKEND_CONFIG=torch_fl/backends_metax_flagos_py.conf
+export FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_metax_flagos_py.conf
 export FLAGGEMS_SOURCE_DIR=$(python -c "import os,flag_gems;print(os.path.dirname(flag_gems.__file__))")
 
 # Basic op tests (includes Qwen3 inference-path ops: cos/sin/rsqrt/silu/...)
@@ -481,26 +481,26 @@ pytest tests/integration/test_qwen3_infer.py -v -s --model /path/to/Qwen3-0.6B
 pytest tests/integration/test_qwen3_train.py -v -s --steps 10
 
 # All-metax C++ kernel mode (no flagos_python)
-FLAGOS_BACKEND_CONFIG=torch_fl/backends_metax.conf \
+FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_metax.conf \
   FLAGOS_DISABLE_FLAGGEMS_PY=1 \
   pytest tests/integration/test_ops.py -v
 ```
 
-If `FLAGOS_BACKEND_CONFIG` is not set, `tests/integration/conftest.py` auto-selects `torch_fl/backends_metax.conf` on MetaX hardware.
+If `FLAGOS_BACKEND_CONFIG` is not set, `tests/integration/conftest.py` auto-selects `torch_fl/configs/backends_metax.conf` on MetaX hardware.
 
 ### Ascend Platform
 
 ```bash
 # Operator tests
-FLAGOS_BACKEND_CONFIG=torch_fl/backends_ascend.conf \
+FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_ascend.conf \
   pytest tests/integration/ops/ -v -m "anyplatform or ascend"
 
 # Qwen3 inference test
-FLAGOS_BACKEND_CONFIG=torch_fl/backends_ascend.conf \
+FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_ascend.conf \
   pytest tests/integration/test_qwen3_infer.py -v -s
 
 # Qwen3 training test (single GPU)
-FLAGOS_BACKEND_CONFIG=torch_fl/backends_ascend.conf \
+FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_ascend.conf \
   pytest tests/integration/test_qwen3_train.py -v -s --steps 10
 ```
 

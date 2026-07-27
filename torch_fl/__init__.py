@@ -53,7 +53,7 @@ def _select_backend_config() -> None:
         conf_name = "backends_flaggems.conf"
     else:
         conf_name = "backends_cuda.conf"
-    conf_path = os.path.join(os.path.dirname(__file__), conf_name)
+    conf_path = os.path.join(os.path.dirname(__file__), "configs", conf_name)
     if os.path.exists(conf_path):
         os.environ["FLAGOS_BACKEND_CONFIG"] = conf_path
 
