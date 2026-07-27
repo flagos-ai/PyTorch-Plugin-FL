@@ -37,8 +37,6 @@ Usage:
         pytest tests/integration/ops/test_rng_dispatch.py -v
 """
 
-import os
-
 import pytest
 
 import torch
@@ -47,19 +45,13 @@ import torch_fl  # noqa: F401
 
 DEVICE = "flagos:0"
 
-# Unlike the other flaggems_python dispatch tests (which spawn a subprocess and
-# force a single op onto the flaggems path via FLAGOS_OP_*=flaggems_python), these
-# run in-process and assert the RNG *reproducibility contract*, which only holds
-# when the ambient runtime actually routes RNG through the FlagGems Triton
-# generator (torch.cuda.default_generators seed/offset). In pure boxing mode the
-# same ops fall back to the native CUDA generator, where torch.manual_seed does
-# not take effect on the flagos device -> not reproducible. So skip unless
-# FLAGOS_USE_FLAGGEMS is actually enabled.
-pytestmark = pytest.mark.skipif(
-    os.environ.get("FLAGOS_USE_FLAGGEMS", "0").lower() in ("0", "", "off", "false"),
-    reason="RNG reproducibility contract only holds on the FlagGems Triton path "
-    "(set FLAGOS_USE_FLAGGEMS=1)",
-)
+# Every test here is marked @pytest.mark.flaggems_python. The shared ops/conftest.py
+# skips flaggems_python-marked tests unless FLAGOS_USE_FLAGGEMS is enabled, because
+# these assert the RNG *reproducibility contract* which only holds when the runtime
+# routes RNG through the FlagGems Triton generator (torch.cuda.default_generators
+# seed/offset). In pure boxing mode the same ops fall back to the native CUDA
+# generator, where torch.manual_seed does not take effect on the flagos device ->
+# not reproducible. The gate lives in conftest so it applies uniformly.
 
 
 def _reproducible(op):

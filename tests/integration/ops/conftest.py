@@ -33,7 +33,23 @@ def _detect_platform() -> str:
     return "default"
 
 
+def _flaggems_enabled() -> bool:
+    """Whether the FlagGems (Triton) path is actually active this run."""
+    return os.environ.get("FLAGOS_USE_FLAGGEMS", "0").lower() not in (
+        "0",
+        "",
+        "off",
+        "false",
+    )
+
+
 # Markers to skip per platform (tests for other backends are not compiled/available).
+# NOTE: `flaggems` (subprocess dispatch-log tests forcing a specific backend conf)
+# stays platform-skipped on metax -- those assert the native CUDA flaggems dispatch
+# path, not the metax boxing path. `flaggems_python` is instead gated at runtime by
+# FLAGOS_USE_FLAGGEMS (see pytest_collection_modifyitems): it runs on top of the
+# CUDA boxing path on any vendor, so it must run when FlagGems is enabled and skip
+# otherwise, regardless of platform.
 _PLATFORM_SKIP_MARKERS: dict[str, tuple[str, ...]] = {
     "metax": ("cuda", "ascend", "flaggems"),
     "ascend": ("cuda", "metax"),
@@ -51,6 +67,12 @@ def pytest_collection_modifyitems(
     # Tests asserting a `-> metax` dispatch (mark.metax) cannot pass, so skip them.
     if platform == "metax" and os.environ.get("FLAGOS_METAX_BOXING", "0") == "1":
         markers_to_skip.append("metax")
+    # flaggems_python tests assert the FlagGems Triton path's runtime contract
+    # (e.g. seedable/reproducible RNG). Without FLAGOS_USE_FLAGGEMS the same ops
+    # route through the plain CUDA boxing kernels (native generator), where that
+    # contract does not hold -> they must skip, not fail.
+    if not _flaggems_enabled() and "flaggems_python" not in markers_to_skip:
+        markers_to_skip.append("flaggems_python")
     for item in items:
         for marker_name in markers_to_skip:
             if item.get_closest_marker(marker_name):
