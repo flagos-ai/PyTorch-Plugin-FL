@@ -1,19 +1,5 @@
-// Copyright 2026 FlagOS Contributors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 #include <include/flagos.h>
-#include <cuda_runtime.h>
+#include <tx_runtime.h>
 
 #include <map>
 #include <mutex>
@@ -47,24 +33,23 @@ class MemoryManager {
     if (type == MemoryType::MemoryTypeDevice) {
       GetDevice(&current_device);
 
-      // Ensure CUDA device is set correctly before allocation
-      // This is critical in multi-process environments like DDP
-      cudaError_t set_err = cudaSetDevice(current_device);
-      if (set_err != cudaSuccess) {
-        fprintf(stderr, "[flagos] cudaSetDevice(%d) failed: %s\n",
-                current_device, cudaGetErrorString(set_err));
+      // Ensure TX device is set correctly before allocation
+      txError_t set_err = txSetDevice(static_cast<uint32_t>(current_device));
+      if (set_err != TX_SUCCESS) {
+        fprintf(stderr, "[flagos-tsingmicro] txSetDevice(%d) failed: %s\n",
+                current_device, txGetErrorString(set_err));
         return ErrorMemoryAllocation;
       }
 
-      cudaError_t err = cudaMalloc(&mem, size);
-      if (err != cudaSuccess || mem == nullptr) {
-        fprintf(stderr, "[flagos] cudaMalloc(%zu bytes) on device %d failed: %s\n",
-                size, current_device, cudaGetErrorString(err));
+      txError_t err = txMalloc(&mem, static_cast<uint64_t>(size));
+      if (err != TX_SUCCESS || mem == nullptr) {
+        fprintf(stderr, "[flagos-tsingmicro] txMalloc(%zu bytes) on device %d failed: %s\n",
+                size, current_device, txGetErrorString(err));
         return ErrorMemoryAllocation;
       }
     } else {
-      cudaError_t err = cudaMallocHost(&mem, size);
-      if (err != cudaSuccess || mem == nullptr)
+      txError_t err = txMallocHost(&mem, static_cast<uint64_t>(size));
+      if (err != TX_SUCCESS || mem == nullptr)
         return ErrorMemoryAllocation;
     }
 
@@ -83,15 +68,15 @@ class MemoryManager {
       return ErrorUnknown;
 
     const auto& info = it->second;
-    cudaError_t err;
+    txError_t err;
     if (info.type == MemoryType::MemoryTypeDevice) {
-      err = cudaFree(info.pointer);
+      err = txFree(info.pointer);
     } else {
-      err = cudaFreeHost(info.pointer);
+      err = txFreeHost(info.pointer);
     }
 
     m_registry.erase(it);
-    return (err == cudaSuccess) ? Success : ErrorUnknown;
+    return (err == TX_SUCCESS) ? Success : ErrorUnknown;
   }
 
   Error_t memcpy(
@@ -102,26 +87,28 @@ class MemoryManager {
     if (!dst || !src || count == 0)
       return ErrorUnknown;
 
-    cudaMemcpyKind cuda_kind;
+    // txMemcpyKind enum values match MemcpyKind directly
+    // (0=H2H, 1=H2D, 2=D2H, 3=D2D)
+    txMemcpyKind tx_kind;
     switch (kind) {
       case MemcpyHostToHost:
-        cuda_kind = cudaMemcpyHostToHost;
+        tx_kind = txMemcpyHostToHost;
         break;
       case MemcpyHostToDevice:
-        cuda_kind = cudaMemcpyHostToDevice;
+        tx_kind = txMemcpyHostToDevice;
         break;
       case MemcpyDeviceToHost:
-        cuda_kind = cudaMemcpyDeviceToHost;
+        tx_kind = txMemcpyDeviceToHost;
         break;
       case MemcpyDeviceToDevice:
-        cuda_kind = cudaMemcpyDeviceToDevice;
+        tx_kind = txMemcpyDeviceToDevice;
         break;
       default:
         return ErrorUnknown;
     }
 
-    cudaError_t err = cudaMemcpy(dst, src, count, cuda_kind);
-    return (err == cudaSuccess) ? Success : ErrorUnknown;
+    txError_t err = txMemcpy(dst, src, static_cast<uint64_t>(count), tx_kind);
+    return (err == TX_SUCCESS) ? Success : ErrorUnknown;
   }
 
   Error_t memcpyAsync(
@@ -133,26 +120,28 @@ class MemoryManager {
     if (!dst || !src || count == 0)
       return ErrorUnknown;
 
-    cudaMemcpyKind cuda_kind;
+    txMemcpyKind tx_kind;
     switch (kind) {
       case MemcpyHostToHost:
-        cuda_kind = cudaMemcpyHostToHost;
+        tx_kind = txMemcpyHostToHost;
         break;
       case MemcpyHostToDevice:
-        cuda_kind = cudaMemcpyHostToDevice;
+        tx_kind = txMemcpyHostToDevice;
         break;
       case MemcpyDeviceToHost:
-        cuda_kind = cudaMemcpyDeviceToHost;
+        tx_kind = txMemcpyDeviceToHost;
         break;
       case MemcpyDeviceToDevice:
-        cuda_kind = cudaMemcpyDeviceToDevice;
+        tx_kind = txMemcpyDeviceToDevice;
         break;
       default:
         return ErrorUnknown;
     }
 
-    cudaError_t err = cudaMemcpyAsync(dst, src, count, cuda_kind, (cudaStream_t)stream);
-    return (err == cudaSuccess) ? Success : ErrorUnknown;
+    txError_t err = txMemcpyAsync(
+        dst, src, static_cast<uint64_t>(count), tx_kind,
+        reinterpret_cast<txStream_t>(stream));
+    return (err == TX_SUCCESS) ? Success : ErrorUnknown;
   }
 
   Error_t getPointerAttributes(
@@ -178,13 +167,15 @@ class MemoryManager {
   }
 
   Error_t memset(void* devPtr, int value, size_t count) {
-    cudaError_t err = cudaMemset(devPtr, value, count);
-    return (err == cudaSuccess) ? Success : ErrorUnknown;
+    txError_t err = txMemset(devPtr, value, static_cast<uint64_t>(count));
+    return (err == TX_SUCCESS) ? Success : ErrorUnknown;
   }
 
   Error_t memsetAsync(void* devPtr, int value, size_t count, Stream_t stream) {
-    cudaError_t err = cudaMemsetAsync(devPtr, value, count, (cudaStream_t)stream);
-    return (err == cudaSuccess) ? Success : ErrorUnknown;
+    txError_t err = txMemsetAsync(
+        devPtr, value, static_cast<uint64_t>(count),
+        reinterpret_cast<txStream_t>(stream));
+    return (err == TX_SUCCESS) ? Success : ErrorUnknown;
   }
 
  private:

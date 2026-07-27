@@ -1,6 +1,20 @@
+# Copyright 2026 FlagOS Contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 cmake_minimum_required(VERSION 3.18 FATAL_ERROR)
 
-set(ACCELERATOR "cuda" CACHE STRING "Accelerator platform: cuda, metax, or ascend")
+set(ACCELERATOR "cuda" CACHE STRING "Accelerator platform: cuda, metax, ascend, or tsingmicro")
 
 # Kernel build options (can be overridden via -D flags from setup.py)
 option(CUDA_KERNEL "Build CUDA kernel implementations" ON)
@@ -29,6 +43,8 @@ elseif(ACCELERATOR STREQUAL "metax")
   set(CUDA_KERNEL OFF CACHE BOOL "Build CUDA kernel implementations" FORCE)
   set(FLAGGEMS_KERNEL OFF CACHE BOOL "Build FlagGems kernel implementations" FORCE)
   project(TORCH_FLAGOS CXX C)
+elseif(ACCELERATOR STREQUAL "tsingmicro")
+  project(TORCH_FLAGOS CXX C)
 else()
   # project(... CUDA) runs nvcc compiler-id before find_package(CUDAToolkit); conda
   # layouts need CUDAToolkit_ROOT (headers under targets/x86_64-linux/include).
@@ -56,7 +72,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-if(NOT ACCELERATOR STREQUAL "metax" AND NOT ACCELERATOR STREQUAL "ascend")
+if(NOT ACCELERATOR STREQUAL "metax" AND NOT ACCELERATOR STREQUAL "ascend" AND NOT ACCELERATOR STREQUAL "tsingmicro")
   set(CMAKE_CUDA_STANDARD 17)
   set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 endif()
@@ -102,6 +118,27 @@ if(ACCELERATOR STREQUAL "ascend")
   target_link_libraries(cuda_runtime_compat INTERFACE ascendcl)
 
   set(CUDA_RUNTIME_LIB cuda_runtime_compat)
+
+  add_library(torch::cudart INTERFACE IMPORTED)
+  if(NOT TARGET CUDA::nvToolsExt)
+    add_library(CUDA::nvToolsExt INTERFACE IMPORTED)
+  endif()
+elseif(ACCELERATOR STREQUAL "tsingmicro")
+  # TsingMicro Kuiper SDK
+  set(KUIPER_ROOT "/usr/local/kuiper" CACHE PATH "Kuiper SDK root")
+  message(STATUS "TsingMicro Kuiper SDK path: ${KUIPER_ROOT}")
+
+  add_library(cuda_runtime_compat INTERFACE IMPORTED)
+  set_target_properties(cuda_runtime_compat PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "${KUIPER_ROOT}/include"
+  )
+  target_link_directories(cuda_runtime_compat INTERFACE "${KUIPER_ROOT}/lib")
+  target_link_libraries(cuda_runtime_compat INTERFACE hpgr)
+
+  set(CUDA_RUNTIME_LIB cuda_runtime_compat)
+
+  # Embed Kuiper library path in RPATH so LD_LIBRARY_PATH is not needed at runtime.
+  list(APPEND CMAKE_INSTALL_RPATH "${KUIPER_ROOT}/lib")
 
   add_library(torch::cudart INTERFACE IMPORTED)
   if(NOT TARGET CUDA::nvToolsExt)

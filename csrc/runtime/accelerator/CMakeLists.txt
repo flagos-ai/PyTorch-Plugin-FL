@@ -1,8 +1,24 @@
+# Copyright 2026 FlagOS Contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 cmake_minimum_required(VERSION 3.18 FATAL_ERROR)
 
 if(ACCELERATOR STREQUAL "ascend")
   project(FLAGOS_RUNTIME CXX C)
 elseif(ACCELERATOR STREQUAL "metax")
+  project(FLAGOS_RUNTIME CXX C)
+elseif(ACCELERATOR STREQUAL "tsingmicro")
   project(FLAGOS_RUNTIME CXX C)
 else()
   project(FLAGOS_RUNTIME CUDA CXX C)
@@ -47,6 +63,14 @@ elseif(ACCELERATOR STREQUAL "metax")
 
   target_include_directories(${LIBRARY_NAME} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR})
   target_link_libraries(${LIBRARY_NAME} PRIVATE ${CUDA_RUNTIME_LIB})
+elseif(ACCELERATOR STREQUAL "tsingmicro")
+  file(GLOB SOURCE_FILES "${CMAKE_CURRENT_SOURCE_DIR}/tsingmicro/*.cc")
+
+  add_library(${LIBRARY_NAME} SHARED ${SOURCE_FILES})
+
+  target_include_directories(${LIBRARY_NAME} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR} /usr/local/kuiper/include)
+  target_link_directories(${LIBRARY_NAME} PRIVATE /usr/local/kuiper/lib)
+  target_link_libraries(${LIBRARY_NAME} PRIVATE hpgr)
 else()
   file(GLOB SOURCE_FILES "${CMAKE_CURRENT_SOURCE_DIR}/cuda/*.cc")
 

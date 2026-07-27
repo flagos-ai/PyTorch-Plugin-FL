@@ -26,8 +26,23 @@ std::string DefaultConfigPath() {
     auto pos = lib_path.rfind('/');
     if (pos != std::string::npos) {
       std::string dir = lib_path.substr(0, pos);
-      // Try package-relative: <dir>/../torch_fl/backends.conf
-      std::string candidate = dir + "/../torch_fl/backends.conf";
+
+      // Try platform-specific config first (e.g. backends_tsingmicro.conf)
+      const char* platform = nullptr;
+#if defined(USE_TSINGMICRO)
+      platform = "tsingmicro";
+#elif defined(USE_ASCEND)
+      platform = "ascend";
+#endif
+      if (platform) {
+        // dir is <prefix>/torch_fl/lib, config is at <prefix>/torch_fl/
+        std::string candidate = dir + "/../backends_" + platform + ".conf";
+        std::ifstream test(candidate);
+        if (test.is_open()) return candidate;
+      }
+
+      // Try package-relative: <dir>/../backends.conf
+      std::string candidate = dir + "/../backends.conf";
       std::ifstream test(candidate);
       if (test.is_open()) return candidate;
       // Try: <dir>/backends.conf
@@ -78,6 +93,8 @@ std::unordered_map<std::string, Backend> LoadBackendConfig() {
       table[op] = Backend::kCuda;
     } else if (val == "metax") {
       table[op] = Backend::kMetax;
+    } else if (val == "tsingmicro") {
+      table[op] = Backend::kTsingMicro;
     } else if (val == "ascend") {
       table[op] = Backend::kAscend;
     } else if (val == "flagos" || val == "flaggems") {
@@ -109,6 +126,9 @@ std::unordered_map<std::string, Backend> LoadBackendConfig() {
     } else if (v == "metax") {
       table[op] = Backend::kMetax;
       fprintf(stderr, "[flagos] env override: %s -> metax\n", op.c_str());
+    } else if (v == "tsingmicro") {
+      table[op] = Backend::kTsingMicro;
+      fprintf(stderr, "[flagos] env override: %s -> tsingmicro\n", op.c_str());
     } else if (v == "ascend") {
       table[op] = Backend::kAscend;
       fprintf(stderr, "[flagos] env override: %s -> ascend\n", op.c_str());

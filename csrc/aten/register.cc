@@ -181,6 +181,10 @@ void WrapperRecordStream(at::Tensor& self, at::Stream s) {
     return;
   }
   auto* alloc = c10::flagos::GetCachingAllocator();
+  if (!alloc) {
+    // No-op when caching allocator is not available on this platform.
+    return;
+  }
   // Convert at::Stream to flagos Stream_t.
   // The stream id encodes the underlying device stream pointer.
   Stream_t stream = reinterpret_cast<Stream_t>(s.id());
@@ -246,7 +250,6 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   #define FLAGOS_GEN_IMPLS
   #include "generated/register.inc"
   #undef FLAGOS_GEN_IMPLS
-
 }
 
 // Register fallback for all unimplemented operators

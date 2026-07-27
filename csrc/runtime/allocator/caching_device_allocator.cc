@@ -4,8 +4,12 @@
 
 #if defined(USE_ASCEND)
 #include "backends/ascend_memory.h"
-#else
+#endif
+#if !defined(USE_ASCEND) && !defined(USE_TSINGMICRO)
 #include "backends/cuda_memory.h"
+#endif
+#if defined(USE_TSINGMICRO)
+#include "backends/tsingmicro_memory.h"
 #endif
 
 #include <c10/util/Exception.h>
@@ -37,12 +41,16 @@ CachingDeviceAllocator::CachingDeviceAllocator(
 }
 
 CachingDeviceAllocator::~CachingDeviceAllocator() {
+#if !defined(USE_TSINGMICRO)
   // Release all cached memory on destruction.
+  // On TsingMicro, skip this — the TX runtime may already be shut down
+  // at process exit, causing segfaults in txFree.
   for (auto& state_ptr : device_states_) {
     if (state_ptr) {
       release_cached_blocks(*state_ptr);
     }
   }
+#endif
   instance_ = nullptr;
 }
 
@@ -510,6 +518,9 @@ CachingDeviceAllocator* GetCachingAllocator() {
     // Metax and Ascend backends will be added later.
 #if defined(USE_ASCEND)
     auto backend = std::make_unique<AscendDeviceMemory>();
+    alloc = std::make_unique<CachingDeviceAllocator>(std::move(backend));
+#elif defined(USE_TSINGMICRO)
+    auto backend = std::make_unique<TsingMicroDeviceMemory>();
     alloc = std::make_unique<CachingDeviceAllocator>(std::move(backend));
 #else
     // CUDA (and Metax, which uses CUDA-compatible API)

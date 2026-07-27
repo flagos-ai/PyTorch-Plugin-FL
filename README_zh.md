@@ -1,3 +1,19 @@
+<!--
+ Copyright 2026 FlagOS Contributors
+
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+ -->
+
 # torch_fl
 
 基于 PyTorch PrivateUse1 扩展机制的自定义设备插件，将 [FlagGems](https://github.com/FlagOpen/FlagGems) 高性能 Triton 算子注册为 `flagos` 设备后端，实现统一的多芯支持。
