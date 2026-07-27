@@ -26,8 +26,15 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
+# flag_gems is the default operator source for the flagos device: its Triton
+# kernels are routed via backends_*.conf and are on by default, so it is a hard
+# runtime dependency (pure Python + Triton, installs cleanly from PyPI). It is
+# NOT vendored into the wheel — flag_gems iterates fast and pinning a copy would
+# only make upgrades harder. Versions match the validated 2.10 env.
 dependencies = [
     "torch",
+    "flag_gems>=5.0.2",
+    "triton>=3.5.1",
 ]
 
 [project.optional-dependencies]
@@ -35,6 +42,15 @@ dev = [
     "pytest",
     "black",
     "isort",
+]
+# FlagCX enables the heterogeneous unified-comm inner backend for distributed
+# (ProcessGroupFlagOS tries it first, then falls back to the vendor-native
+# backend — NCCL/HCCL). It is a hardware-specific compiled artifact (per-vendor
+# adaptor + CCL) with no PyPI release, so it must be built from source:
+# https://github.com/FlagOpen/FlagCX (see docs/distributed_flagcx_plan.md).
+# This extra is a marker only; installing it does not fetch a wheel.
+flagcx = [
+    "flagcx",
 ]
 
 [tool.setuptools.packages.find]
