@@ -75,25 +75,23 @@ def _run_bmm_subprocess(
     """Run a minimal bmm call in a subprocess and return the result."""
     env = os.environ.copy()
     env.update(extra_env)
-    prefix = ""
+    setup = "import torch_fl, torch; "
     if stub_python_op:
         # This test only verifies routing; avoid triggering FlagGems BMM autotuning.
-        prefix = (
+        setup += (
             "import flag_gems.ops; "
             "flag_gems.ops.bmm = lambda *args: "
             "(_ for _ in ()).throw(RuntimeError('bmm dispatch sentinel')); "
         )
     if use_out:
-        code = prefix + (
-            "import torch_fl, torch; "
+        code = setup + (
             "a = torch.randn(2,4,4,device='flagos:0'); "
             "b = torch.randn(2,4,4,device='flagos:0'); "
             "out = torch.empty(2,4,4,device='flagos:0'); "
             "torch.bmm(a, b, out=out)"
         )
     else:
-        code = prefix + (
-            "import torch_fl, torch; "
+        code = setup + (
             "a = torch.randn(2,4,4,device='flagos:0'); "
             "b = torch.randn(2,4,4,device='flagos:0'); "
             "torch.bmm(a, b)"
