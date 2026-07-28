@@ -313,6 +313,36 @@ pytest tests/integration/ops -q -m "not flaggems and not flaggems_python"
   这个绝对路径，而 glibc ≥ 2.34 已把 librt 合并进 libc，该文件不再存在。
   `ACCELERATOR=dcu` 分支会把这类悬空绝对路径改写为 `-lrt`。
 
+#### 在 DCU 上启用 FlagGems
+
+DTK 自带 Triton（`hcu` 后端）和 FlagGems，其 `hygon` vendor 声明的
+`device_name="cuda"` 正好契合 boxing 路线。两者都装在 DTK 的系统解释器里，因此
+直接把环境指过去即可，不要装 PyPI 上面向 NVIDIA 的 wheel：
+
+```bash
+pip install pyyaml sqlalchemy          # flag_gems 依赖
+mkdir -p /path/to/gems_path && cd /path/to/gems_path
+ln -s /usr/local/lib/python3.10/dist-packages/triton .
+ln -s /usr/local/lib/python3.10/dist-packages/flag_gems .
+
+ACCELERATOR=dcu FLAGGEMS_PYTHON=1 pip install --no-build-isolation -e .
+
+export PYTHONPATH=/path/to/gems_path
+export TRITON_BACKENDS_IN_TREE=1       # 该安装没有 dist-info，
+                                       # 基于 entry-point 的后端发现拿不到任何后端
+export GEMS_VENDOR=hygon
+export FLAGOS_USE_FLAGGEMS=1
+pytest tests/integration/ops -q        # 无需再屏蔽 marker
+```
+
+DCU 构建会把 `ACCELERATOR=dcu` 记录到 `torch_fl/_build_config.py`，因此运行时只需
+`FLAGOS_USE_FLAGGEMS=1` 就会选中 `backends_dcu_flaggems.conf`，不必重新导出
+`ACCELERATOR`。该配置即 `backends_flaggems.conf`，只是把 `hcu` Triton 编译不了或
+跑不通的算子退回 cuda boxing 算子：`silu_backward`（`tl.math.div_rn` 缺少
+`create_precise_divf` lowering）与 `slice_backward`（单独跑结果正确，但其梯度喂给
+MIOpen 的 `convolution_backward` 会触发硬件 VMFault）。可用
+`FLAGOS_OP_<name>=flagos_python|cuda` 按算子覆盖。
+
 ### 从源码安装（燧原 GCU 平台）
 
 燧原 GCU 走的是**原生算子路线**（与 Ascend 一致），而不是 CUDA boxing：

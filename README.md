@@ -346,6 +346,38 @@ Notes:
   which no longer exists on glibc ≥ 2.34 (librt was folded into libc). The
   `ACCELERATOR=dcu` branch rewrites that dangling absolute path to `-lrt`.
 
+#### Enabling FlagGems on DCU
+
+DTK ships its own Triton (the `hcu` backend) and a FlagGems build whose `hygon`
+vendor declares `device_name="cuda"`, which is exactly what the boxing route
+expects. Both live in the DTK system interpreter, so point your env at them
+rather than installing the PyPI wheels (which target NVIDIA):
+
+```bash
+pip install pyyaml sqlalchemy          # flag_gems imports these
+mkdir -p /path/to/gems_path && cd /path/to/gems_path
+ln -s /usr/local/lib/python3.10/dist-packages/triton .
+ln -s /usr/local/lib/python3.10/dist-packages/flag_gems .
+
+ACCELERATOR=dcu FLAGGEMS_PYTHON=1 pip install --no-build-isolation -e .
+
+export PYTHONPATH=/path/to/gems_path
+export TRITON_BACKENDS_IN_TREE=1       # this install has no dist-info, so
+                                       # entry-point backend discovery finds nothing
+export GEMS_VENDOR=hygon
+export FLAGOS_USE_FLAGGEMS=1
+pytest tests/integration/ops -q        # no marker deselection needed
+```
+
+A DCU build records `ACCELERATOR=dcu` in `torch_fl/_build_config.py`, so
+`FLAGOS_USE_FLAGGEMS=1` alone selects `backends_dcu_flaggems.conf` — no need to
+re-export `ACCELERATOR` at runtime. That config is `backends_flaggems.conf` with
+the ops `hcu` Triton cannot compile or run routed back to the cuda boxing
+kernel: `silu_backward` (`tl.math.div_rn` has no `create_precise_divf` lowering)
+and `slice_backward` (its output is correct standalone, but feeding that grad to
+MIOpen's `convolution_backward` triggers a hardware VMFault). Override per op
+with `FLAGOS_OP_<name>=flagos_python|cuda`.
+
 ### Build from Source (Enflame GCU Platform)
 
 Enflame GCU takes the **native operator route** (like Ascend), not CUDA boxing:

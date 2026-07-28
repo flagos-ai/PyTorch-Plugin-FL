@@ -532,6 +532,7 @@ CachingDeviceAllocator* GetCachingAllocator() {
     // delegates to torch's own allocator via the device-generic registry --
     // c10::hip under the hood, no c10::cuda symbols (see backends/dcu_memory.h).
     auto backend = std::make_unique<DcuDeviceMemory>();
+    alloc = std::make_unique<CachingDeviceAllocator>(std::move(backend));
 #elif defined(USE_GCU)
     auto backend = std::make_unique<GcuDeviceMemory>();
     alloc = std::make_unique<CachingDeviceAllocator>(std::move(backend));

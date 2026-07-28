@@ -16,6 +16,24 @@ import os
 import sys
 
 
+def _build_accelerator() -> str:
+    """Accelerator this wheel was built for, lowercased ("" if unknown).
+
+    Reads the ACCELERATOR env var first, then the _build_config.py that setup.py
+    writes at build time. The generated file is what makes a DCU wheel
+    self-describing: _select_backend_config() runs before `import torch`, so it
+    cannot inspect torch.version.hip to detect DCU on its own.
+    """
+    env = os.environ.get("ACCELERATOR", "").strip().lower()
+    if env:
+        return env
+    try:
+        from torch_fl._build_config import ACCELERATOR as built
+    except ImportError:
+        return ""
+    return str(built).strip().lower()
+
+
 def _select_backend_config() -> None:
     """Pick the op-routing config file based on the FLAGOS_USE_FLAGGEMS switch.
 
@@ -26,11 +44,14 @@ def _select_backend_config() -> None:
 
       * FLAGOS_USE_FLAGGEMS=1                  -> backends_flaggems.conf
       * FLAGOS_USE_FLAGGEMS=1 + METAX_BOXING=1 -> backends_metax_flaggems.conf
+      * FLAGOS_USE_FLAGGEMS=1 + ACCELERATOR=dcu -> backends_dcu_flaggems.conf
       * unset / 0                              -> backends_cuda.conf (pure boxing)
 
     The MetaX flaggems conf mirrors backends_flaggems.conf but routes the ops
     triton-metax cannot run (mm/bmm/mean.dim) back to the cuda boxing kernel
-    (maca libtorch_cuda) instead of flagos_python. An explicit
+    (maca libtorch_cuda) instead of flagos_python. The DCU one does the same for
+    the ops DTK's triton (hcu backend) cannot run -- slice_backward (hardware
+    VMFault) and silu_backward (missing div_rn lowering). An explicit
     FLAGOS_BACKEND_CONFIG always wins (advanced/testing use), and the per-op
     FLAGOS_OP_<name> overrides in common.cc still apply on top. This must run
     before the first op dispatch triggers BackendTable() init; setting it at
@@ -61,6 +82,8 @@ def _select_backend_config() -> None:
     metax_boxing = os.environ.get("FLAGOS_METAX_BOXING", "0") == "1"
     if use_flaggems and metax_boxing:
         conf_name = "backends_metax_flaggems.conf"
+    elif use_flaggems and _build_accelerator() == "dcu":
+        conf_name = "backends_dcu_flaggems.conf"
     elif use_flaggems:
         conf_name = "backends_flaggems.conf"
     else:
