@@ -1928,6 +1928,14 @@ def main():
             "special_gammainc",
             "special_scaled_modified_bessel_k1",
             "_upsample_nearest_exact1d",
+            # slice_backward: FlagGems' slice_backward_kernel does an out-of-bounds
+            # access on large tensors (e.g. grad_output [1, 6144, 35] scattered into
+            # [1, 6144, 32], as in Qwen3.5 linear-attn conv1d bwd), raising an
+            # Xnack Error / ATU Fault (0x8) in the shader. On MetaX that fault
+            # DISABLES the whole process's mcruntime (mcGetDevice ->
+            # mcErrorIllegalAddress), poisoning every subsequent op -- unrecoverable
+            # in-process. Route to the cuda boxing kernel, which is bounds-safe.
+            "slice_backward",
         }
         mfg_conf_path = repo_root / "torch_fl/configs/backends_metax_flaggems.conf"
         mfg_lines = [
