@@ -392,6 +392,16 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
             opts,
         )
 
+    def _allgather_base(self, output_tensor, input_tensor, opts=None):
+        # Backs the functional all_gather_into_tensor (single flat tensor in/out).
+        if opts is None:
+            opts = _c10d.AllgatherOptions()
+        return self._inner._allgather_base(
+            _to_comm(output_tensor, self._view_fn),
+            _to_comm(input_tensor, self._view_fn),
+            opts,
+        )
+
     def broadcast(self, tensors, opts=None):
         if opts is None:
             opts = _c10d.BroadcastOptions()
@@ -418,6 +428,16 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
         return self._inner.reduce_scatter_tensor_coalesced(
             _tl(output_tensors, self._view_fn),
             _tl(input_tensors, self._view_fn),
+            opts,
+        )
+
+    def _reduce_scatter_base(self, output_tensor, input_tensor, opts=None):
+        # Backs the functional reduce_scatter_tensor (single flat tensor in/out).
+        if opts is None:
+            opts = _c10d.ReduceScatterOptions()
+        return self._inner._reduce_scatter_base(
+            _to_comm(output_tensor, self._view_fn),
+            _to_comm(input_tensor, self._view_fn),
             opts,
         )
 
