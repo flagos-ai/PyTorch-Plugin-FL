@@ -5,7 +5,10 @@
 #if defined(USE_ASCEND)
 #include "backends/ascend_memory.h"
 #endif
-#if !defined(USE_ASCEND) && !defined(USE_TSINGMICRO)
+#if defined(USE_DCU)
+#include "backends/dcu_memory.h"
+#endif
+#if !defined(USE_ASCEND) && !defined(USE_TSINGMICRO) && !defined(USE_DCU)
 #include "backends/cuda_memory.h"
 #endif
 #if defined(USE_TSINGMICRO)
@@ -514,13 +517,17 @@ CachingDeviceAllocator* GetCachingAllocator() {
   static std::once_flag flag;
   std::call_once(flag, []() {
     // Select backend based on build configuration.
-    // For now, we always create the CUDA backend when this code is compiled.
-    // Metax and Ascend backends will be added later.
 #if defined(USE_ASCEND)
     auto backend = std::make_unique<AscendDeviceMemory>();
     alloc = std::make_unique<CachingDeviceAllocator>(std::move(backend));
 #elif defined(USE_TSINGMICRO)
     auto backend = std::make_unique<TsingMicroDeviceMemory>();
+    alloc = std::make_unique<CachingDeviceAllocator>(std::move(backend));
+#elif defined(USE_DCU)
+    // DCU: DTK's CUDA compatibility layer supplies the runtime API, and caching
+    // delegates to torch's own allocator via the device-generic registry --
+    // c10::hip under the hood, no c10::cuda symbols (see backends/dcu_memory.h).
+    auto backend = std::make_unique<DcuDeviceMemory>();
     alloc = std::make_unique<CachingDeviceAllocator>(std::move(backend));
 #else
     // CUDA (and Metax, which uses CUDA-compatible API)

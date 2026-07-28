@@ -21,7 +21,6 @@ name = "torch_fl"
 # Version is computed in setup.py: the MetaX self-contained build appends a
 # local segment (e.g. 0.1.0+metax3.8.1) via FLAGOS_WHEEL_LOCAL. A static value
 # here would override setup()'s version, so it must be declared dynamic.
-dynamic = ["version"]
 description = "FlagGems operators as a custom PyTorch device (flagos)"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -45,11 +44,11 @@ classifiers = [
 # runtime dependency (pure Python + Triton, installs cleanly from PyPI). It is
 # NOT vendored into the wheel — flag_gems iterates fast and pinning a copy would
 # only make upgrades harder. Versions match the validated 2.10 env.
-dependencies = [
-    "torch",
-    "flag_gems>=5.0.2",
-    "triton>=3.5.1",
-]
+#
+# Declared dynamic so setup.py can drop flag_gems/triton on platforms built in
+# pure-boxing mode (ACCELERATOR=dcu), where PyPI's NVIDIA-targeted triton wheel
+# is the wrong artifact — DTK ships its own. See _install_requires() in setup.py.
+dynamic = ["version", "dependencies"]
 
 [project.optional-dependencies]
 dev = [

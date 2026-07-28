@@ -135,6 +135,11 @@ if(ACCELERATOR STREQUAL "ascend")
 elseif(ACCELERATOR STREQUAL "tsingmicro")
   target_compile_definitions(${LIBRARY_NAME} PRIVATE USE_TSINGMICRO=1)
   target_link_libraries(${LIBRARY_NAME} PRIVATE ${_torch_fl_link_libs})
+elseif(ACCELERATOR STREQUAL "dcu")
+  # Selects backends/dcu_memory.h (CUDA-compat runtime, no c10::cuda caching
+  # delegation -- the DCU wheel exports c10::hip, not c10::cuda).
+  target_compile_definitions(${LIBRARY_NAME} PRIVATE USE_DCU=1)
+  target_link_libraries(${LIBRARY_NAME} PRIVATE ${_torch_fl_link_libs})
 else()
   target_link_libraries(${LIBRARY_NAME} PRIVATE ${_torch_fl_link_libs})
 endif()

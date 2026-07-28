@@ -208,13 +208,82 @@ FLAGOS_DISABLE_CUDA_ASSETS=1 python -c "import torch_fl, torch; \
   print((x @ x).cpu())"
 ```
 
+### 从源码安装（海光 DCU 平台）
+
+海光 DCU（DTK）复用 **CUDA boxing 路线**，通过独立的 `ACCELERATOR=dcu` 分支支持。
+之所以可行，取决于厂商栈的两个特性：
+
+- DCU 的 `torch` wheel 是 **hipify 构建**：HIP 算子注册在 `CUDA` dispatch key 上，
+  张量的设备类型也报告为 `DeviceType::CUDA`（`torch.version.cuda is None`，
+  `torch.version.hip == '6.3.x'`）。因此生成的 PrivateUse1 → CUDA boxing 算子
+  （`csrc/aten/generated/cuda_kernels.cc`）无需改动即可分发进 `libtorch_hip.so`。
+- DTK 在 `$DTK_ROOT/cuda/cuda-*` 提供 **CUDA 兼容 toolkit**，其 `libcudart.so.12`
+  只是 `libgalaxyhip.so` 之上的一层薄壳——与 `libtorch_hip.so` 使用的是同一个
+  runtime，因此只有一份驱动状态，不会出现两套。`csrc/runtime/accelerator/cuda/`
+  下的 runtime 源码可以用普通 host `g++` 原样编译：不需要 `nvcc`、`hipcc`，也不
+  需要 hipify。
+
+该构建是 **纯 boxing**：`CUDA_KERNEL`、`FLAGGEMS_KERNEL`、`FLAGGEMS_PYTHON` 全部
+强制关闭（DTK 自带 Triton，PyPI 上面向 NVIDIA 的 `triton` wheel 是错误产物，因此
+不会被拉取）。
+
+```bash
+git clone https://github.com/flagos-ai/PyTorch-Plugin-FL.git && cd PyTorch-Plugin-FL
+
+source /opt/dtk/env.sh          # 会导出 ROCM_PATH；DTK_ROOT 同样生效
+
+ACCELERATOR=dcu pip install --no-build-isolation -vvv -e .
+```
+
+`DTK_ROOT` 的解析顺序为 `DTK_ROOT` → `ROCM_PATH` → `/opt/dtk`。若 DTK 装在其他
+位置，显式传入即可。
+
+**验证：**
+
+```bash
+python -c "
+import torch, torch_fl
+print('device count:', torch.flagos.device_count())
+x = torch.randn(512, 512, device='flagos')
+print('mm matches .cuda():',
+      torch.allclose(torch.mm(x, x).cpu(), torch.mm(x.cpu().cuda(), x.cpu().cuda()).cpu()))
+"
+```
+
+**跑测试**（纯 boxing 构建，需要反选 FlagGems 相关 marker）：
+
+```bash
+pytest tests/unit tests/integration/test_allocator.py tests/integration/test_factory_ops.py -q
+pytest tests/integration/ops -q -m "not flaggems and not flaggems_python"
+```
+
+说明：
+
+- **内存池。** flagos 张量与 boxing 算子的输出共用一个池。`dcu_memory.h` 通过设备
+  无关的注册表（`c10::getDeviceAllocator(kCUDA)`）把 caching 委托给 torch 自己的
+  分配器，而不是走 `c10::cuda::` 命名空间——DCU wheel 导出的是
+  `c10::hip::HIPCachingAllocator`，完全没有 `c10::cuda` 符号，而且
+  `cuda_runtime.h` 与 `hip/hip_runtime.h` 无法出现在同一个编译单元里。因此
+  `memory_allocated()` / `memory_reserved()` / `empty_cache()` 统计与行为都是真实的。
+- **`record_stream` 在 DCU 上是 no-op**：从裸 stream 句柄构造 `c10::Stream` 需要
+  `c10::cuda::getStreamFromExternal`，该 wheel 未导出此符号。
+- **`.cuda()` 的反向与 `torch_fl` 不能在同一进程中共存。** PyTorch 的
+  `register_privateuse1_backend` 会让 `at::getAccelerator()` 返回 `PrivateUse1`，
+  于是 autograd 引擎在纯 CUDA 图上找不到 stream 元数据，在 `engine.cpp` 里断言失败。
+  这是上游 PrivateUse1 的既有行为，在 CUDA/MetaX/Ascend 上表现一致——flagos 设备
+  自身的反向不受影响。取 `.cuda()` 基准请放到独立进程里。
+- **DTK 导出的 MIOpen CMake 配置** 内嵌了 `/usr/lib/x86_64-linux-gnu/librt.so`
+  这个绝对路径，而 glibc ≥ 2.34 已把 librt 合并进 libc，该文件不再存在。
+  `ACCELERATOR=dcu` 分支会把这类悬空绝对路径改写为 `-lrt`。
+
 ### 构建环境变量
 
 | 变量 | 说明 |
 |------|------|
-| `ACCELERATOR` | 硬件平台：`cuda`（默认）、`metax` 或 `ascend` |
+| `ACCELERATOR` | 硬件平台：`cuda`（默认）、`metax`、`ascend`、`tsingmicro` 或 `dcu` |
 | `FLAGOS_BUILD_JOBS` | 原生库并行编译线程数（默认 CPU 核数）；日志过长可设 `1` |
 | `CUDA_HOME` | CUDA toolkit 路径 |
+| `DTK_ROOT` | 海光 DTK 路径（依次回退到 `ROCM_PATH`、`/opt/dtk`；DCU 构建必需） |
 | `METAX_PATH` | MetaX SDK 路径（默认 `/opt/maca`，metax 构建必需） |
 | `METAX_ARCH` / `METAX_MXCC` | 可选：GPU 架构或 mxcc/cucc 编译器路径 |
 | `METAX_KERNEL` | 启用 MetaX C++ kernel 构建（`ON`/`OFF`；`ACCELERATOR=metax` 时自动开启） |

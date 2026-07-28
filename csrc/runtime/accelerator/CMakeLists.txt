@@ -20,6 +20,8 @@ elseif(ACCELERATOR STREQUAL "metax")
   project(FLAGOS_RUNTIME CXX C)
 elseif(ACCELERATOR STREQUAL "tsingmicro")
   project(FLAGOS_RUNTIME CXX C)
+elseif(ACCELERATOR STREQUAL "dcu")
+  project(FLAGOS_RUNTIME CXX C)
 else()
   project(FLAGOS_RUNTIME CUDA CXX C)
 endif()
@@ -71,6 +73,16 @@ elseif(ACCELERATOR STREQUAL "tsingmicro")
   target_include_directories(${LIBRARY_NAME} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR} /usr/local/kuiper/include)
   target_link_directories(${LIBRARY_NAME} PRIVATE /usr/local/kuiper/lib)
   target_link_libraries(${LIBRARY_NAME} PRIVATE hpgr)
+elseif(ACCELERATOR STREQUAL "dcu")
+  # DTK's CUDA compatibility toolkit provides cuda_runtime.h and a libcudart
+  # shim over libgalaxyhip, so the CUDA runtime sources build unchanged --
+  # no separate dcu/ directory, and no nvcc (plain host g++).
+  file(GLOB SOURCE_FILES "${CMAKE_CURRENT_SOURCE_DIR}/cuda/*.cc")
+
+  add_library(${LIBRARY_NAME} SHARED ${SOURCE_FILES})
+
+  target_include_directories(${LIBRARY_NAME} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR})
+  target_link_libraries(${LIBRARY_NAME} PRIVATE ${CUDA_RUNTIME_LIB})
 else()
   file(GLOB SOURCE_FILES "${CMAKE_CURRENT_SOURCE_DIR}/cuda/*.cc")
 

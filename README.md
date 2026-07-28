@@ -233,12 +233,86 @@ FLAGOS_DISABLE_CUDA_ASSETS=1 python -c "import torch_fl, torch; \
   print((x @ x).cpu())"
 ```
 
+### Build from Source (Hygon DCU Platform)
+
+Hygon DCU (DTK) reuses the **CUDA boxing route** with a dedicated
+`ACCELERATOR=dcu` branch. Two properties of the vendor stack make this work:
+
+- The DCU `torch` wheel is a **hipified** build: it registers its HIP kernels
+  under the `CUDA` dispatch key and its tensors report `DeviceType::CUDA`
+  (`torch.version.cuda is None`, `torch.version.hip == '6.3.x'`). So the
+  generated PrivateUse1 → CUDA boxing kernels
+  (`csrc/aten/generated/cuda_kernels.cc`) dispatch into `libtorch_hip.so`
+  unchanged.
+- DTK ships a **CUDA compatibility toolkit** at `$DTK_ROOT/cuda/cuda-*` whose
+  `libcudart.so.12` is a thin shim over `libgalaxyhip.so` — the same runtime
+  `libtorch_hip.so` uses, so there is one driver state, not two. The runtime
+  sources under `csrc/runtime/accelerator/cuda/` therefore compile as-is with
+  plain host `g++`; no `nvcc`, no `hipcc`, no hipify pass.
+
+The build is **pure boxing**: `CUDA_KERNEL`, `FLAGGEMS_KERNEL` and
+`FLAGGEMS_PYTHON` are all forced off (DTK ships its own Triton, so the
+NVIDIA-targeted PyPI `triton` wheel is the wrong artifact and is not pulled in).
+
+```bash
+git clone https://github.com/flagos-ai/PyTorch-Plugin-FL.git && cd PyTorch-Plugin-FL
+
+source /opt/dtk/env.sh          # exports ROCM_PATH; DTK_ROOT also honored
+
+ACCELERATOR=dcu pip install --no-build-isolation -vvv -e .
+```
+
+`DTK_ROOT` resolves from `DTK_ROOT` → `ROCM_PATH` → `/opt/dtk`. Pass it
+explicitly if DTK lives elsewhere.
+
+**Verify:**
+
+```bash
+python -c "
+import torch, torch_fl
+print('device count:', torch.flagos.device_count())
+x = torch.randn(512, 512, device='flagos')
+print('mm matches .cuda():',
+      torch.allclose(torch.mm(x, x).cpu(), torch.mm(x.cpu().cuda(), x.cpu().cuda()).cpu()))
+"
+```
+
+**Run tests** (deselect the FlagGems markers — this is a pure-boxing build):
+
+```bash
+pytest tests/unit tests/integration/test_allocator.py tests/integration/test_factory_ops.py -q
+pytest tests/integration/ops -q -m "not flaggems and not flaggems_python"
+```
+
+Notes:
+
+- **Memory pool.** flagos tensors and the boxed kernels' outputs share one pool.
+  `dcu_memory.h` delegates caching to torch's own allocator through the
+  device-generic registry (`c10::getDeviceAllocator(kCUDA)`) rather than the
+  `c10::cuda::` namespace — the DCU wheel exports `c10::hip::HIPCachingAllocator`
+  and has zero `c10::cuda` symbols, and `cuda_runtime.h` cannot share a
+  translation unit with `hip/hip_runtime.h`. So `memory_allocated()` /
+  `memory_reserved()` / `empty_cache()` report and act on real usage.
+- **`record_stream` is a no-op** on DCU: building a `c10::Stream` from a raw
+  stream handle needs `c10::cuda::getStreamFromExternal`, which this wheel does
+  not export.
+- **`.cuda()` autograd and `torch_fl` cannot share a process.** PyTorch's
+  `register_privateuse1_backend` makes `at::getAccelerator()` return
+  `PrivateUse1`, so the autograd engine finds no stream metadata for a
+  pure-CUDA graph and asserts in `engine.cpp`. This is upstream PrivateUse1
+  behaviour, identical on CUDA/MetaX/Ascend — flagos-device autograd is
+  unaffected. Take `.cuda()` baselines in a separate process.
+- **DTK's exported MIOpen CMake config** bakes in `/usr/lib/x86_64-linux-gnu/librt.so`,
+  which no longer exists on glibc ≥ 2.34 (librt was folded into libc). The
+  `ACCELERATOR=dcu` branch rewrites that dangling absolute path to `-lrt`.
+
 ### Build Environment Variables
 
 | Variable | Description |
 |----------|-------------|
-| `ACCELERATOR` | Hardware platform: `cuda` (default), `metax`, or `ascend` |
+| `ACCELERATOR` | Hardware platform: `cuda` (default), `metax`, `ascend`, `tsingmicro`, or `dcu` |
 | `CUDA_HOME` | CUDA toolkit path |
+| `DTK_ROOT` | Hygon DTK path (falls back to `ROCM_PATH`, then `/opt/dtk`; required for DCU build) |
 | `METAX_PATH` | MetaX SDK path (default `/opt/maca`; required for MetaX build) |
 | `METAX_ARCH` / `METAX_MXCC` | Optional GPU arch or `mxcc`/`cucc` compiler path |
 | `METAX_KERNEL` | Enable MetaX C++ kernel build (`ON`/`OFF`; auto-enabled when `ACCELERATOR=metax`) |

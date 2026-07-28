@@ -14,7 +14,7 @@
 
 cmake_minimum_required(VERSION 3.18 FATAL_ERROR)
 
-set(ACCELERATOR "cuda" CACHE STRING "Accelerator platform: cuda, metax, ascend, or tsingmicro")
+set(ACCELERATOR "cuda" CACHE STRING "Accelerator platform: cuda, metax, ascend, tsingmicro, or dcu")
 
 # Kernel build options (can be overridden via -D flags from setup.py)
 option(CUDA_KERNEL "Build CUDA kernel implementations" ON)
@@ -45,6 +45,17 @@ elseif(ACCELERATOR STREQUAL "metax")
   project(TORCH_FLAGOS CXX C)
 elseif(ACCELERATOR STREQUAL "tsingmicro")
   project(TORCH_FLAGOS CXX C)
+elseif(ACCELERATOR STREQUAL "dcu")
+  # Hygon DCU (DTK). The vendor torch wheel is a hipified build that registers
+  # its HIP kernels under the CUDA dispatch key (tensors report device type
+  # kCUDA), so the generated PrivateUse1 -> CUDA boxing kernels dispatch into
+  # libtorch_hip.so unchanged. DTK also ships a CUDA compatibility toolkit whose
+  # libcudart.so.12 is a thin shim over libgalaxyhip.so, so the runtime sources
+  # under csrc/runtime/accelerator/cuda/ compile as-is against host g++.
+  # No nvcc and no CUDA language: nothing outside backends/metax/ is a .cu.
+  set(CUDA_KERNEL OFF CACHE BOOL "Build CUDA kernel implementations" FORCE)
+  set(FLAGGEMS_KERNEL OFF CACHE BOOL "Build FlagGems kernel implementations" FORCE)
+  project(TORCH_FLAGOS CXX C)
 else()
   # project(... CUDA) runs nvcc compiler-id before find_package(CUDAToolkit); conda
   # layouts need CUDAToolkit_ROOT (headers under targets/x86_64-linux/include).
@@ -72,7 +83,8 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-if(NOT ACCELERATOR STREQUAL "metax" AND NOT ACCELERATOR STREQUAL "ascend" AND NOT ACCELERATOR STREQUAL "tsingmicro")
+if(NOT ACCELERATOR STREQUAL "metax" AND NOT ACCELERATOR STREQUAL "ascend"
+   AND NOT ACCELERATOR STREQUAL "tsingmicro" AND NOT ACCELERATOR STREQUAL "dcu")
   set(CMAKE_CUDA_STANDARD 17)
   set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 endif()
@@ -144,6 +156,56 @@ elseif(ACCELERATOR STREQUAL "tsingmicro")
   if(NOT TARGET CUDA::nvToolsExt)
     add_library(CUDA::nvToolsExt INTERFACE IMPORTED)
   endif()
+elseif(ACCELERATOR STREQUAL "dcu")
+  # Hygon DTK. DTK_ROOT defaults to /opt/dtk (ROCM_PATH is what env.sh exports).
+  if(NOT DTK_ROOT)
+    set(DTK_ROOT "$ENV{DTK_ROOT}")
+  endif()
+  if(NOT DTK_ROOT)
+    set(DTK_ROOT "$ENV{ROCM_PATH}")
+  endif()
+  if(NOT DTK_ROOT)
+    set(DTK_ROOT "/opt/dtk")
+  endif()
+  message(STATUS "Hygon DTK path: ${DTK_ROOT}")
+
+  # DTK's CUDA compatibility toolkit. Its libcudart.so.12 is a shim over
+  # libgalaxyhip.so -- the same runtime libtorch_hip.so uses -- so there is one
+  # driver state, not two.
+  file(GLOB _DCU_CUDA_CANDIDATES "${DTK_ROOT}/cuda/cuda-*")
+  set(DCU_CUDA_ROOT "")
+  foreach(_cand IN LISTS _DCU_CUDA_CANDIDATES)
+    if(EXISTS "${_cand}/include/cuda_runtime.h")
+      set(DCU_CUDA_ROOT "${_cand}")
+      break()
+    endif()
+  endforeach()
+  if(NOT DCU_CUDA_ROOT)
+    message(FATAL_ERROR
+        "ACCELERATOR=dcu selected, but the DTK CUDA compatibility toolkit was "
+        "not found under ${DTK_ROOT}/cuda/. Set DTK_ROOT (or ROCM_PATH) to a "
+        "DTK installation that provides cuda-*/include/cuda_runtime.h.")
+  endif()
+  message(STATUS "DTK CUDA compatibility toolkit: ${DCU_CUDA_ROOT}")
+
+  add_library(cuda_runtime_compat INTERFACE IMPORTED)
+  set_target_properties(cuda_runtime_compat PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "${DCU_CUDA_ROOT}/include"
+  )
+  target_link_directories(cuda_runtime_compat INTERFACE "${DCU_CUDA_ROOT}/lib64")
+  target_link_libraries(cuda_runtime_compat INTERFACE cudart)
+
+  set(CUDA_RUNTIME_LIB cuda_runtime_compat)
+
+  # Embed the compat + DTK library paths so LD_LIBRARY_PATH is not needed.
+  list(APPEND CMAKE_INSTALL_RPATH "${DCU_CUDA_ROOT}/lib64" "${DTK_ROOT}/lib")
+
+  # Pre-create torch::cudart so PyTorch's cuda.cmake is skipped entirely
+  # (guard: if(TARGET torch::cudart) return()).
+  add_library(torch::cudart INTERFACE IMPORTED)
+  if(NOT TARGET CUDA::nvToolsExt)
+    add_library(CUDA::nvToolsExt INTERFACE IMPORTED)
+  endif()
 elseif(ACCELERATOR STREQUAL "metax")
   # MetaX SDK: use cu-bridge headers and runtime_cu library
   if(NOT METAX_PATH)
@@ -196,6 +258,37 @@ else()
 endif()
 
 find_package(Torch REQUIRED)
+
+if(ACCELERATOR STREQUAL "dcu")
+  # DTK exports MIOpen with a build-machine absolute path baked into its link
+  # interface: /usr/lib/x86_64-linux-gnu/librt.so. glibc >= 2.34 folded librt
+  # into libc, so current distros ship only librt.a + librt.so.1 -- that .so
+  # symlink no longer exists and the generated makefiles die with
+  # "No rule to make target '/usr/lib/x86_64-linux-gnu/librt.so'".
+  # Rewrite any dangling absolute path to its bare -l name; the linker resolves
+  # `rt` against the stub archive. Nothing to do on hosts where the path exists.
+  foreach(_dcu_target MIOpen)
+    if(TARGET ${_dcu_target})
+      get_target_property(_dcu_libs ${_dcu_target} INTERFACE_LINK_LIBRARIES)
+      if(_dcu_libs)
+        set(_dcu_fixed_libs "")
+        foreach(_dcu_lib IN LISTS _dcu_libs)
+          if(IS_ABSOLUTE "${_dcu_lib}" AND NOT EXISTS "${_dcu_lib}")
+            get_filename_component(_dcu_name "${_dcu_lib}" NAME_WE)
+            string(REGEX REPLACE "^lib" "" _dcu_name "${_dcu_name}")
+            message(STATUS
+                "DCU: ${_dcu_target} links missing ${_dcu_lib}, using -l${_dcu_name}")
+            list(APPEND _dcu_fixed_libs "${_dcu_name}")
+          else()
+            list(APPEND _dcu_fixed_libs "${_dcu_lib}")
+          endif()
+        endforeach()
+        set_target_properties(${_dcu_target} PROPERTIES
+            INTERFACE_LINK_LIBRARIES "${_dcu_fixed_libs}")
+      endif()
+    endif()
+  endforeach()
+endif()
 
 if(FLAGGEMS_KERNEL)
   # Allow override via cmake var or env var

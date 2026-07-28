@@ -274,6 +274,22 @@ def _setup_metax_build_env(env: dict) -> str:
     return metax_path
 
 
+def _dtk_root() -> str:
+    """Hygon DTK install root. Honors DTK_ROOT, then ROCM_PATH (what DTK's
+    env.sh exports), then the default install location."""
+    for key in ("DTK_ROOT", "ROCM_PATH"):
+        path = os.environ.get(key)
+        if path and os.path.isdir(path):
+            return path
+    default = "/opt/dtk"
+    if not os.path.isdir(default):
+        raise RuntimeError(
+            "ACCELERATOR=dcu selected, but no DTK installation was found. "
+            "Source DTK's env.sh or set DTK_ROOT to the install root."
+        )
+    return default
+
+
 def _cmake_build_jobs() -> int:
     """Parallel compile jobs for cmake/ninja. Set FLAGOS_BUILD_JOBS=1 for serial logs."""
     for key in ("FLAGOS_BUILD_JOBS", "MAX_JOBS", "CMAKE_BUILD_PARALLEL_LEVEL"):
@@ -332,6 +348,22 @@ def build_deps():
                 "-DASCEND_KERNEL=OFF",
             ]
         )
+    elif ACCELERATOR == "dcu":
+        # Pure boxing build. The DCU torch wheel is a hipified build whose HIP
+        # kernels are registered under the CUDA dispatch key, so the generated
+        # PrivateUse1 -> CUDA boxing kernels reach them with no hand-written
+        # kernels of our own. FLAGGEMS_KERNEL needs liboperators.so (not built
+        # for DTK); FLAGGEMS_PYTHON needs a DTK triton, which is a separate
+        # install -- both stay off unless explicitly requested below.
+        cmake_args.extend(
+            [
+                "-DCUDA_KERNEL=OFF",
+                "-DFLAGGEMS_KERNEL=OFF",
+                "-DFLAGGEMS_PYTHON=OFF",
+                "-DMETAX_KERNEL=OFF",
+                "-DASCEND_KERNEL=OFF",
+            ]
+        )
 
     # Kernel build options from environment
     for kernel_opt in (
@@ -373,6 +405,8 @@ def build_deps():
         flaggems_dir = _find_flaggems_dir()
         if flaggems_dir:
             cmake_args.append(f"-DFLAGGEMS_DIR={flaggems_dir}")
+    elif ACCELERATOR == "dcu":
+        cmake_args.append(f"-DDTK_ROOT={_dtk_root()}")
 
     subprocess.check_call([cmake, BASE_DIR] + cmake_args, cwd=build_dir, env=build_env)
 
@@ -609,6 +643,14 @@ def _cuda_runtime_requires():
 
 def _install_requires():
     reqs = ["torch"]
+    # FlagGems (and its Triton) is the default operator source, so it is a hard
+    # runtime dep everywhere it can actually run. ACCELERATOR=dcu is the
+    # exception: it builds pure-boxing (FLAGGEMS_KERNEL/FLAGGEMS_PYTHON off) and
+    # DTK ships its own Triton, so pulling PyPI's NVIDIA-targeted triton wheel
+    # would install ~200 MB of the wrong artifact. All flag_gems imports in the
+    # Python layer are ImportError-guarded, so omitting it is safe.
+    if ACCELERATOR != "dcu":
+        reqs += ["flag_gems>=5.0.2", "triton>=3.5.1"]
     # For a CUDA wheel we bundle libtorch_cuda.so and preload it at import; it
     # needs the NVIDIA runtime libs present, so make them hard deps. Ascend/MetaX
     # builds do not (they supply their own runtime), so keep it CUDA-only.
