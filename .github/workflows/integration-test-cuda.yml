@@ -48,8 +48,13 @@ jobs:
           pip install -e . --no-build-isolation
           pip install pytest
 
-      - name: Run ops tests
+      - name: Run ops tests (vendor backend)
         run: pytest tests/integration/ops/ -v -s --tb=short
+
+      - name: Run ops tests (FlagGems runtime path)
+        env:
+          FLAGOS_USE_FLAGGEMS: "1"
+        run: pytest tests/integration/ops/ -m flaggems -v -s --tb=short
 
       - name: Run general tests
         run: pytest tests/integration/test_factory_ops.py -v --device cuda --tb=short
