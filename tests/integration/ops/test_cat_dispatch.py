@@ -84,6 +84,7 @@ def _run_cat_subprocess(
         env=env,
         capture_output=True,
         text=True,
+        timeout=60,
     )
     if check:
         assert result.returncode == 0, (
