@@ -67,13 +67,24 @@ def cuda_ref():
 
 
 def _run_bmm_subprocess(
-    extra_env: dict, use_out: bool = False, check: bool = True
+    extra_env: dict,
+    use_out: bool = False,
+    check: bool = True,
+    stub_python_op: bool = False,
 ) -> subprocess.CompletedProcess:
     """Run a minimal bmm call in a subprocess and return the result."""
     env = os.environ.copy()
     env.update(extra_env)
+    prefix = ""
+    if stub_python_op:
+        # This test only verifies routing; avoid triggering FlagGems BMM autotuning.
+        prefix = (
+            "import flag_gems.ops; "
+            "flag_gems.ops.bmm = lambda *args: "
+            "(_ for _ in ()).throw(RuntimeError('bmm dispatch sentinel')); "
+        )
     if use_out:
-        code = (
+        code = prefix + (
             "import torch_fl, torch; "
             "a = torch.randn(2,4,4,device='flagos:0'); "
             "b = torch.randn(2,4,4,device='flagos:0'); "
@@ -81,7 +92,7 @@ def _run_bmm_subprocess(
             "torch.bmm(a, b, out=out)"
         )
     else:
-        code = (
+        code = prefix + (
             "import torch_fl, torch; "
             "a = torch.randn(2,4,4,device='flagos:0'); "
             "b = torch.randn(2,4,4,device='flagos:0'); "
@@ -92,6 +103,7 @@ def _run_bmm_subprocess(
         env=env,
         capture_output=True,
         text=True,
+        timeout=60,
     )
     if check:
         assert result.returncode == 0, (
@@ -247,6 +259,7 @@ class TestBmmDispatchLog:
         result = _run_bmm_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_bmm": "flaggems_python"},
             check=False,
+            stub_python_op=True,
         )
         assert "[flagos dispatch] bmm -> flagos_python" in result.stderr, (
             f"Expected flagos_python dispatch log, got:\n{result.stderr}"
