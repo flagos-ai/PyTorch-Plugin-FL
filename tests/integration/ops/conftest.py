@@ -104,3 +104,8 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "flaggems_python: requires FlagGems Python wrapper backend"
     )
+    config.addinivalue_line(
+        "markers",
+        "main_ops: representative operator in the CI smoke subset "
+        "(select with -m main_ops); orthogonal to the backend markers",
+    )

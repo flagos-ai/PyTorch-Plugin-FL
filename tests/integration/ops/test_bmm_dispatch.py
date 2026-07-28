@@ -253,6 +253,7 @@ class TestBmmDispatchLog:
         )
 
     @pytest.mark.flaggems
+    @pytest.mark.main_ops
     def test_dispatch_log_flaggems_runtime(self):
         """With the FlagGems runtime path on, bmm routes to flagos_python."""
         result = _run_bmm_subprocess(
@@ -263,6 +264,7 @@ class TestBmmDispatchLog:
         )
 
     @pytest.mark.cuda
+    @pytest.mark.main_ops
     def test_dispatch_log_cuda_override(self):
         """FLAGOS_OP_bmm=cuda overrides to cuda backend."""
         result = _run_bmm_subprocess(

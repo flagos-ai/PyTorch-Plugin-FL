@@ -476,6 +476,7 @@ class TestCatDispatchLog:
         )
 
     @pytest.mark.flaggems
+    @pytest.mark.main_ops
     def test_dispatch_log_flaggems_runtime(self):
         """With the FlagGems runtime path on, cat falls back to the vendor kernel.
 
@@ -491,6 +492,7 @@ class TestCatDispatchLog:
         )
 
     @pytest.mark.cuda
+    @pytest.mark.main_ops
     def test_dispatch_log_cuda_override(self):
         """FLAGOS_OP_cat=cuda overrides to cuda backend."""
         result = _run_cat_subprocess(

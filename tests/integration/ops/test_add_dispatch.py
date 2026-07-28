@@ -114,7 +114,18 @@ class TestAddTensorDispatch:
         )
         assert "[flagos dispatch] add.Tensor -> flagos_python" in result.stderr
 
+    @pytest.mark.flaggems
+    @pytest.mark.main_ops
+    def test_dispatch_log_flaggems_runtime(self):
+        """With the FlagGems runtime path on, add.Tensor routes to flagos_python."""
+        result = _run_add_subprocess(
+            {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_USE_FLAGGEMS": "1"}
+        )
+        assert result.returncode == 0, f"Failed:\n{result.stderr}"
+        assert "[flagos dispatch] add.Tensor -> flagos_python" in result.stderr
+
     @pytest.mark.cuda
+    @pytest.mark.main_ops
     def test_dispatch_log_cuda_override(self):
         result = _run_add_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_add__Tensor": "cuda"}
