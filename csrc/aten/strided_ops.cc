@@ -59,7 +59,16 @@ at::Tensor expand(const at::Tensor& self, c10::SymIntArrayRef size, bool implici
 }
 
 at::Tensor narrow(const at::Tensor& self, int64_t dim, int64_t start, int64_t length) {
-  return self.narrow(dim, start, length);
+  // narrow(dim, start, length) == slice(dim, start, start+length, 1). Route
+  // through at::native::slice (raw stride impl) rather than self.narrow(), which
+  // re-dispatches through PrivateUse1 back here -> infinite recursion -> stack
+  // overflow (segfault). See the NOTE below. Normalise a negative start against
+  // the dim size the same way at::native::narrow does before slicing.
+  int64_t cur_size = self.size(dim);
+  if (start < 0) {
+    start += cur_size;
+  }
+  return at::native::slice(self, dim, start, start + length, 1);
 }
 
 // NOTE: all view ops call at::native:: directly (not the tensor member method).
@@ -100,6 +109,12 @@ at::Tensor unsafe_view(const at::Tensor& self, at::IntArrayRef size) {
 
 at::Tensor detach(const at::Tensor& self) {
   return at::native::detach(self);
+}
+
+// alias() returns a view sharing self's storage (pure metadata). at::native::
+// alias avoids re-dispatching through PrivateUse1 back into this kernel.
+at::Tensor alias(const at::Tensor& self) {
+  return at::native::alias(self);
 }
 
 // t() is the 2-D (or <=2-D) transpose used by nn.Linear (F.linear does
@@ -182,5 +197,11 @@ REGISTER_IMPL_TO_DISPATCHER(
     unbind_int_dispatcher,
     Backend::kAscend,
     unbind_int)
+
+REGISTER_IMPL_TO_DISPATCHER(
+    AliasFn,
+    alias_dispatcher,
+    Backend::kAscend,
+    alias)
 
 } // namespace at::native::flagos

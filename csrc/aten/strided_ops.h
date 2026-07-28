@@ -32,6 +32,7 @@ at::Tensor view(const at::Tensor& self, c10::SymIntArrayRef size);
 at::Tensor expand(const at::Tensor& self, c10::SymIntArrayRef size, bool implicit);
 
 at::Tensor narrow(const at::Tensor& self, int64_t dim, int64_t start, int64_t length);
+at::Tensor alias(const at::Tensor& self);
 
 at::Tensor transpose_int(const at::Tensor& self, int64_t dim0, int64_t dim1);
 

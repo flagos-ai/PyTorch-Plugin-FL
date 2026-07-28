@@ -98,7 +98,10 @@ at::DataPtr CachingDeviceAllocator::allocate(size_t nbytes) {
 
   auto curr_device =
       c10::Device(c10::DeviceType::PrivateUse1, static_cast<c10::DeviceIndex>(device));
-  return {block->ptr, block->ptr, &block_deleter, curr_device};
+  // Stash the Block* as the DataPtr context so the deleter can recover it in
+  // O(1) with no side map / lock. The data pointer and context differ (data =
+  // device memory, context = Block metadata), which DataPtr supports directly.
+  return {block->ptr, block, &block_deleter, curr_device};
 }
 
 at::DeleterFnPtr CachingDeviceAllocator::raw_deleter() const {
@@ -163,12 +166,6 @@ Block* CachingDeviceAllocator::alloc_block(
       std::max(state.stats.peak_allocated, state.stats.bytes_allocated);
   state.stats.num_alloc_calls++;
 
-  // Register in ptr-to-block map.
-  {
-    std::lock_guard<std::mutex> ptr_lock(ptr_map_mutex_);
-    ptr_to_block_[block->ptr] = block;
-  }
-
   return block;
 }
 
@@ -182,12 +179,6 @@ void CachingDeviceAllocator::free_block(Block* block) {
   // Update stats.
   state.stats.bytes_allocated -= block->size;
   state.stats.num_free_calls++;
-
-  // Remove from ptr map.
-  {
-    std::lock_guard<std::mutex> ptr_lock(ptr_map_mutex_);
-    ptr_to_block_.erase(block->ptr);
-  }
 
   // If there are outstanding events on other streams, defer the free.
   if (block->event_count > 0) {
@@ -421,7 +412,13 @@ void CachingDeviceAllocator::record_stream(
     return;
   }
 
-  Block* block = get_block_from_ptr(ptr.get());
+  // The Block* is stored as the DataPtr context by allocate(). Only trust it
+  // when the deleter matches (i.e. this DataPtr came from our block pool, not
+  // the delegation path or a foreign allocator).
+  if (ptr.get_deleter() != &block_deleter) {
+    return;
+  }
+  Block* block = static_cast<Block*>(ptr.get_context());
   if (!block) {
     return;
   }
@@ -470,24 +467,13 @@ void CachingDeviceAllocator::reset_stats(int device) {
   state.stats = AllocatorStats{};
 }
 
-Block* CachingDeviceAllocator::get_block_from_ptr(void* ptr) {
-  std::lock_guard<std::mutex> lock(ptr_map_mutex_);
-  auto it = ptr_to_block_.find(ptr);
-  if (it != ptr_to_block_.end()) {
-    return it->second;
-  }
-  return nullptr;
-}
-
-// Static deleter invoked by DataPtr when a tensor is freed.
-void CachingDeviceAllocator::block_deleter(void* ptr) {
-  if (!ptr || !instance_) {
+// Static deleter invoked by DataPtr when a tensor is freed. The context is the
+// Block* stashed by allocate(), so freeing is O(1) with no map lookup or lock.
+void CachingDeviceAllocator::block_deleter(void* ctx) {
+  if (!ctx || !instance_) {
     return;
   }
-  Block* block = instance_->get_block_from_ptr(ptr);
-  if (block) {
-    instance_->free_block(block);
-  }
+  instance_->free_block(static_cast<Block*>(ctx));
 }
 
 // Deleter for the delegation path: free straight back to the backend's caching

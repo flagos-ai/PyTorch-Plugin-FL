@@ -1034,6 +1034,9 @@ DECLARE_DISPATCHER(PrivFusedMovingAvgObsFqHelperOutFn, priv_fused_moving_avg_obs
 using PrivFusedMovingAvgObsFqHelperFunctionalFn = ::std::tuple<at::Tensor,at::Tensor,at::Tensor,at::Tensor,at::Tensor,at::Tensor> (*)(const at::Tensor &, const at::Tensor &, const at::Tensor &, const at::Tensor &, const at::Tensor &, const at::Tensor &, const at::Tensor &, double, int64_t, int64_t, int64_t, bool, bool);
 DECLARE_DISPATCHER(PrivFusedMovingAvgObsFqHelperFunctionalFn, priv_fused_moving_avg_obs_fq_helper_functional_dispatcher)
 
+using PrivFusedRmsNormFn = ::std::tuple<at::Tensor,at::Tensor> (*)(const at::Tensor &, at::IntArrayRef, const ::std::optional<at::Tensor> &, ::std::optional<double>);
+DECLARE_DISPATCHER(PrivFusedRmsNormFn, priv_fused_rms_norm_dispatcher)
+
 using PrivFusedRmsNormBackwardFn = ::std::tuple<at::Tensor,at::Tensor> (*)(const at::Tensor &, const at::Tensor &, at::IntArrayRef, const at::Tensor &, const ::std::optional<at::Tensor> &, ::std::array<bool,2>);
 DECLARE_DISPATCHER(PrivFusedRmsNormBackwardFn, priv_fused_rms_norm_backward_dispatcher)
 

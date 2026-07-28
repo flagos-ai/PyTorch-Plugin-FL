@@ -58,7 +58,20 @@ class Dispatcher {
 
   template <typename... Args>
   decltype(auto) operator()(Args&&... args) const {
-    return DispatchAs(op_name_, std::forward<Args>(args)...);
+    // Hot path: the op name is fixed (op_name_) and the backend routing is
+    // immutable once the config is loaded, so resolve it once and cache. This
+    // avoids constructing a std::string from op_name_ and hashing it in the
+    // BackendTable on EVERY op call — measured as a significant per-op cost in
+    // the Ascend eager decode loop (thousands of ops/token).
+    Backend backend = cached_backend_;
+    if (__builtin_expect(backend == Backend::kUncached, 0)) {
+      backend = GetBackendForOp(op_name_);
+      cached_backend_ = backend;
+    }
+    LogDispatch(op_name_, backend);
+    auto fn = GetFn(backend);
+    TORCH_CHECK(fn, op_name_, ": backend not registered");
+    return fn(std::forward<Args>(args)...);
   }
 
   template <typename... Args>
@@ -103,6 +116,10 @@ class Dispatcher {
   }
 
   const char* op_name_ = nullptr;
+  // Per-op backend cache for the hot operator() path (see comment there).
+  // mutable: operator() is const but memoizes on first call. Benign data race
+  // under concurrent first-use — all threads compute the same immutable value.
+  mutable Backend cached_backend_ = Backend::kUncached;
   FnPtr cuda_fn_           = nullptr;
   FnPtr flagos_fn_         = nullptr;
   FnPtr flagos_python_fn_  = nullptr;

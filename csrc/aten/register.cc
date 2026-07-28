@@ -16,12 +16,20 @@
 #include "generated/ops.h"
 
 #include <ATen/core/LegacyTypeDispatch.h>
+#include <ATen/core/grad_mode.h>
+#include <ATen/ops/matmul_native.h>
 #include <ATen/SDPBackend.h>
 #include <torch/library.h>
 #include <c10/core/ScalarType.h>
 #include <c10/util/Optional.h>
 #include "common.h"
 #include "runtime/allocator/caching_device_allocator.h"
+#include <c10/core/impl/LocalDispatchKeySet.h>
+
+// Forward declaration for the Ascend matmul kernel (csrc/aten/backends/ascend/matmul.cc).
+namespace at::native::flagos {
+  at::Tensor MatmulKernelAscend(const at::Tensor& self, const at::Tensor& other);
+}
 
 namespace at::flagos {
 
@@ -212,6 +220,37 @@ int64_t WrapperFusedSdpChoice(
 #include "generated/register.inc"
 #undef FLAGOS_GEN_WRAPPERS
 
+// matmul: intercept aten::matmul at PrivateUse1 for the Ascend backend so it
+// routes to aclnnMatmul directly instead of decomposing via
+// CompositeImplicitAutograd into mm + bmm + view. Non-Ascend backends (MetaX
+// etc.) fall back via ExcludeDispatchKeyGuard so PyTorch's composite
+// decomposition runs and mm/bmm reach the appropriate backend kernels.
+static at::Tensor WrapperMatmul(
+    const at::Tensor& self, const at::Tensor& other) {
+  // aten::matmul is CompositeImplicitAutograd: normally it decomposes into
+  // mm/bmm/view, and autograd records the backward through those sub-ops. If we
+  // unconditionally route to the fused aclnnMatmul kernel (which records no
+  // graph), the autograd engine instead selects the aten::matmul_backward
+  // derivative, which is NOT implemented for PrivateUse1 and decays to CPU ->
+  // training crashes. So only take the fused path when NO input requires grad
+  // (inference); when grad is needed, fall through to the composite
+  // decomposition so mm/bmm (which have working PrivateUse1 backward) are used.
+  const bool is_ascend = at::native::flagos::GetBackendForOp("matmul") ==
+      at::native::flagos::Backend::kAscend;
+  const bool requires_grad =
+      (self.requires_grad() || other.requires_grad()) &&
+      at::GradMode::is_enabled();
+  if (is_ascend && !requires_grad) {
+    return at::native::flagos::MatmulKernelAscend(self, other);
+  }
+  // Fall through to the composite decomposition (mm/bmm/view) by calling the
+  // CompositeImplicitAutograd implementation directly. This avoids re-entering
+  // WrapperMatmul (no recursion) while letting the decomposed sub-ops dispatch
+  // normally to their PrivateUse1 kernels, which have working autograd. Used
+  // both for the grad-enabled Ascend training path and for non-Ascend backends.
+  return at::native::matmul(self, other);
+}
+
 } // namespace
 
 // Register basic operators for PrivateUse1 dispatch key
@@ -239,6 +278,12 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("_index_put_impl_", WrapperIndexPutImpl_);
   m.impl("record_stream", WrapperRecordStream);
   m.impl("_fused_sdp_choice", WrapperFusedSdpChoice);
+  // NOTE: matmul is intentionally NOT registered here on the plain PrivateUse1
+  // key. Registering a concrete kernel for the CompositeImplicitAutograd op
+  // aten::matmul makes autograd bind its backward to aten::matmul_backward
+  // (which has no working PrivateUse1 path -> training crashes). Instead we
+  // intercept it on AutogradPrivateUse1 below, so inference gets the fused
+  // aclnnMatmul while training decomposes to mm/bmm with working autograd.
 
   // ============================================================
   // Generated m.impl registrations for 71 CUDA operators
@@ -284,6 +329,14 @@ TORCH_LIBRARY_IMPL(aten, AutogradPrivateUse1, m) {
     // and autograd records CloneBackward0 for gradient propagation.
     return self.clone(memory_format);
   });
+
+  // matmul: intercept at the autograd key (NOT plain PrivateUse1, which would
+  // bind aten::matmul_backward and break training). In inference (no grad) we
+  // route to the fused aclnnMatmul kernel, collapsing mm/bmm/view churn to one
+  // op like torch_npu. When grad is required we run the composite decomposition
+  // (at::native::matmul -> mm/bmm/view), which records backward through the
+  // sub-ops that have working PrivateUse1 autograd.
+  m.impl("matmul", WrapperMatmul);
 }
 
 } // namespace at::flagos

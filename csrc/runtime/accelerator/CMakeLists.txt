@@ -39,6 +39,10 @@ if(ACCELERATOR STREQUAL "ascend")
 
   target_include_directories(${LIBRARY_NAME} PUBLIC
       ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR} ${CANN_INCLUDE_DIR})
+  # memory.cc drains the shared default ACL stream (acl_stream.h) before any
+  # host-visible memcpy now that ops dispatch asynchronously; acl_stream.h is
+  # guarded by USE_ASCEND, so this target must define it.
+  target_compile_definitions(${LIBRARY_NAME} PRIVATE USE_ASCEND=1)
   target_link_libraries(${LIBRARY_NAME} PRIVATE ${ACL_LIB})
 elseif(ACCELERATOR STREQUAL "metax")
   file(GLOB SOURCE_FILES "${CMAKE_CURRENT_SOURCE_DIR}/metax/*.cc")

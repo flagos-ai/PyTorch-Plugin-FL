@@ -73,8 +73,11 @@ def ctx(request):
     print(f"    Parameters: {total:.2f}M total, {trainable:.2f}M trainable")
     print(f"    Load time: {time.time() - t0:.2f}s")
 
+    # foreach=False: the ascend backend has no fused _foreach_* TensorList
+    # kernels, so route AdamW through the single-tensor path (add_/addcmul_/
+    # addcdiv_/sqrt), which the backend does implement.
     optimizer = torch.optim.AdamW(
-        [p for p in model.parameters() if p.requires_grad], lr=lr
+        [p for p in model.parameters() if p.requires_grad], lr=lr, foreach=False
     )
     dataset = DummyTextDataset(tokenizer, num_samples=100, max_length=seq_len)
     dataloader = DataLoader(

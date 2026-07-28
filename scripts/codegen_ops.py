@@ -121,6 +121,19 @@ def cuda_supported(func, funcs, cuda_index):
     return False
 
 
+# Ops that are CompositeImplicitAutograd (so normally decomposed above our
+# dispatch key and skipped) but that we WANT to intercept with a fused backend
+# kernel. Registering a PrivateUse1 kernel for these overrides the composite
+# decomposition (verified: F.rms_norm and aten._fused_rms_norm both land on the
+# PrivateUse1 impl). The backend kernel is hand-written (aclnnRmsNorm) since the
+# tuple(output, rstd) + normalized_shape semantics no codegen category expresses.
+# Without this, HF's Qwen3RMSNorm decomposes into ~6 elementwise ops + 2 dtype
+# casts per layer (the eager decode hot path).
+FORCE_INCLUDE_OPS = {
+    "_fused_rms_norm",
+}
+
+
 def enumerate_all_cuda_ops(nf, funcs, cuda_index):
     """
     Returns (kept_ops, skipped) where kept_ops is the list of op-name strings to
@@ -131,11 +144,18 @@ def enumerate_all_cuda_ops(nf, funcs, cuda_index):
     composite_implicit ops are excluded up front: PyTorch decomposes them ABOVE
     our dispatch key into leaf ops we already box, so registering them is both
     unnecessary and risky. structured_delegate ops survive that exclusion.
+    Ops in FORCE_INCLUDE_OPS bypass both the cuda_supported and composite checks
+    so a hand-written backend kernel can intercept them.
     """
     kept = []
     skipped = defaultdict(list)
     for func in nf.native_functions:
         op = str(func.func.name)
+
+        if op in FORCE_INCLUDE_OPS:
+            if op not in MANUAL_REGISTERED_OPS:
+                kept.append(op)
+            continue
 
         if not cuda_supported(func, funcs, cuda_index):
             continue

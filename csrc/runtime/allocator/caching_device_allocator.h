@@ -53,9 +53,6 @@ class FLAGOS_EXPORT CachingDeviceAllocator final : public at::Allocator {
   // Reset accumulated statistics for a device.
   void reset_stats(int device);
 
-  // Get the underlying block for a data pointer (nullptr if not found).
-  Block* get_block_from_ptr(void* ptr);
-
   // Whether caching is enabled (controlled by env var).
   static bool is_enabled();
 
@@ -101,18 +98,15 @@ class FLAGOS_EXPORT CachingDeviceAllocator final : public at::Allocator {
   // Process completed events and return blocks to the pool.
   void process_events(DeviceState& state);
 
-  // Static deleter function for DataPtr.
-  static void block_deleter(void* ptr);
+  // Static deleter function for DataPtr. Receives the Block* directly as the
+  // DataPtr context (set at allocation), so no ptr->block lookup is needed.
+  static void block_deleter(void* ctx);
 
   // Static deleter for the delegation path (frees via backend caching allocator).
   static void delegated_deleter(void* ptr);
 
   // Get or create per-device state.
   DeviceState& get_device_state(int device);
-
-  // Map from raw pointer to Block for O(1) lookup.
-  std::mutex ptr_map_mutex_;
-  std::unordered_map<void*, Block*> ptr_to_block_;
 
   std::unique_ptr<DeviceMemoryInterface> backend_;
   std::vector<std::unique_ptr<DeviceState>> device_states_;
