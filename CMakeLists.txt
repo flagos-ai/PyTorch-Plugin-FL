@@ -391,10 +391,26 @@ if(FLAGGEMS_KERNEL)
   find_package(FlagGems REQUIRED PATHS "${FLAGGEMS_DIR}" NO_DEFAULT_PATH)
 
   # Embed liboperators.so dir into RPATH so it's found at runtime without LD_LIBRARY_PATH
-  set(_flaggems_libdir "${FLAGGEMS_DIR}/lib")
-  get_target_property(_flaggems_lib_location operators IMPORTED_LOCATION_RELEASE)
+  if(TARGET FlagGems::operators)
+    set(_flaggems_operators_target FlagGems::operators)
+  elseif(TARGET operators)
+    set(_flaggems_operators_target operators)
+  else()
+    message(FATAL_ERROR "FlagGems package does not export an operators target")
+  endif()
+
+  get_filename_component(_flaggems_libdir "${FLAGGEMS_DIR}/../.." ABSOLUTE)
+  get_target_property(
+    _flaggems_lib_location
+    ${_flaggems_operators_target}
+    IMPORTED_LOCATION_RELEASE
+  )
   if(NOT _flaggems_lib_location)
-    get_target_property(_flaggems_lib_location operators IMPORTED_LOCATION)
+    get_target_property(
+      _flaggems_lib_location
+      ${_flaggems_operators_target}
+      IMPORTED_LOCATION
+    )
   endif()
   if(_flaggems_lib_location)
     get_filename_component(_flaggems_libdir "${_flaggems_lib_location}" DIRECTORY)
