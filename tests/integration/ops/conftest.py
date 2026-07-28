@@ -41,6 +41,21 @@ _PLATFORM_SKIP_MARKERS: dict[str, tuple[str, ...]] = {
 }
 
 
+def _flaggems_cpp_enabled() -> bool:
+    """True when the FlagGems C++ runtime path is switched on (FLAGOS_USE_FLAGGEMS_CPP=1).
+
+    Tests marked ``flaggems_cpp`` require a wheel built with FLAGGEMS_KERNEL=ON
+    (liboperators.so linked in) and FLAGOS_USE_FLAGGEMS_CPP=1 at runtime; they
+    are skipped when the env var is off (default).
+    """
+    return os.environ.get("FLAGOS_USE_FLAGGEMS_CPP", "0").lower() not in (
+        "0",
+        "",
+        "off",
+        "false",
+    )
+
+
 def _flaggems_enabled() -> bool:
     """True when the FlagGems runtime path is switched on (FLAGOS_USE_FLAGGEMS=1).
 
@@ -69,7 +84,19 @@ def pytest_collection_modifyitems(
     if platform == "metax" and os.environ.get("FLAGOS_METAX_BOXING", "0") == "1":
         markers_to_skip.append("metax")
     flaggems_on = _flaggems_enabled()
+    flaggems_cpp_on = _flaggems_cpp_enabled()
     for item in items:
+        # The FlagGems C++ path requires a FLAGGEMS_KERNEL=ON wheel and runtime env.
+        if item.get_closest_marker("flaggems_cpp") and not flaggems_cpp_on:
+            item.add_marker(
+                pytest.mark.skip(
+                    reason=(
+                        "FlagGems C++ path is off "
+                        "(set FLAGOS_USE_FLAGGEMS_CPP=1 with a FLAGGEMS_KERNEL=ON wheel)"
+                    )
+                )
+            )
+            continue
         # The flaggems runtime path is a runtime switch, not a build/platform gate:
         # skip its tests only when the switch is off, on any platform.
         if item.get_closest_marker("flaggems") and not flaggems_on:
@@ -100,6 +127,11 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers",
         "flaggems: requires the FlagGems runtime path on (FLAGOS_USE_FLAGGEMS=1)",
+    )
+    config.addinivalue_line(
+        "markers",
+        "flaggems_cpp: requires torch_fl built with FLAGGEMS_KERNEL=ON and "
+        "FLAGOS_USE_FLAGGEMS_CPP=1 at runtime",
     )
     config.addinivalue_line(
         "markers", "flaggems_python: requires FlagGems Python wrapper backend"

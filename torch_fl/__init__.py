@@ -42,10 +42,16 @@ def _select_backend_config() -> None:
     Python-path kernel. Both kernel sets are compiled into the wheel, so the
     choice is purely runtime:
 
+      * FLAGOS_USE_FLAGGEMS_CPP=1              -> backends_flaggems_cpp.conf
       * FLAGOS_USE_FLAGGEMS=1                  -> backends_flaggems.conf
       * FLAGOS_USE_FLAGGEMS=1 + METAX_BOXING=1 -> backends_metax_flaggems.conf
       * FLAGOS_USE_FLAGGEMS=1 + ACCELERATOR=dcu -> backends_dcu_flaggems.conf
       * unset / 0                              -> backends_cuda.conf (pure boxing)
+
+    FLAGOS_USE_FLAGGEMS_CPP=1 activates the C++ FlagGems path (kFlagOs,
+    backends_flaggems_cpp.conf): 18 ops route to the flag_gems C++ runtime
+    (liboperators.so, no GIL), the remainder fall back to flagos_python.
+    Only valid when torch_fl was built with FLAGGEMS_KERNEL=ON.
 
     The MetaX flaggems conf mirrors backends_flaggems.conf but routes the ops
     triton-metax cannot run (mm/bmm/mean.dim) back to the cuda boxing kernel
@@ -71,6 +77,14 @@ def _select_backend_config() -> None:
         if os.path.exists(platform_conf):
             os.environ["FLAGOS_BACKEND_CONFIG"] = platform_conf
             return
+    use_flaggems_cpp = os.environ.get("FLAGOS_USE_FLAGGEMS_CPP", "0") not in (
+        "0",
+        "",
+        "off",
+        "OFF",
+        "false",
+        "FALSE",
+    )
     use_flaggems = os.environ.get("FLAGOS_USE_FLAGGEMS", "0") not in (
         "0",
         "",
@@ -80,7 +94,9 @@ def _select_backend_config() -> None:
         "FALSE",
     )
     metax_boxing = os.environ.get("FLAGOS_METAX_BOXING", "0") == "1"
-    if use_flaggems and metax_boxing:
+    if use_flaggems_cpp:
+        conf_name = "backends_flaggems_cpp.conf"
+    elif use_flaggems and metax_boxing:
         conf_name = "backends_metax_flaggems.conf"
     elif use_flaggems and _build_accelerator() == "dcu":
         conf_name = "backends_dcu_flaggems.conf"

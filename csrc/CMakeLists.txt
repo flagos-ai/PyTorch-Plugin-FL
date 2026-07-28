@@ -105,6 +105,12 @@ if(FLAGGEMS_PYTHON)
   target_compile_definitions(${LIBRARY_NAME} PRIVATE FLAGOS_FLAGGEMS_PYTHON)
 endif()
 
+# Compile the FlagGems C++ dispatch kernels (flaggems_cpp_kernels.cc, guarded by
+# this macro) only when linking against liboperators.so is requested.
+if(FLAGGEMS_KERNEL)
+  target_compile_definitions(${LIBRARY_NAME} PRIVATE FLAGOS_FLAGGEMS_CPP)
+endif()
+
 # The CPU-only torch wheel ships c10/cuda headers but not the CUDA-build-only
 # c10/cuda/impl/cuda_cmake_macros.h. cuda_memory.h includes CUDACachingAllocator.h
 # to delegate flagos allocation to the CUDA caching allocator; this macro tells
