@@ -56,9 +56,7 @@ DEVICE = "flagos:0"
 # The pure-boxing conf shipped alongside torch_fl (every op -> cuda). Used by
 # TestNewOpDispatchRouting to assert boxing routing independently of the
 # ambient FLAGOS_USE_FLAGGEMS setting.
-_BOXING_CONF = (
-    pathlib.Path(torch_fl.__file__).parent / "configs" / "backends_cuda.conf"
-)
+_BOXING_CONF = pathlib.Path(torch_fl.__file__).parent / "configs" / "backends_cuda.conf"
 
 
 # ---------------------------------------------------------------------------
