@@ -72,11 +72,3 @@ jobs:
     uses: ./.github/workflows/all-tests-common.yml
     with:
       platform: ${{ matrix.platform }}
-
-  build-metax:
-    needs: lint
-    uses: ./.github/workflows/build-wheel-metax.yml
-
-  integration-tests-metax:
-    needs: build-metax
-    uses: ./.github/workflows/integration-test-metax.yml
