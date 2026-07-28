@@ -234,6 +234,38 @@ FLAGOS_DISABLE_CUDA_ASSETS=1 FLAGOS_USE_FLAGGEMS=1 python -c "import torch_fl, t
 > `[Errno 18]` 失败。此时用 `curl` 手动下载它打印的 wheel 地址
 > （`Guessing wheel URL: ...`），再对该文件执行 `pip install` 即可。
 
+**可选：PPU 上启用 FlagCX。** 分布式训练默认即可用，走 NCCL 兜底：`PPU_SDK` 自带
+厂商适配的 `libnccl.so.2`，PPU 的 torch wheel 是 `USE_NCCL=1` 构建，因此
+`ProcessGroupNCCL` 原生存在，`ProcessGroupFlagOS` 直接在零拷贝 CUDA view 上使用它。
+若要改用 FlagCX（异构统一通信库），需从源码构建：
+
+```bash
+git clone https://github.com/FlagOpen/FlagCX.git && cd FlagCX
+# --depth 1 不会拉取 submodule；缺少 third-party/json 会导致构建失败：
+# "nlohmann/json.hpp: No such file or directory"
+git submodule update --init --depth 1 third-party/json
+
+make -j16 USE_PPU=1 \
+  DEVICE_HOME=/usr/local/PPU_SDK/CUDA_SDK \
+  CCL_HOME=/usr/local/PPU_SDK/CUDA_SDK
+
+# torch plugin 用 *nvidia* adaptor 构建，而非自动探测出的 `ppu`。两者生成的 torch
+# 侧代码完全一致（PPU 是 CUDA-ABI：同样的 CUDAStreamGuard、CUDAEvent、
+# devName="cuda"），但 FlagCX 只为 NVIDIA 和 MetaX adaptor 编译 extended_api
+# creator，所以 `nvidia` 能拿到更完整的 ProcessGroupFlagCX 绑定。而 `ppu` 目前
+# 还编不过 —— PPU 未被加入 plugin 的各 adaptor #ifdef 分支。
+cd plugin/torch && FLAGCX_ADAPTOR=nvidia FLAGCX_HOME=$(git rev-parse --show-toplevel) \
+  python setup.py install
+```
+
+之后 `import torch_fl` 会自动优先使用 FlagCX（`_try_build_flagcx` 在 NCCL 兜底之前
+执行）；除了把 `libflagcx.so` 放到加载路径上，无需额外环境变量：
+
+```bash
+LD_LIBRARY_PATH=/path/to/FlagCX/build/lib:$LD_LIBRARY_PATH \
+  python tests/manual/test_flagos_dist_live.py --world-size 4
+```
+
 **运行测试：**
 
 ```bash
@@ -243,6 +275,9 @@ FLAGOS_DISABLE_CUDA_ASSETS=1 pytest tests/unit tests/integration/ops \
 
 # FlagGems 路线（首次很慢：Triton 需要逐个编译并 autotune）
 FLAGOS_DISABLE_CUDA_ASSETS=1 FLAGOS_USE_FLAGGEMS=1 pytest tests/integration/ops -q
+
+# 分布式（collectives + DDP）。默认走 NCCL；用 FlagCX 时加上 LD_LIBRARY_PATH。
+python tests/manual/test_flagos_dist_live.py --world-size 4
 ```
 
 ### 从源码安装（海光 DCU 平台）

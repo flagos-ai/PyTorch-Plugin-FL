@@ -262,6 +262,41 @@ FLAGOS_DISABLE_CUDA_ASSETS=1 FLAGOS_USE_FLAGGEMS=1 python -c "import torch_fl, t
 > with `[Errno 18]`. Fetch the wheel the shim reports (`Guessing wheel URL: ...`)
 > with `curl` and `pip install` the file directly.
 
+**Optional: FlagCX on PPU.** Distributed training works out of the box on the
+NCCL fallback — `PPU_SDK` ships a vendor-adapted `libnccl.so.2` and the PPU torch
+wheel is built with `USE_NCCL=1`, so `ProcessGroupNCCL` exists natively and
+`ProcessGroupFlagOS` uses it on the zero-copy CUDA view. To use FlagCX
+(heterogeneous unified comm) instead, build it from source:
+
+```bash
+git clone https://github.com/FlagOpen/FlagCX.git && cd FlagCX
+# --depth 1 skips submodules; without third-party/json the build fails on
+# "nlohmann/json.hpp: No such file or directory".
+git submodule update --init --depth 1 third-party/json
+
+make -j16 USE_PPU=1 \
+  DEVICE_HOME=/usr/local/PPU_SDK/CUDA_SDK \
+  CCL_HOME=/usr/local/PPU_SDK/CUDA_SDK
+
+# Build the torch plugin with the *nvidia* adaptor, not the auto-detected `ppu`
+# one. Both produce identical torch-side code (PPU is CUDA-ABI: same
+# CUDAStreamGuard, CUDAEvent, devName="cuda"), but FlagCX only compiles its
+# extended_api creator for the NVIDIA and MetaX adaptors, so `nvidia` gets the
+# richer ProcessGroupFlagCX binding. `ppu` currently also fails to compile —
+# PPU is missing from the plugin's per-adaptor #ifdef chains.
+cd plugin/torch && FLAGCX_ADAPTOR=nvidia FLAGCX_HOME=$(git rev-parse --show-toplevel) \
+  python setup.py install
+```
+
+`import torch_fl` then prefers FlagCX automatically (`_try_build_flagcx` runs
+before the NCCL fallback); no env var is needed beyond putting `libflagcx.so` on
+the loader path:
+
+```bash
+LD_LIBRARY_PATH=/path/to/FlagCX/build/lib:$LD_LIBRARY_PATH \
+  python tests/manual/test_flagos_dist_live.py --world-size 4
+```
+
 **Run tests:**
 
 ```bash
@@ -271,6 +306,9 @@ FLAGOS_DISABLE_CUDA_ASSETS=1 pytest tests/unit tests/integration/ops \
 
 # FlagGems path (first run is slow: Triton compiles/autotunes every kernel)
 FLAGOS_DISABLE_CUDA_ASSETS=1 FLAGOS_USE_FLAGGEMS=1 pytest tests/integration/ops -q
+
+# Distributed (collectives + DDP). Works on NCCL; add LD_LIBRARY_PATH for FlagCX.
+python tests/manual/test_flagos_dist_live.py --world-size 4
 ```
 
 ### Build from Source (Hygon DCU Platform)
