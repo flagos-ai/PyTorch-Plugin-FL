@@ -641,15 +641,31 @@ def _cuda_runtime_requires():
     return list(_CUDA_RUNTIME_DEPS)
 
 
+def _vendor_supplies_triton() -> bool:
+    """True when the target platform ships its own Triton, so PyPI's
+    NVIDIA-targeted wheel must not be pulled in as a dependency.
+
+    - ACCELERATOR=dcu: DTK ships its own Triton (and builds pure-boxing).
+    - PPU (PPU_SDK present): the vendor Triton lives on a private index and is
+      versioned 3.x+<sdk> (e.g. 3.5.0+v0.2.0.ppu2.1.0), which does not satisfy
+      a `triton>=3.5.1` pin; its sdist is also a download shim that pip cannot
+      always build. Install it manually, then `pip install --no-deps` this
+      package. See "Build from Source (PPU Platform)" in the README.
+    """
+    if ACCELERATOR == "dcu":
+        return True
+    return bool(os.environ.get("PPU_SDK") or os.environ.get("PPU_HOME"))
+
+
 def _install_requires():
     reqs = ["torch"]
     # FlagGems (and its Triton) is the default operator source, so it is a hard
-    # runtime dep everywhere it can actually run. ACCELERATOR=dcu is the
-    # exception: it builds pure-boxing (FLAGGEMS_KERNEL/FLAGGEMS_PYTHON off) and
-    # DTK ships its own Triton, so pulling PyPI's NVIDIA-targeted triton wheel
-    # would install ~200 MB of the wrong artifact. All flag_gems imports in the
-    # Python layer are ImportError-guarded, so omitting it is safe.
-    if ACCELERATOR != "dcu":
+    # runtime dep everywhere it can actually run. Platforms that ship their own
+    # Triton are the exception: pulling PyPI's NVIDIA-targeted triton wheel would
+    # install ~200 MB of the wrong artifact (or fail to resolve outright). All
+    # flag_gems imports in the Python layer are ImportError-guarded, so omitting
+    # it is safe.
+    if not _vendor_supplies_triton():
         reqs += ["flag_gems>=5.0.2", "triton>=3.5.1"]
     # For a CUDA wheel we bundle libtorch_cuda.so and preload it at import; it
     # needs the NVIDIA runtime libs present, so make them hard deps. Ascend/MetaX

@@ -233,6 +233,46 @@ FLAGOS_DISABLE_CUDA_ASSETS=1 python -c "import torch_fl, torch; \
   print((x @ x).cpu())"
 ```
 
+**Optional: FlagGems on PPU.** Set `FLAGGEMS_PYTHON=ON` at build time (the
+default) and `FLAGOS_USE_FLAGGEMS=1` at runtime; `import torch_fl` then selects
+`backends_flaggems.conf` and routes the discovered ops to FlagGems' Triton
+kernels. PPU needs no compat shim beyond the generic CUDA one: `libcuda.so` is a
+real driver, so `is_nvidia_cuda_available()` succeeds, `GEMS_VENDOR=nvidia` is
+set, and `triton.language.extra.cuda.libdevice` resolves (it has `pow`).
+
+PPU's Triton comes from the vendor index, not PyPI, and its version string
+(`3.5.0+v0.2.0.ppu2.1.0`) does not satisfy the `triton>=3.5.1` pin — so when
+`PPU_SDK` is set, `setup.py` drops the `flag_gems`/`triton` requirements and you
+install them yourself:
+
+```bash
+pip install triton==3.5.0+v0.2.0.ppu2.1.0   # vendor index; see note below
+pip install flag_gems
+
+FLAGOS_DISABLE_CUDA_ASSETS=1 FLAGOS_USE_FLAGGEMS=1 python -c "import torch_fl, torch; \
+  x = torch.randn(256, 256, device='flagos'); \
+  print(torch.allclose(torch.softmax(x, -1).cpu(), torch.softmax(x.cpu(), -1), atol=1e-3))"
+```
+
+> **Troubleshooting: `Invalid cross-device link` installing PPU Triton**
+>
+> The vendor `triton` sdist is a downloader shim that fetches the real wheel and
+> `rename()`s it into pip's cache. If your pip cache and build dir are on
+> different filesystems (e.g. cache on NFS, build in `/tmp`) that rename fails
+> with `[Errno 18]`. Fetch the wheel the shim reports (`Guessing wheel URL: ...`)
+> with `curl` and `pip install` the file directly.
+
+**Run tests:**
+
+```bash
+# Pure boxing
+FLAGOS_DISABLE_CUDA_ASSETS=1 pytest tests/unit tests/integration/ops \
+  tests/integration/test_factory_ops.py -q -m "not flaggems and not flaggems_python"
+
+# FlagGems path (first run is slow: Triton compiles/autotunes every kernel)
+FLAGOS_DISABLE_CUDA_ASSETS=1 FLAGOS_USE_FLAGGEMS=1 pytest tests/integration/ops -q
+```
+
 ### Build from Source (Hygon DCU Platform)
 
 Hygon DCU (DTK) reuses the **CUDA boxing route** with a dedicated

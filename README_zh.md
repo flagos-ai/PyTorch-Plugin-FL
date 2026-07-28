@@ -208,6 +208,43 @@ FLAGOS_DISABLE_CUDA_ASSETS=1 python -c "import torch_fl, torch; \
   print((x @ x).cpu())"
 ```
 
+**可选：PPU 上启用 FlagGems。** 构建时设 `FLAGGEMS_PYTHON=ON`（默认即为 ON），运行时设
+`FLAGOS_USE_FLAGGEMS=1`；`import torch_fl` 会自动选择 `backends_flaggems.conf`，把已发现
+的算子路由到 FlagGems 的 Triton 内核。PPU 不需要额外的兼容层，通用 CUDA shim 即可：
+`libcuda.so` 是真实驱动，`is_nvidia_cuda_available()` 成立，于是设置
+`GEMS_VENDOR=nvidia`，`triton.language.extra.cuda.libdevice` 也能正常解析（其中有 `pow`）。
+
+PPU 的 Triton 来自厂商私有 index 而非 PyPI，其版本号（`3.5.0+v0.2.0.ppu2.1.0`）不满足
+`triton>=3.5.1` 的约束。因此当检测到 `PPU_SDK` 时，`setup.py` 会移除 `flag_gems`/`triton`
+依赖，改由用户自行安装：
+
+```bash
+pip install triton==3.5.0+v0.2.0.ppu2.1.0   # 厂商 index，见下方说明
+pip install flag_gems
+
+FLAGOS_DISABLE_CUDA_ASSETS=1 FLAGOS_USE_FLAGGEMS=1 python -c "import torch_fl, torch; \
+  x = torch.randn(256, 256, device='flagos'); \
+  print(torch.allclose(torch.softmax(x, -1).cpu(), torch.softmax(x.cpu(), -1), atol=1e-3))"
+```
+
+> **排查：安装 PPU Triton 时报 `Invalid cross-device link`**
+>
+> 厂商的 `triton` sdist 实际是个下载器，它先取回真实 wheel，再 `rename()` 到 pip 缓存目录。
+> 若 pip 缓存与构建目录不在同一文件系统（例如缓存在 NFS、构建在 `/tmp`），该 rename 会以
+> `[Errno 18]` 失败。此时用 `curl` 手动下载它打印的 wheel 地址
+> （`Guessing wheel URL: ...`），再对该文件执行 `pip install` 即可。
+
+**运行测试：**
+
+```bash
+# 纯 boxing
+FLAGOS_DISABLE_CUDA_ASSETS=1 pytest tests/unit tests/integration/ops \
+  tests/integration/test_factory_ops.py -q -m "not flaggems and not flaggems_python"
+
+# FlagGems 路线（首次很慢：Triton 需要逐个编译并 autotune）
+FLAGOS_DISABLE_CUDA_ASSETS=1 FLAGOS_USE_FLAGGEMS=1 pytest tests/integration/ops -q
+```
+
 ### 从源码安装（海光 DCU 平台）
 
 海光 DCU（DTK）复用 **CUDA boxing 路线**，通过独立的 `ACCELERATOR=dcu` 分支支持。
