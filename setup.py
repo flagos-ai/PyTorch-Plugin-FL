@@ -30,7 +30,8 @@ from setuptools.command.editable_wheel import editable_wheel as _editable_wheel
 IS_DARWIN = platform.system() == "Darwin"
 IS_WINDOWS = platform.system() == "Windows"
 
-# Accelerator platform: "cuda" (default), "metax", or "ascend"
+# Accelerator platform: "cuda" (default), "metax", "ascend", "tsingmicro",
+# "dcu", or "gcu"
 ACCELERATOR = os.environ.get("ACCELERATOR", "cuda").lower()
 
 BASE_DIR = os.path.dirname(os.path.realpath(__file__))
@@ -364,6 +365,20 @@ def build_deps():
                 "-DASCEND_KERNEL=OFF",
             ]
         )
+    elif ACCELERATOR == "gcu":
+        # Enflame GCU has no CUDA runtime: the tops runtime provides the device
+        # layer and libtopsaten the operators, so every CUDA/vendor kernel set
+        # stays off and GCU_KERNEL (topsaten) provides the compute ops. Ops
+        # without a topsaten kernel fall back to CPU.
+        cmake_args.extend(
+            [
+                "-DCUDA_KERNEL=OFF",
+                "-DFLAGGEMS_KERNEL=OFF",
+                "-DMETAX_KERNEL=OFF",
+                "-DASCEND_KERNEL=OFF",
+                "-DGCU_KERNEL=ON",
+            ]
+        )
 
     # Kernel build options from environment
     for kernel_opt in (
@@ -372,6 +387,7 @@ def build_deps():
         "CUDA_KERNEL",
         "METAX_KERNEL",
         "ASCEND_KERNEL",
+        "GCU_KERNEL",
     ):
         val = os.environ.get(kernel_opt)
         if val is not None:

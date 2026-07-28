@@ -276,14 +276,52 @@ pytest tests/integration/ops -q -m "not flaggems and not flaggems_python"
   这个绝对路径，而 glibc ≥ 2.34 已把 librt 合并进 libc，该文件不再存在。
   `ACCELERATOR=dcu` 分支会把这类悬空绝对路径改写为 `-lrt`。
 
+### 从源码安装（燧原 GCU 平台）
+
+燧原 GCU 走的是**原生算子路线**（与 Ascend 一致），而不是 CUDA boxing：
+TopsRider 软件栈里没有 CUDA runtime 可以 box，厂商的 `torch-gcu` wheel 自己要占用
+`PrivateUse1`，无法与 `torch_fl` 共存。因此本插件直接链接厂商库：
+
+- `libtopsrt.so`（tops runtime）承载设备 / 内存 / 流层。
+- `libtopsaten.so`（ATen 风格算子库）承载计算算子。它的调用形态是一次直调，
+  没有 aclnn 那样的 workspace/executor 两段式。
+
+```bash
+# 上游 CPU 版 torch 即可，不需要厂商 torch。
+pip install torch==2.10.0 --index-url https://download.pytorch.org/whl/cpu
+
+ACCELERATOR=gcu pip install --no-build-isolation -vvv -e .
+```
+
+算子由 `scripts/codegen_gcu.py` 生成。它会把每个算子与 `libtopsaten.so` 中实际存在的
+`topsaten::topsatenXxx`（demangle 后）符号比对，缺失的直接跳过，因此 codegen 不可能
+生成当前 SDK 里没有的调用。
+
+**GCU 平台注意事项：**
+
+- **没有 topsaten kernel 的算子完全不在 `PrivateUse1` 上注册**，因此会落到
+  `cpu_fallback` 而不是报错。要扩大覆盖面，只需扩充 `scripts/codegen_gcu.py`
+  里的 `OPS` 表。
+- **topsaten 没有 int64 kernel**：任何 `I64` 操作数都会返回 `NOT_SUPPORT`。
+  因此每个生成的 kernel 都会先判断 dtype，int64 情况下在 CPU 上算再拷回，
+  保证索引、mask、计数器这类张量可用。它同样拒绝 rank-0 形状，所以 0 维张量
+  会按 1 元素向量来描述。
+- **tops 设备指针是按设备绑定的**（没有统一寻址）：指针只在*当前*设备上有效，
+  所以 allocator 和每个 kernel 都会先切换设备，默认流也是每设备一条。
+- **带原生 kernel 的构建会安装一个 `lib/flagos_platform` 标记文件**，让
+  `torch_fl` 选用 `backends_gcu.conf`，而不是默认的 CUDA 路由。
+- 用 `-DGCU_KERNEL=OFF` 可以完全跳过 topsaten；此时 runtime 仍可用，
+  所有计算回落到 CPU。
+
 ### 构建环境变量
 
 | 变量 | 说明 |
 |------|------|
-| `ACCELERATOR` | 硬件平台：`cuda`（默认）、`metax`、`ascend`、`tsingmicro` 或 `dcu` |
+| `ACCELERATOR` | 硬件平台：`cuda`（默认）、`metax`、`ascend`、`tsingmicro`、`dcu` 或 `gcu` |
 | `FLAGOS_BUILD_JOBS` | 原生库并行编译线程数（默认 CPU 核数）；日志过长可设 `1` |
 | `CUDA_HOME` | CUDA toolkit 路径 |
 | `DTK_ROOT` | 海光 DTK 路径（依次回退到 `ROCM_PATH`、`/opt/dtk`；DCU 构建必需） |
+| `TOPS_HOME` | 燧原 TopsRider SDK 路径（默认 `/opt/tops`；GCU 构建必需） |
 | `METAX_PATH` | MetaX SDK 路径（默认 `/opt/maca`，metax 构建必需） |
 | `METAX_ARCH` / `METAX_MXCC` | 可选：GPU 架构或 mxcc/cucc 编译器路径 |
 | `METAX_KERNEL` | 启用 MetaX C++ kernel 构建（`ON`/`OFF`；`ACCELERATOR=metax` 时自动开启） |
@@ -293,6 +331,7 @@ pytest tests/integration/ops -q -m "not flaggems and not flaggems_python"
 | `FLAGGEMS_PYTHON` | 启用 FlagGems Python kernel 封装（`ON`/`OFF`，默认 `OFF`；设为 `1` 启用） |
 | `CUDA_KERNEL` | 启用 CUDA kernel 构建（`ON`/`OFF`，默认 `ON`；Ascend 设为 `0`） |
 | `ASCEND_KERNEL` | 启用 Ascend kernel 构建（`ON`/`OFF`，默认 `OFF`；Ascend 设为 `1`） |
+| `GCU_KERNEL` | 启用燧原 GCU topsaten kernel 构建（`ON`/`OFF`；`ACCELERATOR=gcu` 时自动开启） |
 
 ### 运行时环境变量
 

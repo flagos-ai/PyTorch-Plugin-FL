@@ -8,11 +8,15 @@
 #if defined(USE_DCU)
 #include "backends/dcu_memory.h"
 #endif
-#if !defined(USE_ASCEND) && !defined(USE_TSINGMICRO) && !defined(USE_DCU)
+#if !defined(USE_ASCEND) && !defined(USE_TSINGMICRO) && !defined(USE_DCU) && \
+    !defined(USE_GCU)
 #include "backends/cuda_memory.h"
 #endif
 #if defined(USE_TSINGMICRO)
 #include "backends/tsingmicro_memory.h"
+#endif
+#if defined(USE_GCU)
+#include "backends/gcu_memory.h"
 #endif
 
 #include <c10/util/Exception.h>
@@ -528,6 +532,8 @@ CachingDeviceAllocator* GetCachingAllocator() {
     // delegates to torch's own allocator via the device-generic registry --
     // c10::hip under the hood, no c10::cuda symbols (see backends/dcu_memory.h).
     auto backend = std::make_unique<DcuDeviceMemory>();
+#elif defined(USE_GCU)
+    auto backend = std::make_unique<GcuDeviceMemory>();
     alloc = std::make_unique<CachingDeviceAllocator>(std::move(backend));
 #else
     // CUDA (and Metax, which uses CUDA-compatible API)

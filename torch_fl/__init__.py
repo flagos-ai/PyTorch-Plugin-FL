@@ -38,6 +38,18 @@ def _select_backend_config() -> None:
     """
     if os.environ.get("FLAGOS_BACKEND_CONFIG"):
         return
+    # A vendor build whose kernels are native (no CUDA boxing) records its
+    # platform in lib/flagos_platform; its own conf is the only valid routing.
+    marker = os.path.join(os.path.dirname(__file__), "lib", "flagos_platform")
+    if os.path.exists(marker):
+        with open(marker) as f:
+            platform = f.read().strip()
+        platform_conf = os.path.join(
+            os.path.dirname(__file__), "configs", f"backends_{platform}.conf"
+        )
+        if os.path.exists(platform_conf):
+            os.environ["FLAGOS_BACKEND_CONFIG"] = platform_conf
+            return
     use_flaggems = os.environ.get("FLAGOS_USE_FLAGGEMS", "0") not in (
         "0",
         "",

@@ -65,7 +65,7 @@ at::Tensor _copy_from(
         Memcpy(dst.data_ptr(), self.data_ptr(), nbytes, MemcpyDeviceToDevice);
       }
     } else {
-#if !defined(USE_ASCEND) && !defined(USE_TSINGMICRO)
+#if !defined(USE_ASCEND) && !defined(USE_TSINGMICRO) && !defined(USE_GCU)
       // CUDA platform: use DeviceBoxingGuard to dispatch to native CUDA
       // strided copy kernel (handles strides, dtype casts on-device).
       DeviceBoxingGuard guard(self, dst);
@@ -136,7 +136,7 @@ at::Tensor _copy_from(
     } else {
       auto tmp = at::empty(self_contig.sizes(), dst.options());
       Memcpy(tmp.data_ptr(), self_contig.data_ptr(), nbytes, MemcpyHostToDevice);
-#if defined(USE_ASCEND) || defined(USE_TSINGMICRO)
+#if defined(USE_ASCEND) || defined(USE_TSINGMICRO) || defined(USE_GCU)
       at::native::flagos::_copy_from(tmp, dst, false);
 #else
       DeviceBoxingGuard guard(tmp, dst);
@@ -165,7 +165,7 @@ at::Tensor _copy_from(
     } else {
       auto tmp = at::empty(self_contig.sizes(), dst.options());
       Memcpy(tmp.data_ptr(), self_contig.data_ptr(), nbytes, MemcpyDeviceToDevice);
-#if defined(USE_ASCEND) || defined(USE_TSINGMICRO)
+#if defined(USE_ASCEND) || defined(USE_TSINGMICRO) || defined(USE_GCU)
       at::native::flagos::_copy_from(tmp, dst, false);
 #else
       DeviceBoxingGuard guard(tmp, dst);
@@ -278,7 +278,7 @@ at::Tensor _to_copy(
     int device_index = device.index() >= 0 ? device.index() : 0;
     at::Tensor self_contig = self.contiguous();
     if (dtype != self.scalar_type()) {
-#if defined(USE_ASCEND) || defined(USE_TSINGMICRO)
+#if defined(USE_ASCEND) || defined(USE_TSINGMICRO) || defined(USE_GCU)
       // Ascend / TsingMicro: no CUDA runtime, fall back to CPU round-trip for dtype cast.
       size_t nbytes = self_contig.numel() * self_contig.element_size();
       at::Tensor cpu_tensor =

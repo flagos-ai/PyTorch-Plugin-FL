@@ -19,6 +19,7 @@ option(FLAGGEMS_KERNEL "Build FlagGems C++ kernel wrappers (requires liboperator
 option(FLAGGEMS_PYTHON "Build FlagGems Python kernel wrappers (calls via Python, no C++ linking)" ON)
 option(METAX_KERNEL "Build MetaX kernel implementations" OFF)
 option(ASCEND_KERNEL "Build Ascend kernel implementations" OFF)
+option(GCU_KERNEL "Build Enflame GCU (topsaten) kernel implementations" OFF)
 
 file(GLOB_RECURSE SOURCE_FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/*.cc"
@@ -50,10 +51,21 @@ endif()
 if(NOT ASCEND_KERNEL)
   list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/ascend/.*")
 endif()
+if(NOT GCU_KERNEL)
+  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/gcu/.*")
+endif()
 
 if(ACCELERATOR STREQUAL "metax")
   list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/cuda/.*")
   list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/metax/.*\\.cu$")
+endif()
+
+if(ACCELERATOR STREQUAL "gcu")
+  # The generated CUDA boxing kernels re-dispatch PrivateUse1 -> CUDA, which
+  # needs a CUDA-capable libtorch. GCU has no CUDA runtime at all (the tops
+  # stack exports no cuda symbols), so drop them along with the CUDA backend.
+  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/cuda/.*")
+  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/generated/cuda_kernels\\.cc$")
 endif()
 
 set(_torch_fl_sources ${SOURCE_FILES})
@@ -140,6 +152,17 @@ elseif(ACCELERATOR STREQUAL "dcu")
   # delegation -- the DCU wheel exports c10::hip, not c10::cuda).
   target_compile_definitions(${LIBRARY_NAME} PRIVATE USE_DCU=1)
   target_link_libraries(${LIBRARY_NAME} PRIVATE ${_torch_fl_link_libs})
+elseif(ACCELERATOR STREQUAL "gcu")
+  target_compile_definitions(${LIBRARY_NAME} PRIVATE USE_GCU=1)
+  target_link_libraries(${LIBRARY_NAME} PRIVATE ${_torch_fl_link_libs})
+  if(GCU_KERNEL)
+    # FLAGOS_GCU_KERNEL gates the m.impl subset in register.cc: without the
+    # topsaten kernels there is nothing to register on PrivateUse1.
+    target_compile_definitions(${LIBRARY_NAME} PRIVATE FLAGOS_GCU_KERNEL=1)
+    target_include_directories(${LIBRARY_NAME} PRIVATE
+        ${TOPSATEN_INCLUDE_DIRS})
+    target_link_libraries(${LIBRARY_NAME} PRIVATE ${TOPSATEN_LIB})
+  endif()
 else()
   target_link_libraries(${LIBRARY_NAME} PRIVATE ${_torch_fl_link_libs})
 endif()
@@ -183,3 +206,13 @@ install(TARGETS ${LIBRARY_NAME}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
+
+if(ACCELERATOR STREQUAL "gcu")
+  # torch_fl/__init__.py pins backends_cuda.conf by default, which on GCU would
+  # route every op to the (absent) CUDA kernels. Record the platform next to the
+  # libs so the Python side can pick backends_gcu.conf instead.
+  set(_flagos_platform_marker "${CMAKE_CURRENT_BINARY_DIR}/flagos_platform")
+  file(WRITE "${_flagos_platform_marker}" "${ACCELERATOR}\n")
+  install(FILES "${_flagos_platform_marker}"
+      DESTINATION ${CMAKE_INSTALL_LIBDIR})
+endif()

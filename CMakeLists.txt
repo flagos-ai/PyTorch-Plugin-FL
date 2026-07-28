@@ -14,7 +14,7 @@
 
 cmake_minimum_required(VERSION 3.18 FATAL_ERROR)
 
-set(ACCELERATOR "cuda" CACHE STRING "Accelerator platform: cuda, metax, ascend, tsingmicro, or dcu")
+set(ACCELERATOR "cuda" CACHE STRING "Accelerator platform: cuda, metax, ascend, tsingmicro, dcu, or gcu")
 
 # Kernel build options (can be overridden via -D flags from setup.py)
 option(CUDA_KERNEL "Build CUDA kernel implementations" ON)
@@ -22,6 +22,7 @@ option(FLAGGEMS_KERNEL "Build FlagGems C++ kernel wrappers (requires liboperator
 option(FLAGGEMS_PYTHON "Build FlagGems Python kernel wrappers (calls via Python, no C++ linking)" ON)
 option(METAX_KERNEL "Build MetaX kernel implementations" OFF)
 option(ASCEND_KERNEL "Build Ascend kernel implementations" OFF)
+option(GCU_KERNEL "Build Enflame GCU (topsaten) kernel implementations" OFF)
 
 if(ACCELERATOR STREQUAL "ascend")
   project(TORCH_FLAGOS CXX C)
@@ -56,6 +57,8 @@ elseif(ACCELERATOR STREQUAL "dcu")
   set(CUDA_KERNEL OFF CACHE BOOL "Build CUDA kernel implementations" FORCE)
   set(FLAGGEMS_KERNEL OFF CACHE BOOL "Build FlagGems kernel implementations" FORCE)
   project(TORCH_FLAGOS CXX C)
+elseif(ACCELERATOR STREQUAL "gcu")
+  project(TORCH_FLAGOS CXX C)
 else()
   # project(... CUDA) runs nvcc compiler-id before find_package(CUDAToolkit); conda
   # layouts need CUDAToolkit_ROOT (headers under targets/x86_64-linux/include).
@@ -84,7 +87,8 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 if(NOT ACCELERATOR STREQUAL "metax" AND NOT ACCELERATOR STREQUAL "ascend"
-   AND NOT ACCELERATOR STREQUAL "tsingmicro" AND NOT ACCELERATOR STREQUAL "dcu")
+   AND NOT ACCELERATOR STREQUAL "tsingmicro" AND NOT ACCELERATOR STREQUAL "dcu"
+   AND NOT ACCELERATOR STREQUAL "gcu")
   set(CMAKE_CUDA_STANDARD 17)
   set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 endif()
@@ -202,6 +206,54 @@ elseif(ACCELERATOR STREQUAL "dcu")
 
   # Pre-create torch::cudart so PyTorch's cuda.cmake is skipped entirely
   # (guard: if(TARGET torch::cudart) return()).
+elseif(ACCELERATOR STREQUAL "gcu")
+  # Enflame TopsRider SDK: tops runtime (libtopsrt) + topsaten operator library.
+  if(NOT TOPS_ROOT)
+    set(TOPS_ROOT "$ENV{TOPS_HOME}")
+  endif()
+  if(NOT TOPS_ROOT)
+    set(TOPS_ROOT "/opt/tops")
+  endif()
+  message(STATUS "Enflame TopsRider SDK path: ${TOPS_ROOT}")
+
+  add_library(cuda_runtime_compat INTERFACE IMPORTED)
+  set_target_properties(cuda_runtime_compat PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "${TOPS_ROOT}/include"
+  )
+  target_link_directories(cuda_runtime_compat INTERFACE "${TOPS_ROOT}/lib")
+  target_link_libraries(cuda_runtime_compat INTERFACE topsrt)
+
+  set(CUDA_RUNTIME_LIB cuda_runtime_compat)
+
+  # Embed the tops library path in RPATH so LD_LIBRARY_PATH is not needed at runtime.
+  list(APPEND CMAKE_INSTALL_RPATH "${TOPS_ROOT}/lib")
+
+  # topsaten (the aten-style op library) ships in the distro paths, not under
+  # ${TOPS_ROOT}/lib; its headers live in ${TOPS_ROOT}/include/gcu.
+  if(GCU_KERNEL)
+    find_library(TOPSATEN_LIB topsaten
+        PATHS "${TOPS_ROOT}/lib" /usr/lib /usr/lib64)
+    if(NOT TOPSATEN_LIB)
+      message(FATAL_ERROR
+        "GCU_KERNEL=ON but libtopsaten.so was not found (searched "
+        "${TOPS_ROOT}/lib, /usr/lib, /usr/lib64). Install the TopsRider "
+        "topsaten package, or build with -DGCU_KERNEL=OFF to fall back to CPU "
+        "for all compute ops.")
+    endif()
+    find_path(TOPSATEN_INCLUDE_DIR topsaten/topsaten.h
+        PATHS "${TOPS_ROOT}/include/gcu" /usr/include/gcu)
+    if(NOT TOPSATEN_INCLUDE_DIR)
+      message(FATAL_ERROR
+        "GCU_KERNEL=ON but topsaten/topsaten.h was not found (searched "
+        "${TOPS_ROOT}/include/gcu, /usr/include/gcu).")
+    endif()
+    set(TOPSATEN_INCLUDE_DIRS "${TOPSATEN_INCLUDE_DIR}" "${TOPS_ROOT}/include")
+    message(STATUS "topsaten library: ${TOPSATEN_LIB}")
+    message(STATUS "topsaten include: ${TOPSATEN_INCLUDE_DIR}")
+    get_filename_component(_topsaten_libdir "${TOPSATEN_LIB}" DIRECTORY)
+    list(APPEND CMAKE_INSTALL_RPATH "${_topsaten_libdir}")
+  endif()
+
   add_library(torch::cudart INTERFACE IMPORTED)
   if(NOT TARGET CUDA::nvToolsExt)
     add_library(CUDA::nvToolsExt INTERFACE IMPORTED)

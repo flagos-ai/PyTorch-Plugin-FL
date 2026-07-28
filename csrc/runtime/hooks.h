@@ -12,7 +12,7 @@
 #include <c10/core/Allocator.h>
 #include <c10/core/Device.h>
 
-#if !defined(USE_ASCEND) && !defined(USE_TSINGMICRO)
+#if !defined(USE_ASCEND) && !defined(USE_TSINGMICRO) && !defined(USE_GCU)
 #include <cuda_runtime.h>
 #endif
 #include <include/flagos.h>
@@ -48,7 +48,7 @@ struct HooksInterface : public at::PrivateUse1HooksInterface {
       return true;
     }
 
-#if !defined(USE_ASCEND) && !defined(USE_TSINGMICRO)
+#if !defined(USE_ASCEND) && !defined(USE_TSINGMICRO) && !defined(USE_GCU)
     // Fallback: check if it's CUDA pinned memory
     // This is needed because when CUDA is present, PyTorch's pinned memory
     // allocator defaults to CUDA's cudaMallocHost, which won't be in flagos's

@@ -245,11 +245,22 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("_fused_sdp_choice", WrapperFusedSdpChoice);
 
   // ============================================================
-  // Generated m.impl registrations for 71 CUDA operators
+  // Generated m.impl registrations for the generated operators
   // ============================================================
+  // GCU registers only its own coverage set. Claiming an op on PrivateUse1
+  // without a kernel behind it turns into the dispatcher's "backend not
+  // registered" error, whereas leaving it unregistered reaches the cpu_fallback
+  // below -- and on GCU neither the CUDA boxing kernels (no CUDA runtime) nor
+  // FlagGems are built, so the full list would break every uncovered op.
+  #if defined(USE_GCU)
+    #if defined(FLAGOS_GCU_KERNEL)
+    #include "backends/gcu/generated/gcu_register.inc"
+    #endif
+  #else
   #define FLAGOS_GEN_IMPLS
   #include "generated/register.inc"
   #undef FLAGOS_GEN_IMPLS
+  #endif
 }
 
 // Register fallback for all unimplemented operators

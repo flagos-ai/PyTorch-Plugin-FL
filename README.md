@@ -306,13 +306,54 @@ Notes:
   which no longer exists on glibc ≥ 2.34 (librt was folded into libc). The
   `ACCELERATOR=dcu` branch rewrites that dangling absolute path to `-lrt`.
 
+### Build from Source (Enflame GCU Platform)
+
+Enflame GCU takes the **native operator route** (like Ascend), not CUDA boxing:
+the TopsRider stack has no CUDA runtime to box against, and the vendor
+`torch-gcu` wheel claims `PrivateUse1` for itself, so it cannot coexist with
+`torch_fl`. Instead the plugin links the vendor libraries directly:
+
+- `libtopsrt.so` (tops runtime) backs the device / memory / stream layer.
+- `libtopsaten.so` (ATen-style operator library) backs the compute ops. Its call
+  shape is a single direct call — no workspace/executor phase like aclnn.
+
+```bash
+# Upstream CPU torch wheel is enough; no vendor torch needed.
+pip install torch==2.10.0 --index-url https://download.pytorch.org/whl/cpu
+
+ACCELERATOR=gcu pip install --no-build-isolation -vvv -e .
+```
+
+`scripts/codegen_gcu.py` generates the kernels. It validates every op against
+the demangled `topsaten::topsatenXxx` symbols actually present in
+`libtopsaten.so` and skips any that are missing, so a codegen run cannot emit a
+call the installed SDK does not have.
+
+**GCU-specific notes:**
+
+- **Ops without a topsaten kernel are not registered on `PrivateUse1`** at all,
+  so they reach the `cpu_fallback` instead of raising. Adding coverage is a
+  matter of extending the `OPS` table in `scripts/codegen_gcu.py`.
+- **topsaten has no int64 kernels**: every op returns `NOT_SUPPORT` for an
+  `I64` operand. Each generated kernel therefore guards on dtype and runs the
+  op on CPU for int64, which keeps indices, masks and counters working. It also
+  rejects rank-0 shapes, so 0-dim tensors are described as 1-element vectors.
+- **tops device pointers are device-scoped** (no unified addressing): a pointer
+  only resolves against the *current* device, so the allocator and every kernel
+  select the device first, and the default stream is per-device.
+- **A build with native kernels installs a `lib/flagos_platform` marker** so
+  `torch_fl` picks `backends_gcu.conf` rather than the default CUDA routing.
+- Build with `-DGCU_KERNEL=OFF` to skip topsaten entirely; the runtime still
+  works and all compute falls back to CPU.
+
 ### Build Environment Variables
 
 | Variable | Description |
 |----------|-------------|
-| `ACCELERATOR` | Hardware platform: `cuda` (default), `metax`, `ascend`, `tsingmicro`, or `dcu` |
+| `ACCELERATOR` | Hardware platform: `cuda` (default), `metax`, `ascend`, `tsingmicro`, `dcu`, or `gcu` |
 | `CUDA_HOME` | CUDA toolkit path |
 | `DTK_ROOT` | Hygon DTK path (falls back to `ROCM_PATH`, then `/opt/dtk`; required for DCU build) |
+| `TOPS_HOME` | Enflame TopsRider SDK path (default `/opt/tops`; required for GCU build) |
 | `METAX_PATH` | MetaX SDK path (default `/opt/maca`; required for MetaX build) |
 | `METAX_ARCH` / `METAX_MXCC` | Optional GPU arch or `mxcc`/`cucc` compiler path |
 | `METAX_KERNEL` | Enable MetaX C++ kernel build (`ON`/`OFF`; auto-enabled when `ACCELERATOR=metax`) |
@@ -322,6 +363,7 @@ Notes:
 | `FLAGGEMS_PYTHON` | Enable FlagGems Python kernel wrappers (`ON`/`OFF`, default `OFF`; set `1` to enable) |
 | `CUDA_KERNEL` | Enable CUDA kernel build (`ON`/`OFF`, default `ON`; set `0` for Ascend) |
 | `ASCEND_KERNEL` | Enable Ascend kernel build (`ON`/`OFF`, default `OFF`; set `1` for Ascend) |
+| `GCU_KERNEL` | Enable Enflame GCU topsaten kernel build (`ON`/`OFF`, auto-enabled when `ACCELERATOR=gcu`) |
 
 ### Runtime Environment Variables
 
