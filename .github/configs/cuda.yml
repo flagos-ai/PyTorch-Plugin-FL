@@ -17,7 +17,7 @@ display_name: CUDA
 # Platform-specific preparation is implemented outside the common workflows.
 setup_script: .github/scripts/set_env_cuda.sh
 
-ci_image: harbor.baai.ac.cn/flagos/flagscale:cuda12.8.1-cudnn9.7.1-python3.12-torch2.7.0-time2507111538
+ci_image: harbor.baai.ac.cn/flagos-dev/pytorch-plugin-fl:manual-20260728-cuda-dev
 
 runner_labels:
   - self-hosted
