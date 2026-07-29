@@ -72,10 +72,6 @@ from torch.nn.parallel import DistributedDataParallel
 
 def _describe_inner_backend(pg) -> str:
     """Best-effort name of the inner comm backend ProcessGroupFlagOS built."""
-    try:
-        from torch_fl.comm.process_group import ProcessGroupFlagOS
-    except Exception:
-        return "unknown (import failed)"
     # The default group's backend for privateuseone is our ProcessGroupFlagOS.
     inner = getattr(pg, "_inner", None)
     if inner is None:
