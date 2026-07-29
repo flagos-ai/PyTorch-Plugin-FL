@@ -109,7 +109,9 @@ def worker(rank: int, world_size: int):
     expected = sum(range(1, world_size + 1))
     ok = torch.allclose(t.cpu(), torch.full((4,), float(expected)))
     failures.append(("all_reduce", ok))
-    print(f"[rank {rank}] all_reduce -> {t[0].item()} (expect {expected}) {'OK' if ok else 'FAIL'}")
+    print(
+        f"[rank {rank}] all_reduce -> {t[0].item()} (expect {expected}) {'OK' if ok else 'FAIL'}"
+    )
 
     # --- broadcast (src=0) ---
     b = torch.arange(4, device=dev, dtype=torch.float32) + rank * 10
@@ -136,7 +138,9 @@ def worker(rank: int, world_size: int):
     exp = base * world_size + sum(range(world_size))
     ok = torch.allclose(out.cpu(), exp)
     failures.append(("reduce_scatter_tensor", ok))
-    print(f"[rank {rank}] reduce_scatter -> {out.tolist()} (expect {exp.tolist()}) {'OK' if ok else 'FAIL'}")
+    print(
+        f"[rank {rank}] reduce_scatter -> {out.tolist()} (expect {exp.tolist()}) {'OK' if ok else 'FAIL'}"
+    )
 
     # --- DDP forward/backward ---
     torch.manual_seed(0)
@@ -165,7 +169,9 @@ def worker(rank: int, world_size: int):
     ok = all(abs(v - vals[0]) < 1e-4 for v in vals)
     failures.append(("ddp_grad_sync", ok))
     if rank == 0:
-        print(f"[rank 0] DDP grad.sum across ranks {vals} synced={'OK' if ok else 'FAIL'}")
+        print(
+            f"[rank 0] DDP grad.sum across ranks {vals} synced={'OK' if ok else 'FAIL'}"
+        )
 
     dist.barrier()
     if rank == 0:
