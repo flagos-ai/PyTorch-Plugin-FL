@@ -205,7 +205,7 @@ at::Tensor ArangeKernelPython(const at::Scalar & end, ::std::optional<at::Scalar
   ::std::optional<at::ScalarType> _dt = dtype;
   if (!_dt.has_value()) _dt = (end.isFloatingPoint())
       ? at::typeMetaToScalarType(at::get_default_dtype()) : at::kLong;
-  auto result = CallPythonOp_Factory("flag_gems.ops.arange.arange", {end}, _dt);
+  auto result = CallPythonOp_Factory("flag_gems.ops.arange.arange", {end}, _dt, device);
   UnboxToFlagos(result);
   return result;
 }
@@ -214,7 +214,7 @@ at::Tensor ArangeStartKernelPython(const at::Scalar & start, const at::Scalar & 
   ::std::optional<at::ScalarType> _dt = dtype;
   if (!_dt.has_value()) _dt = (start.isFloatingPoint() || end.isFloatingPoint())
       ? at::typeMetaToScalarType(at::get_default_dtype()) : at::kLong;
-  auto result = CallPythonOp_Factory("flag_gems.ops.arange.arange_start", {start, end}, _dt);
+  auto result = CallPythonOp_Factory("flag_gems.ops.arange.arange_start", {start, end}, _dt, device);
   UnboxToFlagos(result);
   return result;
 }
@@ -223,7 +223,7 @@ at::Tensor ArangeStartStepKernelPython(const at::Scalar & start, const at::Scala
   ::std::optional<at::ScalarType> _dt = dtype;
   if (!_dt.has_value()) _dt = (start.isFloatingPoint() || end.isFloatingPoint() || step.isFloatingPoint())
       ? at::typeMetaToScalarType(at::get_default_dtype()) : at::kLong;
-  auto result = CallPythonOp_Factory("flag_gems.ops.arange.arange_start", {start, end, step}, _dt);
+  auto result = CallPythonOp_Factory("flag_gems.ops.arange.arange_start", {start, end, step}, _dt, device);
   UnboxToFlagos(result);
   return result;
 }
@@ -693,13 +693,13 @@ at::Tensor & ExponentialInplaceKernelPython(at::Tensor & self, double lambd, ::s
 }
 
 at::Tensor EyeKernelPython(int64_t n, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
-  auto result = CallPythonOp_Factory("flag_gems.ops.eye.eye", {n}, dtype);
+  auto result = CallPythonOp_Factory("flag_gems.ops.eye.eye", {n}, dtype, device);
   UnboxToFlagos(result);
   return result;
 }
 
 at::Tensor EyeMKernelPython(int64_t n, int64_t m, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
-  auto result = CallPythonOp_Factory("flag_gems.ops.eye_m.eye_m", {n, m}, dtype);
+  auto result = CallPythonOp_Factory("flag_gems.ops.eye_m.eye_m", {n, m}, dtype, device);
   UnboxToFlagos(result);
   return result;
 }
@@ -788,13 +788,13 @@ at::Tensor & FminOutKernelPython(const at::Tensor & self, const at::Tensor & oth
 }
 
 at::Tensor FullKernelPython(at::IntArrayRef size, const at::Scalar & fill_value, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
-  auto result = CallPythonOp_Factory("flag_gems.ops.full.full", {size, fill_value}, dtype);
+  auto result = CallPythonOp_Factory("flag_gems.ops.full.full", {size, fill_value}, dtype, device);
   UnboxToFlagos(result);
   return result;
 }
 
 at::Tensor FullLikeKernelPython(const at::Tensor & self, const at::Scalar & fill_value, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory, ::std::optional<at::MemoryFormat> memory_format) {
-  auto result = CallPythonOp_LikeFactory("flag_gems.ops.full_like.full_like", {self, fill_value}, dtype);
+  auto result = CallPythonOp_LikeFactory("flag_gems.ops.full_like.full_like", {self, fill_value}, dtype, device);
   UnboxToFlagos(result);
   return result;
 }
@@ -990,7 +990,7 @@ at::Tensor LinalgVectorNormKernelPython(const at::Tensor & self, const at::Scala
 }
 
 at::Tensor LinspaceKernelPython(const at::Scalar & start, const at::Scalar & end, int64_t steps, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
-  auto result = CallPythonOp_Factory("flag_gems.ops.linspace.linspace", {start, end, steps}, dtype);
+  auto result = CallPythonOp_Factory("flag_gems.ops.linspace.linspace", {start, end, steps}, dtype, device);
   UnboxToFlagos(result);
   return result;
 }
@@ -1084,7 +1084,7 @@ at::Tensor & LogitInplaceKernelPython(at::Tensor & self, ::std::optional<double>
 }
 
 at::Tensor LogspaceKernelPython(const at::Scalar & start, const at::Scalar & end, int64_t steps, double base, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
-  auto result = CallPythonOp_Factory("flag_gems.ops.logspace.logspace", {start, end, steps, base}, dtype);
+  auto result = CallPythonOp_Factory("flag_gems.ops.logspace.logspace", {start, end, steps, base}, dtype, device);
   UnboxToFlagos(result);
   return result;
 }
@@ -1348,13 +1348,13 @@ at::Tensor NonzeroKernelPython(const at::Tensor & self) {
 }
 
 at::Tensor OnesKernelPython(at::IntArrayRef size, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
-  auto result = CallPythonOp_Factory("flag_gems.ops.ones.ones", {size}, dtype);
+  auto result = CallPythonOp_Factory("flag_gems.ops.ones.ones", {size}, dtype, device);
   UnboxToFlagos(result);
   return result;
 }
 
 at::Tensor OnesLikeKernelPython(const at::Tensor & self, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory, ::std::optional<at::MemoryFormat> memory_format) {
-  auto result = CallPythonOp_LikeFactory("flag_gems.ops.ones_like.ones_like", {self}, dtype);
+  auto result = CallPythonOp_LikeFactory("flag_gems.ops.ones_like.ones_like", {self}, dtype, device);
   UnboxToFlagos(result);
   return result;
 }
@@ -1413,31 +1413,31 @@ at::Tensor ProdDimIntKernelPython(const at::Tensor & self, int64_t dim, bool kee
 }
 
 at::Tensor RandKernelPython(at::IntArrayRef size, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
-  auto result = CallPythonOp_Factory("flag_gems.ops.rand.rand", {size}, dtype);
+  auto result = CallPythonOp_Factory("flag_gems.ops.rand.rand", {size}, dtype, device);
   UnboxToFlagos(result);
   return result;
 }
 
 at::Tensor RandLikeKernelPython(const at::Tensor & self, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory, ::std::optional<at::MemoryFormat> memory_format) {
-  auto result = CallPythonOp_LikeFactory("flag_gems.ops.rand_like.rand_like", {self}, dtype);
+  auto result = CallPythonOp_LikeFactory("flag_gems.ops.rand_like.rand_like", {self}, dtype, device);
   UnboxToFlagos(result);
   return result;
 }
 
 at::Tensor RandnKernelPython(at::IntArrayRef size, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
-  auto result = CallPythonOp_Factory("flag_gems.ops.randn.randn", {size}, dtype);
+  auto result = CallPythonOp_Factory("flag_gems.ops.randn.randn", {size}, dtype, device);
   UnboxToFlagos(result);
   return result;
 }
 
 at::Tensor RandnLikeKernelPython(const at::Tensor & self, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory, ::std::optional<at::MemoryFormat> memory_format) {
-  auto result = CallPythonOp_LikeFactory("flag_gems.ops.randn_like.randn_like", {self}, dtype);
+  auto result = CallPythonOp_LikeFactory("flag_gems.ops.randn_like.randn_like", {self}, dtype, device);
   UnboxToFlagos(result);
   return result;
 }
 
 at::Tensor RandpermKernelPython(int64_t n, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
-  auto result = CallPythonOp_Factory("flag_gems.ops.randperm.randperm", {n}, dtype);
+  auto result = CallPythonOp_Factory("flag_gems.ops.randperm.randperm", {n}, dtype, device);
   UnboxToFlagos(result);
   return result;
 }
@@ -1937,13 +1937,13 @@ at::Tensor & ZeroInplaceKernelPython(at::Tensor & self) {
 }
 
 at::Tensor ZerosKernelPython(at::IntArrayRef size, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
-  auto result = CallPythonOp_Factory("flag_gems.ops.zeros.zeros", {size}, dtype);
+  auto result = CallPythonOp_Factory("flag_gems.ops.zeros.zeros", {size}, dtype, device);
   UnboxToFlagos(result);
   return result;
 }
 
 at::Tensor ZerosLikeKernelPython(const at::Tensor & self, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory, ::std::optional<at::MemoryFormat> memory_format) {
-  auto result = CallPythonOp_LikeFactory("flag_gems.ops.zeros_like.zeros_like", {self}, dtype);
+  auto result = CallPythonOp_LikeFactory("flag_gems.ops.zeros_like.zeros_like", {self}, dtype, device);
   UnboxToFlagos(result);
   return result;
 }

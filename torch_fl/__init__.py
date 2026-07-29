@@ -292,6 +292,15 @@ def _patch_flaggems_codegen_config():
       CPU-frozen torch wheel against maca's libtorch_cuda.so. Auto-selected when
       FLAGOS_METAX_BOXING=1 (or FLAGOS_METAX_COMPAT=1) and a MetaX card is present.
 
+    - Hygon DCU (DTK): set GEMS_VENDOR=hygon so FlagGems uses its _hygon
+      codegen config (triton hcu backend, triton_extra_name="hip"). No
+      torch.cuda shim is needed -- DTK ships a hipified torch with a real,
+      working torch.cuda. This branch must precede the generic-NVIDIA one:
+      is_nvidia_cuda_available() is False on DTK (there is no libcuda.so, only
+      libgalaxyhip), so without it DCU would reach the ascend fallback and get
+      GEMS_VENDOR=ascend -- which also breaks the comm layer, since that vendor
+      selects the HCCL profile (see comm/process_group.py _VENDOR_PROFILES).
+
     - Ascend (fallback): set GEMS_VENDOR=ascend so FlagGems uses the ASCEND
       codegen config (prefer_block_pointer=False, avoiding a triton-ascend
       tl.make_block_ptr bug), and register torch.flagos as a torch.npu shim so
@@ -317,6 +326,16 @@ def _patch_flaggems_codegen_config():
             os.environ.setdefault("GEMS_VENDOR", "metax")
             patch_torch_cuda_for_metax()
             return
+
+    # --- Hygon DCU branch (DTK) ---
+    # Keyed on the build accelerator rather than probing the runtime: DTK's torch
+    # is hipified, so torch.cuda/torch.version.hip look "cuda-ish" and no
+    # libcuda.so probe can tell the two apart. Must come before both the generic
+    # NVIDIA branch (which no-ops here anyway -- no libcuda.so) and the ascend
+    # fallback. setdefault so an explicit GEMS_VENDOR still wins.
+    if _build_accelerator() == "dcu" and os.environ.get("GEMS_VENDOR") != "ascend":
+        os.environ.setdefault("GEMS_VENDOR", "hygon")
+        return
 
     # --- Generic NVIDIA CUDA branch (default) ---
     if (

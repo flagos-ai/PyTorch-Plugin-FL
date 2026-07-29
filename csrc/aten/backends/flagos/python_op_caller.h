@@ -96,9 +96,17 @@ std::vector<at::Tensor> CallPythonOp_GenericKwTuple(
 // a PrivateUse1 tensor -- no CUDA round-trip, no recursion), layout=strided
 // (gems eye/randperm validate layout, None is rejected), pin_memory=None, and
 // dtype forwarded from the aten call (nullopt -> None, else the ScalarType).
+//
+// `device` is the aten call's device argument, forwarded so the result lands on
+// the requested index. Following aten factory semantics, nullopt (or a device
+// with no index) means "the current device". The injected kwarg carries the
+// resolved index and the Python call runs under a DeviceGuard on it, so gems'
+// internal torch.empty and its Triton launch agree -- a mismatch allocates on
+// one device and launches on another, which faults the GPU rather than erroring.
 at::Tensor CallPythonOp_Factory(const char* func_name,
                                 const std::vector<c10::IValue>& args,
-                                std::optional<at::ScalarType> dtype);
+                                std::optional<at::ScalarType> dtype,
+                                std::optional<at::Device> device = std::nullopt);
 
 // Like-factory caller (zeros_like/ones_like/full_like/...). `args` are the
 // non-TensorOptions positionals -- the input tensor `self` (whose shape/device
@@ -108,9 +116,13 @@ at::Tensor CallPythonOp_Factory(const char* func_name,
 // memory_format=None, pin_memory=None, and dtype forwarded (nullopt -> None,
 // meaning "same as self"). Distinct from CallPythonOp_Factory whose first arg
 // is a shape array; here it's the source tensor.
+//
+// `device` behaves as in CallPythonOp_Factory: forwarded from the aten call,
+// nullopt/index-less means the current device.
 at::Tensor CallPythonOp_LikeFactory(const char* func_name,
                                     const std::vector<c10::IValue>& args,
-                                    std::optional<at::ScalarType> dtype);
+                                    std::optional<at::ScalarType> dtype,
+                                    std::optional<at::Device> device = std::nullopt);
 
 // Random in-place caller (uniform_/exponential_/bernoulli_.float). `args` are
 // the aten positionals with the trailing `Generator?` arg dropped (self, plus

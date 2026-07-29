@@ -402,10 +402,14 @@ ACCELERATOR=dcu FLAGGEMS_PYTHON=1 pip install --no-build-isolation -e .
 export PYTHONPATH=/path/to/gems_path
 export TRITON_BACKENDS_IN_TREE=1       # this install has no dist-info, so
                                        # entry-point backend discovery finds nothing
-export GEMS_VENDOR=hygon
 export FLAGOS_USE_FLAGGEMS=1
 pytest tests/integration/ops -q        # no marker deselection needed
 ```
+
+`GEMS_VENDOR=hygon` is set automatically on a DCU build, so you no longer need to
+export it. This matters beyond FlagGems: `GEMS_VENDOR` also selects the comm
+profile (see `torch_fl/comm/process_group.py`), and DCU is a CUDA-ABI vendor
+whose `ProcessGroupNCCL` is RCCL underneath. Export it yourself only to override.
 
 A DCU build records `ACCELERATOR=dcu` in `torch_fl/_build_config.py`, so
 `FLAGOS_USE_FLAGGEMS=1` alone selects `backends_dcu_flaggems.conf` — no need to
@@ -415,6 +419,25 @@ kernel: `silu_backward` (`tl.math.div_rn` has no `create_precise_divf` lowering)
 and `slice_backward` (its output is correct standalone, but feeding that grad to
 MIOpen's `convolution_backward` triggers a hardware VMFault). Override per op
 with `FLAGOS_OP_<name>=flagos_python|cuda`.
+
+#### Multi-card on DCU
+
+Multi-card works with FlagGems on, over FlagCX or the RCCL fallback. Nothing extra
+to configure — the automatic `GEMS_VENDOR=hygon` routes `ProcessGroupFlagOS` to the
+CUDA-ABI profile (zero-copy `_flagos_to_cuda_view` + `ProcessGroupNCCL`, which on
+DTK is RCCL: `dist.is_nccl_available()` is `True` and `torch.cuda.nccl.version()`
+reports `(2, 22, 3)`).
+
+```bash
+export HSA_FORCE_FINE_GRAIN_PCIE=1     # RCCL warns when unset; affects
+                                       # multi-card throughput and stability
+python tests/manual/test_flagos_dist_live.py --world-size 2
+```
+
+Note that factory ops honoring their `device` index is a prerequisite here: every
+rank>0 worker builds its tensors via a factory, and an output allocated on device 0
+while the Triton kernel launches on device N is a cross-device write that faults
+the GPU. See `tests/integration/test_factory_device_index.py`.
 
 ### Build from Source (Enflame GCU Platform)
 

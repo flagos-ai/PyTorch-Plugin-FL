@@ -59,7 +59,7 @@ def test_unknown_vendor_falls_back_to_default_profile():
 
 
 def test_known_cuda_vendors():
-    for v in ("nvidia", "metax", "iluvatar", "kunlunxin", "du", "thead"):
+    for v in ("nvidia", "metax", "iluvatar", "kunlunxin", "du", "thead", "hygon"):
         prof = pg._get_profile(v)
         assert prof.flagcx_dev == "cuda"
         assert prof.view == "_flagos_to_cuda_view"
@@ -72,6 +72,20 @@ def test_thead_ppu_routes_without_warning():
     with warnings.catch_warnings():
         warnings.simplefilter("error")  # any warning fails the test
         prof = pg._get_profile("thead")
+    assert prof.flagcx_dev == "cuda"
+    assert prof.native == "_try_build_nccl"
+    assert prof.view == pg._VENDOR_PROFILES["nvidia"].view
+
+
+def test_hygon_dcu_routes_without_warning():
+    """DCU (DTK) sets GEMS_VENDOR=hygon. torch there is a hipified CUDA build, so
+    flagos is a cuda alias and ProcessGroupNCCL is RCCL: the CUDA-ABI profile
+    applies verbatim. Must not trip the unknown-vendor warning -- before the row
+    existed, an unset GEMS_VENDOR on DCU landed on the ascend profile instead and
+    init_process_group failed with "no suitable inner backend"."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # any warning fails the test
+        prof = pg._get_profile("hygon")
     assert prof.flagcx_dev == "cuda"
     assert prof.native == "_try_build_nccl"
     assert prof.view == pg._VENDOR_PROFILES["nvidia"].view

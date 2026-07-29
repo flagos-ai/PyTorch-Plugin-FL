@@ -836,11 +836,17 @@ def gen_flaggems_python_kernel(
     if category == "factory":
         # Factory: pass only the shape/scalar positionals; the factory caller
         # injects device=flagos/layout=strided/pin_memory=None and forwards
-        # dtype. `kwargs` here carries the positional (aten_type, name) list.
+        # dtype + device. `kwargs` here carries the positional (aten_type, name) list.
         positional = kwargs or []
         pos_names = [n for _t, n in positional]
         dtype_name = next((a.name for a in aten_args if a.name == "dtype"), None)
         dtype_expr = dtype_name if dtype_name else "::std::nullopt"
+        # Forward the aten `device` arg so the output lands on the requested
+        # index. Without it the caller fell back to a hardcoded index 0, which
+        # allocated on device 0 while the Triton kernel launched on the current
+        # device -- a cross-device write that faults the GPU on multi-card runs.
+        device_name = next((a.name for a in aten_args if a.name == "device"), None)
+        device_expr = device_name if device_name else "::std::nullopt"
         pos_init = "{" + ", ".join(pos_names) + "}"
         infer = ""
         # arange: gems defaults dtype=None to int64 unconditionally, but aten
@@ -862,7 +868,7 @@ def gen_flaggems_python_kernel(
         body = (
             f"{infer}"
             f'  auto result = CallPythonOp_Factory("{gems_func}", '
-            f"{pos_init}, {dtype_expr});\n"
+            f"{pos_init}, {dtype_expr}, {device_expr});\n"
             f"  UnboxToFlagos(result);\n"
             f"  return result;"
         )
@@ -871,16 +877,20 @@ def gen_flaggems_python_kernel(
     if category == "like_factory":
         # *_like: pass the source tensor (+ full_like's fill_value); the caller
         # injects device=flagos/layout/memory_format/pin_memory and forwards
-        # dtype (nullopt -> None means "same as self"). `kwargs` here carries the
-        # non-option positional (aten_type, name) list.
+        # dtype (nullopt -> None means "same as self") + device. `kwargs` here
+        # carries the non-option positional (aten_type, name) list.
         positional = kwargs or []
         pos_names = [n for _t, n in positional]
         dtype_name = next((a.name for a in aten_args if a.name == "dtype"), None)
         dtype_expr = dtype_name if dtype_name else "::std::nullopt"
+        # See the factory branch: forwarded so the result honors the requested
+        # device index. nullopt here means "same device as self".
+        device_name = next((a.name for a in aten_args if a.name == "device"), None)
+        device_expr = device_name if device_name else "::std::nullopt"
         pos_init = "{" + ", ".join(pos_names) + "}"
         body = (
             f'  auto result = CallPythonOp_LikeFactory("{gems_func}", '
-            f"{pos_init}, {dtype_expr});\n"
+            f"{pos_init}, {dtype_expr}, {device_expr});\n"
             f"  UnboxToFlagos(result);\n"
             f"  return result;"
         )

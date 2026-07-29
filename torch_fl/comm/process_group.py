@@ -28,7 +28,8 @@ For every vendor the inner-backend priority is FlagCX first, then the vendor's
 native backend (NCCL for CUDA-ABI vendors, HCCL for Ascend).
 
 View conversion
-    flagos tensors on CUDA-ABI vendors (nvidia/metax/iluvatar/kunlunxin/du/thead)
+    flagos tensors on CUDA-ABI vendors
+    (nvidia/metax/iluvatar/kunlunxin/du/thead/hygon)
     share physical GPU memory with CUDA, so they are reinterpreted as CUDA
     tensors via a zero-copy shared-storage view (``_C._flagos_to_cuda_view``)
     before being handed to NCCL / FlagCX-cuda. The underlying buffer is the
@@ -69,7 +70,9 @@ from torch._C import _distributed_c10d as _c10d
 # cuda_alias vendors: flagos shares physical GPU memory with CUDA, so a flagos
 # tensor can be viewed as a cuda tensor zero-copy (_flagos_to_cuda_view) and
 # handed to NCCL/FlagCX-cuda directly. This is the property that makes the
-# CPU-torch + external libtorch_cuda scheme work.
+# CPU-torch + external libtorch_cuda scheme work. A hipified torch (hygon)
+# qualifies too: its HIP kernels register under the CUDA dispatch key and its
+# "NCCL" backend is RCCL, so the same row shape applies.
 # ---------------------------------------------------------------------------
 
 
@@ -97,6 +100,12 @@ _VENDOR_PROFILES = {
     # a vendor-adapted libnccl.so.2 and its torch wheel is a real CUDA build, so
     # ProcessGroupNCCL works on the zero-copy cuda view unchanged.
     "thead": _VendorProfile("cuda", "_flagos_to_cuda_view", "_try_build_nccl"),
+    # Hygon DCU (DTK). torch is a hipified CUDA build, so flagos IS a cuda alias
+    # and the zero-copy view applies unchanged. Its ProcessGroupNCCL is RCCL
+    # under the hood (dist.is_nccl_available() True, torch.cuda.nccl.version()
+    # -> (2, 22, 3)); measured working for all_reduce / broadcast / all_gather /
+    # all_gather_into_tensor / reduce_scatter_tensor and DDP on 2 cards.
+    "hygon": _VendorProfile("cuda", "_flagos_to_cuda_view", "_try_build_nccl"),
     # Ascend: flagos is NOT a cuda alias; native fallback is HCCL. The flagos->
     # npu view is not implemented yet, so only the FlagCX(cann) path is viable.
     "ascend": _VendorProfile("cann", None, "_try_build_hccl"),

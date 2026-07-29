@@ -365,10 +365,13 @@ ACCELERATOR=dcu FLAGGEMS_PYTHON=1 pip install --no-build-isolation -e .
 export PYTHONPATH=/path/to/gems_path
 export TRITON_BACKENDS_IN_TREE=1       # 该安装没有 dist-info，
                                        # 基于 entry-point 的后端发现拿不到任何后端
-export GEMS_VENDOR=hygon
 export FLAGOS_USE_FLAGGEMS=1
 pytest tests/integration/ops -q        # 无需再屏蔽 marker
 ```
+
+DCU 构建会自动设置 `GEMS_VENDOR=hygon`，无需再手动导出。这一点不只影响 FlagGems：
+`GEMS_VENDOR` 同时决定通信 profile（见 `torch_fl/comm/process_group.py`），而 DCU
+属于 CUDA-ABI vendor，其 `ProcessGroupNCCL` 底层就是 RCCL。只有需要覆盖时才自行导出。
 
 DCU 构建会把 `ACCELERATOR=dcu` 记录到 `torch_fl/_build_config.py`，因此运行时只需
 `FLAGOS_USE_FLAGGEMS=1` 就会选中 `backends_dcu_flaggems.conf`，不必重新导出
@@ -377,6 +380,24 @@ DCU 构建会把 `ACCELERATOR=dcu` 记录到 `torch_fl/_build_config.py`，因�
 `create_precise_divf` lowering）与 `slice_backward`（单独跑结果正确，但其梯度喂给
 MIOpen 的 `convolution_backward` 会触发硬件 VMFault）。可用
 `FLAGOS_OP_<name>=flagos_python|cuda` 按算子覆盖。
+
+#### DCU 多卡
+
+开着 FlagGems 也可以多卡，走 FlagCX 或 RCCL 回退路径均可，无需额外配置：自动设置的
+`GEMS_VENDOR=hygon` 会把 `ProcessGroupFlagOS` 路由到 CUDA-ABI profile（零拷贝
+`_flagos_to_cuda_view` + `ProcessGroupNCCL`，在 DTK 上底层即 RCCL：
+`dist.is_nccl_available()` 为 `True`，`torch.cuda.nccl.version()` 返回
+`(2, 22, 3)`）。
+
+```bash
+export HSA_FORCE_FINE_GRAIN_PCIE=1     # 不设置时 RCCL 会告警；
+                                       # 影响多卡吞吐与稳定性
+python tests/manual/test_flagos_dist_live.py --world-size 2
+```
+
+这里的前提是工厂算子必须遵守传入的 `device` index：每个 rank>0 的 worker 都通过工厂
+算子建张量，若输出分配在 device 0 而 Triton kernel 在 device N 上启动，就是一次跨设备
+写入，会直接把 GPU 打挂。参见 `tests/integration/test_factory_device_index.py`。
 
 ### 从源码安装（燧原 GCU 平台）
 
