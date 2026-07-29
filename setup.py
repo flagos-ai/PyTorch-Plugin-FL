@@ -644,12 +644,19 @@ def _cuda_runtime_requires():
 def _install_requires():
     reqs = ["torch"]
     # FlagGems (and its Triton) is the default operator source, so it is a hard
-    # runtime dep everywhere it can actually run. ACCELERATOR=dcu is the
-    # exception: it builds pure-boxing (FLAGGEMS_KERNEL/FLAGGEMS_PYTHON off) and
-    # DTK ships its own Triton, so pulling PyPI's NVIDIA-targeted triton wheel
-    # would install ~200 MB of the wrong artifact. All flag_gems imports in the
-    # Python layer are ImportError-guarded, so omitting it is safe.
-    if ACCELERATOR != "dcu":
+    # runtime dep everywhere it can actually run. Two accelerators are the
+    # exception, both because they supply the `triton` module themselves and
+    # PyPI's NVIDIA-targeted wheel would overwrite it with ~200 MB of the wrong
+    # artifact:
+    #   - dcu: builds pure-boxing (FLAGGEMS_KERNEL/FLAGGEMS_PYTHON off) and DTK
+    #     ships its own Triton.
+    #   - ascend: `triton` is provided by triton-ascend, which is installed out
+    #     of band (it has no PyPI release satisfying triton>=3.5.1). Declaring
+    #     the dep here makes pip install stock triton over triton-ascend, after
+    #     which any Triton entry point dies with "0 active drivers".
+    # All flag_gems imports in the Python layer are ImportError-guarded, so
+    # omitting it is safe.
+    if ACCELERATOR not in ("dcu", "ascend"):
         reqs += ["flag_gems>=5.0.2", "triton>=3.5.1"]
     # For a CUDA wheel we bundle libtorch_cuda.so and preload it at import; it
     # needs the NVIDIA runtime libs present, so make them hard deps. Ascend/MetaX
