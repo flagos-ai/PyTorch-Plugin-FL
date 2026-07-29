@@ -38,7 +38,10 @@ on:
       timeout_minutes:
         required: true
         type: number
-      model_path:
+      integration_tests:
+        required: true
+        type: string
+      integration_environment:
         required: true
         type: string
 
@@ -69,31 +72,10 @@ jobs:
           python -m pip install -e . --no-build-isolation
           python -m pip install pytest
 
-      - name: Check device availability
+      - name: Run configured integration tests
+        env:
+          INTEGRATION_TESTS: ${{ inputs.integration_tests }}
+          INTEGRATION_ENVIRONMENT: ${{ inputs.integration_environment }}
         run: |
-          python - <<'PY'
-          import torch_fl
-
-          assert torch_fl.flagos.is_available(), "flagos device is unavailable"
-          print(f"flagos devices: {torch_fl.flagos.device_count()}")
-          PY
-
-      - name: Run operator tests
-        run: python -m pytest tests/integration/ops/ -v -s --tb=short
-
-      - name: Run general tests
-        run: python -m pytest tests/integration/test_factory_ops.py -v -s --tb=short
-
-      - name: Run inference tests
-        env:
-          MODEL_PATH: ${{ inputs.model_path }}
-        run: >-
-          python -m pytest tests/integration/test_qwen3_infer.py
-          --model "$MODEL_PATH" -v -s --tb=short
-
-      - name: Run training tests
-        env:
-          MODEL_PATH: ${{ inputs.model_path }}
-        run: >-
-          python -m pytest tests/integration/test_qwen3_train.py
-          --model "$MODEL_PATH" -v -s --tb=short
+          set -euo pipefail
+          python .github/scripts/run_integration_tests.py

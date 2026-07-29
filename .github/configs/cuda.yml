@@ -27,7 +27,8 @@ runner_labels:
 container_volumes:
   - /data/models/Qwen/Qwen3-0.6B:/models/Qwen3-0.6B:ro
 
-model_path: /models/Qwen3-0.6B
+integration_environment:
+  MODEL_PATH: /models/Qwen3-0.6B
 
 container_options: >-
   --gpus all
@@ -38,3 +39,36 @@ container_options: >-
 
 timeout_minutes: 60
 wheel_artifact_name: wheel-cuda
+
+# The common workflow only executes this platform-provided test manifest.
+integration_tests:
+  - name: Check model availability
+    command: test -d "$MODEL_PATH"
+  - name: Check device availability
+    command: |
+      python - <<'PY'
+      import torch
+      import torch_fl
+
+      assert torch.cuda.is_available(), "CUDA is unavailable"
+      assert torch_fl.flagos.is_available(), "flagos device is unavailable"
+      print(f"CUDA devices: {torch.cuda.device_count()}")
+      print(f"flagos devices: {torch_fl.flagos.device_count()}")
+      PY
+  - name: Run operator tests
+    command: python -m pytest tests/integration/ops/ -v -s --tb=short
+  - name: Run FlagGems runtime operator tests
+    command: >-
+      FLAGOS_USE_FLAGGEMS=1
+      python -m pytest tests/integration/ops/
+      -m "flaggems and main_ops" -v -s --tb=short
+  - name: Run general tests
+    command: python -m pytest tests/integration/test_factory_ops.py -v -s --tb=short
+  - name: Run inference tests
+    command: >-
+      python -m pytest tests/integration/test_qwen3_infer.py
+      --model "$MODEL_PATH" -v -s --tb=short
+  - name: Run training tests
+    command: >-
+      python -m pytest tests/integration/test_qwen3_train.py
+      --model "$MODEL_PATH" -v -s --tb=short
