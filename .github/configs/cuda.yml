@@ -55,9 +55,16 @@ integration_tests:
       print(f"CUDA devices: {torch.cuda.device_count()}")
       print(f"flagos devices: {torch_fl.flagos.device_count()}")
       PY
-  - name: Run operator tests
-    command: python -m pytest tests/integration/ops/ -v -s --tb=short
-  - name: Run FlagGems runtime operator tests
+  - name: Check FlagGems routing consistency
+    command: >-
+      python -m pytest
+      tests/integration/ops/test_flaggems_conf_consistency.py
+      -v --tb=short
+  - name: Run operator tests (vendor backend, main ops)
+    command: >-
+      python -m pytest tests/integration/ops/
+      -m main_ops -v -s --tb=short
+  - name: Run operator tests (FlagGems runtime path, main ops)
     command: >-
       FLAGOS_USE_FLAGGEMS=1
       python -m pytest tests/integration/ops/
