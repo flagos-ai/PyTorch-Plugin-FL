@@ -169,14 +169,39 @@ rm -rf ~/.triton/cache/
 
 #### 4. Verify Installation
 
+Two runtime gotchas on Ascend:
+
+- **Import order:** `import torch_fl` **before** `import flag_gems` — torch_fl installs the `torch.npu` shim and sets `GEMS_VENDOR=ascend` that FlagGems reads at its own import time.
+- **libstdc++:** FlagGems pulls in `sqlalchemy`→`_sqlite3`, which needs `CXXABI_1.3.15`. If the system `libstdc++.so.6` is older, preload conda's: `export LD_PRELOAD=$CONDA_PREFIX/lib/libstdc++.so.6`.
+
 ```bash
+export LD_PRELOAD=$CONDA_PREFIX/lib/libstdc++.so.6   # if system libstdc++ is old
 python -c "
-import torch_fl
+import torch_fl, flag_gems
 print('device count:', torch_fl.flagos.device_count())
-print('FlagGems enabled:', torch_fl.is_flaggems_enabled())
-print('registered ops:', len(torch_fl.get_registered_ops()))
+print('flag_gems:', flag_gems.__version__)
 "
 ```
+
+Enable the FlagGems Triton path at runtime. On an Ascend NPU box (detected via
+`/dev/davinci*`) `torch_fl` auto-selects the ascend config — no need to set
+`FLAGOS_BACKEND_CONFIG` by hand:
+
+```bash
+# Pure aclnn C++ backend (default):        no env needed -> backends_ascend.conf
+# FlagGems Triton where triton-ascend runs: FLAGOS_USE_FLAGGEMS=1
+#                                             -> backends_ascend_flagos_py.conf
+FLAGOS_USE_FLAGGEMS=1 FLAGOS_LOG_DISPATCH=1 python -c "
+import torch, torch_fl, flag_gems
+x = torch.randn(64, 64).to('flagos:0')
+print('abs matches CPU:', torch.allclose(torch.abs(x).cpu(), x.cpu().abs()))
+"
+# expect: [flagos dispatch] abs -> flagos_python
+```
+
+> Ops that triton-ascend cannot compile are routed back to the `ascend` aclnn
+> kernel in `backends_ascend_flagos_py.conf` (annotated per op). FlagGems is
+> optional on Ascend — without it, leave `FLAGOS_USE_FLAGGEMS` unset.
 
 #### 5. Run Tests
 

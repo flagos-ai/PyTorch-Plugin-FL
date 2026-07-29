@@ -120,6 +120,7 @@
 #include <ATen/ops/_fused_adamw.h>
 #include <ATen/ops/_fused_dropout.h>
 #include <ATen/ops/_fused_moving_avg_obs_fq_helper.h>
+#include <ATen/ops/_fused_rms_norm.h>
 #include <ATen/ops/_fused_rms_norm_backward.h>
 #include <ATen/ops/_fused_sgd.h>
 #include <ATen/ops/_fw_primal_copy.h>
@@ -3923,6 +3924,15 @@ void PrivFusedAdamwInplaceTensorLrKernelCuda(at::TensorList self, at::TensorList
   UnboxToFlagos(std::get<3>(result));
   UnboxToFlagos(std::get<4>(result));
   UnboxToFlagos(std::get<5>(result));
+  return result;
+}
+
+::std::tuple<at::Tensor,at::Tensor> PrivFusedRmsNormKernelCuda(const at::Tensor & input, at::IntArrayRef normalized_shape, const ::std::optional<at::Tensor> & weight, ::std::optional<double> eps) {
+  at::Tensor weight_t = weight.has_value() ? *weight : at::Tensor();
+  DeviceBoxingGuard guard(input, weight_t);
+  auto result = at::_fused_rms_norm(input, normalized_shape, weight, eps);
+  UnboxToFlagos(std::get<0>(result));
+  UnboxToFlagos(std::get<1>(result));
   return result;
 }
 
@@ -16880,6 +16890,7 @@ REGISTER_IMPL_TO_DISPATCHER(PrivFusedDropoutOutFn, priv_fused_dropout_out_dispat
 REGISTER_IMPL_TO_DISPATCHER(PrivFusedMovingAvgObsFqHelperFn, priv_fused_moving_avg_obs_fq_helper_dispatcher, Backend::kCuda, PrivFusedMovingAvgObsFqHelperKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivFusedMovingAvgObsFqHelperOutFn, priv_fused_moving_avg_obs_fq_helper_out_dispatcher, Backend::kCuda, PrivFusedMovingAvgObsFqHelperOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivFusedMovingAvgObsFqHelperFunctionalFn, priv_fused_moving_avg_obs_fq_helper_functional_dispatcher, Backend::kCuda, PrivFusedMovingAvgObsFqHelperFunctionalKernelCuda)
+REGISTER_IMPL_TO_DISPATCHER(PrivFusedRmsNormFn, priv_fused_rms_norm_dispatcher, Backend::kCuda, PrivFusedRmsNormKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivFusedRmsNormBackwardFn, priv_fused_rms_norm_backward_dispatcher, Backend::kCuda, PrivFusedRmsNormBackwardKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivFusedSgdOutFn, priv_fused_sgd_out_dispatcher, Backend::kCuda, PrivFusedSgdOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivFusedSgdTensorLrOutFn, priv_fused_sgd_tensor_lr_out_dispatcher, Backend::kCuda, PrivFusedSgdTensorLrOutKernelCuda)

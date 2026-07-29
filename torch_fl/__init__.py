@@ -28,6 +28,13 @@ def _select_backend_config() -> None:
       * FLAGOS_USE_FLAGGEMS=1 + METAX_BOXING=1 -> backends_metax_flaggems.conf
       * unset / 0                              -> backends_cuda.conf (pure boxing)
 
+    On an Ascend NPU box (detected via /dev/davinci*), the ACL C++ backend is the
+    only usable one, so the choice is instead:
+
+      * FLAGOS_USE_FLAGGEMS=1 -> backends_ascend_flagos_py.conf (FlagGems Triton
+                                 where triton-ascend can run, else ascend aclnn)
+      * unset / 0             -> backends_ascend.conf (pure aclnn C++)
+
     The MetaX flaggems conf mirrors backends_flaggems.conf but routes the ops
     triton-metax cannot run (mm/bmm/mean.dim) back to the cuda boxing kernel
     (maca libtorch_cuda) instead of flagos_python. An explicit
@@ -47,6 +54,35 @@ def _select_backend_config() -> None:
         "FALSE",
     )
     metax_boxing = os.environ.get("FLAGOS_METAX_BOXING", "0") == "1"
+
+    conf_dir = os.path.join(os.path.dirname(__file__), "configs")
+
+    # Ascend builds compile the ACL C++ backend (Backend::kAscend), not the CUDA
+    # boxing kernels, so the cuda/flaggems confs (which route ops to `cuda`) can
+    # never apply. Since every wheel ships all backends*.conf files, the conf set
+    # can't distinguish the build; use the runtime hardware signal instead. An
+    # Ascend NPU exposes /dev/davinci* device nodes -- their presence means this
+    # is an Ascend box, where the only usable routing is the ascend conf. (A CUDA
+    # build could not run here anyway, so this never mis-fires on a CUDA host.)
+    ascend_default = os.path.join(conf_dir, "backends_ascend.conf")
+    ascend_flaggems = os.path.join(conf_dir, "backends_ascend_flagos_py.conf")
+    try:
+        is_ascend_build = os.path.exists(ascend_default) and any(
+            name.startswith("davinci") for name in os.listdir("/dev")
+        )
+    except OSError:
+        is_ascend_build = False
+
+    if is_ascend_build:
+        conf_path = (
+            ascend_flaggems
+            if (use_flaggems and os.path.exists(ascend_flaggems))
+            else ascend_default
+        )
+        if os.path.exists(conf_path):
+            os.environ["FLAGOS_BACKEND_CONFIG"] = conf_path
+        return
+
     if use_flaggems and metax_boxing:
         conf_name = "backends_metax_flaggems.conf"
     elif use_flaggems:
@@ -234,6 +270,65 @@ torch.__future__.set_swap_module_params_on_conversion(True)
 _flaggems_lib = None
 _autograd_lib = None
 _registered_ops = []
+
+
+def _patch_flaggems_philox():
+    """Give FlagGems' RNG ops a working default generator on flagos.
+
+    gems' rand/randn/rand_like/randn_like/randperm/multinomial (and any op that
+    draws randomness without an explicit generator) call
+    ``philox_backend_seed_offset(increment)`` with no generator, which then
+    reaches for ``torch_device_fn.default_generators[current_device()]``. Under
+    the nvidia branch torch_device_fn is torch.cuda, whose ``default_generators``
+    is an EMPTY tuple on a CPU-torch wheel + cuda shim -> IndexError, crashing
+    every generator-less gems RNG op.
+
+    We hold one module-level CUDA ``torch.Generator`` and monkeypatch
+    ``philox_backend_seed_offset`` so a None generator with an empty
+    default_generators falls back to it. gems reads only the philox seed+offset
+    from the generator and ``set_state``'s the advanced offset back, so the one
+    shared generator yields distinct streams across calls. The GIL serializes
+    the set_state (every gems call holds it), so no extra locking is needed.
+    Seeded from ``torch.initial_seed()`` so ``torch.manual_seed(...)`` before the
+    first RNG op is honoured.
+
+    No-op / best-effort: wrapped in try/except so a missing flag_gems or a
+    version without this symbol degrades silently (those ops just stay broken,
+    same as before). Only meaningful on the nvidia branch (empty cuda
+    default_generators); ascend/metax have their own generators.
+    """
+    try:
+        import sys
+
+        import torch
+        from flag_gems.utils import random_utils
+
+        _fallback = torch.Generator(device="cuda")
+        _fallback.manual_seed(torch.initial_seed())
+        _orig = random_utils.philox_backend_seed_offset
+
+        def _patched(increment, generator=None):
+            if (
+                generator is None
+                and len(random_utils.torch_device_fn.default_generators) == 0
+            ):
+                generator = _fallback
+            return _orig(increment, generator=generator)
+
+        # rand.py etc. do `from ..utils.random_utils import
+        # philox_backend_seed_offset` at import time, binding the name into their
+        # own module namespace -- patching random_utils alone would not reach
+        # those local bindings. Rebind the name in every flag_gems module that
+        # exported it (plus the canonical location).
+        for mod in list(sys.modules.values()):
+            name = getattr(mod, "__name__", "")
+            if name.startswith("flag_gems") and hasattr(
+                mod, "philox_backend_seed_offset"
+            ):
+                mod.philox_backend_seed_offset = _patched
+        random_utils.philox_backend_seed_offset = _patched
+    except Exception:
+        pass
 
 
 def _patch_flaggems_codegen_config():

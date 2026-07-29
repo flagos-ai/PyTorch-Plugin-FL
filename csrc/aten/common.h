@@ -17,7 +17,18 @@ namespace at::native::flagos {
 
 // Backend selector for unified op wrappers.
 // Determines which physical backend impl() dispatches to.
-enum class Backend { kCuda, kFlagOs, kFlagOsPython, kAscend, kMusa, kMetax, kTsingMicro };
+// kUncached is a sentinel used by Dispatcher's per-op backend cache; it is
+// never stored in the BackendTable and never returned by GetBackendForOp.
+enum class Backend {
+  kCuda,
+  kFlagOs,
+  kFlagOsPython,
+  kAscend,
+  kMusa,
+  kMetax,
+  kTsingMicro,
+  kUncached
+};
 
 // Returns the backend for a given op name, loaded once from config file at startup.
 // Config file path: $FLAGOS_BACKEND_CONFIG or torch_fl/configs/backends.conf

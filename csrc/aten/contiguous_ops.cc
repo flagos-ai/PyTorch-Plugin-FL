@@ -10,6 +10,9 @@
 #include <ATen/ops/copy_native.h>
 #include <include/flagos.h>
 #include "device_boxing.h"
+#ifdef USE_ASCEND
+#include "backends/ascend/ascend_copy.h"
+#endif
 
 namespace at::native::flagos {
 
@@ -31,25 +34,29 @@ at::Tensor contiguous(
       DeviceBoxingGuard guard(self, result);
       at::native::copy_(result, self, false);
 #else
-      // Ascend: no CUDA runtime, fall back to CPU round-trip.
-      size_t storage_size = self.storage().nbytes();
-      at::Tensor storage_cpu = at::empty(
-          {static_cast<int64_t>(storage_size)},
-          at::TensorOptions().dtype(at::kByte).device(at::kCPU));
-      Memcpy(storage_cpu.data_ptr(), self.storage().data(), storage_size, MemcpyDeviceToHost);
+      // Ascend: copy the strided source into the contiguous result on-device
+      // via aclnnInplaceCopy. Falls back to a CPU round-trip only if that path
+      // is unavailable.
+      if (!ascend::StridedCopy(result, self)) {
+        size_t storage_size = self.storage().nbytes();
+        at::Tensor storage_cpu = at::empty(
+            {static_cast<int64_t>(storage_size)},
+            at::TensorOptions().dtype(at::kByte).device(at::kCPU));
+        Memcpy(storage_cpu.data_ptr(), self.storage().data(), storage_size, MemcpyDeviceToHost);
 
-      at::Tensor cpu_view = at::empty({0}, self.options().device(at::kCPU));
-      cpu_view.set_(
-          storage_cpu.storage(),
-          self.storage_offset(),
-          self.sizes(),
-          self.strides());
+        at::Tensor cpu_view = at::empty({0}, self.options().device(at::kCPU));
+        cpu_view.set_(
+            storage_cpu.storage(),
+            self.storage_offset(),
+            self.sizes(),
+            self.strides());
 
-      auto cpu_contig = at::empty(self.sizes(), self.options().device(at::kCPU).memory_format(memory_format));
-      cpu_contig.copy_(cpu_view);
+        auto cpu_contig = at::empty(self.sizes(), self.options().device(at::kCPU).memory_format(memory_format));
+        cpu_contig.copy_(cpu_view);
 
-      size_t nbytes = cpu_contig.numel() * cpu_contig.element_size();
-      Memcpy(result.data_ptr(), cpu_contig.data_ptr(), nbytes, MemcpyHostToDevice);
+        size_t nbytes = cpu_contig.numel() * cpu_contig.element_size();
+        Memcpy(result.data_ptr(), cpu_contig.data_ptr(), nbytes, MemcpyHostToDevice);
+      }
 #endif
     }
 
@@ -95,7 +102,12 @@ at::Tensor clone(
 #else
     auto result = at::empty(
         self.sizes(), self.options().memory_format(memory_format));
-    result.copy_(self);
+    // On-device strided copy (aclnnInplaceCopy) instead of result.copy_(self),
+    // which would bounce through a CPU round-trip. This is the Qwen3 GQA
+    // repeat_kv hotspot (~59% of inference time before this change).
+    if (!ascend::StridedCopy(result, self)) {
+      result.copy_(self);
+    }
     return result;
 #endif
   }

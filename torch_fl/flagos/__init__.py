@@ -107,34 +107,43 @@ def _lazy_init():
 
     _original_getitem = torch.Tensor.__getitem__
 
+    _Tensor = torch.Tensor
+    _full_slice = slice(None, None, None)
+    _aten_index = torch.ops.aten.index.Tensor
+
     def _patched_getitem(self, indices):
+        # Fast path: the workaround only applies to a tuple of indices that
+        # contains at least one Tensor. Anything else (the vast majority of
+        # __getitem__ calls, e.g. x[:, -1:]) returns immediately, avoiding the
+        # device property access and any tuple scan.
+        if type(indices) is not tuple:
+            return _original_getitem(self, indices)
+
+        has_tensor = False
+        for idx in indices:
+            if isinstance(idx, _Tensor):
+                has_tensor = True
+                break
+        if not has_tensor:
+            return _original_getitem(self, indices)
+
         # Only patch for our device
         if self.device.type not in ("privateuseone", "flagos"):
             return _original_getitem(self, indices)
 
-        # Handle tuple of indices with at least one tensor
-        if isinstance(indices, tuple):
-            has_tensor = any(isinstance(idx, torch.Tensor) for idx in indices)
-            if has_tensor:
-                # Convert to list for aten.index.Tensor
-                indices_list = []
-                for idx in indices:
-                    if isinstance(idx, slice):
-                        if idx == slice(None, None, None):
-                            indices_list.append(None)
-                        else:
-                            # Non-trivial slice — fall back to original
-                            return _original_getitem(self, indices)
-                    elif isinstance(idx, torch.Tensor):
-                        indices_list.append(idx)
-                    else:
-                        # Other types (int, etc.) — fall back to original
-                        return _original_getitem(self, indices)
+        # Convert to list for aten.index.Tensor
+        indices_list = []
+        for idx in indices:
+            if isinstance(idx, _Tensor):
+                indices_list.append(idx)
+            elif idx is _full_slice or idx == _full_slice:
+                indices_list.append(None)
+            else:
+                # Non-trivial slice / int / other — fall back to original
+                return _original_getitem(self, indices)
 
-                # Use aten.index.Tensor which works correctly
-                return torch.ops.aten.index.Tensor(self, indices_list)
-
-        return _original_getitem(self, indices)
+        # Use aten.index.Tensor which works correctly
+        return _aten_index(self, indices_list)
 
     torch.Tensor.__getitem__ = _patched_getitem
 

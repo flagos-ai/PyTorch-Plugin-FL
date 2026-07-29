@@ -14,6 +14,7 @@
 
 #include <include/flagos.h>
 #include <acl/acl_rt.h>
+#include "acl_stream.h"
 
 #include <cstdio>
 #include <map>
@@ -102,6 +103,16 @@ class MemoryManager {
       case MemcpyDeviceToHost:   acl_kind = ACL_MEMCPY_DEVICE_TO_HOST; break;
       case MemcpyDeviceToDevice: acl_kind = ACL_MEMCPY_DEVICE_TO_DEVICE; break;
       default: return ErrorUnknown;
+    }
+
+    // aclnn ops enqueue asynchronously on the shared default stream (per-op
+    // sync was removed from EXEC_ASCEND_CMD). This blocking aclrtMemcpy runs
+    // outside that stream's ordering, so any transfer touching device memory
+    // must first drain the default stream: a D2H read would otherwise observe
+    // stale data, and an H2D/D2D write could race a pending consumer/producer.
+    // Host-to-host transfers touch no device memory and need no barrier.
+    if (kind != MemcpyHostToHost) {
+      aclrtSynchronizeStream(at::native::flagos::ascend::GetDefaultAclStream());
     }
 
     aclError err = aclrtMemcpy(dst, count, src, count, acl_kind);

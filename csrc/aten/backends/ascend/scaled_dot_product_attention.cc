@@ -52,15 +52,38 @@ PrivScaledDotProductEfficientAttentionKernelAscend(
 
   // Input validation
   TORCH_CHECK(query.dim() == 4, "query must be 4D [B, N, S, D]");
-  TORCH_CHECK(query.sizes() == key.sizes(), "query and key must have same shape");
-  TORCH_CHECK(query.sizes() == value.sizes(), "query and value must have same shape");
+  TORCH_CHECK(key.dim() == 4 && value.dim() == 4, "key/value must be 4D [B, N, S, D]");
   TORCH_CHECK(query.is_privateuseone(), "SDPA Ascend: inputs must be on NPU");
   TORCH_CHECK(dropout_p == 0.0, "SDPA Ascend: dropout not yet supported (aclnn requires explicit mask handling)");
 
   int64_t B = query.size(0);
-  int64_t N = query.size(1);  // num_heads
+  int64_t N = query.size(1);  // num query heads
   int64_t S = query.size(2);  // seq_len
   int64_t D = query.size(3);  // head_dim
+
+  // Grouped-query / multi-query attention: key and value may carry fewer heads
+  // than the query (Qwen3 uses num_kv_heads < num_attention_heads). PyTorch's
+  // SDPA repeats the kv heads (repeat_kv) before the math path; the aclnn flash
+  // kernel expects q/k/v with matching head counts, so replicate each kv head
+  // N/N_kv times along dim 1 to match the query. Contiguous so the aclnn tensor
+  // wrapper sees a dense [B, N, S, D] buffer.
+  // key/value carry their own seq_len (S_kv), which differs from the query's S
+  // during incremental decode (query S==1, kv S==full context). Expand only the
+  // head dim, preserving each tensor's own seq_len.
+  at::Tensor key_eff = key;
+  at::Tensor value_eff = value;
+  int64_t N_kv = key.size(1);
+  int64_t S_kv = key.size(2);
+  if (N_kv != N) {
+    TORCH_CHECK(N_kv > 0 && N % N_kv == 0,
+        "SDPA Ascend GQA: query heads (", N, ") must be a multiple of kv heads (", N_kv, ")");
+    int64_t repeat = N / N_kv;
+    // [B, N_kv, S_kv, D] -> [B, N_kv, repeat, S_kv, D] -> [B, N, S_kv, D]
+    key_eff = key.unsqueeze(2).expand({B, N_kv, repeat, S_kv, D}).reshape({B, N, S_kv, D}).contiguous();
+    value_eff = value.unsqueeze(2).expand({B, N_kv, repeat, S_kv, D}).reshape({B, N, S_kv, D}).contiguous();
+  }
+  TORCH_CHECK(key_eff.size(1) == N && value_eff.size(1) == N,
+      "GQA expand failed to match query head count");
 
   // Compute scale (default: 1/sqrt(D))
   double scale_value = scale.value_or(1.0 / std::sqrt(static_cast<double>(D)));
@@ -107,8 +130,8 @@ PrivScaledDotProductEfficientAttentionKernelAscend(
 
   // Prepare aclnn arguments
   AclTensorWrapper q_wrap(query);
-  AclTensorWrapper k_wrap(key);
-  AclTensorWrapper v_wrap(value);
+  AclTensorWrapper k_wrap(key_eff);
+  AclTensorWrapper v_wrap(value_eff);
   AclTensorWrapper mask_wrap(is_causal ? atten_mask : at::Tensor());
   AclTensorWrapper drop_mask_wrap(drop_mask);
   AclTensorWrapper softmax_max_wrap(softmax_max);

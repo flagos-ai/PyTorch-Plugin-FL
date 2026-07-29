@@ -1030,6 +1030,9 @@ void WrapperPrivFusedAdamwInplaceTensorLr(at::TensorList self, at::TensorList gr
 ::std::tuple<at::Tensor,at::Tensor,at::Tensor,at::Tensor,at::Tensor,at::Tensor> WrapperPrivFusedMovingAvgObsFqHelperFunctional(const at::Tensor & self, const at::Tensor & observer_on, const at::Tensor & fake_quant_on, const at::Tensor & running_min, const at::Tensor & running_max, const at::Tensor & scale, const at::Tensor & zero_point, double averaging_const, int64_t quant_min, int64_t quant_max, int64_t ch_axis, bool per_row_fake_quant, bool symmetric_quant) {
   return at::native::flagos::priv_fused_moving_avg_obs_fq_helper_functional_dispatcher(self, observer_on, fake_quant_on, running_min, running_max, scale, zero_point, averaging_const, quant_min, quant_max, ch_axis, per_row_fake_quant, symmetric_quant);
 }
+::std::tuple<at::Tensor,at::Tensor> WrapperPrivFusedRmsNorm(const at::Tensor & input, at::IntArrayRef normalized_shape, const ::std::optional<at::Tensor> & weight, ::std::optional<double> eps) {
+  return at::native::flagos::priv_fused_rms_norm_dispatcher(input, normalized_shape, weight, eps);
+}
 ::std::tuple<at::Tensor,at::Tensor> WrapperPrivFusedRmsNormBackward(const at::Tensor & grad_out, const at::Tensor & input, at::IntArrayRef normalized_shape, const at::Tensor & rstd, const ::std::optional<at::Tensor> & weight, ::std::array<bool,2> output_mask) {
   return at::native::flagos::priv_fused_rms_norm_backward_dispatcher(grad_out, input, normalized_shape, rstd, weight, output_mask);
 }
@@ -6449,6 +6452,7 @@ at::Tensor & WrapperZerosLikeOut(const at::Tensor & self, ::std::optional<at::Me
   m.impl("_fused_moving_avg_obs_fq_helper", WrapperPrivFusedMovingAvgObsFqHelper);
   m.impl("_fused_moving_avg_obs_fq_helper.out", WrapperPrivFusedMovingAvgObsFqHelperOut);
   m.impl("_fused_moving_avg_obs_fq_helper_functional", WrapperPrivFusedMovingAvgObsFqHelperFunctional);
+  m.impl("_fused_rms_norm", WrapperPrivFusedRmsNorm);
   m.impl("_fused_rms_norm_backward", WrapperPrivFusedRmsNormBackward);
   m.impl("_fused_sgd.out", WrapperPrivFusedSgdOut);
   m.impl("_fused_sgd.tensor_lr_out", WrapperPrivFusedSgdTensorLrOut);

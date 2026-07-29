@@ -17,6 +17,8 @@
 #include <ATen/ops/unsqueeze_native.h>
 #include <ATen/ops/_unsafe_view_native.h>
 #include <ATen/ops/detach_native.h>
+#include <ATen/ops/t_native.h>
+#include <ATen/ops/unbind_native.h>
 
 namespace at::native::flagos {
 
@@ -105,6 +107,24 @@ at::Tensor detach(const at::Tensor& self) {
   return at::native::detach(self);
 }
 
+// alias() returns a view sharing self's storage (pure metadata). at::native::
+// alias avoids re-dispatching through PrivateUse1 back into this kernel.
+at::Tensor alias(const at::Tensor& self) {
+  return at::native::alias(self);
+}
+
+// t() is the 2-D (or <=2-D) transpose used by nn.Linear (F.linear does
+// input.matmul(weight.t())). Pure metadata, like transpose_int.
+at::Tensor t(const at::Tensor& self) {
+  return at::native::t(self);
+}
+
+// unbind returns views along dim; at::native::unbind builds them via select,
+// which we route to at::native::select above (no re-dispatch recursion).
+::std::vector<at::Tensor> unbind_int(const at::Tensor& self, int64_t dim) {
+  return at::native::unbind(self, dim);
+}
+
 // View ops are pure metadata (stride) operations; they route through the
 // generated dispatchers but need a backend kernel registered. Register them
 // for the Ascend backend so the generated wrappers in register.inc resolve.
@@ -161,5 +181,23 @@ REGISTER_IMPL_TO_DISPATCHER(
     detach_dispatcher,
     Backend::kAscend,
     detach)
+
+REGISTER_IMPL_TO_DISPATCHER(
+    TFn,
+    t_dispatcher,
+    Backend::kAscend,
+    t)
+
+REGISTER_IMPL_TO_DISPATCHER(
+    UnbindIntFn,
+    unbind_int_dispatcher,
+    Backend::kAscend,
+    unbind_int)
+
+REGISTER_IMPL_TO_DISPATCHER(
+    AliasFn,
+    alias_dispatcher,
+    Backend::kAscend,
+    alias)
 
 } // namespace at::native::flagos
