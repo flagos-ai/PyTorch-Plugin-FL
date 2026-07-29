@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import contextlib
+
 import torch
 
 from .. import _C  # type: ignore[misc]
@@ -236,45 +238,96 @@ class Stream(torch.cuda.Stream):
         return super().__new__(cls, device=device, priority=priority, **kwargs)
 
 
-class Event:
-    """Simple timing event using host-side timestamps after device sync."""
+def _real_current_stream(device=None):
+    """Resolve the actual current CUDA stream as a real ``torch.cuda.Stream``.
 
-    def __init__(
-        self, enable_timing=False, blocking=False, interprocess=False, external=False
+    Under MetaX boxing, ``torch.cuda.current_stream`` is monkey-patched to a
+    lightweight shim (only ``.cuda_stream``, for triton/FlagGems launch), which
+    is NOT a real Stream and makes ``torch.cuda.Event.record()`` fail with
+    "invalid StreamId". We instead read the true stream tuple straight from the
+    C++ runtime (``_cuda_getCurrentStream``) and rebuild a real Stream from it,
+    so events record/wait on the same physical (default) stream the boxing
+    kernels submit to.
+    """
+    idx = current_device() if device is None else int(device)
+    stream_id, device_index, device_type = torch._C._cuda_getCurrentStream(idx)
+    return torch.cuda.Stream(
+        stream_id=stream_id, device_index=device_index, device_type=device_type
+    )
+
+
+class Event(torch.cuda.Event):
+    """Flagos event that wraps a CUDA event (same physical GPU under boxing).
+
+    Since flagos shares the CUDA stream/GPU, a real ``torch.cuda.Event`` gives
+    true device-side semantics (maca event under the hood): ``record`` and
+    ``wait`` enforce cross-stream ordering, ``elapsed_time`` measures on-device
+    time, and ``query`` reflects actual completion -- unlike the previous
+    host-timestamp stand-in whose ``wait`` was a no-op.
+
+    ``record``/``wait`` are overridden to default to the *real* current stream
+    (see :func:`_real_current_stream`) rather than ``torch.cuda.current_stream``,
+    which boxing replaces with a non-Stream shim.
+    """
+
+    def __new__(
+        cls, enable_timing=False, blocking=False, interprocess=False, external=False
     ):
-        self._time = None
+        return super().__new__(
+            cls,
+            enable_timing=enable_timing,
+            blocking=blocking,
+            interprocess=interprocess,
+            external=external,
+        )
 
     def record(self, stream=None):
-        import time as _time
-
-        _C._synchronize()
-        self._time = _time.perf_counter()
-
-    def elapsed_time(self, end_event):
-        if self._time is None or end_event._time is None:
-            raise RuntimeError("Events have not been recorded")
-        return (end_event._time - self._time) * 1000.0
-
-    def synchronize(self):
-        _C._synchronize()
-
-    def query(self):
-        return True
+        if stream is None:
+            stream = _real_current_stream()
+        return super().record(stream)
 
     def wait(self, stream=None):
-        pass
+        if stream is None:
+            stream = _real_current_stream()
+        return super().wait(stream)
 
 
 def current_stream(device=None):
-    """Return the currently selected stream for the given device."""
-    if device is None:
-        device = current_device()
-    return torch.cuda.current_stream(device)
+    """Return the currently selected stream for the given device.
+
+    Returns a real ``torch.cuda.Stream`` (bypassing the boxing shim on
+    ``torch.cuda.current_stream``) so it is usable for event record/wait and
+    stream ordering, not just triton launch.
+    """
+    return _real_current_stream(device)
 
 
+@contextlib.contextmanager
 def stream(s):
-    """Context-manager that selects a given stream."""
-    return torch.cuda.stream(s)
+    """Context-manager that selects a given stream.
+
+    Reimplemented instead of delegating to ``torch.cuda.stream`` because the
+    latter saves/restores via ``torch.cuda.current_stream``, which boxing
+    replaces with a non-Stream shim (no ``.device``) -> AttributeError. We
+    save/restore the real stream through ``_cuda_setStream`` directly.
+    """
+    if s is None:
+        yield
+        return
+    prev = _real_current_stream(s.device.index)
+    torch._C._cuda_setStream(
+        stream_id=s.stream_id,
+        device_index=s.device_index,
+        device_type=s.device_type,
+    )
+    try:
+        yield
+    finally:
+        torch._C._cuda_setStream(
+            stream_id=prev.stream_id,
+            device_index=prev.device_index,
+            device_type=prev.device_type,
+        )
 
 
 def get_amp_supported_dtype():

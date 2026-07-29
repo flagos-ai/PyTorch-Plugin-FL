@@ -9,6 +9,7 @@
 #include "copy_dispatcher.h"
 
 #include <ATen/native/Resize.h>
+#include <ATen/ops/_pin_memory.h>
 #include <ATen/ops/copy_native.h>
 #include <include/flagos.h>
 #include "device_boxing.h"
@@ -226,12 +227,19 @@ at::Tensor _to_copy(
   TORCH_CHECK(
       !self.is_quantized(),
       "flagos _to_copy does not support quantized tensors yet");
-  TORCH_CHECK(
-      !pin_memory_opt.value_or(false),
-      "flagos _to_copy does not support pin_memory=True yet");
+  const bool want_pinned = pin_memory_opt.value_or(false);
   auto device = device_opt.value_or(self.device());
   auto dtype = dtype_opt.value_or(self.scalar_type());
   auto memory_format = memory_format_opt.value_or(c10::MemoryFormat::Preserve);
+
+  // pin_memory is a host-memory concept: only a CPU destination can be pinned.
+  // (Pinning is applied to the result CPU tensor below via _pin_memory, using
+  // the flagos host allocator = cudaMallocHost on MetaX.)
+  TORCH_CHECK(
+      !want_pinned || device.is_cpu(),
+      "flagos _to_copy: pin_memory=True is only valid for a CPU destination, "
+      "but got destination device ",
+      device);
 
   // Ascend NPU does not support float64; clamp to float32.
   if (dtype == at::kDouble && (device.is_privateuseone() || device.is_cuda())) {
@@ -369,6 +377,13 @@ at::Tensor _to_copy(
 
   if (memory_format != c10::MemoryFormat::Preserve) {
     result = result.contiguous(memory_format);
+  }
+
+  // Copy the result (CPU) into pinned host memory when requested. Guarded above
+  // so this only runs for a CPU destination; _pin_memory routes to the flagos
+  // host allocator (cudaMallocHost on MetaX) registered via the hooks.
+  if (want_pinned) {
+    result = at::_pin_memory(result, std::nullopt);
   }
 
   return result;
