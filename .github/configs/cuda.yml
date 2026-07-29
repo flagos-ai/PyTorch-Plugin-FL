@@ -24,7 +24,10 @@ runner_labels:
   - nvidia
   - gpu-8
 
-container_volumes: []
+container_volumes:
+  - /data/models/Qwen/Qwen3-0.6B:/models/Qwen3-0.6B:ro
+
+model_path: /models/Qwen3-0.6B
 
 container_options: >-
   --gpus all

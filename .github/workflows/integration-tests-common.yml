@@ -38,6 +38,9 @@ on:
       timeout_minutes:
         required: true
         type: number
+      model_path:
+        required: true
+        type: string
 
 jobs:
   integration-tests:
@@ -82,7 +85,15 @@ jobs:
         run: python -m pytest tests/integration/test_factory_ops.py -v -s --tb=short
 
       - name: Run inference tests
-        run: python -m pytest tests/integration/test_qwen3_infer.py -v -s --tb=short
+        env:
+          MODEL_PATH: ${{ inputs.model_path }}
+        run: >-
+          python -m pytest tests/integration/test_qwen3_infer.py
+          --model "$MODEL_PATH" -v -s --tb=short
 
       - name: Run training tests
-        run: python -m pytest tests/integration/test_qwen3_train.py -v -s --tb=short
+        env:
+          MODEL_PATH: ${{ inputs.model_path }}
+        run: >-
+          python -m pytest tests/integration/test_qwen3_train.py
+          --model "$MODEL_PATH" -v -s --tb=short
