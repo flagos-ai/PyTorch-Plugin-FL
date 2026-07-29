@@ -349,6 +349,33 @@ def patch_torch_cuda_for_metax():
     if hasattr(torch.cuda, "_queued_calls"):
         torch.cuda._queued_calls.clear()
 
+    # Route torch.cuda.set_device / current_device to the maca runtime.
+    #
+    # Stock torch.cuda.set_device calls torch._C._cuda_setDevice, which on the
+    # CPU wheel only bumps torch's own device counter and never reaches maca's
+    # mcSetDevice -- so torch.cuda.set_device(rank) leaves the maca runtime on
+    # device 0. NCCL(mccl) hides this because ProcessGroupNCCL wraps every op in
+    # a CUDAGuard(tensor.device()); FlagCX does NOT -- it creates its collective
+    # stream (mcStreamCreateWithFlags) on the *current* maca device before
+    # setting the tensor's device, so on rank!=0 the stream lands on device 0
+    # while the communicator/tensor are on device r, giving
+    # "CUDA error: invalid resource handle". Make set_device actually move the
+    # maca runtime (via _flagos.set_device) and read the true current device
+    # back from it, so the FlagCX path binds a consistent device.
+    _orig_cuda_setDevice = getattr(torch._C, "_cuda_setDevice", None)
+
+    def _patched_set_device(device):
+        idx = _device_index(device)
+        if _orig_cuda_setDevice is not None:
+            try:
+                _orig_cuda_setDevice(idx)  # keep torch's own counter aligned
+            except Exception:
+                pass
+        _set_device(idx)  # actually move the maca runtime (mcSetDevice)
+
+    torch.cuda.set_device = _patched_set_device
+    torch.cuda.current_device = _current_device
+
     torch.cuda.synchronize = _metax_synchronize
     torch.cuda.current_stream = lambda device=None: _MetaxStreamShim(
         _device_index(device)
