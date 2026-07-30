@@ -77,13 +77,25 @@ CachingDeviceAllocator::DeviceState& CachingDeviceAllocator::get_device_state(
 }
 
 at::DataPtr CachingDeviceAllocator::allocate(size_t nbytes) {
-  if (nbytes == 0) {
-    return {nullptr, nullptr, &block_deleter,
-            c10::Device(c10::DeviceType::PrivateUse1, 0)};
-  }
-
   int device = -1;
   backend_->get_device_index(&device);
+
+  if (nbytes == 0) {
+    // No memory to hand out, but the DataPtr's device still has to be the
+    // current one: it is what the resulting tensor reports as its device, and
+    // the composite factories (arange, eye, ...) build their output by
+    // `at::empty({0}, options)` and then filling it with an `_out` variant.
+    // Pinning index 0 here made `torch.arange(..., device="flagos:1")` come
+    // back as flagos:0. `empty_memory_format` has already installed a
+    // DeviceGuard for the requested device, so the current index is right.
+    //
+    // A zero-byte request must not need a live runtime, so a failed query
+    // degrades to index 0 rather than raising.
+    return {nullptr, nullptr, &block_deleter,
+            c10::Device(c10::DeviceType::PrivateUse1,
+                        static_cast<c10::DeviceIndex>(device < 0 ? 0 : device))};
+  }
+
   TORCH_CHECK(device >= 0, "CachingDeviceAllocator: invalid device index");
 
   // Delegation path: the backend ships its own caching allocator (e.g. CUDA).
