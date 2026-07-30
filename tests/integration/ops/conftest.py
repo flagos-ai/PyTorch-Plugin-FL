@@ -18,26 +18,52 @@ import pytest
 
 
 def _detect_platform() -> str:
-    """Infer the active hardware/backend platform from env."""
+    """Infer the active hardware/backend platform.
+
+    ACCELERATOR is a *build*-time variable, so it is usually absent when running
+    the tests against an installed wheel. The lib/flagos_platform marker that
+    native-kernel builds write is authoritative in that case, and the resolved
+    FLAGOS_BACKEND_CONFIG name is the last resort.
+    """
     accelerator = os.environ.get("ACCELERATOR", "").lower()
     if accelerator == "ascend":
         return "ascend"
     if accelerator in ("metax", "maca"):
         return "metax"
+    if accelerator == "musa":
+        return "musa"
+
+    try:
+        import torch_fl
+
+        marker = os.path.join(
+            os.path.dirname(torch_fl.__file__), "lib", "flagos_platform"
+        )
+        with open(marker) as f:
+            platform = f.read().strip().lower()
+        if platform:
+            return platform
+    except (ImportError, OSError):
+        pass
 
     backend_cfg = os.environ.get("FLAGOS_BACKEND_CONFIG", "").lower()
     if "ascend" in backend_cfg:
         return "ascend"
     if "metax" in backend_cfg:
         return "metax"
+    if "musa" in backend_cfg:
+        return "musa"
     return "default"
 
 
 # Markers to skip per platform (tests for other backends are not compiled/available).
 _PLATFORM_SKIP_MARKERS: dict[str, tuple[str, ...]] = {
-    "metax": ("cuda", "ascend"),
-    "ascend": ("cuda", "metax"),
-    "default": ("metax", "ascend"),
+    "metax": ("cuda", "ascend", "musa"),
+    "ascend": ("cuda", "metax", "musa"),
+    # MUSA builds compile no CUDA boxing kernels (no cudart on the platform), so
+    # `-> cuda` routing assertions cannot hold; nor is FlagGems built.
+    "musa": ("cuda", "metax", "ascend", "flaggems_python"),
+    "default": ("metax", "ascend", "musa"),
 }
 
 
@@ -124,6 +150,7 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "cuda: requires CUDA platform")
     config.addinivalue_line("markers", "metax: requires MetaX platform")
     config.addinivalue_line("markers", "ascend: requires Ascend platform")
+    config.addinivalue_line("markers", "musa: requires Moore Threads MUSA platform")
     config.addinivalue_line(
         "markers",
         "flaggems: requires the FlagGems runtime path on (FLAGOS_USE_FLAGGEMS=1)",

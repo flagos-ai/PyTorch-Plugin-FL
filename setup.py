@@ -31,7 +31,7 @@ IS_DARWIN = platform.system() == "Darwin"
 IS_WINDOWS = platform.system() == "Windows"
 
 # Accelerator platform: "cuda" (default), "metax", "ascend", "tsingmicro",
-# "dcu", or "gcu"
+# "dcu", "gcu", or "musa"
 ACCELERATOR = os.environ.get("ACCELERATOR", "cuda").lower()
 
 BASE_DIR = os.path.dirname(os.path.realpath(__file__))
@@ -311,6 +311,11 @@ def build_deps():
         "-DCMAKE_INSTALL_PREFIX="
         + os.path.realpath(os.path.join(BASE_DIR, "torch_fl")),
         "-DPYTHON_INCLUDE_DIR=" + sysconfig.get_paths().get("include"),
+        # CMake probes the environment for optional packages (torch_musa,
+        # flag_gems). It must use *this* interpreter, not whatever python is
+        # first on PATH, or the probe reads a different site-packages than the
+        # one we are building against.
+        "-DPYTHON_EXECUTABLE=" + sys.executable,
         "-DPYTORCH_INSTALL_DIR=" + get_pytorch_dir(),
     ]
 
@@ -379,6 +384,24 @@ def build_deps():
                 "-DGCU_KERNEL=ON",
             ]
         )
+    elif ACCELERATOR == "musa":
+        # Moore Threads MUSA has no CUDA runtime: the musa* API provides the
+        # device layer, and mudnn provides the operators (MUSA_KERNEL). With no
+        # CUDA runtime there is no vendor key for the CUDA boxing kernels to
+        # reach, so they stay off. FLAGGEMS_KERNEL needs liboperators.so
+        # (not built for MUSA);
+        # FLAGGEMS_PYTHON needs a MUSA triton (the mtgpu backend ships with the
+        # toolkit) -- opt in explicitly via the env overrides below.
+        cmake_args.extend(
+            [
+                "-DCUDA_KERNEL=OFF",
+                "-DFLAGGEMS_KERNEL=OFF",
+                "-DFLAGGEMS_PYTHON=OFF",
+                "-DMETAX_KERNEL=OFF",
+                "-DASCEND_KERNEL=OFF",
+                "-DMUSA_KERNEL=ON",
+            ]
+        )
 
     # Kernel build options from environment
     for kernel_opt in (
@@ -388,6 +411,7 @@ def build_deps():
         "METAX_KERNEL",
         "ASCEND_KERNEL",
         "GCU_KERNEL",
+        "MUSA_KERNEL",
     ):
         val = os.environ.get(kernel_opt)
         if val is not None:

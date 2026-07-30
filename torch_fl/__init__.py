@@ -225,7 +225,52 @@ def _preload_cuda_assets() -> None:
             _try(p)
 
 
+def _disable_vendor_backend_autoload() -> None:
+    """Stop a vendor PrivateUse1 backend from claiming the key before flagos.
+
+    torch_musa ships a `torch.backends` entry point, so a bare `import torch`
+    autoloads it, and it calls rename_privateuse1_backend("musa") + registers the
+    PrivateUse1 hooks/allocator. flagos wants that same single key, and PyTorch
+    allows exactly one owner: our later rename raises "already been set!
+    Current backend: musa".
+
+    torch.__init__ honours TORCH_DEVICE_BACKEND_AUTOLOAD=0 to skip entry-point
+    autoloading, so set it before `import torch`. Nothing of torch_musa is
+    needed either way: the MUSA operator route calls mudnn, which is part of the
+    MUSA toolkit and independent of the vendor's torch plugin.
+
+    An explicit user setting always wins, so exporting
+    TORCH_DEVICE_BACKEND_AUTOLOAD=1 restores stock torch_musa behaviour (useful
+    for A/B testing against the vendor plugin, with torch_fl not imported).
+    """
+    if _build_accelerator() != "musa":
+        return
+    os.environ.setdefault("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")
+
+
+def _check_privateuse1_unclaimed() -> None:
+    """Fail with an actionable message if a vendor plugin already took the key.
+
+    PrivateUse1 admits exactly one backend name. `import torch` autoloads any
+    `torch.backends` entry point -- torch_musa has one -- so when torch is
+    imported before torch_fl, the name is already "musa" and our rename raises a
+    bare "already been set!". _disable_vendor_backend_autoload only covers the
+    torch_fl-first order, since by the time we run in the other order torch has
+    already been initialised.
+    """
+    current = torch._C._get_privateuse1_backend_name()
+    if current in ("privateuseone", "flagos"):
+        return
+    raise RuntimeError(
+        f"PrivateUse1 is already claimed by the '{current}' backend, so torch_fl "
+        "cannot register 'flagos'. A vendor plugin was autoloaded by `import "
+        "torch` before torch_fl. Either import torch_fl first, or export "
+        "TORCH_DEVICE_BACKEND_AUTOLOAD=0 before starting Python."
+    )
+
+
 _preload_cuda_assets()
+_disable_vendor_backend_autoload()
 
 import torch  # noqa: E402
 
@@ -265,13 +310,32 @@ _stream_api_path = _os.path.join(_os.path.dirname(__file__), "lib", "libstream_a
 if _os.path.exists(_stream_api_path):
     ctypes.CDLL(_stream_api_path, mode=ctypes.RTLD_GLOBAL)
 
+# Checked *before* loading _C, not just before the rename: libtorch_fl.so
+# registers the AutogradPrivateUse1 fallback at dlopen time, and a vendor plugin
+# that already registered one makes that a std::terminate ("Tried to register
+# multiple backend fallbacks for the same dispatch key") -- an abort we cannot
+# catch or report. Running the check first turns that into the actionable
+# message below.
+_check_privateuse1_unclaimed()
+
 import torch_fl._C  # type: ignore[misc]  # noqa: E402, F401
+
+
 from . import flagos  # noqa: E402
 
 
 torch.utils.rename_privateuse1_backend("flagos")
 torch._register_device_module("flagos", flagos)
 torch.utils.generate_methods_for_privateuse1_backend(for_storage=True)
+
+# torch::utils::device_lazy_init(PrivateUse1) imports the module named
+# `torch_<backend_name>` and calls its _lazy_init(). It only does so once some
+# library has called set_requires_device_init(PrivateUse1, true) -- which
+# some vendor libraries do, so the very first flagos factory call can raise
+# "No module named 'torch_flagos'". Publishing the device module under that name
+# satisfies the lookup; flagos._lazy_init is the real initializer, so this is a
+# rename, not a stub. Harmless on backends that never trigger lazy init.
+sys.modules.setdefault("torch_flagos", flagos)
 
 # Enable swap_tensors in Module._apply so that .to("flagos") preserves weight
 # tying.  Without this, _apply creates new Parameter objects for PrivateUse1

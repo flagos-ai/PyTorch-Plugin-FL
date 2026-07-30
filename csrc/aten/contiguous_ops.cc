@@ -11,6 +11,10 @@
 #include <include/flagos.h>
 #include "device_boxing.h"
 
+#if defined(FLAGOS_MUSA_KERNEL)
+#include "backends/musa/mudnn_common.h"
+#endif
+
 namespace at::native::flagos {
 
 at::Tensor contiguous(
@@ -25,7 +29,13 @@ at::Tensor contiguous(
   if (self.is_privateuseone()) {
     int64_t numel = self.numel();
     if (numel > 0) {
-#if !defined(USE_ASCEND) && !defined(USE_TSINGMICRO) && !defined(USE_GCU)
+#if defined(FLAGOS_MUSA_KERNEL)
+      // MUSA: mudnn's Unary::IDENTITY does the strided copy on device -- a mudnn
+      // Tensor carries strides on both operands, so the gather needs no
+      // intermediate buffer and no CPU round-trip.
+      musa_ops::MudnnCopy(self, result);
+#elif !defined(USE_ASCEND) && !defined(USE_TSINGMICRO) && !defined(USE_GCU) && \
+    !defined(USE_MUSA)
       // CUDA platform: use DeviceBoxingGuard to invoke native CUDA strided copy
       // kernel on-device, avoiding expensive CPU round-trip.
       DeviceBoxingGuard guard(self, result);
@@ -86,13 +96,16 @@ at::Tensor clone(
   // Non-contiguous clone: use DeviceBoxingGuard to leverage CUDA's native
   // strided copy kernel instead of expensive CPU round-trip.
   if (self.is_privateuseone()) {
-#if !defined(USE_ASCEND) && !defined(USE_TSINGMICRO) && !defined(USE_GCU)
+#if !defined(USE_ASCEND) && !defined(USE_TSINGMICRO) && !defined(USE_GCU) && \
+    !defined(USE_MUSA)
     auto result = at::empty(
         self.sizes(), self.options().memory_format(memory_format));
     DeviceBoxingGuard guard(self, result);
     at::native::copy_(result, self, false);
     return result;
 #else
+    // MUSA joins the non-boxing group: copy_ reaches _copy_from, which
+    // torch_musa implements for strided/dtype-casting copies on device.
     auto result = at::empty(
         self.sizes(), self.options().memory_format(memory_format));
     result.copy_(self);

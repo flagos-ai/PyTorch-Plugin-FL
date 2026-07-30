@@ -5,8 +5,8 @@ A custom PyTorch device plugin based on the PrivateUse1 extension mechanism, reg
 ## Features
 
 - Automatically registers FlagGems Triton operators as dispatch implementations for the `flagos` device
-- Configurable backend routing: select FlagGems or native vendor backend (CUDA/MetaX/Ascend) at per-operator granularity
-- Currently supports CUDA, MetaX, and Ascend hardware platforms
+- Configurable backend routing: select FlagGems or native vendor backend (CUDA/MetaX/Ascend/MUSA) at per-operator granularity
+- Currently supports CUDA, MetaX, Ascend, TsingMicro, DCU, Enflame GCU, and Moore Threads MUSA hardware platforms
 - Complete device management API (stream, event, RNG, AMP)
 ## Requirements
 
@@ -479,11 +479,116 @@ call the installed SDK does not have.
 - Build with `-DGCU_KERNEL=OFF` to skip topsaten entirely; the runtime still
   works and all compute falls back to CPU.
 
+### Build from Source (Moore Threads MUSA Platform)
+
+MUSA takes the **native operator route**, like Ascend and GCU: the MUSA toolkit
+ships no CUDA runtime, so there is no vendor dispatch key to box into, and the
+generated kernels call the vendor kernel library — **mudnn** (`libmudnn.so`) —
+directly.
+
+mudnn links against `musart` only and pulls in **no torch symbols at all**, which
+is the property that matters here: nothing in the backend embeds torch's C++
+object layout. Only the MUSA toolkit is required — no `torch_musa` package and no
+extracted vendor tree.
+
+The supported target is **`torch==2.10.0+cpu`**, which is what is built and tested
+on this platform. Because mudnn carries no torch symbols the backend is not
+*structurally* pinned to that version — it was also run clean against 2.9.1 from
+the same source tree — but only 2.10.0+cpu is verified, so treat other versions as
+untested rather than supported.
+
+The target machine needs only:
+
+- The official `torch==2.10.0+cpu` wheel (from PyPI, no CUDA)
+- This `torch_fl` wheel
+- The MUSA toolkit under `/usr/local/musa` (`musart` + `mudnn`), present on any
+  machine with a Moore Threads card
+
+```bash
+pip install torch==2.10.0+cpu --index-url https://download.pytorch.org/whl/cpu
+ACCELERATOR=musa pip install --no-build-isolation -vvv -e .
+```
+
+`--no-build-isolation` is not optional here. Without it pip resolves its own torch
+into a build overlay, and the extension links against that instead of the torch
+you installed — the resulting `import torch_fl` fails with
+`undefined symbol: c10::ValueError`.
+
+> An earlier version of this backend called `torch_musa`'s flat `at::musa::*` API
+> from `libmusa_python.so` instead. That library links against torch and so embeds
+> torch's C++ object layout, which pinned the plugin to one exact torch build:
+> `sizeof(c10::MessageLogger)` changed 408 → 400 between 2.9.1 and 2.10, and the
+> vendor `.so` stack-allocates the larger size at 312 call sites, so mixing
+> versions corrupts its stack (`tensor.sum()` segfaults inside `empty_musa`).
+> mudnn has no such coupling.
+
+`scripts/codegen_mudnn.py` generates the kernels, category-driven like
+`codegen_gcu.py`: an `OPS` table maps each aten op onto a mudnn
+`Unary`/`Binary`/`Reduce`/`MatMul`/`BatchMatMul`/`Softmax` mode. Coverage is
+**64 generated ops** plus 2 handwritten convolution kernels; everything outside
+that set reaches the `cpu_fallback`.
+
+Two mudnn properties shape the kernels, both verified against the library rather
+than assumed:
+
+- **mudnn Tensors carry strides on both operands, and honour 0-strides.** So
+  broadcasting is just `expand()` (a view) and non-contiguous inputs are read in
+  place. The GCU templates have to `.contiguous()` in both cases.
+- **int64 works across Unary/Binary/Reduce/MatMul.** topsaten has no int64
+  kernels at all, so the GCU kernels carry an int64 CPU-fallback branch; here only
+  genuinely unmapped dtypes (complex, quantized) fall back.
+
+`sinh`, `cosh` and `asin` have no mudnn mode and are deliberately left
+unregistered, so they reach the `cpu_fallback` and stay correct. `neg`, `trunc`
+and `expm1` have no mode either but compose exactly from one (`MUL` by -1,
+`TRUNCATEDIV` by 1, `EXP` then `SUB` 1) and are verified against CPU.
+
+**Convolution** is handwritten rather than generated
+(`csrc/aten/backends/musa/mudnn_conv.cc`), because `convolution_overrideable` is
+the one op that cannot be left unregistered: ATen's default for it raises rather
+than being boxable to CPU. mudnn's `Convolution` covers 2 spatial dims only, so
+conv1d runs as a 2D conv with a unit `H` dim (exact against CPU) and conv3d takes
+the CPU fallback. Bias is a separate broadcast `Binary::ADD` — `RunFusion` accepts
+a bias only for the plain non-grouped 2D case. The algorithm is chosen by trial
+and cached per shape, since `GetRecommendForwardAlgorithm` can name one the `Run`
+then rejects.
+
+**MUSA-specific notes:**
+
+- **TF32 follows `torch.backends.cuda.matmul.allow_tf32`.** mudnn enables TF32 by
+  default whereas torch defaults matmul TF32 *off*; left at the mudnn default a
+  64×64 float `mm` drifts ~2e-2 from CPU. The handle is refreshed from torch's
+  flag on every op.
+- **Strided copies and dtype casts go through mudnn's `Unary::IDENTITY` /
+  `Unary::CAST`** (`csrc/aten/backends/musa/mudnn_copy.cc`), which handle both in
+  a single device pass. Without that, `copy_`/`clone`/`contiguous` would reach the
+  CUDA `DispatchStub` and fail with "missing kernel for cuda".
+- **A fully broadcast input is materialized before a multi-dim reduction.** mudnn
+  v3300's `Reduce` raises `SIGFPE` — an uncatchable crash, not an error status —
+  when reducing over more than one dim of a tensor that is a broadcast of a single
+  element. Conv bias gradients hit exactly that, since autograd feeds
+  `ones.expand(...)` into the reduction.
+- **flagos keeps its own caching allocator** over raw `musaMalloc`. mudnn
+  allocates nothing on its own beyond op workspaces, which are served from that
+  same allocator via a `MemoryMaintainer`.
+- **Import `torch_fl` before `torch`**, or export
+  `TORCH_DEVICE_BACKEND_AUTOLOAD=0` — but only if the `torch_musa` package happens
+  to be installed alongside. It registers a `torch.backends` entry point, so a
+  bare `import torch` autoloads it and claims the `PrivateUse1` backend name
+  first. `torch_fl` sets that variable itself, which covers the torch_fl-first
+  order; the other order fails with an explicit message. Nothing of `torch_musa`
+  is used either way.
+- **No CUDA boxing kernels or FlagGems are compiled** — the MUSA toolkit exports
+  no cuda symbols. A build installs a `lib/flagos_platform` marker so `torch_fl`
+  picks `backends_musa.conf`.
+- Build with `-DMUSA_KERNEL=OFF` to skip mudnn entirely; the runtime still works
+  and all compute falls back to CPU.
+
 ### Build Environment Variables
 
 | Variable | Description |
 |----------|-------------|
-| `ACCELERATOR` | Hardware platform: `cuda` (default), `metax`, `ascend`, `tsingmicro`, `dcu`, or `gcu` |
+| `ACCELERATOR` | Hardware platform: `cuda` (default), `metax`, `ascend`, `tsingmicro`, `dcu`, `gcu`, or `musa` |
 | `CUDA_HOME` | CUDA toolkit path |
 | `DTK_ROOT` | Hygon DTK path (falls back to `ROCM_PATH`, then `/opt/dtk`; required for DCU build) |
 | `TOPS_HOME` | Enflame TopsRider SDK path (default `/opt/tops`; required for GCU build) |
@@ -497,6 +602,8 @@ call the installed SDK does not have.
 | `CUDA_KERNEL` | Enable CUDA kernel build (`ON`/`OFF`, default `ON`; set `0` for Ascend) |
 | `ASCEND_KERNEL` | Enable Ascend kernel build (`ON`/`OFF`, default `OFF`; set `1` for Ascend) |
 | `GCU_KERNEL` | Enable Enflame GCU topsaten kernel build (`ON`/`OFF`, auto-enabled when `ACCELERATOR=gcu`) |
+| `MUSA_HOME` | Moore Threads MUSA toolkit path (default `/usr/local/musa`; required for MUSA build) |
+| `MUSA_KERNEL` | Enable the MUSA mudnn kernel build (`ON`/`OFF`, auto-enabled when `ACCELERATOR=musa`); `OFF` falls back to CPU for all compute |
 
 ### Runtime Environment Variables
 
@@ -511,6 +618,7 @@ call the installed SDK does not have.
 | `FLAGOS_DISABLE_FLAGGEMS_PY` | Set to `1` to disable FlagGems Python-layer registration (C++ stub-only mode) |
 | `FLAGOS_LOG_DISPATCH` | Set to `1` to print backend selection for each operator dispatch |
 | `FLAGOS_OP_<name>` | Per-operator backend override (replace `.` with `__` in op names) |
+| `TORCH_DEVICE_BACKEND_AUTOLOAD` | Set to `0` to stop a vendor plugin (e.g. `torch_musa`) from claiming `PrivateUse1` during `import torch`; `torch_fl` sets this itself on MUSA builds |
 
 ## Usage
 

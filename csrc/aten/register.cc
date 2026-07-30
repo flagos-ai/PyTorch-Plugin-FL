@@ -252,9 +252,20 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   // registered" error, whereas leaving it unregistered reaches the cpu_fallback
   // below -- and on GCU neither the CUDA boxing kernels (no CUDA runtime) nor
   // FlagGems are built, so the full list would break every uncovered op.
+  //
+  // MUSA is the same story: musa_register.inc lists exactly the ops with a mudnn
+  // kernel behind them, and no CUDA boxing kernels are compiled in
+  // (musa_runtime, not cudart), so uncovered ops must fall through rather than
+  // be claimed. The two convolution `*_overrideable` ops are the exception that
+  // proves the rule -- ATen's default for them raises instead of being boxable,
+  // so they get real kernels in backends/musa/mudnn_conv.cc.
   #if defined(USE_GCU)
     #if defined(FLAGOS_GCU_KERNEL)
     #include "backends/gcu/generated/gcu_register.inc"
+    #endif
+  #elif defined(USE_MUSA)
+    #if defined(FLAGOS_MUSA_KERNEL)
+    #include "backends/musa/generated/musa_register.inc"
     #endif
   #else
   #define FLAGOS_GEN_IMPLS

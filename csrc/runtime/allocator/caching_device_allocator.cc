@@ -9,7 +9,7 @@
 #include "backends/dcu_memory.h"
 #endif
 #if !defined(USE_ASCEND) && !defined(USE_TSINGMICRO) && !defined(USE_DCU) && \
-    !defined(USE_GCU)
+    !defined(USE_GCU) && !defined(USE_MUSA)
 #include "backends/cuda_memory.h"
 #endif
 #if defined(USE_TSINGMICRO)
@@ -17,6 +17,9 @@
 #endif
 #if defined(USE_GCU)
 #include "backends/gcu_memory.h"
+#endif
+#if defined(USE_MUSA)
+#include "backends/musa_memory.h"
 #endif
 
 #include <c10/util/Exception.h>
@@ -535,6 +538,12 @@ CachingDeviceAllocator* GetCachingAllocator() {
     alloc = std::make_unique<CachingDeviceAllocator>(std::move(backend));
 #elif defined(USE_GCU)
     auto backend = std::make_unique<GcuDeviceMemory>();
+    alloc = std::make_unique<CachingDeviceAllocator>(std::move(backend));
+#elif defined(USE_MUSA)
+    // MUSA: raw musa* runtime with flagos's own caching on top. The vendor
+    // MUSACachingAllocator claims the same PrivateUse1 allocator slot flagos
+    // registers, so it is deliberately not delegated to (see musa_memory.h).
+    auto backend = std::make_unique<MusaDeviceMemory>();
     alloc = std::make_unique<CachingDeviceAllocator>(std::move(backend));
 #else
     // CUDA (and Metax, which uses CUDA-compatible API)
