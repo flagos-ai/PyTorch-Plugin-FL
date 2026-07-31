@@ -105,3 +105,29 @@ def test_cupti_library_locatable():
         except OSError:
             continue
     assert loaded is not None, f"cannot dlopen libcupti from {candidates}"
+
+
+import json
+import tempfile
+
+
+def test_stage_b_chrome_trace_has_gpu_kernels():
+    """Stage B smoke test: kineto Chrome trace should contain GPU kernel events
+    when CUPTI child profiler is registered and working."""
+    x = torch.randn(1024, 1024, device="flagos")
+    torch.flagos.synchronize()
+    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.PrivateUse1]) as prof:
+        for _ in range(5):
+            y = x @ x
+        torch.flagos.synchronize()
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+        path = f.name
+    prof.export_chrome_trace(path)
+    with open(path) as fh:
+        data = json.load(fh)
+    events = data.get("traceEvents", data) if isinstance(data, dict) else data
+    kernel_like = [e for e in events
+                   if isinstance(e, dict) and (
+                       e.get("cat") in ("kernel", "Kernel", "gpu_op") or
+                       "kernel" in str(e.get("name", "")).lower())]
+    assert len(kernel_like) > 0, "no GPU kernel events in chrome trace"
