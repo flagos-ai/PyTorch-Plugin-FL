@@ -66,6 +66,8 @@ def test_guard_stream_is_real_not_synthetic():
 
 from torch.profiler import profile, ProfilerActivity
 import pytest
+import ctypes
+import glob
 
 
 @pytest.mark.skip(
@@ -86,3 +88,20 @@ def test_stage_a_privateuse1_device_time():
     # 至少一个条目有非零 device self-time
     dev_times = [getattr(e, "self_device_time_total", 0) for e in ka]
     assert any(t > 0 for t in dev_times), f"no device time recorded: max={max(dev_times, default=0)}"
+
+
+def test_cupti_library_locatable():
+    """确认运行环境能 dlopen 到 libcupti(Stage B 前提)。"""
+    candidates = ["libcupti.so.13", "libcupti.so.12", "libcupti.so"]
+    candidates += glob.glob("/usr/local/cuda-13.0/targets/*/lib/libcupti.so*")
+    candidates += glob.glob(
+        os.path.join(os.path.dirname(os.__file__),
+                     "../site-packages/nvidia/cuda_cupti/lib/libcupti.so*"))
+    loaded = None
+    for c in candidates:
+        try:
+            loaded = ctypes.CDLL(c)
+            break
+        except OSError:
+            continue
+    assert loaded is not None, f"cannot dlopen libcupti from {candidates}"

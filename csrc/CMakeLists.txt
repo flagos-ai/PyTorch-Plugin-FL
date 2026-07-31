@@ -125,6 +125,16 @@ endif()
 add_library(${LIBRARY_NAME} SHARED ${_torch_fl_sources})
 set_target_properties(${LIBRARY_NAME} PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+# CUPTI headers for the profiler child (Stage B). Runtime symbols are dlopen'd,
+# so we only need the include path, not the link library.
+find_path(CUPTI_INCLUDE_DIR cupti_activity.h
+  PATHS /usr/local/cuda-13.0/targets/x86_64-linux/include
+        /usr/local/cuda/extras/CUPTI/include)
+if(CUPTI_INCLUDE_DIR)
+  target_include_directories(${LIBRARY_NAME} PRIVATE ${CUPTI_INCLUDE_DIR})
+  target_compile_definitions(${LIBRARY_NAME} PRIVATE FLAGOS_HAVE_CUPTI=1)
+endif()
+
 # Build stream_api as a standalone shared lib so liboperators.so can resolve it at runtime
 if(FLAGGEMS_KERNEL AND ACCELERATOR STREQUAL "ascend")
   add_library(stream_api SHARED "${CMAKE_CURRENT_SOURCE_DIR}/runtime/accelerator/ascend/stream_api.cc")
