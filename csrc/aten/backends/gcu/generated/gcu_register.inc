@@ -9,16 +9,41 @@
 // "backend not registered" check, whereas an unregistered op simply reaches
 // the cpu_fallback. So this file is exactly the GCU coverage set.
 
+  m.impl("_foreach_add_.List", WrapperForeachAddInplaceList);
+  m.impl("_foreach_add_.Scalar", WrapperForeachAddInplaceScalar);
+  m.impl("_foreach_add_.Tensor", WrapperForeachAddInplaceTensor);
+  m.impl("_foreach_addcdiv_.Scalar", WrapperForeachAddcdivInplaceScalar);
+  m.impl("_foreach_addcdiv_.ScalarList", WrapperForeachAddcdivInplaceScalarlist);
+  m.impl("_foreach_addcmul_.Scalar", WrapperForeachAddcmulInplaceScalar);
+  m.impl("_foreach_addcmul_.ScalarList", WrapperForeachAddcmulInplaceScalarlist);
+  m.impl("_foreach_div_.List", WrapperForeachDivInplaceList);
+  m.impl("_foreach_div_.Scalar", WrapperForeachDivInplaceScalar);
+  m.impl("_foreach_div_.ScalarList", WrapperForeachDivInplaceScalarlist);
+  m.impl("_foreach_lerp_.Scalar", WrapperForeachLerpInplaceScalar);
+  m.impl("_foreach_mul_.List", WrapperForeachMulInplaceList);
+  m.impl("_foreach_mul_.Scalar", WrapperForeachMulInplaceScalar);
+  m.impl("_foreach_neg_", WrapperForeachNegInplace);
+  m.impl("_foreach_sqrt", WrapperForeachSqrt);
+  m.impl("_foreach_sqrt_", WrapperForeachSqrtInplace);
+  m.impl("_foreach_sub_.List", WrapperForeachSubInplaceList);
+  m.impl("_foreach_sub_.Scalar", WrapperForeachSubInplaceScalar);
   m.impl("_softmax", WrapperPrivSoftmax);
+  m.impl("_softmax_backward_data", WrapperPrivSoftmaxBackwardData);
   m.impl("abs", WrapperAbs);
   m.impl("acos", WrapperAcos);
   m.impl("add.Scalar", WrapperAddScalar);
   m.impl("add.Tensor", WrapperAddTensor);
+  m.impl("addmm", WrapperAddmm);
+  m.impl("addmm.out", WrapperAddmmOut);
+  m.impl("amax", WrapperAmax);
+  m.impl("amin", WrapperAmin);
   m.impl("asin", WrapperAsin);
   m.impl("atan", WrapperAtan);
   m.impl("bmm", WrapperBmm);
   m.impl("bmm.out", WrapperBmmOut);
+  m.impl("cat", WrapperCat);
   m.impl("ceil", WrapperCeil);
+  m.impl("clamp", WrapperClamp);
   m.impl("cos", WrapperCos);
   m.impl("cosh", WrapperCosh);
   m.impl("div.Scalar", WrapperDivScalar);
@@ -28,6 +53,7 @@
   m.impl("erf", WrapperErf);
   m.impl("exp", WrapperExp);
   m.impl("expm1", WrapperExpm1);
+  m.impl("flip", WrapperFlip);
   m.impl("floor", WrapperFloor);
   m.impl("fmod.Scalar", WrapperFmodScalar);
   m.impl("fmod.Tensor", WrapperFmodTensor);
@@ -52,11 +78,15 @@
   m.impl("minimum", WrapperMinimum);
   m.impl("mm", WrapperMm);
   m.impl("mm.out", WrapperMmOut);
+  m.impl("mse_loss", WrapperMseLoss);
+  m.impl("mse_loss_backward", WrapperMseLossBackward);
   m.impl("mul.Scalar", WrapperMulScalar);
   m.impl("mul.Tensor", WrapperMulTensor);
+  m.impl("native_layer_norm", WrapperNativeLayerNorm);
   m.impl("ne.Scalar", WrapperNeScalar);
   m.impl("ne.Tensor", WrapperNeTensor);
   m.impl("neg", WrapperNeg);
+  m.impl("ones_like", WrapperOnesLike);
   m.impl("pow.Tensor_Scalar", WrapperPowTensorScalar);
   m.impl("pow.Tensor_Tensor", WrapperPowTensorTensor);
   m.impl("reciprocal", WrapperReciprocal);
@@ -67,6 +97,7 @@
   m.impl("sigmoid", WrapperSigmoid);
   m.impl("sign", WrapperSign);
   m.impl("silu", WrapperSilu);
+  m.impl("silu_backward", WrapperSiluBackward);
   m.impl("sin", WrapperSin);
   m.impl("sinh", WrapperSinh);
   m.impl("sqrt", WrapperSqrt);
@@ -75,4 +106,7 @@
   m.impl("sum", WrapperSum);
   m.impl("sum.dim_IntList", WrapperSumDimIntlist);
   m.impl("tanh", WrapperTanh);
+  m.impl("tril", WrapperTril);
+  m.impl("triu", WrapperTriu);
   m.impl("trunc", WrapperTrunc);
+  m.impl("zeros_like", WrapperZerosLike);

@@ -143,9 +143,64 @@ OPS = {
     # ---- reduce whole tensor ----
     "sum": ("reduce_all_dtype", None),
     "mean": ("reduce_all_dtype", None),
+    # ---- reduce over a required dim list (no dtype arg) ----
+    "amax": ("reduce_dims_plain", None),
+    "amin": ("reduce_dims_plain", None),
+    # ---- shape-preserving with one int64 arg ----
+    "tril": ("unary_int", None),
+    "triu": ("unary_int", None),
+    # ---- shape-preserving with a dim list ----
+    "flip": ("unary_dims", None),
     # ---- misc ----
     "gelu": ("gelu", None),
     "_softmax": ("softmax_fwd", "SoftmaxForward"),
+    "clamp": ("clamp", None),
+    "addmm": ("addmm", None),
+    "addmm.out": ("addmm_out", None),
+    "cat": ("cat", None),
+    "zeros_like": ("full_like", "ZerosLike"),
+    "ones_like": ("full_like", "OnesLike"),
+    "native_layer_norm": ("layer_norm", None),
+    # native_layer_norm_backward is deliberately absent: topsaten's kernel
+    # rejects every output_mask ("LNB Output mask is not supported now!") and,
+    # worse, still returns TOPSATEN_STATUS_SUCCESS while writing nothing to the
+    # output buffers, so a caller sees uninitialized gradients rather than an
+    # error. Left unregistered -> cpu_fallback. The forward is fine.
+    "_softmax_backward_data": ("softmax_bwd", "SoftmaxBackwardData"),
+    "silu_backward": ("binary_grad", None),
+    "mse_loss": ("loss", None),
+    "mse_loss_backward": ("loss_backward", None),
+    # ---- foreach: the body of every optimizer step ----
+    "_foreach_add_.Scalar": ("foreach_scalar_alpha_inplace", "ForeachAdd"),
+    "_foreach_add_.List": ("foreach_list_alpha_inplace", "ForeachAdd"),
+    "_foreach_add_.Tensor": ("foreach_tensor_alpha_inplace", "ForeachAdd"),
+    "_foreach_sub_.Scalar": ("foreach_scalar_alpha_inplace", "ForeachSub"),
+    "_foreach_sub_.List": ("foreach_list_alpha_inplace", "ForeachSub"),
+    "_foreach_mul_.Scalar": ("foreach_scalar_inplace", "ForeachMul"),
+    "_foreach_mul_.List": ("foreach_list_inplace", "ForeachMul"),
+    "_foreach_div_.Scalar": ("foreach_scalar_inplace", "ForeachDiv"),
+    "_foreach_div_.List": ("foreach_list_inplace", "ForeachDiv"),
+    "_foreach_div_.ScalarList": ("foreach_scalarlist_inplace", "ForeachDiv"),
+    "_foreach_neg_": ("foreach_unary_inplace", "ForeachNeg"),
+    "_foreach_sqrt_": ("foreach_unary_inplace", "ForeachSqrt"),
+    "_foreach_sqrt": ("foreach_unary", "ForeachSqrt"),
+    "_foreach_lerp_.Scalar": ("foreach_lerp_scalar_inplace", "ForeachLerp"),
+    "_foreach_addcmul_.Scalar": (
+        "foreach_ternary_scalar_inplace",
+        "ForeachAddcmul",
+    ),
+    "_foreach_addcmul_.ScalarList": (
+        "foreach_ternary_scalarlist_inplace",
+        "ForeachAddcmul",
+    ),
+    "_foreach_addcdiv_.Scalar": (
+        "foreach_ternary_scalar_inplace",
+        "ForeachAddcdiv",
+    ),
+    "_foreach_addcdiv_.ScalarList": (
+        "foreach_ternary_scalarlist_inplace",
+        "ForeachAddcdiv",
+    ),
 }
 
 # Ops handwritten elsewhere for GCU would double-register the kGcu slot (which
@@ -158,6 +213,27 @@ AT_OP_OVERRIDES = {
     "mm.out": "mm",
     "bmm.out": "bmm",
     "_softmax": "_softmax",
+    # The foreach fallbacks loop over the list applying the equivalent per-tensor
+    # Tensor method, rather than calling at::_foreach_* -- the latter would
+    # re-enter this same kernel and recurse forever.
+    "_foreach_add_.Scalar": "add_",
+    "_foreach_add_.List": "add_",
+    "_foreach_add_.Tensor": "add_",
+    "_foreach_sub_.Scalar": "sub_",
+    "_foreach_sub_.List": "sub_",
+    "_foreach_mul_.Scalar": "mul_",
+    "_foreach_mul_.List": "mul_",
+    "_foreach_div_.Scalar": "div_",
+    "_foreach_div_.List": "div_",
+    "_foreach_div_.ScalarList": "div_",
+    "_foreach_neg_": "neg_",
+    "_foreach_sqrt_": "sqrt_",
+    "_foreach_sqrt": "sqrt",
+    "_foreach_lerp_.Scalar": "lerp_",
+    "_foreach_addcmul_.Scalar": "addcmul_",
+    "_foreach_addcmul_.ScalarList": "addcmul_",
+    "_foreach_addcdiv_.Scalar": "addcdiv_",
+    "_foreach_addcdiv_.ScalarList": "addcdiv_",
 }
 
 # ==========================================================================
@@ -547,6 +623,732 @@ at::Tensor {kernel}(const at::Tensor& self, int64_t dim, bool half_to_float) {{
 REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kGcu, {kernel})
 """
 
+# amax/amin: reduce over a required (non-optional, possibly empty) dim list, no
+# dtype argument and no integral promotion -- the output dtype is the input's.
+T_REDUCE_DIMS_PLAIN = """\
+at::Tensor {kernel}(
+    const at::Tensor& self,
+    at::IntArrayRef dim,
+    bool keepdim) {{
+  if (!gcu::TopsatenSupportsDtype(self.scalar_type())) {{
+    return at::{at_op}(self.cpu(), dim, keepdim).to(self.device());
+  }}
+  int64_t ndim = self.dim();
+  std::vector<int64_t> norm_dims;
+  if (!dim.empty()) {{
+    for (int64_t d : dim) norm_dims.push_back(d < 0 ? d + ndim : d);
+  }} else {{
+    for (int64_t d = 0; d < ndim; ++d) norm_dims.push_back(d);
+  }}
+  auto out_shape = self.sizes().vec();
+  std::vector<int64_t> sorted_dims(norm_dims);
+  std::sort(sorted_dims.rbegin(), sorted_dims.rend());
+  for (int64_t d : sorted_dims) {{
+    if (keepdim) {{
+      out_shape[d] = 1;
+    }} else {{
+      out_shape.erase(out_shape.begin() + d);
+    }}
+  }}
+  auto out = at::empty(out_shape, self.options());
+
+  gcu::TopsatenSizeWrapper t_dims(norm_dims);
+  gcu::TopsatenTensorWrapper t_self(self);
+  gcu::TopsatenTensorWrapper t_out(out);
+  EXEC_TOPSATEN_CMD(
+      {tops}, self, t_out.get(), t_self.get(), t_dims.get(), keepdim);
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kGcu, {kernel})
+"""
+
+# tril/triu: same shape as the input plus one int64 (the diagonal).
+T_UNARY_INT = """\
+at::Tensor {kernel}(const at::Tensor& self, int64_t k) {{
+  if (!gcu::TopsatenSupportsDtype(self.scalar_type())) {{
+    return at::{at_op}(self.cpu(), k).to(self.device());
+  }}
+  auto self_c = self.contiguous();
+  auto out = at::empty(self_c.sizes(), self_c.options());
+  gcu::TopsatenTensorWrapper t_self(self_c);
+  gcu::TopsatenTensorWrapper t_out(out);
+  EXEC_TOPSATEN_CMD({tops}, self, t_out.get(), t_self.get(), k);
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kGcu, {kernel})
+"""
+
+# flip: same shape as the input plus a dim list. Negative dims are wrapped.
+T_UNARY_DIMS = """\
+at::Tensor {kernel}(const at::Tensor& self, at::IntArrayRef dims) {{
+  if (!gcu::TopsatenSupportsDtype(self.scalar_type())) {{
+    return at::{at_op}(self.cpu(), dims).to(self.device());
+  }}
+  int64_t ndim = self.dim();
+  std::vector<int64_t> norm_dims;
+  for (int64_t d : dims) norm_dims.push_back(d < 0 ? d + ndim : d);
+  auto self_c = self.contiguous();
+  auto out = at::empty(self_c.sizes(), self_c.options());
+
+  gcu::TopsatenSizeWrapper t_dims(norm_dims);
+  gcu::TopsatenTensorWrapper t_self(self_c);
+  gcu::TopsatenTensorWrapper t_out(out);
+  EXEC_TOPSATEN_CMD({tops}, self, t_out.get(), t_self.get(), t_dims.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kGcu, {kernel})
+"""
+
+# clamp: both bounds are optional. topsaten takes two required scalars, so an
+# absent bound becomes the dtype's limit, which is a no-op clamp on that side.
+T_CLAMP = """\
+at::Tensor {kernel}(
+    const at::Tensor& self,
+    const ::std::optional<at::Scalar>& min,
+    const ::std::optional<at::Scalar>& max) {{
+  if (!gcu::TopsatenSupportsDtype(self.scalar_type())) {{
+    return at::{at_op}(self.cpu(), min, max).to(self.device());
+  }}
+  auto self_c = self.contiguous();
+  auto out = at::empty(self_c.sizes(), self_c.options());
+  auto dtype = self.scalar_type();
+  auto lo = min.has_value()
+      ? gcu::ToTopsatenScalar(min.value(), dtype)
+      : gcu::ToTopsatenScalar(gcu::DtypeLowest(dtype), dtype);
+  auto hi = max.has_value()
+      ? gcu::ToTopsatenScalar(max.value(), dtype)
+      : gcu::ToTopsatenScalar(gcu::DtypeHighest(dtype), dtype);
+
+  gcu::TopsatenTensorWrapper t_self(self_c);
+  gcu::TopsatenTensorWrapper t_out(out);
+  EXEC_TOPSATEN_CMD({tops}, self, t_out.get(), t_self.get(), lo, hi);
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kGcu, {kernel})
+"""
+
+# addmm: out = beta * self + alpha * (mat1 @ mat2). `self` (the bias) broadcasts
+# in PyTorch but not in topsaten, so it is expanded to the product's shape.
+_ADDMM_PROLOGUE = """\
+  std::vector<int64_t> out_shape{{mat1.size(0), mat2.size(1)}};
+  auto self_b = self.expand(out_shape).contiguous();
+  auto mat1_c = mat1.contiguous();
+  auto mat2_c = mat2.contiguous();
+  auto t_beta = gcu::ToTopsatenScalar(beta, self.scalar_type());
+  auto t_alpha = gcu::ToTopsatenScalar(alpha, self.scalar_type());
+"""
+
+T_ADDMM = (
+    """\
+at::Tensor {kernel}(
+    const at::Tensor& self,
+    const at::Tensor& mat1,
+    const at::Tensor& mat2,
+    const at::Scalar& beta,
+    const at::Scalar& alpha) {{
+  if (!gcu::TopsatenSupportsDtype(self.scalar_type()) ||
+      !gcu::TopsatenSupportsDtype(mat1.scalar_type()) ||
+      !gcu::TopsatenSupportsDtype(mat2.scalar_type())) {{
+    return at::{at_op}(self.cpu(), mat1.cpu(), mat2.cpu(), beta, alpha)
+        .to(self.device());
+  }}
+"""
+    + _ADDMM_PROLOGUE
+    + """\
+  auto out = at::empty(out_shape, self.options());
+
+  gcu::TopsatenTensorWrapper t_self(self_b);
+  gcu::TopsatenTensorWrapper t_mat1(mat1_c);
+  gcu::TopsatenTensorWrapper t_mat2(mat2_c);
+  gcu::TopsatenTensorWrapper t_out(out);
+  EXEC_TOPSATEN_CMD(
+      {tops}, self, t_out.get(), t_self.get(), t_mat1.get(), t_mat2.get(),
+      t_beta, t_alpha);
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kGcu, {kernel})
+"""
+)
+
+T_ADDMM_OUT = (
+    """\
+at::Tensor& {kernel}(
+    const at::Tensor& self,
+    const at::Tensor& mat1,
+    const at::Tensor& mat2,
+    const at::Scalar& beta,
+    const at::Scalar& alpha,
+    at::Tensor& out) {{
+  if (!gcu::TopsatenSupportsDtype(self.scalar_type()) ||
+      !gcu::TopsatenSupportsDtype(mat1.scalar_type()) ||
+      !gcu::TopsatenSupportsDtype(mat2.scalar_type())) {{
+    out.copy_(at::{at_op}(self.cpu(), mat1.cpu(), mat2.cpu(), beta, alpha));
+    return out;
+  }}
+"""
+    + _ADDMM_PROLOGUE
+    + """\
+  if (!out.sizes().equals(out_shape)) {{
+    out.resize_(out_shape);
+  }}
+
+  gcu::TopsatenTensorWrapper t_self(self_b);
+  gcu::TopsatenTensorWrapper t_mat1(mat1_c);
+  gcu::TopsatenTensorWrapper t_mat2(mat2_c);
+  gcu::TopsatenTensorWrapper t_out(out);
+  EXEC_TOPSATEN_CMD(
+      {tops}, self, t_out.get(), t_self.get(), t_mat1.get(), t_mat2.get(),
+      t_beta, t_alpha);
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kGcu, {kernel})
+"""
+)
+
+# cat: topsaten takes a std::vector<topsatenTensor>, so the wrappers are held in
+# a vector to keep each one's sizes/strides alive for the duration of the call.
+# An empty tensor is skipped, matching PyTorch's treatment of it as absent.
+T_CAT = """\
+at::Tensor {kernel}(const at::ITensorListRef& tensors, int64_t dim) {{
+  std::vector<at::Tensor> inputs;
+  bool cpu_path = false;
+  for (const at::Tensor& t : tensors) {{
+    if (t.numel() == 0 && t.dim() == 1) continue;
+    if (!gcu::TopsatenSupportsDtype(t.scalar_type())) cpu_path = true;
+    inputs.push_back(t);
+  }}
+  TORCH_CHECK(!inputs.empty(), "flagos cat: expected at least one tensor");
+  if (cpu_path) {{
+    std::vector<at::Tensor> host;
+    host.reserve(inputs.size());
+    for (const auto& t : inputs) host.push_back(t.cpu());
+    return at::{at_op}(host, dim).to(inputs[0].device());
+  }}
+  int64_t ndim = inputs[0].dim();
+  int64_t d = dim < 0 ? dim + ndim : dim;
+
+  auto out_shape = inputs[0].sizes().vec();
+  int64_t total = 0;
+  for (const auto& t : inputs) total += t.size(d);
+  out_shape[d] = total;
+  auto out = at::empty(out_shape, inputs[0].options());
+
+  std::vector<at::Tensor> contig;
+  contig.reserve(inputs.size());
+  std::vector<std::unique_ptr<gcu::TopsatenTensorWrapper>> keep;
+  keep.reserve(inputs.size());
+  std::vector<topsatenTensor> tops_in;
+  tops_in.reserve(inputs.size());
+  for (const auto& t : inputs) {{
+    contig.push_back(t.contiguous());
+    keep.push_back(
+        std::make_unique<gcu::TopsatenTensorWrapper>(contig.back()));
+    tops_in.push_back(keep.back()->get());
+  }}
+  gcu::TopsatenTensorWrapper t_out(out);
+  EXEC_TOPSATEN_CMD({tops}, inputs[0], t_out.get(), tops_in, d);
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kGcu, {kernel})
+"""
+
+# zeros_like / ones_like: the dtype/layout/device/pin/memory_format options
+# describe the *result*, so a request for a different device or a dtype topsaten
+# cannot express is handed to the generic implementation instead.
+T_FULL_LIKE = """\
+at::Tensor {kernel}(
+    const at::Tensor& self,
+    ::std::optional<at::ScalarType> dtype,
+    ::std::optional<at::Layout> layout,
+    ::std::optional<at::Device> device,
+    ::std::optional<bool> pin_memory,
+    ::std::optional<at::MemoryFormat> memory_format) {{
+  auto out_dtype = dtype.value_or(self.scalar_type());
+  auto target_device = device.value_or(self.device());
+  if (target_device != self.device() ||
+      !gcu::TopsatenSupportsDtype(out_dtype) ||
+      !gcu::TopsatenSupportsDtype(self.scalar_type())) {{
+    // Built on a CPU tensor so the call lands on the CPU kernel: passing the
+    // flagos tensor back to at::{at_op} would re-enter this kernel.
+    auto host = at::{at_op}(
+        self.cpu(), out_dtype, layout, at::kCPU, pin_memory, memory_format);
+    return target_device.type() == at::kCPU ? host : host.to(target_device);
+  }}
+  // at::empty rejects MemoryFormat::Preserve (autograd passes it for every
+  // seed gradient), so resolve it against the input first. A non-contiguous
+  // result would leave topsaten writing through strides it does not honour for
+  // this op, so those go to the host path.
+  auto fmt = memory_format.value_or(at::MemoryFormat::Contiguous);
+  if (fmt == at::MemoryFormat::Preserve) {{
+    fmt = self.suggest_memory_format();
+  }}
+  if (fmt != at::MemoryFormat::Contiguous) {{
+    auto host = at::{at_op}(
+        self.cpu(), out_dtype, layout, at::kCPU, pin_memory, memory_format);
+    return host.to(target_device);
+  }}
+  auto options = self.options().dtype(out_dtype);
+  auto out = at::empty(self.sizes(), options, fmt);
+
+  auto self_c = self.contiguous();
+  gcu::TopsatenTensorWrapper t_self(self_c);
+  gcu::TopsatenTensorWrapper t_out(out);
+  EXEC_TOPSATEN_CMD(
+      {tops}, self, t_out.get(), t_self.get(),
+      gcu::ToTopsatenDataType(out_dtype), TOPSATEN_LAYOUT_STRIDED,
+      TOPSATEN_MEMORY_CONTIGUOUS);
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kGcu, {kernel})
+"""
+
+# native_layer_norm -> (out, mean, rstd). mean/rstd keep the leading (un-
+# normalized) dims and carry 1s for the normalized tail, which is the shape
+# topsaten writes even though PyTorch's public shape drops the trailing 1s.
+# weight/bias are optional in PyTorch but required by topsaten, so they are
+# materialized as ones/zeros when absent.
+T_LAYER_NORM = """\
+::std::tuple<at::Tensor, at::Tensor, at::Tensor> {kernel}(
+    const at::Tensor& input,
+    at::IntArrayRef normalized_shape,
+    const ::std::optional<at::Tensor>& weight,
+    const ::std::optional<at::Tensor>& bias,
+    double eps) {{
+  if (!gcu::TopsatenSupportsDtype(input.scalar_type())) {{
+    auto r = at::{at_op}(
+        input.cpu(),
+        normalized_shape,
+        weight.has_value() ? ::std::optional<at::Tensor>(weight->cpu())
+                           : ::std::nullopt,
+        bias.has_value() ? ::std::optional<at::Tensor>(bias->cpu())
+                         : ::std::nullopt,
+        eps);
+    return {{std::get<0>(r).to(input.device()),
+            std::get<1>(r).to(input.device()),
+            std::get<2>(r).to(input.device())}};
+  }}
+  auto input_c = input.contiguous();
+  int64_t norm_ndim = static_cast<int64_t>(normalized_shape.size());
+  int64_t outer = input_c.dim() - norm_ndim;
+
+  auto stat_shape = input_c.sizes().vec();
+  for (int64_t i = outer; i < input_c.dim(); ++i) stat_shape[i] = 1;
+
+  auto out = at::empty(input_c.sizes(), input_c.options());
+  auto mean = at::empty(stat_shape, input_c.options());
+  auto rstd = at::empty(stat_shape, input_c.options());
+
+  auto w = weight.has_value() && weight->defined()
+      ? weight->contiguous()
+      : at::ones(normalized_shape, input_c.options());
+  auto b = bias.has_value() && bias->defined()
+      ? bias->contiguous()
+      : at::zeros(normalized_shape, input_c.options());
+
+  gcu::TopsatenSizeWrapper t_shape(normalized_shape);
+  gcu::TopsatenTensorWrapper t_in(input_c);
+  gcu::TopsatenTensorWrapper t_w(w);
+  gcu::TopsatenTensorWrapper t_b(b);
+  gcu::TopsatenTensorWrapper t_out(out);
+  gcu::TopsatenTensorWrapper t_mean(mean);
+  gcu::TopsatenTensorWrapper t_rstd(rstd);
+  auto t_eps = gcu::ToTopsatenScalar(at::Scalar(eps), input.scalar_type());
+  EXEC_TOPSATEN_CMD(
+      {tops}, input, t_out.get(), t_mean.get(), t_rstd.get(), t_in.get(),
+      t_shape.get(), t_w.get(), t_b.get(), t_eps);
+
+  // PyTorch's mean/rstd drop the normalized dims entirely.
+  std::vector<int64_t> pt_stat(
+      input_c.sizes().begin(), input_c.sizes().begin() + outer);
+  pt_stat.push_back(1);
+  return {{out, mean.reshape(pt_stat), rstd.reshape(pt_stat)}};
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kGcu, {kernel})
+"""
+
+# _softmax_backward_data(grad_output, output, dim, input_dtype)
+T_SOFTMAX_BWD = """\
+at::Tensor {kernel}(
+    const at::Tensor& grad_output,
+    const at::Tensor& output,
+    int64_t dim,
+    at::ScalarType input_dtype) {{
+  if (!gcu::TopsatenSupportsDtype(grad_output.scalar_type()) ||
+      !gcu::TopsatenSupportsDtype(input_dtype)) {{
+    return at::{at_op}(grad_output.cpu(), output.cpu(), dim, input_dtype)
+        .to(grad_output.device());
+  }}
+  int64_t d = dim < 0 ? dim + output.dim() : dim;
+  auto grad_c = grad_output.contiguous();
+  auto out_c = output.contiguous();
+  auto result = at::empty(out_c.sizes(), out_c.options().dtype(input_dtype));
+
+  gcu::TopsatenTensorWrapper t_grad(grad_c);
+  gcu::TopsatenTensorWrapper t_out(out_c);
+  gcu::TopsatenTensorWrapper t_result(result);
+  EXEC_TOPSATEN_CMD(
+      {tops}, grad_output, t_result.get(), t_grad.get(), t_out.get(), d,
+      gcu::ToTopsatenDataType(input_dtype));
+  return result;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kGcu, {kernel})
+"""
+
+# silu_backward(grad_output, self) -> grad_input, all the same shape.
+T_BINARY_GRAD = """\
+at::Tensor {kernel}(
+    const at::Tensor& grad_output,
+    const at::Tensor& self) {{
+  if (!gcu::TopsatenSupportsDtype(self.scalar_type()) ||
+      !gcu::TopsatenSupportsDtype(grad_output.scalar_type())) {{
+    return at::{at_op}(grad_output.cpu(), self.cpu()).to(self.device());
+  }}
+  auto grad_c = grad_output.contiguous();
+  auto self_c = self.contiguous();
+  auto grad_input = at::empty(self_c.sizes(), self_c.options());
+
+  gcu::TopsatenTensorWrapper t_grad(grad_c);
+  gcu::TopsatenTensorWrapper t_self(self_c);
+  gcu::TopsatenTensorWrapper t_gi(grad_input);
+  EXEC_TOPSATEN_CMD({tops}, self, t_gi.get(), t_grad.get(), t_self.get());
+  return grad_input;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kGcu, {kernel})
+"""
+
+# mse_loss(self, target, reduction). reduction 0=none keeps the input shape;
+# 1=mean and 2=sum produce a scalar.
+T_LOSS = """\
+at::Tensor {kernel}(
+    const at::Tensor& self,
+    const at::Tensor& target,
+    int64_t reduction) {{
+  if (!gcu::TopsatenSupportsDtype(self.scalar_type()) ||
+      !gcu::TopsatenSupportsDtype(target.scalar_type())) {{
+    return at::{at_op}(self.cpu(), target.cpu(), reduction).to(self.device());
+  }}
+  auto self_c = self.contiguous();
+  auto target_c = target.to(self.device()).contiguous();
+  auto out = reduction == 0
+      ? at::empty(self_c.sizes(), self_c.options())
+      : at::empty({{}}, self_c.options());
+
+  gcu::TopsatenTensorWrapper t_self(self_c);
+  gcu::TopsatenTensorWrapper t_target(target_c);
+  gcu::TopsatenTensorWrapper t_out(out);
+  EXEC_TOPSATEN_CMD(
+      {tops}, self, t_out.get(), t_self.get(), t_target.get(), reduction);
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kGcu, {kernel})
+"""
+
+# mse_loss_backward(grad_output, self, target, reduction) -> grad_input.
+T_LOSS_BACKWARD = """\
+at::Tensor {kernel}(
+    const at::Tensor& grad_output,
+    const at::Tensor& self,
+    const at::Tensor& target,
+    int64_t reduction) {{
+  if (!gcu::TopsatenSupportsDtype(self.scalar_type()) ||
+      !gcu::TopsatenSupportsDtype(target.scalar_type())) {{
+    return at::{at_op}(
+               grad_output.cpu(), self.cpu(), target.cpu(), reduction)
+        .to(self.device());
+  }}
+  auto self_c = self.contiguous();
+  auto target_c = target.to(self.device()).contiguous();
+  // topsaten does not broadcast the (scalar) grad for a reduced loss.
+  auto grad_c = grad_output.to(self.device())
+                    .expand(self_c.sizes())
+                    .contiguous();
+  auto grad_input = at::empty(self_c.sizes(), self_c.options());
+
+  gcu::TopsatenTensorWrapper t_grad(grad_c);
+  gcu::TopsatenTensorWrapper t_self(self_c);
+  gcu::TopsatenTensorWrapper t_target(target_c);
+  gcu::TopsatenTensorWrapper t_gi(grad_input);
+  EXEC_TOPSATEN_CMD(
+      {tops}, self, t_gi.get(), t_grad.get(), t_self.get(), t_target.get(),
+      reduction);
+  return grad_input;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kGcu, {kernel})
+"""
+
+# ---------------------------------------------------------------------------
+# foreach. These are what an optimizer step is made of, so keeping them off the
+# host is worth more than any single elementwise op: one AdamW step over a
+# 2-block transformer issued ~20 foreach calls, each of which was copying every
+# parameter to the CPU and back.
+#
+# The in-place variants pass the same list as both source and destination --
+# verified on hardware that topsaten accepts an aliasing output -- so the
+# parameters are updated in place with no extra copy. A list that is not
+# uniformly contiguous/supported goes to the generic implementation via
+# at::_foreach_*, which is why every kernel opens with IsForeachEligible().
+# ---------------------------------------------------------------------------
+
+# _foreach_neg_ / (any in-place unary foreach): topsatenForeachX(out, in)
+T_FOREACH_UNARY_INPLACE = """\
+void {kernel}(at::TensorList self) {{
+  if (!gcu::IsForeachEligible(self)) {{
+    for (const at::Tensor& t : self) t.{at_op}();
+    return;
+  }}
+  gcu::TopsatenTensorList t_self(self);
+  gcu::TopsatenTensorList t_out(self);
+  EXEC_TOPSATEN_CMD({tops}, self[0], t_out.get(), t_self.get());
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kGcu, {kernel})
+"""
+
+# _foreach_sqrt: out-of-place, returns a fresh list.
+T_FOREACH_UNARY = """\
+::std::vector<at::Tensor> {kernel}(at::TensorList self) {{
+  if (!gcu::IsForeachEligible(self)) {{
+    std::vector<at::Tensor> out;
+    out.reserve(self.size());
+    for (const at::Tensor& t : self) out.push_back(t.{at_op}());
+    return out;
+  }}
+  std::vector<at::Tensor> out;
+  out.reserve(self.size());
+  for (const at::Tensor& t : self) {{
+    out.push_back(at::empty(t.sizes(), t.options()));
+  }}
+  gcu::TopsatenTensorList t_self(self);
+  gcu::TopsatenTensorList t_out(out);
+  EXEC_TOPSATEN_CMD({tops}, self[0], t_out.get(), t_self.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kGcu, {kernel})
+"""
+
+# _foreach_mul_.Scalar / _foreach_div_.Scalar: one scalar for the whole list.
+T_FOREACH_SCALAR_INPLACE = """\
+void {kernel}(at::TensorList self, const at::Scalar& scalar) {{
+  if (!gcu::IsForeachEligible(self)) {{
+    for (const at::Tensor& t : self) t.{at_op}(scalar);
+    return;
+  }}
+  auto t_scalar = gcu::ToTopsatenScalar(scalar, self[0].scalar_type());
+  gcu::TopsatenTensorList t_self(self);
+  gcu::TopsatenTensorList t_out(self);
+  EXEC_TOPSATEN_CMD({tops}, self[0], t_out.get(), t_self.get(), t_scalar);
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kGcu, {kernel})
+"""
+
+# _foreach_add_.Scalar: same as above but the overload takes a trailing alpha.
+T_FOREACH_SCALAR_ALPHA_INPLACE = """\
+void {kernel}(at::TensorList self, const at::Scalar& scalar) {{
+  if (!gcu::IsForeachEligible(self)) {{
+    for (const at::Tensor& t : self) t.{at_op}(scalar);
+    return;
+  }}
+  auto t_scalar = gcu::ToTopsatenScalar(scalar, self[0].scalar_type());
+  gcu::TopsatenTensorList t_self(self);
+  gcu::TopsatenTensorList t_out(self);
+  EXEC_TOPSATEN_CMD({tops}, self[0], t_out.get(), t_self.get(), t_scalar);
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kGcu, {kernel})
+"""
+
+# _foreach_div_.ScalarList: one scalar per tensor.
+T_FOREACH_SCALARLIST_INPLACE = """\
+void {kernel}(at::TensorList self, at::ArrayRef<at::Scalar> scalars) {{
+  if (!gcu::IsForeachEligible(self) || scalars.size() != self.size()) {{
+    for (size_t i = 0; i < self.size(); ++i) self[i].{at_op}(scalars[i]);
+    return;
+  }}
+  std::vector<topsatenScalar_t> t_scalars;
+  t_scalars.reserve(scalars.size());
+  for (size_t i = 0; i < scalars.size(); ++i) {{
+    t_scalars.push_back(
+        gcu::ToTopsatenScalar(scalars[i], self[i].scalar_type()));
+  }}
+  gcu::TopsatenTensorList t_self(self);
+  gcu::TopsatenTensorList t_out(self);
+  EXEC_TOPSATEN_CMD({tops}, self[0], t_out.get(), t_self.get(), t_scalars);
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kGcu, {kernel})
+"""
+
+# _foreach_mul_.List / _foreach_div_.List: elementwise against a second list.
+T_FOREACH_LIST_INPLACE = """\
+void {kernel}(at::TensorList self, at::TensorList other) {{
+  if (!gcu::IsForeachEligible(self) || !gcu::IsForeachEligible(other) ||
+      self.size() != other.size()) {{
+    for (size_t i = 0; i < self.size(); ++i) self[i].{at_op}(other[i]);
+    return;
+  }}
+  gcu::TopsatenTensorList t_self(self);
+  gcu::TopsatenTensorList t_other(other);
+  gcu::TopsatenTensorList t_out(self);
+  EXEC_TOPSATEN_CMD(
+      {tops}, self[0], t_out.get(), t_self.get(), t_other.get());
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kGcu, {kernel})
+"""
+
+# _foreach_add_.List: two lists plus alpha.
+T_FOREACH_LIST_ALPHA_INPLACE = """\
+void {kernel}(
+    at::TensorList self,
+    at::TensorList other,
+    const at::Scalar& alpha) {{
+  if (!gcu::IsForeachEligible(self) || !gcu::IsForeachEligible(other) ||
+      self.size() != other.size()) {{
+    for (size_t i = 0; i < self.size(); ++i) {{
+      self[i].{at_op}(other[i], alpha);
+    }}
+    return;
+  }}
+  auto t_alpha = gcu::ToTopsatenScalar(alpha, self[0].scalar_type());
+  gcu::TopsatenTensorList t_self(self);
+  gcu::TopsatenTensorList t_other(other);
+  gcu::TopsatenTensorList t_out(self);
+  EXEC_TOPSATEN_CMD(
+      {tops}, self[0], t_out.get(), t_self.get(), t_other.get(), t_alpha);
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kGcu, {kernel})
+"""
+
+# _foreach_add_.Tensor: a single tensor broadcast across the whole list.
+T_FOREACH_TENSOR_ALPHA_INPLACE = """\
+void {kernel}(
+    at::TensorList self,
+    const at::Tensor& other,
+    const at::Scalar& alpha) {{
+  // aten requires `other` to be 0-dim here (it is typically a device-resident
+  // learning rate). topsaten rejects rank-0 shapes, but the wrapper presents
+  // those as shape {{1}} and the op broadcasts a 1-element rhs across every
+  // list tensor -- verified on hardware.
+  if (!gcu::IsForeachEligible(self) || !other.defined() ||
+      other.numel() != 1 || !other.is_contiguous() ||
+      !gcu::TopsatenSupportsDtype(other.scalar_type()) ||
+      other.device() != self[0].device()) {{
+    for (const at::Tensor& t : self) t.{at_op}(other, alpha);
+    return;
+  }}
+  auto t_alpha = gcu::ToTopsatenScalar(alpha, self[0].scalar_type());
+  gcu::TopsatenTensorWrapper t_other(other);
+  gcu::TopsatenTensorList t_self(self);
+  gcu::TopsatenTensorList t_out(self);
+  EXEC_TOPSATEN_CMD(
+      {tops}, self[0], t_out.get(), t_self.get(), t_other.get(), t_alpha);
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kGcu, {kernel})
+"""
+
+# _foreach_lerp_.Scalar: self + weight * (other - self), over two lists.
+T_FOREACH_LERP_SCALAR_INPLACE = """\
+void {kernel}(
+    at::TensorList self,
+    at::TensorList tensors1,
+    const at::Scalar& weight) {{
+  if (!gcu::IsForeachEligible(self) || !gcu::IsForeachEligible(tensors1) ||
+      self.size() != tensors1.size()) {{
+    for (size_t i = 0; i < self.size(); ++i) {{
+      self[i].{at_op}(tensors1[i], weight);
+    }}
+    return;
+  }}
+  auto t_weight = gcu::ToTopsatenScalar(weight, self[0].scalar_type());
+  gcu::TopsatenTensorList t_self(self);
+  gcu::TopsatenTensorList t_end(tensors1);
+  gcu::TopsatenTensorList t_out(self);
+  EXEC_TOPSATEN_CMD(
+      {tops}, self[0], t_out.get(), t_self.get(), t_end.get(), t_weight);
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kGcu, {kernel})
+"""
+
+# _foreach_addcmul_.Scalar / _foreach_addcdiv_.Scalar:
+#   self += value * (tensor1 op tensor2)
+T_FOREACH_TERNARY_SCALAR_INPLACE = """\
+void {kernel}(
+    at::TensorList self,
+    at::TensorList tensor1,
+    at::TensorList tensor2,
+    const at::Scalar& value) {{
+  if (!gcu::IsForeachEligible(self) || !gcu::IsForeachEligible(tensor1) ||
+      !gcu::IsForeachEligible(tensor2) || self.size() != tensor1.size() ||
+      self.size() != tensor2.size()) {{
+    for (size_t i = 0; i < self.size(); ++i) {{
+      self[i].{at_op}(tensor1[i], tensor2[i], value);
+    }}
+    return;
+  }}
+  auto t_value = gcu::ToTopsatenScalar(value, self[0].scalar_type());
+  gcu::TopsatenTensorList t_self(self);
+  gcu::TopsatenTensorList t_t1(tensor1);
+  gcu::TopsatenTensorList t_t2(tensor2);
+  gcu::TopsatenTensorList t_out(self);
+  EXEC_TOPSATEN_CMD(
+      {tops}, self[0], t_out.get(), t_self.get(), t_t1.get(), t_t2.get(),
+      t_value);
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kGcu, {kernel})
+"""
+
+# _foreach_addcdiv_.ScalarList / _foreach_addcmul_.ScalarList: per-tensor value.
+T_FOREACH_TERNARY_SCALARLIST_INPLACE = """\
+void {kernel}(
+    at::TensorList self,
+    at::TensorList tensor1,
+    at::TensorList tensor2,
+    at::ArrayRef<at::Scalar> scalars) {{
+  if (!gcu::IsForeachEligible(self) || !gcu::IsForeachEligible(tensor1) ||
+      !gcu::IsForeachEligible(tensor2) || self.size() != tensor1.size() ||
+      self.size() != tensor2.size() || scalars.size() != self.size()) {{
+    for (size_t i = 0; i < self.size(); ++i) {{
+      self[i].{at_op}(tensor1[i], tensor2[i], scalars[i]);
+    }}
+    return;
+  }}
+  std::vector<topsatenScalar_t> t_scalars;
+  t_scalars.reserve(scalars.size());
+  for (size_t i = 0; i < scalars.size(); ++i) {{
+    t_scalars.push_back(
+        gcu::ToTopsatenScalar(scalars[i], self[i].scalar_type()));
+  }}
+  gcu::TopsatenTensorList t_self(self);
+  gcu::TopsatenTensorList t_t1(tensor1);
+  gcu::TopsatenTensorList t_t2(tensor2);
+  gcu::TopsatenTensorList t_out(self);
+  EXEC_TOPSATEN_CMD(
+      {tops}, self[0], t_out.get(), t_self.get(), t_t1.get(), t_t2.get(),
+      t_scalars);
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kGcu, {kernel})
+"""
+
 CATEGORIES = {
     "unary": T_UNARY,
     "binary": T_BINARY,
@@ -561,8 +1363,32 @@ CATEGORIES = {
     "matmul_out": T_MATMUL_OUT,
     "reduce_dims_dtype": T_REDUCE_DIMS_DTYPE,
     "reduce_all_dtype": T_REDUCE_ALL_DTYPE,
+    "reduce_dims_plain": T_REDUCE_DIMS_PLAIN,
+    "unary_int": T_UNARY_INT,
+    "unary_dims": T_UNARY_DIMS,
+    "clamp": T_CLAMP,
+    "addmm": T_ADDMM,
+    "addmm_out": T_ADDMM_OUT,
+    "cat": T_CAT,
+    "full_like": T_FULL_LIKE,
+    "layer_norm": T_LAYER_NORM,
+    "softmax_bwd": T_SOFTMAX_BWD,
+    "binary_grad": T_BINARY_GRAD,
+    "loss": T_LOSS,
+    "loss_backward": T_LOSS_BACKWARD,
     "gelu": T_GELU,
     "softmax_fwd": T_SOFTMAX_FWD,
+    "foreach_unary": T_FOREACH_UNARY,
+    "foreach_unary_inplace": T_FOREACH_UNARY_INPLACE,
+    "foreach_scalar_inplace": T_FOREACH_SCALAR_INPLACE,
+    "foreach_scalar_alpha_inplace": T_FOREACH_SCALAR_ALPHA_INPLACE,
+    "foreach_scalarlist_inplace": T_FOREACH_SCALARLIST_INPLACE,
+    "foreach_list_inplace": T_FOREACH_LIST_INPLACE,
+    "foreach_list_alpha_inplace": T_FOREACH_LIST_ALPHA_INPLACE,
+    "foreach_tensor_alpha_inplace": T_FOREACH_TENSOR_ALPHA_INPLACE,
+    "foreach_lerp_scalar_inplace": T_FOREACH_LERP_SCALAR_INPLACE,
+    "foreach_ternary_scalar_inplace": T_FOREACH_TERNARY_SCALAR_INPLACE,
+    "foreach_ternary_scalarlist_inplace": T_FOREACH_TERNARY_SCALARLIST_INPLACE,
 }
 
 FILE_HEADER = """\

@@ -19,6 +19,8 @@
 
 #include <topsaten/topsaten.h>
 
+#include <limits>
+#include <memory>
 #include <mutex>
 #include <vector>
 
@@ -205,6 +207,80 @@ inline topsatenScalar_t ToTopsatenScalar(
     out.ival = scalar.to<int64_t>();
   }
   return out;
+}
+
+// Marshals an at::TensorList into the std::vector<topsatenTensor> the foreach
+// ops take, owning one wrapper per tensor so every sizes/strides array stays
+// alive for the duration of the call.
+//
+// The foreach kernels write through the strides they are given and accept an
+// output that aliases an input (verified on hardware), so an in-place foreach
+// can hand the same list as both operand and destination -- but only when each
+// tensor is contiguous, since a non-contiguous destination cannot be written
+// back through a temporary. Callers gate on IsForeachEligible() for that.
+class TopsatenTensorList {
+ public:
+  explicit TopsatenTensorList(at::TensorList tensors) {
+    wrappers_.reserve(tensors.size());
+    tops_.reserve(tensors.size());
+    for (const at::Tensor& t : tensors) {
+      wrappers_.push_back(std::make_unique<TopsatenTensorWrapper>(t));
+      tops_.push_back(wrappers_.back()->get());
+    }
+  }
+
+  std::vector<topsatenTensor>& get() {
+    return tops_;
+  }
+
+  TopsatenTensorList(const TopsatenTensorList&) = delete;
+  TopsatenTensorList& operator=(const TopsatenTensorList&) = delete;
+
+ private:
+  std::vector<std::unique_ptr<TopsatenTensorWrapper>> wrappers_;
+  std::vector<topsatenTensor> tops_;
+};
+
+// A foreach list goes to topsaten only if every tensor is a contiguous,
+// zero-offset, topsaten-representable tensor on the same device. Anything else
+// (an int64 list, a sliced parameter view, a mixed-device list) takes the
+// generic path, which is still correct, just slower.
+inline bool IsForeachEligible(at::TensorList tensors) {
+  if (tensors.empty()) {
+    return false;
+  }
+  auto device = tensors[0].device();
+  for (const at::Tensor& t : tensors) {
+    if (!t.defined() || !TopsatenSupportsDtype(t.scalar_type()) ||
+        !t.is_contiguous() || t.storage_offset() != 0 || t.numel() == 0 ||
+        t.device() != device) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Bounds used to fill in an absent clamp limit: clamping against the dtype's
+// own extreme leaves that side untouched. Floating types use -inf/+inf so that
+// NaN handling matches an unbounded clamp.
+inline at::Scalar DtypeLowest(at::ScalarType type) {
+  if (at::isFloatingType(type)) {
+    return at::Scalar(-std::numeric_limits<double>::infinity());
+  }
+  if (type == at::kBool) {
+    return at::Scalar(false);
+  }
+  return at::Scalar(std::numeric_limits<int64_t>::lowest());
+}
+
+inline at::Scalar DtypeHighest(at::ScalarType type) {
+  if (at::isFloatingType(type)) {
+    return at::Scalar(std::numeric_limits<double>::infinity());
+  }
+  if (type == at::kBool) {
+    return at::Scalar(true);
+  }
+  return at::Scalar(std::numeric_limits<int64_t>::max());
 }
 
 } // namespace at::native::flagos::gcu
