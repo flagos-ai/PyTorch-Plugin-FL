@@ -5,7 +5,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "strided_ops.h"
-#include "generated/ops.h"
 
 #include <ATen/native/Resize.h>
 #include <ATen/ops/transpose_native.h>
@@ -16,6 +15,7 @@
 #include <ATen/ops/squeeze_native.h>
 #include <ATen/ops/unsqueeze_native.h>
 #include <ATen/ops/_unsafe_view_native.h>
+#include <ATen/ops/unfold_native.h>
 #include <ATen/ops/detach_native.h>
 
 namespace at::native::flagos {
@@ -101,65 +101,16 @@ at::Tensor unsafe_view(const at::Tensor& self, at::IntArrayRef size) {
   return at::native::_unsafe_view(self, size);
 }
 
+// Pure-stride view: at::native::unfold computes the unfolded strides and calls
+// as_strided, which re-dispatches to the registered flagos as_strided (metadata
+// only, no recursion). Missing this registration made Tensor.repeat() fall back
+// to an invalid CPU view op and return uninitialized data.
+at::Tensor unfold(const at::Tensor& self, int64_t dimension, int64_t size, int64_t step) {
+  return at::native::unfold(self, dimension, size, step);
+}
+
 at::Tensor detach(const at::Tensor& self) {
   return at::native::detach(self);
 }
-
-// View ops are pure metadata (stride) operations; they route through the
-// generated dispatchers but need a backend kernel registered. Register them
-// for the Ascend backend so the generated wrappers in register.inc resolve.
-REGISTER_IMPL_TO_DISPATCHER(
-    TransposeIntFn,
-    transpose_int_dispatcher,
-    Backend::kAscend,
-    transpose_int)
-
-REGISTER_IMPL_TO_DISPATCHER(
-    PermuteFn,
-    permute_dispatcher,
-    Backend::kAscend,
-    permute)
-
-REGISTER_IMPL_TO_DISPATCHER(
-    SelectIntFn,
-    select_int_dispatcher,
-    Backend::kAscend,
-    select_int)
-
-REGISTER_IMPL_TO_DISPATCHER(
-    SliceTensorFn,
-    slice_tensor_dispatcher,
-    Backend::kAscend,
-    slice_tensor)
-
-REGISTER_IMPL_TO_DISPATCHER(
-    SqueezeFn,
-    squeeze_dispatcher,
-    Backend::kAscend,
-    squeeze)
-
-REGISTER_IMPL_TO_DISPATCHER(
-    SqueezeDimFn,
-    squeeze_dim_dispatcher,
-    Backend::kAscend,
-    squeeze_dim)
-
-REGISTER_IMPL_TO_DISPATCHER(
-    UnsqueezeFn,
-    unsqueeze_dispatcher,
-    Backend::kAscend,
-    unsqueeze)
-
-REGISTER_IMPL_TO_DISPATCHER(
-    PrivUnsafeViewFn,
-    priv_unsafe_view_dispatcher,
-    Backend::kAscend,
-    unsafe_view)
-
-REGISTER_IMPL_TO_DISPATCHER(
-    DetachFn,
-    detach_dispatcher,
-    Backend::kAscend,
-    detach)
 
 } // namespace at::native::flagos

@@ -122,6 +122,63 @@ at::Tensor WrapperNarrow(const at::Tensor& self, int64_t dim, int64_t start, int
   return at::native::flagos::narrow(self, dim, start, length);
 }
 
+// These operators only derive a new Tensor view from existing storage. Keeping
+// them in the hand-written metadata path avoids device boxing and backend
+// selection while preserving the normal ATen view and aliasing semantics.
+at::Tensor WrapperTransposeInt(
+    const at::Tensor& self, int64_t dim0, int64_t dim1) {
+  return at::native::flagos::transpose_int(self, dim0, dim1);
+}
+
+at::Tensor WrapperPermute(const at::Tensor& self, at::IntArrayRef dims) {
+  return at::native::flagos::permute(self, dims);
+}
+
+at::Tensor WrapperSelectInt(
+    const at::Tensor& self, int64_t dim, int64_t index) {
+  return at::native::flagos::select_int(self, dim, index);
+}
+
+at::Tensor WrapperSliceTensor(
+    const at::Tensor& self,
+    int64_t dim,
+    ::std::optional<int64_t> start,
+    ::std::optional<int64_t> end,
+    int64_t step) {
+  return at::native::flagos::slice_tensor(self, dim, start, end, step);
+}
+
+at::Tensor WrapperSqueeze(const at::Tensor& self) {
+  return at::native::flagos::squeeze(self);
+}
+
+at::Tensor WrapperSqueezeDim(const at::Tensor& self, int64_t dim) {
+  return at::native::flagos::squeeze_dim(self, dim);
+}
+
+at::Tensor WrapperUnsqueeze(const at::Tensor& self, int64_t dim) {
+  return at::native::flagos::unsqueeze(self, dim);
+}
+
+at::Tensor WrapperUnsafeView(const at::Tensor& self, at::IntArrayRef size) {
+  return at::native::flagos::unsafe_view(self, size);
+}
+
+at::Tensor WrapperDetach(const at::Tensor& self) {
+  return at::native::flagos::detach(self);
+}
+
+// unfold is a pure-stride view op. Without a flagos registration it falls back
+// to CPU, which is invalid for view ops (storage cannot be shared across
+// devices) -> PyTorch emits a warning and returns an uninitialized tensor.
+// This silently corrupts any op that relies on unfold internally, e.g.
+// Tensor.repeat() (which unfolds the result buffer and copy_'s into it),
+// producing garbage data. See GPTJ repeat/gather crash root-cause report.
+at::Tensor WrapperUnfold(
+    const at::Tensor& self, int64_t dimension, int64_t size, int64_t step) {
+  return at::native::flagos::unfold(self, dimension, size, step);
+}
+
 at::Tensor WrapperContiguous(
     const at::Tensor& self, at::MemoryFormat memory_format) {
   return at::native::flagos::contiguous(self, memory_format);
@@ -236,6 +293,16 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("view", WrapperView);
   m.impl("expand", WrapperExpand);
   m.impl("narrow", WrapperNarrow);
+  m.impl("transpose.int", WrapperTransposeInt);
+  m.impl("permute", WrapperPermute);
+  m.impl("select.int", WrapperSelectInt);
+  m.impl("slice.Tensor", WrapperSliceTensor);
+  m.impl("squeeze", WrapperSqueeze);
+  m.impl("squeeze.dim", WrapperSqueezeDim);
+  m.impl("unsqueeze", WrapperUnsqueeze);
+  m.impl("_unsafe_view", WrapperUnsafeView);
+  m.impl("detach", WrapperDetach);
+  m.impl("unfold", WrapperUnfold);
   m.impl("contiguous", WrapperContiguous);
   m.impl("clone", WrapperClone);
   m.impl("_to_copy", WrapperToCopy);

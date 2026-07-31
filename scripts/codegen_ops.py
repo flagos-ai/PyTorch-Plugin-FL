@@ -95,6 +95,15 @@ MANUAL_REGISTERED_OPS = {
     "set_.source_Storage",
     "set_.source_Storage_storage_offset",
     "view",
+    "transpose.int",
+    "permute",
+    "select.int",
+    "slice.Tensor",
+    "squeeze",
+    "squeeze.dim",
+    "unsqueeze",
+    "_unsafe_view",
+    "detach",
     "contiguous",
     "clone",
     "_to_copy",
@@ -1079,8 +1088,11 @@ def args_decl(args: List[Tuple[str, str]]) -> str:
     return ", ".join(f"{t} {n}" for t, n in args)
 
 
-def call_args(args: List[Tuple[str, str]]) -> str:
-    return ", ".join(n for _, n in args)
+def call_args(
+    args: List[Tuple[str, str]], replacements: Dict[str, str] | None = None
+) -> str:
+    replacements = replacements or {}
+    return ", ".join(replacements.get(n, n) for _, n in args)
 
 
 def at_api_base(op_name: str) -> str:
@@ -1130,9 +1142,65 @@ def _generator_inject_line(args, device_expr):
     )
 
 
+# Native CUDA leaf kernels that require selected tensor arguments to use the
+# standard contiguous layout. The mapping is deliberately argument-aware:
+# assuming "the first tensor" is the data input would be unsafe for multi-input
+# operators and difficult to validate as schemas evolve.
+_CONTIGUOUS_TENSOR_ARGS_BY_OP = {
+    "native_group_norm": ("input",),
+}
+
+
+def prepare_contiguous_tensor_args(
+    op: str, args: List[Tuple[str, str]]
+) -> Tuple[str, Dict[str, str]]:
+    """Emit conditional contiguous aliases and return call/guard replacements.
+
+    Copies are made before DeviceBoxingGuard changes PrivateUse1 metadata to
+    CUDA. Already-contiguous inputs only create a shallow Tensor handle.
+    """
+    configured = _CONTIGUOUS_TENSOR_ARGS_BY_OP.get(op, ())
+    if not configured:
+        return "", {}
+
+    arg_types = {name: cpp_type for cpp_type, name in args}
+    plain_tensor_names = set(tensor_arg_names(args))
+    existing_names = set(arg_types)
+    lines = []
+    replacements = {}
+    for name in configured:
+        if name not in arg_types:
+            raise ValueError(
+                f"{op}: contiguous tensor argument {name!r} is not in the schema"
+            )
+        cpp_type = arg_types[name]
+        if name not in plain_tensor_names or (
+            "at::Tensor &" in cpp_type and "const" not in cpp_type
+        ):
+            raise ValueError(
+                f"{op}: contiguous argument {name!r} must be a read-only Tensor, "
+                f"got {cpp_type}"
+            )
+        alias = f"{name}_contiguous"
+        if alias in existing_names:
+            raise ValueError(
+                f"{op}: generated contiguous alias {alias!r} conflicts with an "
+                "existing schema argument"
+            )
+        existing_names.add(alias)
+        replacements[name] = alias
+        lines.append(
+            f"  at::Tensor {alias} = {name}.is_contiguous() "
+            f"? {name} : {name}.contiguous();"
+        )
+
+    return "\n".join(lines) + "\n", replacements
+
+
 def gen_functional_pure(op, fn_type, ret_type, args, func=None):
     kn = kernel_name(fn_type)
     api = f"at::{at_api_base(op)}"
+    contiguous_lines, replacements = prepare_contiguous_tensor_args(op, args)
 
     # Box plain Tensor inputs AND optional<Tensor> inputs (e.g. conv/linear bias).
     # An optional<Tensor> that lives on flagos must be boxed to CUDA too, or the
@@ -1140,7 +1208,7 @@ def gen_functional_pure(op, fn_type, ret_type, args, func=None):
     # tensors -> "tensor does not have a device" / segfault. DeviceBoxingGuard
     # only accepts at::Tensor, so materialize each optional into a holder first
     # (same pattern as gen_out_variant / gen_tuple_return).
-    plain = tensor_arg_names(args)
+    plain = [replacements.get(n, n) for n in tensor_arg_names(args)]
     opt_names = optional_tensor_names(args)
     holder_lines = ""
     guard_names = list(plain)
@@ -1157,8 +1225,8 @@ def gen_functional_pure(op, fn_type, ret_type, args, func=None):
         else ""
     )
     return f"""{ret_type} {kn}({args_decl(args)}) {{
-{holder_lines}  DeviceBoxingGuard guard({guard});
-{inject}  auto result = {api}({call_args(args)});
+{contiguous_lines}{holder_lines}  DeviceBoxingGuard guard({guard});
+{inject}  auto result = {api}({call_args(args, replacements)});
   UnboxToFlagos(result);
   return result;
 }}"""
@@ -1232,12 +1300,13 @@ def gen_out_variant(op, fn_type, ret_type, args, func=None):
     kn = kernel_name(fn_type)
     base = at_api_base(op)
     api = f"at::{base}_outf"
+    contiguous_lines, replacements = prepare_contiguous_tensor_args(op, args)
 
     # Mutable (non-const) Tensor& args are the outputs.
     out_names = [n for t, n in args if "at::Tensor &" in t and "const" not in t]
 
     # Box plain tensor inputs + optional<Tensor> inputs (via holders).
-    plain = tensor_arg_names(args)
+    plain = [replacements.get(n, n) for n in tensor_arg_names(args)]
     opt_names = optional_tensor_names(args)
     holder_lines = ""
     guard_names = list(plain)
@@ -1258,16 +1327,16 @@ def gen_out_variant(op, fn_type, ret_type, args, func=None):
         # (local is _ret, not result, because some ops have an out arg literally
         #  named `result`, e.g. _linalg_det.result.)
         return f"""{ret_type} {kn}({args_decl(args)}) {{
-{holder_lines}  DeviceBoxingGuard guard({guard});
-{inject}  auto _ret = {api}({call_args(args)});
+{contiguous_lines}{holder_lines}  DeviceBoxingGuard guard({guard});
+{inject}  auto _ret = {api}({call_args(args, replacements)});
 {unbox_lines}
   return _ret;
 }}"""
     # single mutable Tensor& out.
     out_name = out_names[0]
     return f"""{ret_type} {kn}({args_decl(args)}) {{
-{holder_lines}  DeviceBoxingGuard guard({guard});
-{inject}  {api}({call_args(args)});
+{contiguous_lines}{holder_lines}  DeviceBoxingGuard guard({guard});
+{inject}  {api}({call_args(args, replacements)});
 {unbox_lines}
   return {out_name};
 }}"""
@@ -1278,7 +1347,8 @@ def gen_tuple_return(op, fn_type, ret_type, args, func=None):
     kn = kernel_name(fn_type)
     # optional<Tensor> weight needs a holder to be boxed by DeviceBoxingGuard
     opt_names = optional_tensor_names(args)
-    plain = tensor_arg_names(args)
+    contiguous_lines, replacements = prepare_contiguous_tensor_args(op, args)
+    plain = [replacements.get(n, n) for n in tensor_arg_names(args)]
     api = f"at::{at_api_base(op)}"
     ntuple = ret_type.count(",") + 1  # ::std::tuple<a,b> -> 2
 
@@ -1296,8 +1366,8 @@ def gen_tuple_return(op, fn_type, ret_type, args, func=None):
     )
     inject = _generator_inject_line(args, f"{tensor_arg_names(args)[0]}.get_device()")
     return f"""{ret_type} {kn}({args_decl(args)}) {{
-{holder_lines}  DeviceBoxingGuard guard({guard});
-{inject}  auto result = {api}({call_args(args)});
+{contiguous_lines}{holder_lines}  DeviceBoxingGuard guard({guard});
+{inject}  auto result = {api}({call_args(args, replacements)});
 {unbox_lines}
   return result;
 }}"""
@@ -1311,9 +1381,7 @@ def gen_foreach(op, fn_type, ret_type, args, func=None):
     # Detect TensorList args (ITensorListRef in torch 2.13)
     tensorlist_args = [(t, n) for t, n in args if "TensorList" in t]
 
-    # cat must drop legacy-empty (1-D size-0) inputs before dispatch: maca's
-    # forked libtorch_cuda cat kernel mishandles them on its vectorized fast
-    # path (see DropLegacyEmptyForCat in device_boxing.h).
+    # cat materialization also applies ATen's legacy-empty skip semantics.
     is_cat = at_api_base(op) == "cat"
 
     # Materialize ITensorListRef → std::vector<Tensor>
@@ -1326,7 +1394,7 @@ def gen_foreach(op, fn_type, ret_type, args, func=None):
             if is_cat:
                 materialize_lines += (
                     f"  auto {mat_name} = "
-                    f"DropLegacyEmptyForCat(MaterializeToTensorVec({n}));\n"
+                    f"MaterializeForCat({n});\n"
                 )
             else:
                 materialize_lines += (
@@ -1381,8 +1449,7 @@ def gen_foreach_out(op, fn_type, ret_type, args, func=None):
     kn = kernel_name(fn_type)
     api = f"at::{at_api_base(op)}_outf"
 
-    # cat.out must drop legacy-empty (1-D size-0) inputs, same as cat (see
-    # DropLegacyEmptyForCat in device_boxing.h / gen_foreach).
+    # cat.out uses the same materialization and legacy-empty semantics as cat.
     is_cat = at_api_base(op) == "cat"
 
     # Every mutable single Tensor& arg (non-list, non-const) must be boxed. For
@@ -1406,7 +1473,7 @@ def gen_foreach_out(op, fn_type, ret_type, args, func=None):
             if is_cat:
                 materialize_lines += (
                     f"  auto {mat_name} = "
-                    f"DropLegacyEmptyForCat(MaterializeToTensorVec({n}));\n"
+                    f"MaterializeForCat({n});\n"
                 )
             else:
                 materialize_lines += (

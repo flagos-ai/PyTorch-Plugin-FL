@@ -4,6 +4,7 @@
 
 #include "common.h"
 #include <c10/util/Exception.h>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -60,19 +61,50 @@ class Dispatcher {
 
   template <typename... Args>
   decltype(auto) operator()(Args&&... args) const {
-    return DispatchAs(op_name_, std::forward<Args>(args)...);
-  }
-
-  template <typename... Args>
-  decltype(auto) DispatchAs(const std::string& op_name, Args&&... args) const {
-    auto backend = GetBackendForOp(op_name);
-    LogDispatch(op_name, backend);
-    auto fn = GetFn(backend);
-    TORCH_CHECK(fn, op_name, ": backend not registered");
+    // Hot path: the backend routing for a given dispatcher is constant at
+    // runtime (config + FLAGOS_OP_* env overrides are folded into a static
+    // table at startup; see common.cc), so the resolved kernel pointer is
+    // cached on first use. Steady state is a relaxed atomic load + a
+    // branch-predicted null check + an indirect call -- no std::string temp,
+    // no unordered_map hash lookup, no GetFn switch.
+    FnPtr fn = resolved_fn_.load(std::memory_order_relaxed);
+    if (__builtin_expect(fn == nullptr, 0)) {
+      fn = ResolveAndCache();
+    }
     return fn(std::forward<Args>(args)...);
   }
 
+  // Op-name override path (uncached): the caller supplies an op name that may
+  // differ from op_name_, so the single resolved_fn_ slot can't back it. Shares
+  // the resolve logic with the cached hot path via Resolve().
+  template <typename... Args>
+  decltype(auto) DispatchAs(const std::string& op_name, Args&&... args) const {
+    return Resolve(op_name)(std::forward<Args>(args)...);
+  }
+
  private:
+  // Single source of truth for op_name -> backend -> kernel pointer: look up the
+  // routing, log the chosen backend, and fail fast if unregistered. Used by both
+  // the cached hot path (ResolveAndCache) and the DispatchAs override path.
+  FnPtr Resolve(const std::string& op_name) const {
+    auto backend = GetBackendForOp(op_name);
+    LogDispatch(op_name, backend);
+    FnPtr fn = GetFn(backend);
+    TORCH_CHECK(fn, op_name, ": backend not registered");
+    return fn;
+  }
+
+  // Cold path: resolve op_name_ -> kernel pointer once and cache it. Marked
+  // noinline so the hot operator() stays tiny (just the load + call). With
+  // caching, Resolve logs each op's chosen backend once (on first call), not on
+  // every call. Not memoized when the kernel is unregistered (Resolve throws
+  // before we store), so the check is re-run rather than caching a bad pointer.
+  __attribute__((noinline)) FnPtr ResolveAndCache() const {
+    FnPtr fn = Resolve(op_name_);
+    resolved_fn_.store(fn, std::memory_order_relaxed);
+    return fn;
+  }
+
   FnPtr GetFn(Backend device) const {
     switch (device) {
       case Backend::kCuda:          return cuda_fn_;
@@ -109,6 +141,12 @@ class Dispatcher {
   }
 
   const char* op_name_ = nullptr;
+  // Cached kernel pointer resolved from op_name_ on first call (see
+  // ResolveAndCache). mutable: operator()/ResolveAndCache are const. atomic
+  // because ops are called from multiple threads; all threads resolve the
+  // SAME pointer for a given dispatcher, so a racing double-resolve is
+  // harmless and relaxed ordering (no torn pointer) suffices -- no lock.
+  mutable std::atomic<FnPtr> resolved_fn_{nullptr};
   FnPtr cuda_fn_           = nullptr;
   FnPtr flagos_fn_         = nullptr;
   FnPtr flagos_python_fn_  = nullptr;
