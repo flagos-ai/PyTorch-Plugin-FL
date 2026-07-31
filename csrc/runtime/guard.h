@@ -197,6 +197,13 @@ struct GuardImpl final : public c10::impl::DeviceGuardImplInterface {
     return static_cast<c10::DeviceIndex>(count);
   }
 
+  c10::DeviceCapability getDeviceCapability(c10::Device d) const override {
+    // Return a default device capability struct with all scalar types enabled
+    // This is called by autograd profiler to determine device properties
+    // The default constructor already enables all capabilities
+    return c10::DeviceCapability();
+  }
+
   void record(
       void** event,
       const c10::Stream& stream,
