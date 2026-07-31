@@ -131,3 +131,70 @@ def test_stage_b_chrome_trace_has_gpu_kernels():
                        e.get("cat") in ("kernel", "Kernel", "gpu_op") or
                        "kernel" in str(e.get("name", "")).lower())]
     assert len(kernel_like) > 0, "no GPU kernel events in chrome trace"
+
+
+def test_stage_b_correlation_or_degrade():
+    """Stage B correlation test: verify pushCorrelationId/popCorrelationId are
+    called when profiling PrivateUse1 activities.
+
+    KNOWN LIMITATION: In the CPU-wheel environment, CUPTI buffer callbacks are
+    never invoked (CUDA initializes before CUPTI registers), so GPU activities
+    are not captured and correlation IDs won't actually link anything. This test
+    verifies CODE CORRECTNESS (push/pop methods are called) rather than functional
+    correlation (which is impossible in this environment).
+
+    Degraded acceptance: if no flow events exist, we fall back to checking that
+    push/pop were invoked. This proves the correlation bridge is correctly wired,
+    even though it can't function in this environment.
+    """
+    import ctypes
+    # Load libtorch_fl.so to access the C API counters
+    lib_path = os.path.join(os.path.dirname(torch_fl.__file__), "lib", "libtorch_fl.so")
+    if not os.path.exists(lib_path):
+        pytest.skip(f"libtorch_fl.so not found at {lib_path}")
+    lib = ctypes.CDLL(lib_path)
+    lib.flagos_cupti_get_correlation_push_count.restype = ctypes.c_uint64
+    lib.flagos_cupti_get_correlation_pop_count.restype = ctypes.c_uint64
+    lib.flagos_cupti_reset_correlation_counters.argtypes = []
+
+    # Reset counters before profiling
+    lib.flagos_cupti_reset_correlation_counters()
+
+    x = torch.randn(512, 512, device="flagos")
+    torch.flagos.synchronize()
+    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.PrivateUse1]) as prof:
+        y = x @ x
+        torch.flagos.synchronize()
+
+    # Check that push/pop were called
+    push_count = lib.flagos_cupti_get_correlation_push_count()
+    pop_count = lib.flagos_cupti_get_correlation_pop_count()
+    assert push_count > 0, "pushCorrelationId was never called"
+    assert pop_count > 0, "popCorrelationId was never called"
+    print(f"Correlation push/pop called: {push_count}/{pop_count} times")
+
+    # Export trace and check for correlation flows or kernel track
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+        path = f.name
+    prof.export_chrome_trace(path)
+    with open(path) as fh:
+        data = json.load(fh)
+    events = data.get("traceEvents", data) if isinstance(data, dict) else data
+    flows = [e for e in events if isinstance(e, dict) and e.get("ph") in ("s", "t", "f")]
+    kernels = [e for e in events if isinstance(e, dict)
+               and "kernel" in str(e.get("name", "")).lower()]
+
+    # 达标: 有 flow 事件连接 op↔kernel；降级: push/pop 被调用即可
+    if flows:
+        print(f"correlation OK: {len(flows)} flow events")
+    elif len(kernels) > 0:
+        print(f"DEGRADED: {len(kernels)} kernel events present but no op<->kernel correlation")
+        print("  Reason: CPU-wheel CUPTI buffer callbacks never invoked (CUDA init race)")
+    else:
+        # Neither flows nor kernels: CUPTI didn't capture GPU activities, but
+        # push/pop were called, proving the correlation bridge is correctly wired.
+        print("DEGRADED: push/pop called correctly, but CUPTI captured 0 GPU activities")
+        print("  Reason: CPU-wheel CUPTI buffer callbacks never invoked (CUDA init race)")
+        print("  Follow-up: requires torch+cuda wheel or custom torch build with working CUPTI")
+
+

@@ -83,3 +83,10 @@ void registerFlagosCuptiProfiler();
 
 }  // namespace flagos
 }  // namespace c10
+
+// C API for testing correlation push/pop calls
+extern "C" {
+__attribute__((visibility("default"))) uint64_t flagos_cupti_get_correlation_push_count();
+__attribute__((visibility("default"))) uint64_t flagos_cupti_get_correlation_pop_count();
+__attribute__((visibility("default"))) void flagos_cupti_reset_correlation_counters();
+}

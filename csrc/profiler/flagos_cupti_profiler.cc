@@ -70,6 +70,10 @@ namespace detail {
 FlagosCuptiProfilerSession* g_active_session = nullptr;
 std::mutex g_session_mutex;
 
+// Instrumentation counters for correlation push/pop verification
+std::atomic<uint64_t> g_correlation_push_count{0};
+std::atomic<uint64_t> g_correlation_pop_count{0};
+
 // Buffer pool for CUPTI activity records
 constexpr size_t kBufferSize = 8 * 1024 * 1024;  // 8MB per buffer
 constexpr size_t kBufferAlignment = 8;
@@ -242,6 +246,7 @@ void FlagosCuptiProfilerSession::pushCorrelationId(uint64_t id) {
   if (shim.ok && shim.ActivityPushExternalCorrelationId) {
     shim.ActivityPushExternalCorrelationId(
         CUPTI_EXTERNAL_CORRELATION_KIND_CUSTOM0, id);
+    detail::g_correlation_push_count.fetch_add(1, std::memory_order_relaxed);
   }
 }
 
@@ -251,6 +256,7 @@ void FlagosCuptiProfilerSession::popCorrelationId() {
     uint64_t id;
     shim.ActivityPopExternalCorrelationId(
         CUPTI_EXTERNAL_CORRELATION_KIND_CUSTOM0, &id);
+    detail::g_correlation_pop_count.fetch_add(1, std::memory_order_relaxed);
   }
 }
 
@@ -315,3 +321,22 @@ static CuptiProfilerRegistrar g_registrar;
 
 }  // namespace flagos
 }  // namespace c10
+
+// C API for testing correlation push/pop calls
+extern "C" {
+__attribute__((visibility("default")))
+uint64_t flagos_cupti_get_correlation_push_count() {
+  return c10::flagos::detail::g_correlation_push_count.load(std::memory_order_relaxed);
+}
+
+__attribute__((visibility("default")))
+uint64_t flagos_cupti_get_correlation_pop_count() {
+  return c10::flagos::detail::g_correlation_pop_count.load(std::memory_order_relaxed);
+}
+
+__attribute__((visibility("default")))
+void flagos_cupti_reset_correlation_counters() {
+  c10::flagos::detail::g_correlation_push_count.store(0, std::memory_order_relaxed);
+  c10::flagos::detail::g_correlation_pop_count.store(0, std::memory_order_relaxed);
+}
+}
