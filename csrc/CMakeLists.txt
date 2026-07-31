@@ -127,6 +127,27 @@ set_target_properties(${LIBRARY_NAME} PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # CUPTI headers for the profiler child (Stage B). Runtime symbols are dlopen'd,
 # so we only need the include path, not the link library.
+#
+# CRITICAL: the header MUST match the CUDA runtime actually running in the
+# process (cu12.8 via the external libtorch_cuda.so + pip nvidia-*-cu12 wheels),
+# NOT the system CUDA-13.0 toolkit. The activity-record struct layouts and the
+# CUpti_ActivityKind enum values DIFFER between major versions (e.g.
+# CONCURRENT_KERNEL is 10 in cu12 but 9 elsewhere); using the wrong header
+# decodes kernel timestamps/names as garbage. So probe the pip cu12 CUPTI
+# include dir first, then fall back to system paths.
+execute_process(
+  COMMAND "${PYTHON_EXECUTABLE}" -c
+    "import importlib.util,os,sys; s=importlib.util.find_spec('nvidia'); \
+d=[os.path.join(b,'cuda_cupti','include') for b in (s.submodule_search_locations or []) \
+if os.path.exists(os.path.join(b,'cuda_cupti','include','cupti_activity.h'))]; \
+sys.stdout.write(d[0] if d else '')"
+  OUTPUT_VARIABLE CUPTI_CU12_INCLUDE_DIR
+  ERROR_QUIET)
+find_path(CUPTI_INCLUDE_DIR cupti_activity.h
+  PATHS ${CUPTI_CU12_INCLUDE_DIR}
+        /usr/local/cuda-13.0/targets/x86_64-linux/include
+        /usr/local/cuda/extras/CUPTI/include
+  NO_DEFAULT_PATH)
 find_path(CUPTI_INCLUDE_DIR cupti_activity.h
   PATHS /usr/local/cuda-13.0/targets/x86_64-linux/include
         /usr/local/cuda/extras/CUPTI/include)

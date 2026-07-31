@@ -112,12 +112,17 @@ import tempfile
 
 
 def test_stage_b_chrome_trace_has_gpu_kernels():
-    """Stage B smoke test: kineto Chrome trace should contain GPU kernel events
-    when CUPTI child profiler is registered and working."""
+    """Stage B: kineto Chrome trace must contain GPU kernel events with real
+    CUPTI-decoded names and non-zero durations. This is the core Stage B goal --
+    torch.profiler capturing the CUDA kernel timeline via our dlopen'd CUPTI
+    child profiler, on the CPU-torch + external libtorch_cuda stack (no CUDA
+    wheel). Running N matmuls must surface N sgemm kernels, not just one.
+    """
+    N = 10
     x = torch.randn(1024, 1024, device="flagos")
     torch.flagos.synchronize()
     with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.PrivateUse1]) as prof:
-        for _ in range(5):
+        for _ in range(N):
             y = x @ x
         torch.flagos.synchronize()
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
@@ -131,6 +136,20 @@ def test_stage_b_chrome_trace_has_gpu_kernels():
                        e.get("cat") in ("kernel", "Kernel", "gpu_op") or
                        "kernel" in str(e.get("name", "")).lower())]
     assert len(kernel_like) > 0, "no GPU kernel events in chrome trace"
+
+    # Names must be real (not empty / not the "kernel" placeholder we emit when
+    # CUPTI hands us a null name pointer) and at least one matmul kernel must
+    # have a non-zero duration -- both regress to garbage if the CUPTI activity
+    # record layout / enum values are wrong.
+    named = [e for e in kernel_like
+             if e.get("name") and e.get("name") not in ("kernel", "Memcpy")]
+    assert named, f"kernel events have no real names: {[e.get('name') for e in kernel_like][:5]}"
+    sgemm = [e for e in named if "sgemm" in str(e.get("name", "")).lower()
+             or "gemm" in str(e.get("name", "")).lower()]
+    assert sgemm, f"no matmul (sgemm) kernel captured; names={[e.get('name') for e in named][:5]}"
+    # We launched N matmuls; expect roughly N sgemm launches (allow some slack).
+    assert len(sgemm) >= N // 2, f"expected ~{N} sgemm kernels, got {len(sgemm)}"
+    assert any(e.get("dur", 0) > 0 for e in sgemm), "all sgemm kernel durations are zero"
 
 
 def test_stage_b_correlation_or_degrade():

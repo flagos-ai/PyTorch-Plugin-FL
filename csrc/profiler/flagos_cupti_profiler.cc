@@ -20,45 +20,89 @@
 #include <kineto/libkineto.h>
 
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <memory>
 #include <mutex>
 #include <vector>
 
-// Forward declare CUPTI activity record structures we need.
-// These match cupti_activity.h but we avoid including the header to keep
-// CUPTI paths out of the build.
+// Diagnostic logging is gated behind FLAGOS_CUPTI_SHIM_DEBUG=1 so that normal
+// profiling runs stay quiet (these callbacks fire once per buffer/session).
+namespace {
+inline bool flagos_cupti_debug() {
+  static const bool on = (std::getenv("FLAGOS_CUPTI_SHIM_DEBUG") != nullptr);
+  return on;
+}
+}  // namespace
+#define FLAGOS_CUPTI_LOG(expr) \
+  do { if (flagos_cupti_debug()) { std::cerr << expr; } } while (0)
 
+// CUPTI activity record layouts. We mirror the cu12 runtime's
+// cupti_activity.h EXACTLY (verified against nvidia-cuda-cupti-cu12's
+// CUpti_ActivityKernel9 / CUpti_ActivityMemcpy6): the records are
+// __attribute__((packed)) with no natural-alignment padding, `kind` is a
+// 4-byte enum, and the kernel `name` is a `const char*` pointer field located
+// deep in the struct -- NOT an inline string at a small offset. An earlier
+// hand-guessed layout (uint8_t kind + pad[7], name at +56) decoded garbage
+// (empty names, zero durations), so these must stay byte-accurate.
+//
+// CUpti_ActivityKind is a 4-byte enum on this platform.
+using CUpti_ActivityKind_t = uint32_t;
+
+#pragma pack(push, 1)
 struct CUpti_Activity {
-  uint8_t kind;
+  CUpti_ActivityKind_t kind;
 };
 
-// Minimal kernel activity record layout (common fields across CUPTI versions)
-struct CUpti_ActivityKernel_Compat {
-  uint8_t kind;
-  uint8_t pad[7];
+// Prefix of CUpti_ActivityKernel9 up to and including `name`. Field order and
+// widths are copied verbatim from the cu12 header; the packed attribute makes
+// offsets match the runtime records byte-for-byte.
+struct CUpti_ActivityKernel9_Compat {
+  CUpti_ActivityKind_t kind;
+  uint8_t cacheConfig;            // union { uint8_t both; ... } cacheConfig
+  uint8_t sharedMemoryConfig;
+  uint16_t registersPerThread;
+  uint32_t partitionedGlobalCacheRequested;  // enum, 4 bytes
+  uint32_t partitionedGlobalCacheExecuted;   // enum, 4 bytes
   uint64_t start;
   uint64_t end;
   uint64_t completed;
   uint32_t deviceId;
   uint32_t contextId;
   uint32_t streamId;
-  int32_t correlationId;
-  // Name follows at some offset, but we'll access via pointer arithmetic
+  int32_t gridX;
+  int32_t gridY;
+  int32_t gridZ;
+  int32_t blockX;
+  int32_t blockY;
+  int32_t blockZ;
+  int32_t staticSharedMemory;
+  int32_t dynamicSharedMemory;
+  uint32_t localMemoryPerThread;
+  uint32_t localMemoryTotal;
+  uint32_t correlationId;
+  int64_t gridId;
+  const char* name;
+  // ... remaining fields omitted (we only read up to `name`).
 };
 
-// Minimal memcpy activity record layout
+// Prefix of CUpti_ActivityMemcpy6 up to correlationId.
 struct CUpti_ActivityMemcpy_Compat {
-  uint8_t kind;
-  uint8_t pad[7];
+  CUpti_ActivityKind_t kind;
+  uint8_t copyKind;
+  uint8_t srcKind;
+  uint8_t dstKind;
+  uint8_t flags;
+  uint64_t bytes;
   uint64_t start;
   uint64_t end;
   uint32_t deviceId;
   uint32_t contextId;
   uint32_t streamId;
-  int32_t correlationId;
+  uint32_t correlationId;
 };
+#pragma pack(pop)
 
 namespace c10 {
 namespace flagos {
@@ -79,7 +123,7 @@ constexpr size_t kBufferSize = 8 * 1024 * 1024;  // 8MB per buffer
 constexpr size_t kBufferAlignment = 8;
 
 void bufferRequested(uint8_t** buffer, size_t* size, size_t* maxNumRecords) {
-  std::cerr << "[flagos] CUPTI bufferRequested callback invoked\n";
+  FLAGOS_CUPTI_LOG("[flagos] CUPTI bufferRequested callback invoked\n");
   *buffer = (uint8_t*)aligned_alloc(kBufferAlignment, kBufferSize);
   *size = kBufferSize;
   *maxNumRecords = 0;  // no limit
@@ -91,7 +135,7 @@ void bufferCompleted(
     uint8_t* buffer,
     size_t size,
     size_t validSize) {
-  std::cerr << "[flagos] CUPTI bufferCompleted callback invoked, validSize=" << validSize << "\n";
+  FLAGOS_CUPTI_LOG("[flagos] CUPTI bufferCompleted callback invoked, validSize=" << validSize << "\n");
   std::lock_guard<std::mutex> lock(g_session_mutex);
   if (!g_active_session || !buffer) {
     if (buffer) {
@@ -119,16 +163,19 @@ void bufferCompleted(
     // Parse kernel and memcpy records
     if (record->kind == CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL ||
         record->kind == CUPTI_ACTIVITY_KIND_KERNEL) {
-      auto* kernel = reinterpret_cast<CUpti_ActivityKernel_Compat*>(record);
+      auto* kernel = reinterpret_cast<CUpti_ActivityKernel9_Compat*>(record);
 
       libkineto::GenericTraceActivity activity;
       activity.activityType = libkineto::ActivityType::CONCURRENT_KERNEL;
 
-      // Extract kernel name (located at offset ~56 bytes in most CUPTI versions)
-      // This is fragile but necessary without including cupti_activity.h
-      const char* name_ptr = reinterpret_cast<const char*>(
-          reinterpret_cast<uintptr_t>(kernel) + 56);
-      activity.activityName = std::string(name_ptr);
+      // `name` is a const char* field in the record (a pointer into CUPTI's
+      // own interned string table), valid for the lifetime of the buffer
+      // callback. Copy it into our std::string now.
+      if (kernel->name != nullptr) {
+        activity.activityName = std::string(kernel->name);
+      } else {
+        activity.activityName = "kernel";
+      }
 
       activity.startTime = kernel->start;
       activity.endTime = kernel->end;
@@ -164,24 +211,31 @@ void bufferCompleted(
 void FlagosCuptiProfilerSession::start() {
   auto& shim = CuptiShim::get();
   if (!shim.ok) {
-    std::cerr << "[flagos] CUPTI not available in start()\n";
+    FLAGOS_CUPTI_LOG("[flagos] CUPTI not available in start()\n");
     return;
   }
 
-  std::lock_guard<std::mutex> lock(detail::g_session_mutex);
-  detail::g_active_session = this;
-  activities_.clear();
+  // Publish this session and reset its buffer under the lock, then RELEASE the
+  // lock before touching CUPTI. cuptiActivityFlushAll() invokes bufferCompleted
+  // synchronously on this same thread, and bufferCompleted also locks
+  // g_session_mutex -- holding it across the flush self-deadlocks on the
+  // non-recursive mutex (observed as a hang in torch.profiler start_trace).
+  {
+    std::lock_guard<std::mutex> lock(detail::g_session_mutex);
+    detail::g_active_session = this;
+    activities_.clear();
+  }
 
-  std::cerr << "[flagos] FlagosCuptiProfilerSession::start() called\n";
+  FLAGOS_CUPTI_LOG("[flagos] FlagosCuptiProfilerSession::start() called\n");
 
   // Callbacks are registered globally at init time; just enable activities here
   CUptiResult res1 = shim.ActivityEnable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL);
   CUptiResult res2 = shim.ActivityEnable(CUPTI_ACTIVITY_KIND_MEMCPY);
-  std::cerr << "[flagos] ActivityEnable results: KERNEL=" << res1 << ", MEMCPY=" << res2 << "\n";
+  FLAGOS_CUPTI_LOG("[flagos] ActivityEnable results: KERNEL=" << res1 << ", MEMCPY=" << res2 << "\n");
 
-  // Force a flush to kickstart CUPTI activity collection
+  // Force a flush to kickstart CUPTI activity collection (lock released above).
   CUptiResult res3 = shim.ActivityFlushAll(1);
-  std::cerr << "[flagos] Initial ActivityFlushAll result: " << res3 << "\n";
+  FLAGOS_CUPTI_LOG("[flagos] Initial ActivityFlushAll result: " << res3 << "\n");
 
   status_ = libkineto::TraceStatus::RECORDING;
 }
@@ -192,22 +246,22 @@ void FlagosCuptiProfilerSession::stop() {
     return;
   }
 
-  std::cerr << "[flagos] FlagosCuptiProfilerSession::stop() called\n";
+  FLAGOS_CUPTI_LOG("[flagos] FlagosCuptiProfilerSession::stop() called\n");
 
   shim.ActivityDisable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL);
   shim.ActivityDisable(CUPTI_ACTIVITY_KIND_KERNEL);
   shim.ActivityDisable(CUPTI_ACTIVITY_KIND_MEMCPY);
 
   // Flush all pending activity records - force flag=0 means wait for completion
-  std::cerr << "[flagos] Flushing CUPTI activities...\n";
+  FLAGOS_CUPTI_LOG("[flagos] Flushing CUPTI activities...\n");
   CUptiResult flush_res = shim.ActivityFlushAll(0);
-  std::cerr << "[flagos] ActivityFlushAll result: " << flush_res << "\n";
+  FLAGOS_CUPTI_LOG("[flagos] ActivityFlushAll result: " << flush_res << "\n");
 
   std::lock_guard<std::mutex> lock(detail::g_session_mutex);
   detail::g_active_session = nullptr;
   status_ = libkineto::TraceStatus::PROCESSING;
 
-  std::cerr << "[flagos] Captured " << activities_.size() << " GPU activities\n";
+  FLAGOS_CUPTI_LOG("[flagos] Captured " << activities_.size() << " GPU activities\n");
 }
 
 void FlagosCuptiProfilerSession::processTrace(libkineto::ActivityLogger& logger) {
@@ -278,7 +332,7 @@ const std::set<libkineto::ActivityType>& FlagosCuptiProfiler::availableActivitie
 std::unique_ptr<libkineto::IActivityProfilerSession> FlagosCuptiProfiler::configure(
     const std::set<libkineto::ActivityType>& activityTypes,
     const libkineto::Config& config) {
-  std::cerr << "[flagos] FlagosCuptiProfiler::configure called with " << activityTypes.size() << " activity types\n";
+  FLAGOS_CUPTI_LOG("[flagos] FlagosCuptiProfiler::configure called with " << activityTypes.size() << " activity types\n");
   return std::make_unique<FlagosCuptiProfilerSession>();
 }
 
@@ -303,16 +357,27 @@ struct CuptiProfilerRegistrar {
   CuptiProfilerRegistrar() {
     auto& shim = CuptiShim::get();
     if (shim.ok) {
-      // Register CUPTI callbacks ONCE at initialization - not per-session
-      std::cerr << "[flagos] Registering CUPTI activity callbacks...\n";
+      // Register CUPTI callbacks ONCE at initialization - not per-session.
+      // The empirically-verified working sequence (see memory:
+      // cupti-must-arm-before-cuda-context) arms CUPTI by calling
+      // RegisterCallbacks *and* ActivityEnable together at module-load time,
+      // matching a manual ctypes probe that reliably captured kernels. Enabling
+      // only in session start() (long after libtorch_cuda has initialized its
+      // own CUPTI state) captured nothing. We enable here and keep the enables
+      // in start() as a harmless re-assertion.
+      FLAGOS_CUPTI_LOG("[flagos] Registering CUPTI activity callbacks...\n");
       CUptiResult res = shim.ActivityRegisterCallbacks(
           detail::bufferRequested, detail::bufferCompleted);
-      std::cerr << "[flagos] ActivityRegisterCallbacks result: " << res << "\n";
+      FLAGOS_CUPTI_LOG("[flagos] ActivityRegisterCallbacks result: " << res << "\n");
+      CUptiResult en_k = shim.ActivityEnable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL);
+      CUptiResult en_m = shim.ActivityEnable(CUPTI_ACTIVITY_KIND_MEMCPY);
+      FLAGOS_CUPTI_LOG("[flagos] init ActivityEnable KERNEL=" << en_k
+                << " MEMCPY=" << en_m << "\n");
 
       registerFlagosCuptiProfiler();
-      std::cerr << "[flagos] FlagosCuptiProfiler registered with kineto\n";
+      FLAGOS_CUPTI_LOG("[flagos] FlagosCuptiProfiler registered with kineto\n");
     } else {
-      std::cerr << "[flagos] CUPTI not available, FlagosCuptiProfiler not registered\n";
+      FLAGOS_CUPTI_LOG("[flagos] CUPTI not available, FlagosCuptiProfiler not registered\n");
     }
   }
 };
