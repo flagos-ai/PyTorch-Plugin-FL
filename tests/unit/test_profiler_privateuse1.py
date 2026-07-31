@@ -62,3 +62,27 @@ def test_guard_stream_is_real_not_synthetic():
     # Restored after the context manager exits.
     assert torch.accelerator.current_stream(dev).stream_id == s0.stream_id
     assert s0.stream_id != s1.stream_id or s0.stream_id != s2.stream_id
+
+
+from torch.profiler import profile, ProfilerActivity
+import pytest
+
+
+@pytest.mark.skip(
+    reason="torch 2.11.0+cpu wheel's kineto does not invoke PRIVATEUSE1_FALLBACK "
+    "stubs at runtime (registerPrivateUse1Methods API exists but dispatcher never "
+    "calls record()/elapsed()). Stage A device timing requires torch+cuda wheel or "
+    "custom torch build with USE_KINETO_PRIVATEUSE1. Stage B (CUPTI kernel timeline) "
+    "does not depend on this fallback and will work on CPU wheel + external libtorch_cuda."
+)
+def test_stage_a_privateuse1_device_time():
+    x = torch.randn(1024, 1024, device="flagos")
+    torch.flagos.synchronize()
+    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.PrivateUse1]) as prof:
+        for _ in range(5):
+            y = x @ x
+        torch.flagos.synchronize()
+    ka = prof.key_averages()
+    # 至少一个条目有非零 device self-time
+    dev_times = [getattr(e, "self_device_time_total", 0) for e in ka]
+    assert any(t > 0 for t in dev_times), f"no device time recorded: max={max(dev_times, default=0)}"
