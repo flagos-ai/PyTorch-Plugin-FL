@@ -242,6 +242,8 @@ OPS = {
     "bmm.out": ("matmul_out", "BatchMatMul"),
     # cat: TensorList concat (aclCreateTensorList).
     "cat": ("cat", "Cat"),
+    # stack: TensorList concat along a NEW dim (aclCreateTensorList).
+    "stack": ("stack", "Stack"),
     # factory ops: at::empty + device-side zero_/fill_ (no direct aclnn call).
     "zeros": ("zeros", None),
     "ones": ("ones", None),
@@ -291,10 +293,37 @@ OPS = {
     "mul_.Tensor": ("inplace_mul_tensor", "InplaceMul"),
     "mul_.Scalar": ("inplace_mul_scalar", "InplaceMuls"),
     "div_.Tensor": ("inplace_div_tensor", "InplaceDiv"),
+    # bitwise_{and,or,xor}_.Tensor have the same (self&, other) shape as
+    # mul_.Tensor; reuse that category with the Inplace* aclnn override.
+    # torch's allclose()->isclose() decomposition combines nan/close masks
+    # with these in-place, so their absence cascades into ~every
+    # allclose-based test failing.
+    "bitwise_and_.Tensor": ("inplace_mul_tensor", "InplaceBitwiseAndTensor"),
+    "bitwise_or_.Tensor": ("inplace_mul_tensor", "InplaceBitwiseOrTensor"),
+    "bitwise_xor_.Tensor": ("inplace_mul_tensor", "InplaceBitwiseXorTensor"),
     "addcmul_": ("inplace_addcmul", "InplaceAddcmul"),
     "addcdiv_": ("inplace_addcdiv", "InplaceAddcdiv"),
     "sqrt_": ("inplace_sqrt", "InplaceSqrt"),
     "lerp_.Scalar": ("inplace_lerp_scalar", "InplaceLerps"),
+    # ---- foreach (TensorList) family: needed by torch.optim.AdamW's default
+    # foreach=True path (aten's _multi_tensor_adam). All void-returning
+    # in-place ops except _foreach_sqrt (returns new Tensor[]). ----
+    "_foreach_mul_.Scalar": ("foreach_inplace_scalar", "ForeachMulScalarV2"),
+    "_foreach_add_.Scalar": ("foreach_inplace_scalar", "ForeachAddScalarV2"),
+    "_foreach_lerp_.Scalar": ("foreach_inplace_lerp_scalar", "ForeachLerpScalar"),
+    "_foreach_addcmul_.Scalar": (
+        "foreach_inplace_addcmul_scalar",
+        "ForeachAddcmulScalarV2",
+    ),
+    "_foreach_sqrt": ("foreach_sqrt", "ForeachSqrt"),
+    "_foreach_div_.ScalarList": (
+        "foreach_inplace_div_scalarlist",
+        "ForeachDivScalarList",
+    ),
+    "_foreach_addcdiv_.ScalarList": (
+        "foreach_inplace_addcdiv_scalarlist",
+        "ForeachAddcdivScalarList",
+    ),
     # ---- embedding + pad (single-aclnn-call, migrated from handwritten) ----
     "embedding": ("embedding", "Embedding"),
     "embedding_dense_backward": ("embedding_dense_backward", "EmbeddingDenseBackward"),
@@ -327,6 +356,9 @@ OPS = {
     "max": ("reduce_minmax_all", "Max"),
     "min": ("reduce_minmax_all", "Min"),
     "mean.dim": ("reduce_mean_dtype", "MeanV2"),
+    "mean": ("mean_all", "Mean"),
+    "clamp": ("clamp", "Clamp"),
+    "clamp.Tensor": ("clamp_tensor", "ClampTensor"),
     # ---- conv/pool family (each carries an output-shape formula) ----
     "_adaptive_avg_pool2d": ("adaptive_avg_pool2d", "AdaptiveAvgPool2d"),
     "avg_pool2d": ("avg_pool2d", "AvgPool2d"),
@@ -1220,6 +1252,346 @@ at::Tensor {kernel}(const at::ITensorListRef& tensors, int64_t dim) {{
 REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
 """
 
+# stack: (TensorList tensors, dim) -> new-dim concatenation (unlike cat, no
+# existing dim is merged; each input keeps its own shape and dim is inserted).
+#   aclnn<Name>(aclTensorList, dim, out). dim is normalized against the OUTPUT
+#   rank (input rank + 1), matching torch's `maybe_wrap_dim(dim, ndim + 1)`.
+T_STACK = """\
+at::Tensor {kernel}(at::TensorList tensors, int64_t dim) {{
+  namespace ascend = at::native::flagos::ascend;
+  TORCH_CHECK(!tensors.empty(), "stack: expected a non-empty list of tensors");
+
+  auto& first = tensors[0];
+  int64_t out_ndim = first.dim() + 1;
+  if (dim < 0) dim += out_ndim;
+
+  std::vector<int64_t> out_sizes(first.sizes().begin(), first.sizes().end());
+  out_sizes.insert(out_sizes.begin() + dim, static_cast<int64_t>(tensors.size()));
+
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      out_sizes, first.options());
+
+  std::vector<ascend::AclTensorWrapper> wrappers;
+  wrappers.reserve(tensors.size());
+  for (const auto& t : tensors) {{
+    wrappers.emplace_back(t);
+  }}
+
+  std::vector<const aclTensor*> acl_tensors;
+  acl_tensors.reserve(tensors.size());
+  for (auto& w : wrappers) {{
+    acl_tensors.push_back(w.get());
+  }}
+
+  aclTensorList* tensor_list = aclCreateTensorList(
+      acl_tensors.data(), acl_tensors.size());
+
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, tensor_list, dim, acl_out.get());
+
+  (void)tensor_list;  // aclTensor* owned by wrappers; do not aclDestroyTensorList
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# --- foreach ops needed by torch.optim.AdamW's foreach=True path (aten's
+# _multi_tensor_adam). void return, in-place on `self`'s TensorList: build an
+# aclTensorList for each TensorList arg, execute in-place-style (out == x),
+# then leave the input tensors mutated (matches PyTorch's _foreach_*_ inplace
+# semantics: the storage is written in place, no new Tensors are returned).
+#   NOTE: aclTensorList's aclTensor* are owned by the AclTensorWrapper RAII
+#   vector, so — same as cat/stack — we must NOT aclDestroyTensorList.
+
+# _foreach_mul_.Scalar / _foreach_add_.Scalar: (self[]&, scalar) -> void.
+#   aclnnForeachMulScalarV2/aclnnForeachAddScalarV2(x, scalar, out=x).
+T_FOREACH_INPLACE_SCALAR = """\
+static void {kernel}Chunk(at::TensorList self, const at::Scalar& scalar) {{
+  namespace ascend = at::native::flagos::ascend;
+
+  std::vector<ascend::AclTensorWrapper> wrappers;
+  wrappers.reserve(self.size());
+  for (const auto& t : self) {{
+    wrappers.emplace_back(t);
+  }}
+  std::vector<const aclTensor*> acl_tensors;
+  acl_tensors.reserve(self.size());
+  for (auto& w : wrappers) {{
+    acl_tensors.push_back(w.get());
+  }}
+  aclTensorList* tensor_list = aclCreateTensorList(acl_tensors.data(), acl_tensors.size());
+  // aic-ops-info: ForeachMulScalar/ForeachAddScalar's `scalar` dtype tracks x's
+  // EXCEPT bf16 x, which requires a float32 scalar (no bf16 scalar entry).
+  auto scalar_dtype = self[0].scalar_type() == at::kBFloat16 ? at::kFloat : self[0].scalar_type();
+  ascend::AclScalarWrapper acl_scalar(scalar, scalar_dtype);
+
+  EXEC_ASCEND_CMD({aclnn}, tensor_list, acl_scalar.get(), tensor_list);
+
+  (void)tensor_list;  // aclTensor* owned by wrappers; do not aclDestroyTensorList
+}}
+
+void {kernel}(at::TensorList self, const at::Scalar& scalar) {{
+  TORCH_CHECK(!self.empty(), "{disp}: expected a non-empty list of tensors");
+  for (size_t off = 0; off < self.size(); off += {chunk}) {{
+    size_t n = std::min<size_t>({chunk}, self.size() - off);
+    {kernel}Chunk(self.slice(off, n), scalar);
+  }}
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# CANN's aclnnForeach* kernels only process the FIRST 50 entries of an
+# aclTensorList. Past that they either error (the ScalarList variants return
+# 561002/161002) or -- worse -- return success while leaving entries >= 50
+# untouched, so the bug is silent. Measured: entry 50 is the first wrong one for
+# Mul/Add/Addcmul/Lerp/Sqrt alike, independent of each tensor's numel
+# (8 .. 65536) and dtype (fp16/fp32/bf16). AdamW on Qwen3-0.6B passes 310
+# tensors, so every foreach kernel slices its lists into sub-50 chunks;
+# elementwise semantics make the split exact.
+FOREACH_CHUNK = 32  # aclnn processes at most 50 entries per call
+
+# _foreach_lerp_.Scalar: (self[]&, tensors1[], weight) -> void, self += weight*(tensors1-self).
+#   aclnnForeachLerpScalar(x1=self, x2=tensors1, weight, out=self).
+T_FOREACH_INPLACE_LERP_SCALAR = """\
+static void {kernel}Chunk(at::TensorList self, at::TensorList tensors1, const at::Scalar& weight) {{
+  namespace ascend = at::native::flagos::ascend;
+
+  std::vector<ascend::AclTensorWrapper> self_w, t1_w;
+  self_w.reserve(self.size());
+  t1_w.reserve(tensors1.size());
+  for (const auto& t : self) self_w.emplace_back(t);
+  for (const auto& t : tensors1) t1_w.emplace_back(t);
+
+  std::vector<const aclTensor*> self_ptrs, t1_ptrs;
+  self_ptrs.reserve(self.size());
+  t1_ptrs.reserve(tensors1.size());
+  for (auto& w : self_w) self_ptrs.push_back(w.get());
+  for (auto& w : t1_w) t1_ptrs.push_back(w.get());
+
+  aclTensorList* self_list = aclCreateTensorList(self_ptrs.data(), self_ptrs.size());
+  aclTensorList* t1_list = aclCreateTensorList(t1_ptrs.data(), t1_ptrs.size());
+  // aic-ops-info: ForeachLerpScalar's `weight` is ALWAYS float32, regardless
+  // of x1/x2's dtype (unlike mul_/add_.Scalar, which track x except for bf16).
+  ascend::AclScalarWrapper acl_weight(weight, at::kFloat);
+
+  EXEC_ASCEND_CMD({aclnn}, self_list, t1_list, acl_weight.get(), self_list);
+
+  (void)self_list; (void)t1_list;  // owned by *_w; do not aclDestroyTensorList
+}}
+
+void {kernel}(at::TensorList self, at::TensorList tensors1, const at::Scalar& weight) {{
+  TORCH_CHECK(!self.empty(), "{disp}: expected a non-empty list of tensors");
+  TORCH_CHECK(self.size() == tensors1.size(), "{disp}: tensor lists must match in length");
+  for (size_t off = 0; off < self.size(); off += {chunk}) {{
+    size_t n = std::min<size_t>({chunk}, self.size() - off);
+    {kernel}Chunk(self.slice(off, n), tensors1.slice(off, n), weight);
+  }}
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# _foreach_addcmul_.Scalar: (self[]&, tensor1[], tensor2[], value) -> void,
+#   self += value * tensor1 * tensor2.
+#   aclnnForeachAddcmulScalarV2(x1=self, x2=tensor1, x3=tensor2, scalar=value, out=self).
+T_FOREACH_INPLACE_ADDCMUL_SCALAR = """\
+static void {kernel}Chunk(at::TensorList self, at::TensorList tensor1, at::TensorList tensor2, const at::Scalar& value) {{
+  namespace ascend = at::native::flagos::ascend;
+
+  std::vector<ascend::AclTensorWrapper> self_w, t1_w, t2_w;
+  self_w.reserve(self.size());
+  t1_w.reserve(tensor1.size());
+  t2_w.reserve(tensor2.size());
+  for (const auto& t : self) self_w.emplace_back(t);
+  for (const auto& t : tensor1) t1_w.emplace_back(t);
+  for (const auto& t : tensor2) t2_w.emplace_back(t);
+
+  std::vector<const aclTensor*> self_ptrs, t1_ptrs, t2_ptrs;
+  self_ptrs.reserve(self.size());
+  t1_ptrs.reserve(tensor1.size());
+  t2_ptrs.reserve(tensor2.size());
+  for (auto& w : self_w) self_ptrs.push_back(w.get());
+  for (auto& w : t1_w) t1_ptrs.push_back(w.get());
+  for (auto& w : t2_w) t2_ptrs.push_back(w.get());
+
+  aclTensorList* self_list = aclCreateTensorList(self_ptrs.data(), self_ptrs.size());
+  aclTensorList* t1_list = aclCreateTensorList(t1_ptrs.data(), t1_ptrs.size());
+  aclTensorList* t2_list = aclCreateTensorList(t2_ptrs.data(), t2_ptrs.size());
+  // aic-ops-info: ForeachAddcmulScalar's `scalar` dtype tracks x EXCEPT bf16 x,
+  // which requires a float32 scalar (same rule as mul_/add_.Scalar).
+  auto value_dtype = self[0].scalar_type() == at::kBFloat16 ? at::kFloat : self[0].scalar_type();
+  ascend::AclScalarWrapper acl_value(value, value_dtype);
+
+  EXEC_ASCEND_CMD({aclnn}, self_list, t1_list, t2_list, acl_value.get(), self_list);
+
+  (void)self_list; (void)t1_list; (void)t2_list;  // owned by *_w
+}}
+
+void {kernel}(at::TensorList self, at::TensorList tensor1, at::TensorList tensor2, const at::Scalar& value) {{
+  TORCH_CHECK(!self.empty(), "{disp}: expected a non-empty list of tensors");
+  TORCH_CHECK(self.size() == tensor1.size() && self.size() == tensor2.size(),
+      "{disp}: tensor lists must match in length");
+  for (size_t off = 0; off < self.size(); off += {chunk}) {{
+    size_t n = std::min<size_t>({chunk}, self.size() - off);
+    {kernel}Chunk(self.slice(off, n), tensor1.slice(off, n), tensor2.slice(off, n), value);
+  }}
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# _foreach_sqrt: (self[]) -> Tensor[] (NOT in-place — returns new tensors).
+#   aclnnForeachSqrt(x, out) with out a freshly-allocated TensorList.
+T_FOREACH_SQRT = """\
+static void {kernel}Chunk(at::TensorList self, at::TensorList outs) {{
+  namespace ascend = at::native::flagos::ascend;
+
+
+  std::vector<ascend::AclTensorWrapper> in_w, out_w;
+  in_w.reserve(self.size());
+  out_w.reserve(outs.size());
+  for (const auto& t : self) in_w.emplace_back(t);
+  for (const auto& t : outs) out_w.emplace_back(t);
+
+  std::vector<const aclTensor*> in_ptrs, out_ptrs;
+  in_ptrs.reserve(self.size());
+  out_ptrs.reserve(outs.size());
+  for (auto& w : in_w) in_ptrs.push_back(w.get());
+  for (auto& w : out_w) out_ptrs.push_back(w.get());
+
+  aclTensorList* in_list = aclCreateTensorList(in_ptrs.data(), in_ptrs.size());
+  aclTensorList* out_list = aclCreateTensorList(out_ptrs.data(), out_ptrs.size());
+
+  EXEC_ASCEND_CMD({aclnn}, in_list, out_list);
+
+  (void)in_list; (void)out_list;  // owned by in_w/out_w
+}}
+
+::std::vector<at::Tensor> {kernel}(at::TensorList self) {{
+  TORCH_CHECK(!self.empty(), "{disp}: expected a non-empty list of tensors");
+  std::vector<at::Tensor> outs;
+  outs.reserve(self.size());
+  for (const auto& t : self) outs.push_back(at::empty_like(t));
+  for (size_t off = 0; off < self.size(); off += {chunk}) {{
+    size_t n = std::min<size_t>({chunk}, self.size() - off);
+    {kernel}Chunk(self.slice(off, n), at::TensorList(outs).slice(off, n));
+  }}
+  return outs;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# _foreach_div_.ScalarList / _foreach_addcdiv_.ScalarList: per-tensor scalar
+# list. aclnn's ScalarList variant takes an aclScalarList (div), while its
+# addcdiv counterpart's "scalars" param is (per the header) an aclTensor* —
+# both are boxed as a plain list of aclScalar* built from the ArrayRef<Scalar>.
+T_FOREACH_INPLACE_DIV_SCALARLIST = """\
+static void {kernel}Chunk(at::TensorList self, at::ArrayRef<at::Scalar> scalars) {{
+  namespace ascend = at::native::flagos::ascend;
+
+  std::vector<ascend::AclTensorWrapper> wrappers;
+  wrappers.reserve(self.size());
+  for (const auto& t : self) wrappers.emplace_back(t);
+  std::vector<const aclTensor*> acl_tensors;
+  acl_tensors.reserve(self.size());
+  for (auto& w : wrappers) acl_tensors.push_back(w.get());
+  aclTensorList* tensor_list = aclCreateTensorList(acl_tensors.data(), acl_tensors.size());
+
+  // aic-ops-info: ForeachDivScalarList's `scalars` is ALWAYS float32,
+  // regardless of x's dtype (same rule as ForeachLerpScalar's weight).
+  std::vector<ascend::AclScalarWrapper> scalar_wrappers;
+  scalar_wrappers.reserve(scalars.size());
+  for (size_t i = 0; i < scalars.size(); ++i) {{
+    scalar_wrappers.emplace_back(scalars[i], at::kFloat);
+  }}
+  std::vector<const aclScalar*> acl_scalars;
+  acl_scalars.reserve(scalar_wrappers.size());
+  for (auto& sw : scalar_wrappers) acl_scalars.push_back(sw.get());
+  aclScalarList* scalar_list = aclCreateScalarList(acl_scalars.data(), acl_scalars.size());
+
+  EXEC_ASCEND_CMD({aclnn}, tensor_list, scalar_list, tensor_list);
+
+  aclDestroyScalarList(scalar_list);
+  (void)tensor_list;  // aclTensor* owned by wrappers; do not aclDestroyTensorList
+}}
+
+void {kernel}(at::TensorList self, at::ArrayRef<at::Scalar> scalars) {{
+  TORCH_CHECK(!self.empty(), "{disp}: expected a non-empty list of tensors");
+  TORCH_CHECK(self.size() == scalars.size(), "{disp}: scalars must match tensor list length");
+  for (size_t off = 0; off < self.size(); off += {chunk}) {{
+    size_t n = std::min<size_t>({chunk}, self.size() - off);
+    {kernel}Chunk(self.slice(off, n), scalars.slice(off, n));
+  }}
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+T_FOREACH_INPLACE_ADDCDIV_SCALARLIST = """\
+static void {kernel}Chunk(at::TensorList self, at::TensorList tensor1, at::TensorList tensor2, at::ArrayRef<at::Scalar> scalars) {{
+  namespace ascend = at::native::flagos::ascend;
+
+  std::vector<ascend::AclTensorWrapper> self_w, t1_w, t2_w;
+  self_w.reserve(self.size());
+  t1_w.reserve(tensor1.size());
+  t2_w.reserve(tensor2.size());
+  for (const auto& t : self) self_w.emplace_back(t);
+  for (const auto& t : tensor1) t1_w.emplace_back(t);
+  for (const auto& t : tensor2) t2_w.emplace_back(t);
+
+  std::vector<const aclTensor*> self_ptrs, t1_ptrs, t2_ptrs;
+  self_ptrs.reserve(self.size());
+  t1_ptrs.reserve(tensor1.size());
+  t2_ptrs.reserve(tensor2.size());
+  for (auto& w : self_w) self_ptrs.push_back(w.get());
+  for (auto& w : t1_w) t1_ptrs.push_back(w.get());
+  for (auto& w : t2_w) t2_ptrs.push_back(w.get());
+
+  aclTensorList* self_list = aclCreateTensorList(self_ptrs.data(), self_ptrs.size());
+  aclTensorList* t1_list = aclCreateTensorList(t1_ptrs.data(), t1_ptrs.size());
+  aclTensorList* t2_list = aclCreateTensorList(t2_ptrs.data(), t2_ptrs.size());
+
+  // aclnnForeachAddcdivScalarList's "scalars" param is a plain device aclTensor
+  // (1-D, one element per list entry), NOT an aclScalarList -- unlike div's
+  // ScalarList variant. Materialize scalars on host in self[0]'s dtype, then
+  // move to device once. The dtype MUST match self (a float32 scalars tensor
+  // against fp16 inputs returns 161002), which costs up to 1 ulp versus CPU,
+  // where the divisor stays a full-precision Scalar.
+  at::Tensor scalars_cpu = at::empty({{static_cast<int64_t>(scalars.size())}},
+      at::TensorOptions().dtype(self[0].scalar_type()));
+  AT_DISPATCH_FLOATING_TYPES_AND2(at::kHalf, at::kBFloat16, self[0].scalar_type(),
+      "{disp}_scalars", [&] {{
+    auto* ptr = scalars_cpu.data_ptr<scalar_t>();
+    for (size_t i = 0; i < scalars.size(); ++i) {{
+      ptr[i] = scalars[i].to<scalar_t>();
+    }}
+  }});
+  at::Tensor scalars_dev = scalars_cpu.to(self[0].device());
+  ascend::AclTensorWrapper acl_scalars(scalars_dev);
+
+  EXEC_ASCEND_CMD({aclnn}, self_list, t1_list, t2_list, acl_scalars.get(), self_list);
+
+  (void)self_list; (void)t1_list; (void)t2_list;  // owned by *_w
+}}
+
+void {kernel}(at::TensorList self, at::TensorList tensor1, at::TensorList tensor2, at::ArrayRef<at::Scalar> scalars) {{
+  TORCH_CHECK(!self.empty(), "{disp}: expected a non-empty list of tensors");
+  TORCH_CHECK(self.size() == tensor1.size() && self.size() == tensor2.size() && self.size() == scalars.size(),
+      "{disp}: tensor/scalar lists must match in length");
+  for (size_t off = 0; off < self.size(); off += {chunk}) {{
+    size_t n = std::min<size_t>({chunk}, self.size() - off);
+    {kernel}Chunk(self.slice(off, n), tensor1.slice(off, n), tensor2.slice(off, n),
+        scalars.slice(off, n));
+  }}
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
 # --- factory ops: at::empty(...) on the PrivateUse1 device + device-side fill ---
 # These build TensorOptions on-host then fill via zero_/fill_, which are themselves
 # device-side aclnn kernels (aclnnInplaceZero / aclnnInplaceFillScalar), so the
@@ -1736,6 +2108,56 @@ at::Tensor {kernel}(const at::Tensor& condition, const at::Tensor& self, const a
 REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
 """
 
+# clamp: (self, Scalar? min, Scalar? max) -> Tensor, self's shape/dtype.
+#   aclnnClamp(self, clipValueMin, clipValueMax, out). Either bound may be
+#   absent (torch allows min=None or max=None, just not both); AclScalarWrapper's
+#   default ctor leaves the acl_scalar null, which aclnn reads as "not supplied".
+T_CLAMP = """\
+at::Tensor {kernel}(const at::Tensor& self, const ::std::optional<at::Scalar>& min, const ::std::optional<at::Scalar>& max) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options());
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclScalarWrapper acl_min = min.has_value()
+      ? ascend::AclScalarWrapper(min.value(), self.scalar_type())
+      : ascend::AclScalarWrapper();
+  ascend::AclScalarWrapper acl_max = max.has_value()
+      ? ascend::AclScalarWrapper(max.value(), self.scalar_type())
+      : ascend::AclScalarWrapper();
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_min.get(), acl_max.get(), acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# clamp.Tensor: (self, Tensor? min, Tensor? max) -> Tensor, broadcast shape.
+#   aclnnClampTensor(self, minT, maxT, out). AclTensorWrapper already maps an
+#   undefined at::Tensor to a null aclTensor*, matching an absent bound.
+T_CLAMP_TENSOR = """\
+at::Tensor {kernel}(const at::Tensor& self, const ::std::optional<at::Tensor>& min, const ::std::optional<at::Tensor>& max) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto out_shape = self.sizes().vec();
+  if (min.has_value()) out_shape = at::infer_size(out_shape, min.value().sizes());
+  if (max.has_value()) out_shape = at::infer_size(out_shape, max.value().sizes());
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      out_shape, self.options());
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_min(min.value_or(at::Tensor()));
+  ascend::AclTensorWrapper acl_max(max.value_or(at::Tensor()));
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_min.get(), acl_max.get(), acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
 # softmax_fwd: _softmax(self, int64 dim, bool half_to_float) -> same shape.
 #   aclnn<Name>(self, dim, out). half_to_float promotes the output dtype to float.
 T_SOFTMAX_FWD = """\
@@ -1897,6 +2319,31 @@ at::Tensor {kernel}(const at::Tensor& self, std::optional<at::ScalarType> dtype)
       ? dtype.value()
       : (c10::isIntegralType(self.scalar_type(), /*includeBool=*/true)
              ? at::kLong : self.scalar_type());
+  int64_t ndim = self.dim();
+  std::vector<int64_t> norm_dims;
+  for (int64_t d = 0; d < ndim; ++d) norm_dims.push_back(d);
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      {{}}, self.options().dtype(out_dtype));
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_out(out);
+  ascend::AclIntArrayWrapper acl_dim(norm_dims);
+  aclDataType acl_dtype = ascend::ToAclDataType(out_dtype);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_dim.get(), false, acl_dtype, acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# mean_all: mean(self, ScalarType? dtype) -> full reduction to a 0-d tensor.
+#   aclnnMean(self, dims=all, keepdim=false, aclDataType, out). Unlike sum,
+#   mean does NOT integer-promote (undefined for int/bool without a given
+#   dtype); out_dtype defaults to self's own float dtype.
+T_MEAN_ALL = """\
+at::Tensor {kernel}(const at::Tensor& self, std::optional<at::ScalarType> dtype) {{
+  namespace ascend = at::native::flagos::ascend;
+  at::ScalarType out_dtype = dtype.has_value() ? dtype.value() : self.scalar_type();
   int64_t ndim = self.dim();
   std::vector<int64_t> norm_dims;
   for (int64_t d = 0; d < ndim; ++d) norm_dims.push_back(d);
@@ -2745,8 +3192,21 @@ T_CONVOLUTION_BACKWARD = """\
       input.sizes(), input.options());
   auto grad_weight = ascend::OpPreparation::apply_tensor_without_format(
       weight.sizes(), weight.options());
-  std::vector<int64_t> bias_shape = bias_sizes.has_value()
-      ? bias_sizes.value().vec() : std::vector<int64_t>{{weight.size(0)}};
+  // grad_bias is always allocated and passed, even when output_mask[2] is
+  // false (aclnn writes nothing to it then). But its shape must still be
+  // valid: aclnnConvolutionBackward rejects an empty biasSizes, or one whose
+  // product is 0, with 161002 (ACLNN_ERR_PARAM_INVALID). For bias=None
+  // autograd hands us [0] (and an empty list is possible too), so in either
+  // case substitute the real bias length [Cout] = weight.size(0).
+  std::vector<int64_t> bias_shape = std::vector<int64_t>{{weight.size(0)}};
+  if (bias_sizes.has_value() && !bias_sizes.value().empty()) {{
+    const auto bs = bias_sizes.value();
+    int64_t numel = 1;
+    for (auto d : bs) {{ numel *= d; }}
+    if (numel > 0) {{
+      bias_shape = bs.vec();
+    }}
+  }}
   auto grad_bias = ascend::OpPreparation::apply_tensor_without_format(
       bias_shape, weight.options());
 
@@ -2951,6 +3411,7 @@ CATEGORIES = {
     "matmul": T_MATMUL,
     "matmul_out": T_MATMUL_OUT,
     "cat": T_CAT,
+    "stack": T_STACK,
     "mv": T_MV,
     "dot": T_DOT,
     "bce": T_BCE,
@@ -2965,10 +3426,13 @@ CATEGORIES = {
     "binary_scalar": T_BINARY_SCALAR,
     "act_backward_self": T_ACT_BACKWARD_SELF,
     "where": T_WHERE,
+    "clamp": T_CLAMP,
+    "clamp_tensor": T_CLAMP_TENSOR,
     "softmax_fwd": T_SOFTMAX_FWD,
     "reduce_all": T_REDUCE_ALL,
     "reduce_sum_dtype": T_REDUCE_SUM_DTYPE,
     "reduce_sum_all": T_REDUCE_SUM_ALL,
+    "mean_all": T_MEAN_ALL,
     "reduce_minmax_all": T_REDUCE_MINMAX_ALL,
     "reduce_mean_dtype": T_REDUCE_MEAN_DTYPE,
     "adaptive_avg_pool2d": T_ADAPTIVE_AVG_POOL2D,
@@ -2999,6 +3463,12 @@ CATEGORIES = {
     "inplace_addcdiv": T_INPLACE_ADDCDIV,
     "inplace_sqrt": T_INPLACE_SQRT,
     "inplace_lerp_scalar": T_INPLACE_LERP_SCALAR,
+    "foreach_inplace_scalar": T_FOREACH_INPLACE_SCALAR,
+    "foreach_inplace_lerp_scalar": T_FOREACH_INPLACE_LERP_SCALAR,
+    "foreach_inplace_addcmul_scalar": T_FOREACH_INPLACE_ADDCMUL_SCALAR,
+    "foreach_sqrt": T_FOREACH_SQRT,
+    "foreach_inplace_div_scalarlist": T_FOREACH_INPLACE_DIV_SCALARLIST,
+    "foreach_inplace_addcdiv_scalarlist": T_FOREACH_INPLACE_ADDCDIV_SCALARLIST,
     "embedding": T_EMBEDDING,
     "embedding_dense_backward": T_EMBEDDING_DENSE_BACKWARD,
     "constant_pad_nd": T_CONSTANT_PAD_ND,
@@ -3028,6 +3498,18 @@ NO_ACLNN_CATEGORIES = {
     "new_ones",
 }
 
+# Categories whose template splits its TensorList args into chunks to stay under
+# the CANN per-kernel list-length cap (see FOREACH_CHUNK above). Maps the
+# category to the chunk size substituted into the template's {chunk} slot.
+FOREACH_CHUNKED_CATEGORIES = {
+    "foreach_inplace_scalar": FOREACH_CHUNK,
+    "foreach_inplace_lerp_scalar": FOREACH_CHUNK,
+    "foreach_inplace_addcmul_scalar": FOREACH_CHUNK,
+    "foreach_sqrt": FOREACH_CHUNK,
+    "foreach_inplace_div_scalarlist": FOREACH_CHUNK,
+    "foreach_inplace_addcdiv_scalarlist": FOREACH_CHUNK,
+}
+
 FILE_HEADER = """\
 // Copyright (c) 2026, BAAI. All rights reserved.
 //
@@ -3040,6 +3522,7 @@ FILE_HEADER = """\
 
 #include "../../../generated/ops.h"
 #include <ATen/core/Tensor.h>
+#include <ATen/Dispatch.h>
 #include <ATen/ExpandUtils.h>
 #include <ATen/ops/empty.h>
 #include <c10/core/Scalar.h>
@@ -3122,6 +3605,8 @@ def main():
         kernel = fn[:-2] + "KernelAscend"  # SqrtFn -> SqrtKernelAscend
         template = CATEGORIES[cat]
         fmt = dict(kernel=kernel, aclnn=acl, fn=fn, disp=disp)
+        if cat in FOREACH_CHUNKED_CATEGORIES:
+            fmt["chunk"] = FOREACH_CHUNKED_CATEGORIES[cat]
         if exec_cache and cat in CACHED_CATEGORIES:
             template = CACHED_CATEGORIES[cat]
             cached_ops.append(op)

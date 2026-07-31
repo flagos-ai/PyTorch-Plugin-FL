@@ -7,9 +7,9 @@ against two backends so step-time and throughput are directly comparable:
   --backend torch_fl   torch_fl + aclnn C++ kernels (device flagos:0)
   --backend torch_npu  Huawei torch_npu baseline    (device npu:0)
 
-The optimizer uses foreach=False: the torch_fl aclnn backend has no fused
-_foreach_* TensorList kernels, so both backends are pinned to the single-tensor
-AdamW path for a fair comparison.
+AdamW defaults to its foreach path on both backends (pass --no-foreach for the
+single-tensor path); the setting is applied identically either way so the
+optimizer contributes the same op mix to both measurements.
 
 Usage:
     ACCELERATOR=ascend python tests/perf/e2e_qwen3_train_ascend.py \
@@ -65,6 +65,12 @@ def main():
     parser.add_argument("--batch-size", type=int, default=1, help="Batch size")
     parser.add_argument("--seq-len", type=int, default=128, help="Sequence length")
     parser.add_argument("--lr", type=float, default=1e-5, help="Learning rate")
+    parser.add_argument(
+        "--foreach",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="AdamW foreach path (--no-foreach for the single-tensor path)",
+    )
     args = parser.parse_args()
 
     device, synchronize = setup_backend(args.backend)
@@ -112,11 +118,14 @@ def main():
     print(f"    Parameters: {total:.2f}M total, {trainable:.2f}M trainable")
     print()
 
-    # foreach=False: torch_fl has no fused _foreach_* kernels; pin both backends
-    # to the single-tensor AdamW path for an apples-to-apples comparison.
+    # Both backends get the same foreach setting so the optimizer contributes the
+    # same op mix to each measurement.
     optimizer = torch.optim.AdamW(
-        [p for p in model.parameters() if p.requires_grad], lr=args.lr, foreach=False
+        [p for p in model.parameters() if p.requires_grad],
+        lr=args.lr,
+        foreach=args.foreach,
     )
+    print(f"    Optimizer: AdamW(foreach={args.foreach})")
     dataset = DummyTextDataset(tokenizer, num_samples=100, max_length=args.seq_len)
     dataloader = DataLoader(
         dataset, batch_size=args.batch_size, shuffle=False, drop_last=True

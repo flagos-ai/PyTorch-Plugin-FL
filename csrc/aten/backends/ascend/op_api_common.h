@@ -241,6 +241,11 @@ struct AclScalarWrapper {
     at::BFloat16 bf16;
   } value_storage;
 
+  // Absent-optional form: leaves acl_scalar null. aclnn ops that take an
+  // optional scalar (e.g. aclnnClamp's clipValueMin/Max) read a null pointer
+  // as "not supplied", which is what an empty std::optional must map to.
+  AclScalarWrapper() = default;
+
   AclScalarWrapper(const at::Scalar& scalar, at::ScalarType dtype) {
     // aclCreateScalar stores a pointer to the value, so we must keep it alive
     switch (dtype) {

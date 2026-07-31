@@ -9,6 +9,7 @@
 
 #include "../../../generated/ops.h"
 #include <ATen/core/Tensor.h>
+#include <ATen/Dispatch.h>
 #include <ATen/ExpandUtils.h>
 #include <ATen/ops/empty.h>
 #include <c10/core/Scalar.h>
@@ -2460,6 +2461,45 @@ at::Tensor CatKernelAscend(const at::ITensorListRef& tensors, int64_t dim) {
 
 REGISTER_IMPL_TO_DISPATCHER(CatFn, cat_dispatcher, Backend::kAscend, CatKernelAscend)
 
+at::Tensor StackKernelAscend(at::TensorList tensors, int64_t dim) {
+  namespace ascend = at::native::flagos::ascend;
+  TORCH_CHECK(!tensors.empty(), "stack: expected a non-empty list of tensors");
+
+  auto& first = tensors[0];
+  int64_t out_ndim = first.dim() + 1;
+  if (dim < 0) dim += out_ndim;
+
+  std::vector<int64_t> out_sizes(first.sizes().begin(), first.sizes().end());
+  out_sizes.insert(out_sizes.begin() + dim, static_cast<int64_t>(tensors.size()));
+
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      out_sizes, first.options());
+
+  std::vector<ascend::AclTensorWrapper> wrappers;
+  wrappers.reserve(tensors.size());
+  for (const auto& t : tensors) {
+    wrappers.emplace_back(t);
+  }
+
+  std::vector<const aclTensor*> acl_tensors;
+  acl_tensors.reserve(tensors.size());
+  for (auto& w : wrappers) {
+    acl_tensors.push_back(w.get());
+  }
+
+  aclTensorList* tensor_list = aclCreateTensorList(
+      acl_tensors.data(), acl_tensors.size());
+
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD(aclnnStack, tensor_list, dim, acl_out.get());
+
+  (void)tensor_list;  // aclTensor* owned by wrappers; do not aclDestroyTensorList
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(StackFn, stack_dispatcher, Backend::kAscend, StackKernelAscend)
+
 at::Tensor ZerosKernelAscend(at::IntArrayRef size, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
   auto options = at::TensorOptions()
     .dtype(dtype.value_or(at::kFloat))
@@ -3078,6 +3118,45 @@ at::Tensor& DivInplaceTensorKernelAscend(at::Tensor& self, const at::Tensor& oth
 
 REGISTER_IMPL_TO_DISPATCHER(DivInplaceTensorFn, div_inplace_tensor_dispatcher, Backend::kAscend, DivInplaceTensorKernelAscend)
 
+at::Tensor& BitwiseAndInplaceTensorKernelAscend(at::Tensor& self, const at::Tensor& other) {
+  namespace ascend = at::native::flagos::ascend;
+  auto other_c = other.is_privateuseone()
+      ? (other.scalar_type() == self.scalar_type() ? other : other.to(self.scalar_type()))
+      : other.to(self.options());
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_other(other_c);
+  EXEC_ASCEND_CMD(aclnnInplaceBitwiseAndTensor, const_cast<aclTensor*>(acl_self.get()), acl_other.get());
+  return self;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(BitwiseAndInplaceTensorFn, bitwise_and_inplace_tensor_dispatcher, Backend::kAscend, BitwiseAndInplaceTensorKernelAscend)
+
+at::Tensor& BitwiseOrInplaceTensorKernelAscend(at::Tensor& self, const at::Tensor& other) {
+  namespace ascend = at::native::flagos::ascend;
+  auto other_c = other.is_privateuseone()
+      ? (other.scalar_type() == self.scalar_type() ? other : other.to(self.scalar_type()))
+      : other.to(self.options());
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_other(other_c);
+  EXEC_ASCEND_CMD(aclnnInplaceBitwiseOrTensor, const_cast<aclTensor*>(acl_self.get()), acl_other.get());
+  return self;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(BitwiseOrInplaceTensorFn, bitwise_or_inplace_tensor_dispatcher, Backend::kAscend, BitwiseOrInplaceTensorKernelAscend)
+
+at::Tensor& BitwiseXorInplaceTensorKernelAscend(at::Tensor& self, const at::Tensor& other) {
+  namespace ascend = at::native::flagos::ascend;
+  auto other_c = other.is_privateuseone()
+      ? (other.scalar_type() == self.scalar_type() ? other : other.to(self.scalar_type()))
+      : other.to(self.options());
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_other(other_c);
+  EXEC_ASCEND_CMD(aclnnInplaceBitwiseXorTensor, const_cast<aclTensor*>(acl_self.get()), acl_other.get());
+  return self;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(BitwiseXorInplaceTensorFn, bitwise_xor_inplace_tensor_dispatcher, Backend::kAscend, BitwiseXorInplaceTensorKernelAscend)
+
 at::Tensor& AddcmulInplaceKernelAscend(at::Tensor& self, const at::Tensor& tensor1, const at::Tensor& tensor2, const at::Scalar& value) {
   namespace ascend = at::native::flagos::ascend;
   auto t1 = tensor1.scalar_type() == self.scalar_type() ? tensor1 : tensor1.to(self.scalar_type());
@@ -3129,6 +3208,292 @@ at::Tensor& LerpInplaceScalarKernelAscend(at::Tensor& self, const at::Tensor& en
 }
 
 REGISTER_IMPL_TO_DISPATCHER(LerpInplaceScalarFn, lerp_inplace_scalar_dispatcher, Backend::kAscend, LerpInplaceScalarKernelAscend)
+
+static void ForeachMulInplaceScalarKernelAscendChunk(at::TensorList self, const at::Scalar& scalar) {
+  namespace ascend = at::native::flagos::ascend;
+
+  std::vector<ascend::AclTensorWrapper> wrappers;
+  wrappers.reserve(self.size());
+  for (const auto& t : self) {
+    wrappers.emplace_back(t);
+  }
+  std::vector<const aclTensor*> acl_tensors;
+  acl_tensors.reserve(self.size());
+  for (auto& w : wrappers) {
+    acl_tensors.push_back(w.get());
+  }
+  aclTensorList* tensor_list = aclCreateTensorList(acl_tensors.data(), acl_tensors.size());
+  // aic-ops-info: ForeachMulScalar/ForeachAddScalar's `scalar` dtype tracks x's
+  // EXCEPT bf16 x, which requires a float32 scalar (no bf16 scalar entry).
+  auto scalar_dtype = self[0].scalar_type() == at::kBFloat16 ? at::kFloat : self[0].scalar_type();
+  ascend::AclScalarWrapper acl_scalar(scalar, scalar_dtype);
+
+  EXEC_ASCEND_CMD(aclnnForeachMulScalarV2, tensor_list, acl_scalar.get(), tensor_list);
+
+  (void)tensor_list;  // aclTensor* owned by wrappers; do not aclDestroyTensorList
+}
+
+void ForeachMulInplaceScalarKernelAscend(at::TensorList self, const at::Scalar& scalar) {
+  TORCH_CHECK(!self.empty(), "foreach_mul_inplace_scalar_dispatcher: expected a non-empty list of tensors");
+  for (size_t off = 0; off < self.size(); off += 32) {
+    size_t n = std::min<size_t>(32, self.size() - off);
+    ForeachMulInplaceScalarKernelAscendChunk(self.slice(off, n), scalar);
+  }
+}
+
+REGISTER_IMPL_TO_DISPATCHER(ForeachMulInplaceScalarFn, foreach_mul_inplace_scalar_dispatcher, Backend::kAscend, ForeachMulInplaceScalarKernelAscend)
+
+static void ForeachAddInplaceScalarKernelAscendChunk(at::TensorList self, const at::Scalar& scalar) {
+  namespace ascend = at::native::flagos::ascend;
+
+  std::vector<ascend::AclTensorWrapper> wrappers;
+  wrappers.reserve(self.size());
+  for (const auto& t : self) {
+    wrappers.emplace_back(t);
+  }
+  std::vector<const aclTensor*> acl_tensors;
+  acl_tensors.reserve(self.size());
+  for (auto& w : wrappers) {
+    acl_tensors.push_back(w.get());
+  }
+  aclTensorList* tensor_list = aclCreateTensorList(acl_tensors.data(), acl_tensors.size());
+  // aic-ops-info: ForeachMulScalar/ForeachAddScalar's `scalar` dtype tracks x's
+  // EXCEPT bf16 x, which requires a float32 scalar (no bf16 scalar entry).
+  auto scalar_dtype = self[0].scalar_type() == at::kBFloat16 ? at::kFloat : self[0].scalar_type();
+  ascend::AclScalarWrapper acl_scalar(scalar, scalar_dtype);
+
+  EXEC_ASCEND_CMD(aclnnForeachAddScalarV2, tensor_list, acl_scalar.get(), tensor_list);
+
+  (void)tensor_list;  // aclTensor* owned by wrappers; do not aclDestroyTensorList
+}
+
+void ForeachAddInplaceScalarKernelAscend(at::TensorList self, const at::Scalar& scalar) {
+  TORCH_CHECK(!self.empty(), "foreach_add_inplace_scalar_dispatcher: expected a non-empty list of tensors");
+  for (size_t off = 0; off < self.size(); off += 32) {
+    size_t n = std::min<size_t>(32, self.size() - off);
+    ForeachAddInplaceScalarKernelAscendChunk(self.slice(off, n), scalar);
+  }
+}
+
+REGISTER_IMPL_TO_DISPATCHER(ForeachAddInplaceScalarFn, foreach_add_inplace_scalar_dispatcher, Backend::kAscend, ForeachAddInplaceScalarKernelAscend)
+
+static void ForeachLerpInplaceScalarKernelAscendChunk(at::TensorList self, at::TensorList tensors1, const at::Scalar& weight) {
+  namespace ascend = at::native::flagos::ascend;
+
+  std::vector<ascend::AclTensorWrapper> self_w, t1_w;
+  self_w.reserve(self.size());
+  t1_w.reserve(tensors1.size());
+  for (const auto& t : self) self_w.emplace_back(t);
+  for (const auto& t : tensors1) t1_w.emplace_back(t);
+
+  std::vector<const aclTensor*> self_ptrs, t1_ptrs;
+  self_ptrs.reserve(self.size());
+  t1_ptrs.reserve(tensors1.size());
+  for (auto& w : self_w) self_ptrs.push_back(w.get());
+  for (auto& w : t1_w) t1_ptrs.push_back(w.get());
+
+  aclTensorList* self_list = aclCreateTensorList(self_ptrs.data(), self_ptrs.size());
+  aclTensorList* t1_list = aclCreateTensorList(t1_ptrs.data(), t1_ptrs.size());
+  // aic-ops-info: ForeachLerpScalar's `weight` is ALWAYS float32, regardless
+  // of x1/x2's dtype (unlike mul_/add_.Scalar, which track x except for bf16).
+  ascend::AclScalarWrapper acl_weight(weight, at::kFloat);
+
+  EXEC_ASCEND_CMD(aclnnForeachLerpScalar, self_list, t1_list, acl_weight.get(), self_list);
+
+  (void)self_list; (void)t1_list;  // owned by *_w; do not aclDestroyTensorList
+}
+
+void ForeachLerpInplaceScalarKernelAscend(at::TensorList self, at::TensorList tensors1, const at::Scalar& weight) {
+  TORCH_CHECK(!self.empty(), "foreach_lerp_inplace_scalar_dispatcher: expected a non-empty list of tensors");
+  TORCH_CHECK(self.size() == tensors1.size(), "foreach_lerp_inplace_scalar_dispatcher: tensor lists must match in length");
+  for (size_t off = 0; off < self.size(); off += 32) {
+    size_t n = std::min<size_t>(32, self.size() - off);
+    ForeachLerpInplaceScalarKernelAscendChunk(self.slice(off, n), tensors1.slice(off, n), weight);
+  }
+}
+
+REGISTER_IMPL_TO_DISPATCHER(ForeachLerpInplaceScalarFn, foreach_lerp_inplace_scalar_dispatcher, Backend::kAscend, ForeachLerpInplaceScalarKernelAscend)
+
+static void ForeachAddcmulInplaceScalarKernelAscendChunk(at::TensorList self, at::TensorList tensor1, at::TensorList tensor2, const at::Scalar& value) {
+  namespace ascend = at::native::flagos::ascend;
+
+  std::vector<ascend::AclTensorWrapper> self_w, t1_w, t2_w;
+  self_w.reserve(self.size());
+  t1_w.reserve(tensor1.size());
+  t2_w.reserve(tensor2.size());
+  for (const auto& t : self) self_w.emplace_back(t);
+  for (const auto& t : tensor1) t1_w.emplace_back(t);
+  for (const auto& t : tensor2) t2_w.emplace_back(t);
+
+  std::vector<const aclTensor*> self_ptrs, t1_ptrs, t2_ptrs;
+  self_ptrs.reserve(self.size());
+  t1_ptrs.reserve(tensor1.size());
+  t2_ptrs.reserve(tensor2.size());
+  for (auto& w : self_w) self_ptrs.push_back(w.get());
+  for (auto& w : t1_w) t1_ptrs.push_back(w.get());
+  for (auto& w : t2_w) t2_ptrs.push_back(w.get());
+
+  aclTensorList* self_list = aclCreateTensorList(self_ptrs.data(), self_ptrs.size());
+  aclTensorList* t1_list = aclCreateTensorList(t1_ptrs.data(), t1_ptrs.size());
+  aclTensorList* t2_list = aclCreateTensorList(t2_ptrs.data(), t2_ptrs.size());
+  // aic-ops-info: ForeachAddcmulScalar's `scalar` dtype tracks x EXCEPT bf16 x,
+  // which requires a float32 scalar (same rule as mul_/add_.Scalar).
+  auto value_dtype = self[0].scalar_type() == at::kBFloat16 ? at::kFloat : self[0].scalar_type();
+  ascend::AclScalarWrapper acl_value(value, value_dtype);
+
+  EXEC_ASCEND_CMD(aclnnForeachAddcmulScalarV2, self_list, t1_list, t2_list, acl_value.get(), self_list);
+
+  (void)self_list; (void)t1_list; (void)t2_list;  // owned by *_w
+}
+
+void ForeachAddcmulInplaceScalarKernelAscend(at::TensorList self, at::TensorList tensor1, at::TensorList tensor2, const at::Scalar& value) {
+  TORCH_CHECK(!self.empty(), "foreach_addcmul_inplace_scalar_dispatcher: expected a non-empty list of tensors");
+  TORCH_CHECK(self.size() == tensor1.size() && self.size() == tensor2.size(),
+      "foreach_addcmul_inplace_scalar_dispatcher: tensor lists must match in length");
+  for (size_t off = 0; off < self.size(); off += 32) {
+    size_t n = std::min<size_t>(32, self.size() - off);
+    ForeachAddcmulInplaceScalarKernelAscendChunk(self.slice(off, n), tensor1.slice(off, n), tensor2.slice(off, n), value);
+  }
+}
+
+REGISTER_IMPL_TO_DISPATCHER(ForeachAddcmulInplaceScalarFn, foreach_addcmul_inplace_scalar_dispatcher, Backend::kAscend, ForeachAddcmulInplaceScalarKernelAscend)
+
+static void ForeachSqrtKernelAscendChunk(at::TensorList self, at::TensorList outs) {
+  namespace ascend = at::native::flagos::ascend;
+
+
+  std::vector<ascend::AclTensorWrapper> in_w, out_w;
+  in_w.reserve(self.size());
+  out_w.reserve(outs.size());
+  for (const auto& t : self) in_w.emplace_back(t);
+  for (const auto& t : outs) out_w.emplace_back(t);
+
+  std::vector<const aclTensor*> in_ptrs, out_ptrs;
+  in_ptrs.reserve(self.size());
+  out_ptrs.reserve(outs.size());
+  for (auto& w : in_w) in_ptrs.push_back(w.get());
+  for (auto& w : out_w) out_ptrs.push_back(w.get());
+
+  aclTensorList* in_list = aclCreateTensorList(in_ptrs.data(), in_ptrs.size());
+  aclTensorList* out_list = aclCreateTensorList(out_ptrs.data(), out_ptrs.size());
+
+  EXEC_ASCEND_CMD(aclnnForeachSqrt, in_list, out_list);
+
+  (void)in_list; (void)out_list;  // owned by in_w/out_w
+}
+
+::std::vector<at::Tensor> ForeachSqrtKernelAscend(at::TensorList self) {
+  TORCH_CHECK(!self.empty(), "foreach_sqrt_dispatcher: expected a non-empty list of tensors");
+  std::vector<at::Tensor> outs;
+  outs.reserve(self.size());
+  for (const auto& t : self) outs.push_back(at::empty_like(t));
+  for (size_t off = 0; off < self.size(); off += 32) {
+    size_t n = std::min<size_t>(32, self.size() - off);
+    ForeachSqrtKernelAscendChunk(self.slice(off, n), at::TensorList(outs).slice(off, n));
+  }
+  return outs;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(ForeachSqrtFn, foreach_sqrt_dispatcher, Backend::kAscend, ForeachSqrtKernelAscend)
+
+static void ForeachDivInplaceScalarlistKernelAscendChunk(at::TensorList self, at::ArrayRef<at::Scalar> scalars) {
+  namespace ascend = at::native::flagos::ascend;
+
+  std::vector<ascend::AclTensorWrapper> wrappers;
+  wrappers.reserve(self.size());
+  for (const auto& t : self) wrappers.emplace_back(t);
+  std::vector<const aclTensor*> acl_tensors;
+  acl_tensors.reserve(self.size());
+  for (auto& w : wrappers) acl_tensors.push_back(w.get());
+  aclTensorList* tensor_list = aclCreateTensorList(acl_tensors.data(), acl_tensors.size());
+
+  // aic-ops-info: ForeachDivScalarList's `scalars` is ALWAYS float32,
+  // regardless of x's dtype (same rule as ForeachLerpScalar's weight).
+  std::vector<ascend::AclScalarWrapper> scalar_wrappers;
+  scalar_wrappers.reserve(scalars.size());
+  for (size_t i = 0; i < scalars.size(); ++i) {
+    scalar_wrappers.emplace_back(scalars[i], at::kFloat);
+  }
+  std::vector<const aclScalar*> acl_scalars;
+  acl_scalars.reserve(scalar_wrappers.size());
+  for (auto& sw : scalar_wrappers) acl_scalars.push_back(sw.get());
+  aclScalarList* scalar_list = aclCreateScalarList(acl_scalars.data(), acl_scalars.size());
+
+  EXEC_ASCEND_CMD(aclnnForeachDivScalarList, tensor_list, scalar_list, tensor_list);
+
+  aclDestroyScalarList(scalar_list);
+  (void)tensor_list;  // aclTensor* owned by wrappers; do not aclDestroyTensorList
+}
+
+void ForeachDivInplaceScalarlistKernelAscend(at::TensorList self, at::ArrayRef<at::Scalar> scalars) {
+  TORCH_CHECK(!self.empty(), "foreach_div_inplace_scalarlist_dispatcher: expected a non-empty list of tensors");
+  TORCH_CHECK(self.size() == scalars.size(), "foreach_div_inplace_scalarlist_dispatcher: scalars must match tensor list length");
+  for (size_t off = 0; off < self.size(); off += 32) {
+    size_t n = std::min<size_t>(32, self.size() - off);
+    ForeachDivInplaceScalarlistKernelAscendChunk(self.slice(off, n), scalars.slice(off, n));
+  }
+}
+
+REGISTER_IMPL_TO_DISPATCHER(ForeachDivInplaceScalarlistFn, foreach_div_inplace_scalarlist_dispatcher, Backend::kAscend, ForeachDivInplaceScalarlistKernelAscend)
+
+static void ForeachAddcdivInplaceScalarlistKernelAscendChunk(at::TensorList self, at::TensorList tensor1, at::TensorList tensor2, at::ArrayRef<at::Scalar> scalars) {
+  namespace ascend = at::native::flagos::ascend;
+
+  std::vector<ascend::AclTensorWrapper> self_w, t1_w, t2_w;
+  self_w.reserve(self.size());
+  t1_w.reserve(tensor1.size());
+  t2_w.reserve(tensor2.size());
+  for (const auto& t : self) self_w.emplace_back(t);
+  for (const auto& t : tensor1) t1_w.emplace_back(t);
+  for (const auto& t : tensor2) t2_w.emplace_back(t);
+
+  std::vector<const aclTensor*> self_ptrs, t1_ptrs, t2_ptrs;
+  self_ptrs.reserve(self.size());
+  t1_ptrs.reserve(tensor1.size());
+  t2_ptrs.reserve(tensor2.size());
+  for (auto& w : self_w) self_ptrs.push_back(w.get());
+  for (auto& w : t1_w) t1_ptrs.push_back(w.get());
+  for (auto& w : t2_w) t2_ptrs.push_back(w.get());
+
+  aclTensorList* self_list = aclCreateTensorList(self_ptrs.data(), self_ptrs.size());
+  aclTensorList* t1_list = aclCreateTensorList(t1_ptrs.data(), t1_ptrs.size());
+  aclTensorList* t2_list = aclCreateTensorList(t2_ptrs.data(), t2_ptrs.size());
+
+  // aclnnForeachAddcdivScalarList's "scalars" param is a plain device aclTensor
+  // (1-D, one element per list entry), NOT an aclScalarList -- unlike div's
+  // ScalarList variant. Materialize scalars on host in self[0]'s dtype, then
+  // move to device once. The dtype MUST match self (a float32 scalars tensor
+  // against fp16 inputs returns 161002), which costs up to 1 ulp versus CPU,
+  // where the divisor stays a full-precision Scalar.
+  at::Tensor scalars_cpu = at::empty({static_cast<int64_t>(scalars.size())},
+      at::TensorOptions().dtype(self[0].scalar_type()));
+  AT_DISPATCH_FLOATING_TYPES_AND2(at::kHalf, at::kBFloat16, self[0].scalar_type(),
+      "foreach_addcdiv_inplace_scalarlist_dispatcher_scalars", [&] {
+    auto* ptr = scalars_cpu.data_ptr<scalar_t>();
+    for (size_t i = 0; i < scalars.size(); ++i) {
+      ptr[i] = scalars[i].to<scalar_t>();
+    }
+  });
+  at::Tensor scalars_dev = scalars_cpu.to(self[0].device());
+  ascend::AclTensorWrapper acl_scalars(scalars_dev);
+
+  EXEC_ASCEND_CMD(aclnnForeachAddcdivScalarList, self_list, t1_list, t2_list, acl_scalars.get(), self_list);
+
+  (void)self_list; (void)t1_list; (void)t2_list;  // owned by *_w
+}
+
+void ForeachAddcdivInplaceScalarlistKernelAscend(at::TensorList self, at::TensorList tensor1, at::TensorList tensor2, at::ArrayRef<at::Scalar> scalars) {
+  TORCH_CHECK(!self.empty(), "foreach_addcdiv_inplace_scalarlist_dispatcher: expected a non-empty list of tensors");
+  TORCH_CHECK(self.size() == tensor1.size() && self.size() == tensor2.size() && self.size() == scalars.size(),
+      "foreach_addcdiv_inplace_scalarlist_dispatcher: tensor/scalar lists must match in length");
+  for (size_t off = 0; off < self.size(); off += 32) {
+    size_t n = std::min<size_t>(32, self.size() - off);
+    ForeachAddcdivInplaceScalarlistKernelAscendChunk(self.slice(off, n), tensor1.slice(off, n), tensor2.slice(off, n),
+        scalars.slice(off, n));
+  }
+}
+
+REGISTER_IMPL_TO_DISPATCHER(ForeachAddcdivInplaceScalarlistFn, foreach_addcdiv_inplace_scalarlist_dispatcher, Backend::kAscend, ForeachAddcdivInplaceScalarlistKernelAscend)
 
 at::Tensor EmbeddingKernelAscend(const at::Tensor& weight, const at::Tensor& indices, int64_t padding_idx, bool scale_grad_by_freq, bool sparse) {
   namespace ascend = at::native::flagos::ascend;
@@ -3611,6 +3976,64 @@ at::Tensor MeanDimKernelAscend(const at::Tensor& self, at::OptionalIntArrayRef d
 
 REGISTER_IMPL_TO_DISPATCHER(MeanDimFn, mean_dim_dispatcher, Backend::kAscend, MeanDimKernelAscend)
 
+at::Tensor MeanKernelAscend(const at::Tensor& self, std::optional<at::ScalarType> dtype) {
+  namespace ascend = at::native::flagos::ascend;
+  at::ScalarType out_dtype = dtype.has_value() ? dtype.value() : self.scalar_type();
+  int64_t ndim = self.dim();
+  std::vector<int64_t> norm_dims;
+  for (int64_t d = 0; d < ndim; ++d) norm_dims.push_back(d);
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      {}, self.options().dtype(out_dtype));
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_out(out);
+  ascend::AclIntArrayWrapper acl_dim(norm_dims);
+  aclDataType acl_dtype = ascend::ToAclDataType(out_dtype);
+
+  EXEC_ASCEND_CMD(aclnnMean, acl_self.get(), acl_dim.get(), false, acl_dtype, acl_out.get());
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(MeanFn, mean_dispatcher, Backend::kAscend, MeanKernelAscend)
+
+at::Tensor ClampKernelAscend(const at::Tensor& self, const ::std::optional<at::Scalar>& min, const ::std::optional<at::Scalar>& max) {
+  namespace ascend = at::native::flagos::ascend;
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options());
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclScalarWrapper acl_min = min.has_value()
+      ? ascend::AclScalarWrapper(min.value(), self.scalar_type())
+      : ascend::AclScalarWrapper();
+  ascend::AclScalarWrapper acl_max = max.has_value()
+      ? ascend::AclScalarWrapper(max.value(), self.scalar_type())
+      : ascend::AclScalarWrapper();
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD(aclnnClamp, acl_self.get(), acl_min.get(), acl_max.get(), acl_out.get());
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(ClampFn, clamp_dispatcher, Backend::kAscend, ClampKernelAscend)
+
+at::Tensor ClampTensorKernelAscend(const at::Tensor& self, const ::std::optional<at::Tensor>& min, const ::std::optional<at::Tensor>& max) {
+  namespace ascend = at::native::flagos::ascend;
+  auto out_shape = self.sizes().vec();
+  if (min.has_value()) out_shape = at::infer_size(out_shape, min.value().sizes());
+  if (max.has_value()) out_shape = at::infer_size(out_shape, max.value().sizes());
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      out_shape, self.options());
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_min(min.value_or(at::Tensor()));
+  ascend::AclTensorWrapper acl_max(max.value_or(at::Tensor()));
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD(aclnnClampTensor, acl_self.get(), acl_min.get(), acl_max.get(), acl_out.get());
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(ClampTensorFn, clamp_tensor_dispatcher, Backend::kAscend, ClampTensorKernelAscend)
+
 at::Tensor PrivAdaptiveAvgPool2dKernelAscend(const at::Tensor& self, at::IntArrayRef output_size) {
   namespace ascend = at::native::flagos::ascend;
   auto out_shape = self.sizes().vec();
@@ -3751,8 +4174,21 @@ REGISTER_IMPL_TO_DISPATCHER(ConvolutionFn, convolution_dispatcher, Backend::kAsc
       input.sizes(), input.options());
   auto grad_weight = ascend::OpPreparation::apply_tensor_without_format(
       weight.sizes(), weight.options());
-  std::vector<int64_t> bias_shape = bias_sizes.has_value()
-      ? bias_sizes.value().vec() : std::vector<int64_t>{weight.size(0)};
+  // grad_bias is always allocated and passed, even when output_mask[2] is
+  // false (aclnn writes nothing to it then). But its shape must still be
+  // valid: aclnnConvolutionBackward rejects an empty biasSizes, or one whose
+  // product is 0, with 161002 (ACLNN_ERR_PARAM_INVALID). For bias=None
+  // autograd hands us [0] (and an empty list is possible too), so in either
+  // case substitute the real bias length [Cout] = weight.size(0).
+  std::vector<int64_t> bias_shape = std::vector<int64_t>{weight.size(0)};
+  if (bias_sizes.has_value() && !bias_sizes.value().empty()) {
+    const auto bs = bias_sizes.value();
+    int64_t numel = 1;
+    for (auto d : bs) { numel *= d; }
+    if (numel > 0) {
+      bias_shape = bs.vec();
+    }
+  }
   auto grad_bias = ascend::OpPreparation::apply_tensor_without_format(
       bias_shape, weight.options());
 
