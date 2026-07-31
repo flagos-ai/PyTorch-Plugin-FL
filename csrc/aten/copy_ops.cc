@@ -11,6 +11,7 @@
 #include <ATen/native/Resize.h>
 #include <ATen/ops/_pin_memory.h>
 #include <ATen/ops/copy_native.h>
+#include <ATen/ops/_to_copy_ops.h>
 #include <include/flagos.h>
 #include "device_boxing.h"
 
@@ -268,6 +269,35 @@ at::Tensor _to_copy(
         : 0;
     device = c10::Device(device.type(), device_index);
   }
+
+#if !defined(USE_ASCEND) && !defined(USE_TSINGMICRO) && !defined(USE_GCU)
+  // MetaX/CUDA boxing fast path: _to_copy is one of the hottest Qwen decode
+  // ops (dtype conversions in RMSNorm and attention). Reuse the native CUDA
+  // implementation directly instead of allocating a flagos result and then
+  // entering the custom copy_ path. The outer PrivateUse1/autograd dispatch has
+  // already happened, so a fixed CUDA redispatch key is sufficient. Ascend /
+  // TsingMicro / GCU have no CUDA runtime, so they keep the explicit Memcpy path
+  // below.
+  if (self.is_privateuseone() &&
+      (device.is_privateuseone() || device.is_cuda())) {
+    const bool return_flagos = device.is_privateuseone();
+    const c10::Device cuda_device(c10::DeviceType::CUDA, device.index());
+    DeviceBoxingGuard guard(self);
+    auto result = at::_ops::_to_copy::redispatch(
+        c10::DispatchKeySet(c10::DispatchKey::CUDA),
+        self,
+        ::std::optional<c10::ScalarType>(dtype),
+        layout_opt,
+        ::std::optional<c10::Device>(cuda_device),
+        pin_memory_opt,
+        non_blocking,
+        memory_format_opt);
+    if (return_flagos) {
+      UnboxToFlagos(result);
+    }
+    return result;
+  }
+#endif
 
   if (device == self.device() && dtype == self.scalar_type()) {
     if (memory_format == c10::MemoryFormat::Preserve) {
