@@ -13,7 +13,7 @@
 - 构建/测试环境: conda env `torch-fl-211`, python 3.12, torch `2.11.0+cpu`(CPU wheel，绝不装 pip CUDA torch)。加载 conda: `source /nfs/lvyufeng/env.sh`。
 - 构建命令: `FLAGGEMS_KERNEL=OFF FLAGGEMS_PYTHON=OFF CUDA_KERNEL=ON pip install -e . --no-build-isolation`(g++ only，CUDA 符号运行时从外挂 .so 解析)。
 - 所有运行/测试必须经包装器: `bash scripts/with_cuda_libtorch.sh <cmd>`(LD_PRELOAD 注入 libtorch_cuda.so；直接 pytest 会 device init 失败)。
-- 后端配置: `FLAGOS_BACKEND_CONFIG=torch_fl/backends_cuda.conf`。
+- 后端配置: `FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_cuda.conf`。
 - Qwen3 测试需: `HF_HOME=/nfs/lvyufeng/hf_cache HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1`，模型 `Qwen/Qwen3-0.6B`。
 - 外挂 CUDA assets 在 `.libtorch_cuda_assets/`(cu128)。CMake 需 `-DC10_CUDA_NO_CMAKE_CONFIGURE_FILE`(CPU wheel 缺 cuda_cmake_macros.h)。
 - 硬件: A100-SXM4-40GB ×8, driver 580, 主机 CUDA 13.0 toolkit(用 cu128 userspace)。
@@ -81,7 +81,7 @@ Expected: 编译成功。注: 关闭 FLAGGEMS 以绕开 §背景的 `libtriton_j
 Run:
 ```bash
 cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support
-FLAGOS_BACKEND_CONFIG=torch_fl/backends_cuda.conf \
+FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_cuda.conf \
   bash scripts/with_cuda_libtorch.sh python -c \
   "import torch_fl, torch; x=torch.randn(8,8,device='flagos'); torch.flagos.synchronize(); print('OK', (x@x).sum().item())"
 ```
@@ -135,7 +135,7 @@ def test_guard_stream_is_real_not_synthetic():
 Run:
 ```bash
 cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support
-FLAGOS_BACKEND_CONFIG=torch_fl/backends_cuda.conf \
+FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_cuda.conf \
   bash scripts/with_cuda_libtorch.sh python -m pytest \
   tests/unit/test_profiler_privateuse1.py::test_guard_stream_is_real_not_synthetic -v
 ```
@@ -190,7 +190,7 @@ Run:
 ```bash
 cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support
 FLAGGEMS_KERNEL=OFF FLAGGEMS_PYTHON=OFF CUDA_KERNEL=ON pip install -e . --no-build-isolation
-FLAGOS_BACKEND_CONFIG=torch_fl/backends_cuda.conf \
+FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_cuda.conf \
   bash scripts/with_cuda_libtorch.sh python -m pytest \
   tests/unit/test_profiler_privateuse1.py::test_guard_stream_is_real_not_synthetic -v
 ```
@@ -201,7 +201,7 @@ Expected: PASS。
 Run(跑既有核心 ops 套件确认 stream 改动无回归):
 ```bash
 cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support
-FLAGOS_BACKEND_CONFIG=torch_fl/backends_cuda.conf \
+FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_cuda.conf \
   bash scripts/with_cuda_libtorch.sh python -m pytest \
   tests/integration/ops/ -m "not flaggems and not flaggems_python" -q
 ```
@@ -252,7 +252,7 @@ def test_stage_a_privateuse1_device_time():
 Run:
 ```bash
 cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support
-FLAGOS_BACKEND_CONFIG=torch_fl/backends_cuda.conf \
+FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_cuda.conf \
   bash scripts/with_cuda_libtorch.sh python -m pytest \
   tests/unit/test_profiler_privateuse1.py::test_stage_a_privateuse1_device_time -v
 ```
@@ -338,7 +338,7 @@ Run:
 ```bash
 cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support
 FLAGGEMS_KERNEL=OFF FLAGGEMS_PYTHON=OFF CUDA_KERNEL=ON pip install -e . --no-build-isolation
-FLAGOS_BACKEND_CONFIG=torch_fl/backends_cuda.conf \
+FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_cuda.conf \
   bash scripts/with_cuda_libtorch.sh python -m pytest \
   tests/unit/test_profiler_privateuse1.py::test_stage_a_privateuse1_device_time -v
 ```
@@ -396,7 +396,7 @@ def test_profiler_over_qwen3_infer():
 Run:
 ```bash
 cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support
-FLAGOS_BACKEND_CONFIG=torch_fl/backends_cuda.conf \
+FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_cuda.conf \
   HF_HOME=/nfs/lvyufeng/hf_cache HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
   bash scripts/with_cuda_libtorch.sh python -m pytest \
   tests/integration/test_profiler_qwen3_infer.py -v -s
@@ -453,7 +453,7 @@ def test_cupti_library_locatable():
 Run:
 ```bash
 cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support
-FLAGOS_BACKEND_CONFIG=torch_fl/backends_cuda.conf \
+FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_cuda.conf \
   bash scripts/with_cuda_libtorch.sh python -m pytest \
   tests/unit/test_profiler_privateuse1.py::test_cupti_library_locatable -v
 ```
@@ -594,7 +594,7 @@ def test_stage_b_chrome_trace_has_gpu_kernels():
 Run:
 ```bash
 cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support
-FLAGOS_BACKEND_CONFIG=torch_fl/backends_cuda.conf \
+FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_cuda.conf \
   bash scripts/with_cuda_libtorch.sh python -m pytest \
   tests/unit/test_profiler_privateuse1.py::test_stage_b_chrome_trace_has_gpu_kernels -v
 ```
@@ -671,7 +671,7 @@ Run:
 ```bash
 cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support
 FLAGGEMS_KERNEL=OFF FLAGGEMS_PYTHON=OFF CUDA_KERNEL=ON pip install -e . --no-build-isolation
-FLAGOS_BACKEND_CONFIG=torch_fl/backends_cuda.conf \
+FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_cuda.conf \
   bash scripts/with_cuda_libtorch.sh python -m pytest \
   tests/unit/test_profiler_privateuse1.py::test_stage_b_chrome_trace_has_gpu_kernels -v
 ```
@@ -729,7 +729,7 @@ def test_stage_b_correlation_or_degrade():
 Run:
 ```bash
 cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support
-FLAGOS_BACKEND_CONFIG=torch_fl/backends_cuda.conf \
+FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_cuda.conf \
   bash scripts/with_cuda_libtorch.sh python -m pytest \
   tests/unit/test_profiler_privateuse1.py::test_stage_b_correlation_or_degrade -v -s
 ```
@@ -786,7 +786,7 @@ def test_profiler_qwen3_chrome_trace_kernels():
 Run:
 ```bash
 cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support
-FLAGOS_BACKEND_CONFIG=torch_fl/backends_cuda.conf \
+FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_cuda.conf \
   HF_HOME=/nfs/lvyufeng/hf_cache HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
   bash scripts/with_cuda_libtorch.sh python -m pytest \
   tests/integration/test_profiler_qwen3_infer.py -v -s
@@ -798,7 +798,7 @@ Expected: 两个测试都 PASS。
 Run:
 ```bash
 cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support
-FLAGOS_BACKEND_CONFIG=torch_fl/backends_cuda.conf \
+FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_cuda.conf \
   bash scripts/with_cuda_libtorch.sh python -m pytest \
   tests/integration/ops/ -m "not flaggems and not flaggems_python" -q
 ```
