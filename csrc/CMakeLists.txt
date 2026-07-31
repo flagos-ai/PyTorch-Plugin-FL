@@ -35,12 +35,16 @@ list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/runtime/accelerator/ascend/stream_api
 if(NOT CUDA_KERNEL)
   list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/cuda/.*")
 endif()
-if(NOT FLAGGEMS_KERNEL AND NOT FLAGGEMS_PYTHON)
-  # Neither C++ nor Python wrappers: exclude entire flagos backend
+if(NOT FLAGGEMS_KERNEL AND NOT FLAGGEMS_PYTHON AND NOT CUDA_KERNEL)
+  # Nothing needs python_op_caller: exclude entire flagos backend
   # (only python_op_caller.{h,cc} lives here now). The generated
   # flaggems_python_kernels.cc stays but is a no-op without FLAGOS_FLAGGEMS_PYTHON.
   list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/flagos/.*")
 endif()
+# CUDA_KERNEL path: cuda_kernels.cc's native RNG kernels unconditionally call
+# GetFlagosDefaultCudaGenerator() (unified-RNG generator injection) regardless
+# of the FlagGems dispatch path, so python_op_caller.cc must stay in the build
+# whenever CUDA_KERNEL is on -- even with FLAGGEMS_KERNEL=OFF FLAGGEMS_PYTHON=OFF.
 # FLAGGEMS_PYTHON path: keep csrc/aten/backends/flagos/python_op_caller.cc and
 # build csrc/aten/generated/flaggems_python_kernels.cc with FLAGOS_FLAGGEMS_PYTHON
 # defined (below). The stale C++/python_wrapper files were removed; nothing to

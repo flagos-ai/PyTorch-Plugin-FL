@@ -1114,6 +1114,22 @@ def optional_tensor_names(args: List[Tuple[str, str]]) -> List[str]:
     return [n for t, n in args if "optional<at::Tensor>" in t]
 
 
+def _generator_inject_line(args, device_expr):
+    """If this op's schema carries a trailing `Generator?`, emit a line that
+    fills an absent generator with the flagos shared CUDA generator (the one
+    FlagGems reads), so torch.manual_seed unifies native + flaggems RNG.
+    Returns '' for non-RNG ops. `device_expr` is a C++ expr yielding int64
+    device index in the kernel body scope."""
+    has_gen = any("Generator" in t for t, _ in args)
+    if not has_gen:
+        return ""
+    # The generator parameter is always named `generator` in the faithful sig.
+    return (
+        f"  if (!generator.has_value()) generator = "
+        f"at::native::flagos::GetFlagosDefaultCudaGenerator({device_expr});\n"
+    )
+
+
 def gen_functional_pure(op, fn_type, ret_type, args, func=None):
     kn = kernel_name(fn_type)
     api = f"at::{at_api_base(op)}"
@@ -1135,9 +1151,14 @@ def gen_functional_pure(op, fn_type, ret_type, args, func=None):
         guard_names.append(f"{on}_t")
     guard = ", ".join(guard_names)
 
+    inject = (
+        _generator_inject_line(args, f"{guard_names[0]}.get_device()")
+        if guard_names
+        else ""
+    )
     return f"""{ret_type} {kn}({args_decl(args)}) {{
 {holder_lines}  DeviceBoxingGuard guard({guard});
-  auto result = {api}({call_args(args)});
+{inject}  auto result = {api}({call_args(args)});
   UnboxToFlagos(result);
   return result;
 }}"""
@@ -1193,9 +1214,10 @@ def gen_inplace(op, fn_type, ret_type, args, func=None):
         ret_line = ""
     else:
         ret_line = f"\n  return {self_name};"
+    inject = _generator_inject_line(args, "self.get_device()")
     return f"""{ret_type} {kn}({args_decl(args)}) {{
   DeviceBoxingGuard guard({guard});
-  {body_call}{ret_line}
+{inject}  {body_call}{ret_line}
 }}"""
 
 
@@ -1228,13 +1250,16 @@ def gen_out_variant(op, fn_type, ret_type, args, func=None):
 
     unbox_lines = "\n".join(f"  UnboxToFlagos({n});" for n in out_names)
 
+    device_source = out_names[0] if out_names else guard_names[0]
+    inject = _generator_inject_line(args, f"{device_source}.get_device()")
+
     if ret_type.startswith("::std::tuple"):
         # tuple<Tensor&,...>: _ret references the out tensors; unbox out names.
         # (local is _ret, not result, because some ops have an out arg literally
         #  named `result`, e.g. _linalg_det.result.)
         return f"""{ret_type} {kn}({args_decl(args)}) {{
 {holder_lines}  DeviceBoxingGuard guard({guard});
-  auto _ret = {api}({call_args(args)});
+{inject}  auto _ret = {api}({call_args(args)});
 {unbox_lines}
   return _ret;
 }}"""
@@ -1242,7 +1267,7 @@ def gen_out_variant(op, fn_type, ret_type, args, func=None):
     out_name = out_names[0]
     return f"""{ret_type} {kn}({args_decl(args)}) {{
 {holder_lines}  DeviceBoxingGuard guard({guard});
-  {api}({call_args(args)});
+{inject}  {api}({call_args(args)});
 {unbox_lines}
   return {out_name};
 }}"""
@@ -1269,9 +1294,10 @@ def gen_tuple_return(op, fn_type, ret_type, args, func=None):
     unbox_lines = "\n".join(
         f"  UnboxToFlagos(std::get<{i}>(result));" for i in range(ntuple)
     )
+    inject = _generator_inject_line(args, f"{tensor_arg_names(args)[0]}.get_device()")
     return f"""{ret_type} {kn}({args_decl(args)}) {{
 {holder_lines}  DeviceBoxingGuard guard({guard});
-  auto result = {api}({call_args(args)});
+{inject}  auto result = {api}({call_args(args)});
 {unbox_lines}
   return result;
 }}"""
@@ -1469,11 +1495,60 @@ def gen_factory(op, fn_type, ret_type, args, func=None):
                 "::std::optional<at::Device>(_cuda_dev)" if n == device_arg else n
                 for _, n in args
             ]
+            has_gen_arg = any("Generator" in t for t, _ in args)
+            # Unified RNG for generator-LESS factory overloads.
+            #
+            # torch.randint(...) / torch.randperm(...) call the overloads WITHOUT a
+            # `Generator?` arg, so _generator_inject_line (which only fires when the
+            # schema already carries one) does nothing and at::randint(...) falls back
+            # to ATen's default CUDA generator -- unreachable from torch.manual_seed.
+            # These bases all expose a sibling overload with `Generator?` inserted
+            # right after the size arg (verified in ATen/ops/{randint,randperm,
+            # rand,randn}.h), so inject the flagos shared generator there to route
+            # them through the same seedable generator FlagGems uses. randperm falls
+            # out for free (its dominant randomness is an internal torch.randint).
+            _GEN_FACTORY_BASES = {"randint", "randperm", "rand", "randn"}
+            if not has_gen_arg and base in _GEN_FACTORY_BASES:
+                # size is the first IntArrayRef/SymIntArrayRef positional (no self here)
+                size_name = next(
+                    (n for t, n in args if "ArrayRef" in t and "Dimname" not in t),
+                    size_arg,
+                )
+                gen_call_names = []
+                for _t, n in args:
+                    cn = (
+                        "::std::optional<at::Device>(_cuda_dev)"
+                        if n == device_arg
+                        else n
+                    )
+                    gen_call_names.append(cn)
+                    if n == size_name:
+                        gen_call_names.append("_flagos_gen")
+                inject = (
+                    "  ::std::optional<at::Generator> _flagos_gen = "
+                    "at::native::flagos::GetFlagosDefaultCudaGenerator(_cuda_dev.index());\n"
+                )
+                make = (
+                    f"  at::Device _req_dev = {device_arg}.has_value() ? *{device_arg} "
+                    f": at::Device(at::kPrivateUse1, 0);\n"
+                    "  at::Device _cuda_dev = _req_dev.type() == at::kPrivateUse1\n"
+                    "      ? at::Device(at::kCUDA, _req_dev.index()) : _req_dev;\n"
+                    f"{inject}"
+                    f"  auto result = at::{base}({', '.join(gen_call_names)});\n"
+                    "  if (result.device().type() == at::kCUDA) UnboxToFlagos(result);"
+                )
+                return f"""{ret_type} {kn}({args_decl(args)}) {{
+{options}
+{make}
+  return result;
+}}"""
+            inject = _generator_inject_line(args, "_cuda_dev.index()")
             make = (
                 f"  at::Device _req_dev = {device_arg}.has_value() ? *{device_arg} "
                 f": at::Device(at::kPrivateUse1, 0);\n"
                 "  at::Device _cuda_dev = _req_dev.type() == at::kPrivateUse1\n"
                 "      ? at::Device(at::kCUDA, _req_dev.index()) : _req_dev;\n"
+                f"{inject}"
                 f"  auto result = at::{base}({', '.join(call_names)});\n"
                 "  if (result.device().type() == at::kCUDA) UnboxToFlagos(result);"
             )
@@ -1731,6 +1806,7 @@ def main():
         "",
         '#include "ops.h"',
         '#include "../device_boxing.h"',
+        '#include "../backends/flagos/python_op_caller.h"',
         "",
         "#include <vector>",
         "#include <tuple>",

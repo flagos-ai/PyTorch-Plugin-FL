@@ -6,6 +6,8 @@
 #include <pybind11/stl.h>
 #include <torch/csrc/autograd/python_variable.h>
 #include <torch/csrc/utils/pybind.h>
+#include <torch/csrc/Generator.h>
+#include <ATen/core/Generator.h>
 #include <ATen/core/ivalue.h>
 #include <c10/core/DeviceGuard.h>
 
@@ -514,6 +516,29 @@ std::vector<at::Tensor> CallPythonOp_GenericTuple(
     out.push_back(PythonToTensor(py::reinterpret_borrow<py::object>(seq[i])));
   }
   return out;
+}
+
+at::Generator GetFlagosDefaultCudaGenerator(int64_t device_index) {
+  static std::mutex cache_mu;
+  static std::unordered_map<int64_t, at::Generator> gen_cache;
+  {
+    std::lock_guard<std::mutex> lk(cache_mu);
+    auto it = gen_cache.find(device_index);
+    if (it != gen_cache.end()) {
+      return it->second;
+    }
+  }
+  py::gil_scoped_acquire gil;
+  py::module_ torch_cuda = py::module_::import("torch.cuda");
+  py::object gens = torch_cuda.attr("default_generators");
+  py::object py_gen = gens[py::cast(device_index)];
+  // torch.Generator -> at::Generator via THPGenerator unpack.
+  at::Generator gen = py_gen.cast<at::Generator>();
+  {
+    std::lock_guard<std::mutex> lk(cache_mu);
+    gen_cache[device_index] = gen;
+  }
+  return gen;
 }
 
 } // namespace at::native::flagos
