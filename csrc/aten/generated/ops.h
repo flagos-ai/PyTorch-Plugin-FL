@@ -1604,9 +1604,6 @@ DECLARE_DISPATCHER(PrivUnique2OutFn, priv_unique2_out_dispatcher)
 using PrivUnsafeIndexTensorFn = at::Tensor (*)(const at::Tensor &, const c10::List<::std::optional<at::Tensor>> &);
 DECLARE_DISPATCHER(PrivUnsafeIndexTensorFn, priv_unsafe_index_tensor_dispatcher)
 
-using PrivUnsafeViewFn = at::Tensor (*)(const at::Tensor &, at::IntArrayRef);
-DECLARE_DISPATCHER(PrivUnsafeViewFn, priv_unsafe_view_dispatcher)
-
 using PrivUnsafeViewOutFn = at::Tensor & (*)(const at::Tensor &, at::IntArrayRef, at::Tensor &);
 DECLARE_DISPATCHER(PrivUnsafeViewOutFn, priv_unsafe_view_out_dispatcher)
 
@@ -2647,9 +2644,6 @@ DECLARE_DISPATCHER(DequantizeSelfFn, dequantize_self_dispatcher)
 
 using DequantizeSelfOutFn = at::Tensor & (*)(const at::Tensor &, at::Tensor &);
 DECLARE_DISPATCHER(DequantizeSelfOutFn, dequantize_self_out_dispatcher)
-
-using DetachFn = at::Tensor (*)(const at::Tensor &);
-DECLARE_DISPATCHER(DetachFn, detach_dispatcher)
 
 using DetachInplaceFn = at::Tensor & (*)(at::Tensor &);
 DECLARE_DISPATCHER(DetachInplaceFn, detach_inplace_dispatcher)
@@ -4433,9 +4427,6 @@ DECLARE_DISPATCHER(OrmqrFn, ormqr_dispatcher)
 using OrmqrOutFn = at::Tensor & (*)(const at::Tensor &, const at::Tensor &, const at::Tensor &, bool, bool, at::Tensor &);
 DECLARE_DISPATCHER(OrmqrOutFn, ormqr_out_dispatcher)
 
-using PermuteFn = at::Tensor (*)(const at::Tensor &, at::IntArrayRef);
-DECLARE_DISPATCHER(PermuteFn, permute_dispatcher)
-
 using PermuteCopyOutFn = at::Tensor & (*)(const at::Tensor &, at::IntArrayRef, at::Tensor &);
 DECLARE_DISPATCHER(PermuteCopyOutFn, permute_copy_out_dispatcher)
 
@@ -5027,9 +5018,6 @@ DECLARE_DISPATCHER(SegmentReduceFn, segment_reduce_dispatcher)
 using SegmentReduceOutFn = at::Tensor & (*)(const at::Tensor &, c10::string_view, const ::std::optional<at::Tensor> &, const ::std::optional<at::Tensor> &, const ::std::optional<at::Tensor> &, int64_t, bool, const ::std::optional<at::Scalar> &, at::Tensor &);
 DECLARE_DISPATCHER(SegmentReduceOutFn, segment_reduce_out_dispatcher)
 
-using SelectIntFn = at::Tensor (*)(const at::Tensor &, int64_t, int64_t);
-DECLARE_DISPATCHER(SelectIntFn, select_int_dispatcher)
-
 using SelectBackwardOutFn = at::Tensor & (*)(const at::Tensor &, at::IntArrayRef, int64_t, int64_t, at::Tensor &);
 DECLARE_DISPATCHER(SelectBackwardOutFn, select_backward_out_dispatcher)
 
@@ -5140,9 +5128,6 @@ DECLARE_DISPATCHER(SinhOutFn, sinh_out_dispatcher)
 
 using SinhInplaceFn = at::Tensor & (*)(at::Tensor &);
 DECLARE_DISPATCHER(SinhInplaceFn, sinh_inplace_dispatcher)
-
-using SliceTensorFn = at::Tensor (*)(const at::Tensor &, int64_t, ::std::optional<int64_t>, ::std::optional<int64_t>, int64_t);
-DECLARE_DISPATCHER(SliceTensorFn, slice_tensor_dispatcher)
 
 using SliceBackwardFn = at::Tensor (*)(const at::Tensor &, at::IntArrayRef, int64_t, int64_t, int64_t, int64_t);
 DECLARE_DISPATCHER(SliceBackwardFn, slice_backward_dispatcher)
@@ -5654,12 +5639,6 @@ DECLARE_DISPATCHER(SqrtOutFn, sqrt_out_dispatcher)
 using SqrtInplaceFn = at::Tensor & (*)(at::Tensor &);
 DECLARE_DISPATCHER(SqrtInplaceFn, sqrt_inplace_dispatcher)
 
-using SqueezeFn = at::Tensor (*)(const at::Tensor &);
-DECLARE_DISPATCHER(SqueezeFn, squeeze_dispatcher)
-
-using SqueezeDimFn = at::Tensor (*)(const at::Tensor &, int64_t);
-DECLARE_DISPATCHER(SqueezeDimFn, squeeze_dim_dispatcher)
-
 using SqueezeDimsFn = at::Tensor (*)(const at::Tensor &, at::IntArrayRef);
 DECLARE_DISPATCHER(SqueezeDimsFn, squeeze_dims_dispatcher)
 
@@ -5804,9 +5783,6 @@ DECLARE_DISPATCHER(TraceFn, trace_dispatcher)
 using TraceOutFn = at::Tensor & (*)(const at::Tensor &, at::Tensor &);
 DECLARE_DISPATCHER(TraceOutFn, trace_out_dispatcher)
 
-using TransposeIntFn = at::Tensor (*)(const at::Tensor &, int64_t, int64_t);
-DECLARE_DISPATCHER(TransposeIntFn, transpose_int_dispatcher)
-
 using TransposeInplaceFn = at::Tensor & (*)(at::Tensor &, int64_t, int64_t);
 DECLARE_DISPATCHER(TransposeInplaceFn, transpose_inplace_dispatcher)
 
@@ -5911,9 +5887,6 @@ DECLARE_DISPATCHER(UnsafeSplitWithSizesFn, unsafe_split_with_sizes_dispatcher)
 
 using UnsafeSplitWithSizesOutFn = void (*)(const at::Tensor &, at::IntArrayRef, int64_t, at::TensorList);
 DECLARE_DISPATCHER(UnsafeSplitWithSizesOutFn, unsafe_split_with_sizes_out_dispatcher)
-
-using UnsqueezeFn = at::Tensor (*)(const at::Tensor &, int64_t);
-DECLARE_DISPATCHER(UnsqueezeFn, unsqueeze_dispatcher)
 
 using UnsqueezeInplaceFn = at::Tensor & (*)(at::Tensor &, int64_t);
 DECLARE_DISPATCHER(UnsqueezeInplaceFn, unsqueeze_inplace_dispatcher)

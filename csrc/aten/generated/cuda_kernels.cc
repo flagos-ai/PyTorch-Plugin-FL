@@ -619,7 +619,6 @@
 #include <ATen/ops/ones.h>
 #include <ATen/ops/ones_like.h>
 #include <ATen/ops/ormqr.h>
-#include <ATen/ops/permute.h>
 #include <ATen/ops/permute_copy.h>
 #include <ATen/ops/pixel_shuffle.h>
 #include <ATen/ops/pixel_unshuffle.h>
@@ -682,7 +681,6 @@
 #include <ATen/ops/scatter_reduce.h>
 #include <ATen/ops/searchsorted.h>
 #include <ATen/ops/segment_reduce.h>
-#include <ATen/ops/select.h>
 #include <ATen/ops/select_backward.h>
 #include <ATen/ops/select_copy.h>
 #include <ATen/ops/select_scatter.h>
@@ -697,7 +695,6 @@
 #include <ATen/ops/sin.h>
 #include <ATen/ops/sinc.h>
 #include <ATen/ops/sinh.h>
-#include <ATen/ops/slice.h>
 #include <ATen/ops/slice_backward.h>
 #include <ATen/ops/slice_copy.h>
 #include <ATen/ops/slice_inverse.h>
@@ -5478,13 +5475,6 @@ at::Tensor PrivUnsafeIndexTensorKernelCuda(const at::Tensor & self, const c10::L
   return result;
 }
 
-at::Tensor PrivUnsafeViewKernelCuda(const at::Tensor & self, at::IntArrayRef size) {
-  DeviceBoxingGuard guard(self);
-  auto result = at::_unsafe_view(self, size);
-  UnboxToFlagos(result);
-  return result;
-}
-
 at::Tensor & PrivUnsafeViewOutKernelCuda(const at::Tensor & self, at::IntArrayRef size, at::Tensor & out) {
   DeviceBoxingGuard guard(self, out);
   at::_unsafe_view_outf(self, size, out);
@@ -7202,7 +7192,7 @@ at::Tensor & BucketizeTensorOutKernelCuda(const at::Tensor & self, const at::Ten
 }
 
 at::Tensor CatKernelCuda(const at::ITensorListRef & tensors, int64_t dim) {
-  auto tensors_vec = DropLegacyEmptyForCat(MaterializeToTensorVec(tensors));
+  auto tensors_vec = MaterializeForCat(tensors);
   TensorListBoxingGuard guard;
   guard.box(tensors_vec);
   auto result = at::cat(tensors_vec, dim);
@@ -7211,7 +7201,7 @@ at::Tensor CatKernelCuda(const at::ITensorListRef & tensors, int64_t dim) {
 }
 
 at::Tensor & CatOutKernelCuda(const at::ITensorListRef & tensors, int64_t dim, at::Tensor & out) {
-  auto tensors_vec = DropLegacyEmptyForCat(MaterializeToTensorVec(tensors));
+  auto tensors_vec = MaterializeForCat(tensors);
   TensorListBoxingGuard guard;
   guard.box(tensors_vec);
   guard.box({out});
@@ -8046,13 +8036,6 @@ at::Tensor & DequantizeSelfOutKernelCuda(const at::Tensor & self, at::Tensor & o
   at::dequantize_outf(self, out);
   UnboxToFlagos(out);
   return out;
-}
-
-at::Tensor DetachKernelCuda(const at::Tensor & self) {
-  DeviceBoxingGuard guard(self);
-  auto result = at::detach(self);
-  UnboxToFlagos(result);
-  return result;
 }
 
 at::Tensor & DetachInplaceKernelCuda(at::Tensor & self) {
@@ -12025,10 +12008,11 @@ at::Tensor & NativeDropoutBackwardOutKernelCuda(const at::Tensor & grad_output, 
 }
 
 ::std::tuple<at::Tensor,at::Tensor,at::Tensor> NativeGroupNormKernelCuda(const at::Tensor & input, const ::std::optional<at::Tensor> & weight, const ::std::optional<at::Tensor> & bias, int64_t N, int64_t C, int64_t HxW, int64_t group, double eps) {
+  at::Tensor input_contiguous = input.is_contiguous() ? input : input.contiguous();
   at::Tensor weight_t = weight.has_value() ? *weight : at::Tensor();
   at::Tensor bias_t = bias.has_value() ? *bias : at::Tensor();
-  DeviceBoxingGuard guard(input, weight_t, bias_t);
-  auto result = at::native_group_norm(input, weight, bias, N, C, HxW, group, eps);
+  DeviceBoxingGuard guard(input_contiguous, weight_t, bias_t);
+  auto result = at::native_group_norm(input_contiguous, weight, bias, N, C, HxW, group, eps);
   UnboxToFlagos(std::get<0>(result));
   UnboxToFlagos(std::get<1>(result));
   UnboxToFlagos(std::get<2>(result));
@@ -12523,13 +12507,6 @@ at::Tensor & OrmqrOutKernelCuda(const at::Tensor & self, const at::Tensor & inpu
   at::ormqr_outf(self, input2, input3, left, transpose, out);
   UnboxToFlagos(out);
   return out;
-}
-
-at::Tensor PermuteKernelCuda(const at::Tensor & self, at::IntArrayRef dims) {
-  DeviceBoxingGuard guard(self);
-  auto result = at::permute(self, dims);
-  UnboxToFlagos(result);
-  return result;
 }
 
 at::Tensor & PermuteCopyOutKernelCuda(const at::Tensor & self, at::IntArrayRef dims, at::Tensor & out) {
@@ -14061,13 +14038,6 @@ at::Tensor & SegmentReduceOutKernelCuda(const at::Tensor & data, c10::string_vie
   return out;
 }
 
-at::Tensor SelectIntKernelCuda(const at::Tensor & self, int64_t dim, int64_t index) {
-  DeviceBoxingGuard guard(self);
-  auto result = at::select(self, dim, index);
-  UnboxToFlagos(result);
-  return result;
-}
-
 at::Tensor & SelectBackwardOutKernelCuda(const at::Tensor & grad_output, at::IntArrayRef input_sizes, int64_t dim, int64_t index, at::Tensor & out) {
   DeviceBoxingGuard guard(grad_output, out);
   at::select_backward_outf(grad_output, input_sizes, dim, index, out);
@@ -14317,13 +14287,6 @@ at::Tensor & SinhInplaceKernelCuda(at::Tensor & self) {
   DeviceBoxingGuard guard(self);
   self.sinh_();
   return self;
-}
-
-at::Tensor SliceTensorKernelCuda(const at::Tensor & self, int64_t dim, ::std::optional<int64_t> start, ::std::optional<int64_t> end, int64_t step) {
-  DeviceBoxingGuard guard(self);
-  auto result = at::slice(self, dim, start, end, step);
-  UnboxToFlagos(result);
-  return result;
 }
 
 at::Tensor SliceBackwardKernelCuda(const at::Tensor & grad_output, at::IntArrayRef input_sizes, int64_t dim, int64_t start, int64_t end, int64_t step) {
@@ -15534,20 +15497,6 @@ at::Tensor & SqrtInplaceKernelCuda(at::Tensor & self) {
   return self;
 }
 
-at::Tensor SqueezeKernelCuda(const at::Tensor & self) {
-  DeviceBoxingGuard guard(self);
-  auto result = at::squeeze(self);
-  UnboxToFlagos(result);
-  return result;
-}
-
-at::Tensor SqueezeDimKernelCuda(const at::Tensor & self, int64_t dim) {
-  DeviceBoxingGuard guard(self);
-  auto result = at::squeeze(self, dim);
-  UnboxToFlagos(result);
-  return result;
-}
-
 at::Tensor SqueezeDimsKernelCuda(const at::Tensor & self, at::IntArrayRef dim) {
   DeviceBoxingGuard guard(self);
   auto result = at::squeeze(self, dim);
@@ -15883,13 +15832,6 @@ at::Tensor & TraceOutKernelCuda(const at::Tensor & self, at::Tensor & out) {
   return out;
 }
 
-at::Tensor TransposeIntKernelCuda(const at::Tensor & self, int64_t dim0, int64_t dim1) {
-  DeviceBoxingGuard guard(self);
-  auto result = at::transpose(self, dim0, dim1);
-  UnboxToFlagos(result);
-  return result;
-}
-
 at::Tensor & TransposeInplaceKernelCuda(at::Tensor & self, int64_t dim0, int64_t dim1) {
   DeviceBoxingGuard guard(self);
   self.transpose_(dim0, dim1);
@@ -16159,13 +16101,6 @@ void UnsafeSplitWithSizesOutKernelCuda(const at::Tensor & self, at::IntArrayRef 
   TensorListBoxingGuard guard;
   guard.box(out_vec);
   at::unsafe_split_with_sizes_outf(self, split_sizes, dim, out_vec);
-}
-
-at::Tensor UnsqueezeKernelCuda(const at::Tensor & self, int64_t dim) {
-  DeviceBoxingGuard guard(self);
-  auto result = at::unsqueeze(self, dim);
-  UnboxToFlagos(result);
-  return result;
 }
 
 at::Tensor & UnsqueezeInplaceKernelCuda(at::Tensor & self, int64_t dim) {
@@ -17156,7 +17091,6 @@ REGISTER_IMPL_TO_DISPATCHER(PrivUniqueOutFn, priv_unique_out_dispatcher, Backend
 REGISTER_IMPL_TO_DISPATCHER(PrivUnique2Fn, priv_unique2_dispatcher, Backend::kCuda, PrivUnique2KernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivUnique2OutFn, priv_unique2_out_dispatcher, Backend::kCuda, PrivUnique2OutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivUnsafeIndexTensorFn, priv_unsafe_index_tensor_dispatcher, Backend::kCuda, PrivUnsafeIndexTensorKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(PrivUnsafeViewFn, priv_unsafe_view_dispatcher, Backend::kCuda, PrivUnsafeViewKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivUnsafeViewOutFn, priv_unsafe_view_out_dispatcher, Backend::kCuda, PrivUnsafeViewOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivUpsampleBicubic2dAaFn, priv_upsample_bicubic2d_aa_dispatcher, Backend::kCuda, PrivUpsampleBicubic2dAaKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivUpsampleBicubic2dAaOutFn, priv_upsample_bicubic2d_aa_out_dispatcher, Backend::kCuda, PrivUpsampleBicubic2dAaOutKernelCuda)
@@ -17504,7 +17438,6 @@ REGISTER_IMPL_TO_DISPATCHER(Deg2radOutFn, deg2rad_out_dispatcher, Backend::kCuda
 REGISTER_IMPL_TO_DISPATCHER(Deg2radInplaceFn, deg2rad_inplace_dispatcher, Backend::kCuda, Deg2radInplaceKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(DequantizeSelfFn, dequantize_self_dispatcher, Backend::kCuda, DequantizeSelfKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(DequantizeSelfOutFn, dequantize_self_out_dispatcher, Backend::kCuda, DequantizeSelfOutKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(DetachFn, detach_dispatcher, Backend::kCuda, DetachKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(DetachInplaceFn, detach_inplace_dispatcher, Backend::kCuda, DetachInplaceKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(DetachCopyOutFn, detach_copy_out_dispatcher, Backend::kCuda, DetachCopyOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(DiagEmbedOutFn, diag_embed_out_dispatcher, Backend::kCuda, DiagEmbedOutKernelCuda)
@@ -18099,7 +18032,6 @@ REGISTER_IMPL_TO_DISPATCHER(OnesLikeFn, ones_like_dispatcher, Backend::kCuda, On
 REGISTER_IMPL_TO_DISPATCHER(OnesLikeOutFn, ones_like_out_dispatcher, Backend::kCuda, OnesLikeOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(OrmqrFn, ormqr_dispatcher, Backend::kCuda, OrmqrKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(OrmqrOutFn, ormqr_out_dispatcher, Backend::kCuda, OrmqrOutKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(PermuteFn, permute_dispatcher, Backend::kCuda, PermuteKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PermuteCopyOutFn, permute_copy_out_dispatcher, Backend::kCuda, PermuteCopyOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PixelShuffleOutFn, pixel_shuffle_out_dispatcher, Backend::kCuda, PixelShuffleOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PixelUnshuffleOutFn, pixel_unshuffle_out_dispatcher, Backend::kCuda, PixelUnshuffleOutKernelCuda)
@@ -18297,7 +18229,6 @@ REGISTER_IMPL_TO_DISPATCHER(SearchsortedTensorFn, searchsorted_tensor_dispatcher
 REGISTER_IMPL_TO_DISPATCHER(SearchsortedTensorOutFn, searchsorted_tensor_out_dispatcher, Backend::kCuda, SearchsortedTensorOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(SegmentReduceFn, segment_reduce_dispatcher, Backend::kCuda, SegmentReduceKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(SegmentReduceOutFn, segment_reduce_out_dispatcher, Backend::kCuda, SegmentReduceOutKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(SelectIntFn, select_int_dispatcher, Backend::kCuda, SelectIntKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(SelectBackwardOutFn, select_backward_out_dispatcher, Backend::kCuda, SelectBackwardOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(SelectCopyIntOutFn, select_copy_int_out_dispatcher, Backend::kCuda, SelectCopyIntOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(SelectScatterOutFn, select_scatter_out_dispatcher, Backend::kCuda, SelectScatterOutKernelCuda)
@@ -18335,7 +18266,6 @@ REGISTER_IMPL_TO_DISPATCHER(SincInplaceFn, sinc_inplace_dispatcher, Backend::kCu
 REGISTER_IMPL_TO_DISPATCHER(SinhFn, sinh_dispatcher, Backend::kCuda, SinhKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(SinhOutFn, sinh_out_dispatcher, Backend::kCuda, SinhOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(SinhInplaceFn, sinh_inplace_dispatcher, Backend::kCuda, SinhInplaceKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(SliceTensorFn, slice_tensor_dispatcher, Backend::kCuda, SliceTensorKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(SliceBackwardFn, slice_backward_dispatcher, Backend::kCuda, SliceBackwardKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(SliceBackwardOutFn, slice_backward_out_dispatcher, Backend::kCuda, SliceBackwardOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(SliceCopyTensorOutFn, slice_copy_tensor_out_dispatcher, Backend::kCuda, SliceCopyTensorOutKernelCuda)
@@ -18506,8 +18436,6 @@ REGISTER_IMPL_TO_DISPATCHER(SplitWithSizesCopyOutFn, split_with_sizes_copy_out_d
 REGISTER_IMPL_TO_DISPATCHER(SqrtFn, sqrt_dispatcher, Backend::kCuda, SqrtKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(SqrtOutFn, sqrt_out_dispatcher, Backend::kCuda, SqrtOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(SqrtInplaceFn, sqrt_inplace_dispatcher, Backend::kCuda, SqrtInplaceKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(SqueezeFn, squeeze_dispatcher, Backend::kCuda, SqueezeKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(SqueezeDimFn, squeeze_dim_dispatcher, Backend::kCuda, SqueezeDimKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(SqueezeDimsFn, squeeze_dims_dispatcher, Backend::kCuda, SqueezeDimsKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(SqueezeInplaceFn, squeeze_inplace_dispatcher, Backend::kCuda, SqueezeInplaceKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(SqueezeInplaceDimFn, squeeze_inplace_dim_dispatcher, Backend::kCuda, SqueezeInplaceDimKernelCuda)
@@ -18556,7 +18484,6 @@ REGISTER_IMPL_TO_DISPATCHER(TopkFn, topk_dispatcher, Backend::kCuda, TopkKernelC
 REGISTER_IMPL_TO_DISPATCHER(TopkValuesFn, topk_values_dispatcher, Backend::kCuda, TopkValuesKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(TraceFn, trace_dispatcher, Backend::kCuda, TraceKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(TraceOutFn, trace_out_dispatcher, Backend::kCuda, TraceOutKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(TransposeIntFn, transpose_int_dispatcher, Backend::kCuda, TransposeIntKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(TransposeInplaceFn, transpose_inplace_dispatcher, Backend::kCuda, TransposeInplaceKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(TransposeCopyIntOutFn, transpose_copy_int_out_dispatcher, Backend::kCuda, TransposeCopyIntOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(TriangularSolveFn, triangular_solve_dispatcher, Backend::kCuda, TriangularSolveKernelCuda)
@@ -18592,7 +18519,6 @@ REGISTER_IMPL_TO_DISPATCHER(UnsafeSplitTensorFn, unsafe_split_tensor_dispatcher,
 REGISTER_IMPL_TO_DISPATCHER(UnsafeSplitTensorOutFn, unsafe_split_tensor_out_dispatcher, Backend::kCuda, UnsafeSplitTensorOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(UnsafeSplitWithSizesFn, unsafe_split_with_sizes_dispatcher, Backend::kCuda, UnsafeSplitWithSizesKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(UnsafeSplitWithSizesOutFn, unsafe_split_with_sizes_out_dispatcher, Backend::kCuda, UnsafeSplitWithSizesOutKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(UnsqueezeFn, unsqueeze_dispatcher, Backend::kCuda, UnsqueezeKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(UnsqueezeInplaceFn, unsqueeze_inplace_dispatcher, Backend::kCuda, UnsqueezeInplaceKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(UnsqueezeCopyOutFn, unsqueeze_copy_out_dispatcher, Backend::kCuda, UnsqueezeCopyOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(UpsampleBicubic2dFn, upsample_bicubic2d_dispatcher, Backend::kCuda, UpsampleBicubic2dKernelCuda)
