@@ -274,12 +274,21 @@ at::Tensor _to_copy(
   // MetaX/CUDA boxing fast path: _to_copy is one of the hottest Qwen decode
   // ops (dtype conversions in RMSNorm and attention). Reuse the native CUDA
   // implementation directly instead of allocating a flagos result and then
-  // entering the custom copy_ path. The outer PrivateUse1/autograd dispatch has
-  // already happened, so a fixed CUDA redispatch key is sufficient. Ascend /
-  // TsingMicro / GCU have no CUDA runtime, so they keep the explicit Memcpy path
-  // below.
+  // entering the custom copy_ path. Ascend / TsingMicro / GCU have no CUDA
+  // runtime, so they keep the explicit Memcpy path below.
+  //
+  // `::redispatch(DispatchKeySet(CUDA))` carries the CUDA backend key alone, so
+  // it silently drops the functionality keys that sit above it — Autograd /
+  // Autocast, the thread-local Functionalize / Python / vmap modes, and the
+  // per-tensor lazy Conjugate / Negative / ZeroTensor bits — and ignores the
+  // FLAGOS_NO_REDISPATCH kill switch. Gate on the same checks device_boxing.h
+  // applies to every generated boxing kernel: only take the fast path when no
+  // such key is active. Otherwise fall through to the explicit copy path below,
+  // which routes through full dispatch (and self.clone() for the identity case),
+  // preserving grad/mode semantics.
   if (self.is_privateuseone() &&
-      (device.is_privateuseone() || device.is_cuda())) {
+      (device.is_privateuseone() || device.is_cuda()) &&
+      !HasBoxingUnsafeKey(self) && CanBoxingRedispatch()) {
     const bool return_flagos = device.is_privateuseone();
     const c10::Device cuda_device(c10::DeviceType::CUDA, device.index());
     DeviceBoxingGuard guard(self);
