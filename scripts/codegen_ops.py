@@ -1100,6 +1100,125 @@ def at_api_base(op_name: str) -> str:
     return op_name.split(".")[0]
 
 
+# ----------------------------------------------------------------------------
+# Boxing redispatch fast path (grad/autocast/mode/lazy-bit-gated).
+#
+# The inner `at::<op>(...)` call inside every boxing kernel is a FULL second
+# PyTorch dispatch. `at::_ops::<unambiguous>::redispatch(DispatchKeySet(CUDA),...)`
+# skips the inner key recomputation / RecordFunction / trampoline and lands
+# directly on the CUDA backend kernel. It ALSO skips every functionality key above
+# the backend — Autograd/Autocast, Functionalize, Python/torch_dispatch modes,
+# vmap, and the per-tensor Conjugate/Negative/ZeroTensor lazy bits — so it is only
+# correct when none of those are in play. The boxing guard's `CanRedispatch()`
+# combines the global CanBoxingRedispatch() (grad/autocast/mode off) with a check
+# that no boxed input carried a lazy bit (see device_boxing.h). We therefore emit
+# a runtime-gated ternary:
+#     guard.CanRedispatch() ? <redispatch> : <normal at:: call>
+# The two branches share the faithful arg ORDER (out args last), but the
+# redispatch branch must additionally widen symint args to their faithful SymInt
+# spelling (redispatch_args), because — unlike the public `at::<op>(...)` overload —
+# `::redispatch(...)` does not implicitly widen int -> SymInt.
+# ----------------------------------------------------------------------------
+
+
+# --- SymInt widening for the redispatch branch --------------------------------
+# The generated wrappers use the NON-symint faithful signature (IntArrayRef /
+# int64_t / OptionalIntArrayRef / optional<int64_t>), matching PyTorch's
+# PrivateUse1 registration. The public `at::<op>(...)` overload implicitly widens
+# those int-flavored args to SymInt, but `at::_ops::<op>::redispatch(...)` uses the
+# faithful *SymInt* signature verbatim and does NOT widen. So the redispatch branch
+# must wrap each symint arg explicitly. Mapping (validated over the full conf):
+#   SymInt        (cpp int64_t)             -> c10::SymInt(x)
+#   SymInt[]/[N]  (cpp IntArrayRef)         -> c10::fromIntArrayRefSlow(x)  (0-copy view)
+#   SymInt?       (cpp optional<int64_t>)   -> ToOptSymInt(x)
+#   SymInt[]?     (cpp OptionalIntArrayRef) -> ToOptSymIntArrayRef(x)
+# ToOptSymInt / ToOptSymIntArrayRef live in device_boxing.h.
+def _symint_kind_by_name(func) -> Dict[str, str]:
+    """{arg_name: 'scalar'|'array'|'opt_scalar'|'opt_array'} for every symint arg.
+
+    Keyed by name so it composes with the faithful arg list (whose names match
+    func.func.arguments.flat_all one-to-one; TensorOptions-exploded names are
+    never symint and simply don't appear here)."""
+    if func is None:
+        return {}
+    from torchgen.model import BaseTy, BaseType, ListType, OptionalType
+
+    kinds: Dict[str, str] = {}
+    for a in func.func.arguments.flat_all:
+        t = a.type
+        is_opt = isinstance(t, OptionalType)
+        inner = t.elem if is_opt else t
+        is_list = isinstance(inner, ListType)
+        base = inner.elem if is_list else inner
+        if not (isinstance(base, BaseType) and base.name == BaseTy.SymInt):
+            continue
+        if is_opt and is_list:
+            kinds[a.name] = "opt_array"
+        elif is_opt:
+            kinds[a.name] = "opt_scalar"
+        elif is_list:
+            kinds[a.name] = "array"
+        else:
+            kinds[a.name] = "scalar"
+    return kinds
+
+
+def _apply_symint(kind: str | None, expr: str) -> str:
+    if kind == "scalar":
+        return f"c10::SymInt({expr})"
+    if kind == "array":
+        return f"c10::fromIntArrayRefSlow({expr})"
+    if kind == "opt_scalar":
+        return f"ToOptSymInt({expr})"
+    if kind == "opt_array":
+        return f"ToOptSymIntArrayRef({expr})"
+    return expr
+
+
+def redispatch_args(
+    func, args: List[Tuple[str, str]], replacements: Dict[str, str] | None = None
+) -> str:
+    """Arg string for the redispatch branch: apply `replacements` (e.g. the
+    GroupNorm input_contiguous alias) then widen symint args to their faithful
+    SymInt spelling. The plain `at::<op>(...)` fallback keeps using call_args()."""
+    replacements = replacements or {}
+    kinds = _symint_kind_by_name(func)
+    return ", ".join(
+        _apply_symint(kinds.get(n), replacements.get(n, n)) for _, n in args
+    )
+
+
+def redispatch_call(func, call_args_str: str) -> str | None:
+    """`at::_ops::<unambiguous>::redispatch(DispatchKeySet(CUDA), <args>)` string.
+
+    Returns None when func is unavailable (degrade to the plain at:: call).
+    `call_args_str` must already be symint-widened (see redispatch_args)."""
+    if func is None:
+        return None
+    unambig = func.func.name.unambiguous_name()
+    dks = "c10::DispatchKeySet(c10::DispatchKey::CUDA)"
+    if call_args_str.strip():
+        return f"at::_ops::{unambig}::redispatch({dks}, {call_args_str})"
+    return f"at::_ops::{unambig}::redispatch({dks})"
+
+
+def gated_call(func, api_call: str, redis_args_str: str, gate: str = "guard.CanRedispatch()") -> str:
+    """Ternary picking the redispatch fast path when it is safe, else the normal
+    `api_call` expression. Falls back to api_call if func is None. `redis_args_str`
+    is the symint-widened redispatch arg list (see redispatch_args); `api_call` is
+    the plain `at::<op>(call_args)` fallback.
+
+    `gate` is the boolean guard expression. It defaults to the boxing guard's
+    per-call check `guard.CanRedispatch()` — grad/autocast/mode off AND no input
+    carrying a redispatch-unsafe lazy bit (conj/neg/zerotensor). Templates without
+    a guard variable in scope (e.g. index.Tensor) pass their own expression.
+    Note: newlines keep generated code readable for wide arg lists."""
+    redis = redispatch_call(func, redis_args_str)
+    if redis is None:
+        return api_call
+    return f"{gate}\n      ? {redis}\n      : {api_call}"
+
+
 # ============================================================================
 # Per-category kernel templates
 # ============================================================================
@@ -1226,7 +1345,7 @@ def gen_functional_pure(op, fn_type, ret_type, args, func=None):
     )
     return f"""{ret_type} {kn}({args_decl(args)}) {{
 {contiguous_lines}{holder_lines}  DeviceBoxingGuard guard({guard});
-{inject}  auto result = {api}({call_args(args, replacements)});
+{inject}  auto result = {gated_call(func, f"{api}({call_args(args, replacements)})", redispatch_args(func, args, replacements))};
   UnboxToFlagos(result);
   return result;
 }}"""
@@ -1241,7 +1360,7 @@ def gen_vector_return(op, fn_type, ret_type, args, func=None):
     api = f"at::{at_api_base(op)}"
     return f"""{ret_type} {kn}({args_decl(args)}) {{
   DeviceBoxingGuard guard({guard});
-  auto result = {api}({call_args(args)});
+  auto result = {gated_call(func, f"{api}({call_args(args)})", redispatch_args(func, args))};
   UnboxTensorVecToFlagos(result);
   return result;
 }}"""
@@ -1277,6 +1396,16 @@ def gen_inplace(op, fn_type, ret_type, args, func=None):
     else:
         # Function-only syntax: at::silu_(self, ...)
         body_call = f"at::{base}({call_args(args)});"
+
+    # Grad/autocast-off fast path: the in-place op's redispatch takes the faithful
+    # arg order (self first, matching call_args), regardless of method vs function
+    # spelling above. Emit an if/else so the method-only ops still get a fast path.
+    redis = redispatch_call(func, redispatch_args(func, args))
+    if redis is not None:
+        body_call = (
+            f"if (guard.CanRedispatch()) {{ {redis}; }}\n"
+            f"  else {{ {body_call} }}"
+        )
 
     if ret_type == "void":
         ret_line = ""
@@ -1328,7 +1457,7 @@ def gen_out_variant(op, fn_type, ret_type, args, func=None):
         #  named `result`, e.g. _linalg_det.result.)
         return f"""{ret_type} {kn}({args_decl(args)}) {{
 {contiguous_lines}{holder_lines}  DeviceBoxingGuard guard({guard});
-{inject}  auto _ret = {api}({call_args(args, replacements)});
+{inject}  auto _ret = {gated_call(func, f"{api}({call_args(args, replacements)})", redispatch_args(func, args, replacements))};
 {unbox_lines}
   return _ret;
 }}"""
@@ -1336,7 +1465,7 @@ def gen_out_variant(op, fn_type, ret_type, args, func=None):
     out_name = out_names[0]
     return f"""{ret_type} {kn}({args_decl(args)}) {{
 {contiguous_lines}{holder_lines}  DeviceBoxingGuard guard({guard});
-{inject}  {api}({call_args(args, replacements)});
+{inject}  {gated_call(func, f"{api}({call_args(args, replacements)})", redispatch_args(func, args, replacements))};
 {unbox_lines}
   return {out_name};
 }}"""
@@ -1367,7 +1496,7 @@ def gen_tuple_return(op, fn_type, ret_type, args, func=None):
     inject = _generator_inject_line(args, f"{tensor_arg_names(args)[0]}.get_device()")
     return f"""{ret_type} {kn}({args_decl(args)}) {{
 {contiguous_lines}{holder_lines}  DeviceBoxingGuard guard({guard});
-{inject}  auto result = {api}({call_args(args, replacements)});
+{inject}  auto result = {gated_call(func, f"{api}({call_args(args, replacements)})", redispatch_args(func, args, replacements))};
 {unbox_lines}
   return result;
 }}"""
@@ -1406,6 +1535,24 @@ def gen_foreach(op, fn_type, ret_type, args, func=None):
 
     call_args_str = ", ".join(call_arg_names)
 
+    # redispatch faithful signatures spell the list arg differently per op:
+    #   cat::redispatch      -> const at::ITensorListRef &   (materialized vec does
+    #                           NOT chain-convert vector->ArrayRef->IListRef, so wrap
+    #                           it explicitly)
+    #   _foreach_*::redispatch -> at::TensorList (=ArrayRef)  (materialized vec converts
+    #                           in one step, pass as-is)
+    redis_arg_names = []
+    _kinds = _symint_kind_by_name(func)
+    for t, n in args:
+        if "ITensorListRef" in t or "TensorList" in t:
+            mat_name = f"{n}_vec"
+            redis_arg_names.append(
+                f"at::ITensorListRef({mat_name})" if is_cat else mat_name
+            )
+        else:
+            redis_arg_names.append(_apply_symint(_kinds.get(n), n))
+    redis_args_str = ", ".join(redis_arg_names)
+
     # Box the materialized vectors
     box_lines = ""
     for t, n in tensorlist_args:
@@ -1413,7 +1560,8 @@ def gen_foreach(op, fn_type, ret_type, args, func=None):
         box_lines += f"  guard.box({mat_name});\n"
 
     if ret_type == "void":
-        body = f"  {api}({call_args_str});"
+        call = gated_call(func, f"{api}({call_args_str})", redis_args_str)
+        body = f"  {call};"
         return f"""{ret_type} {kn}({args_decl(args)}) {{
 {materialize_lines}  TensorListBoxingGuard guard;
 {box_lines}{body}
@@ -1421,7 +1569,7 @@ def gen_foreach(op, fn_type, ret_type, args, func=None):
     elif "vector" in ret_type:
         return f"""{ret_type} {kn}({args_decl(args)}) {{
 {materialize_lines}  TensorListBoxingGuard guard;
-{box_lines}  auto result = {api}({call_args_str});
+{box_lines}  auto result = {gated_call(func, f"{api}({call_args_str})", redis_args_str)};
   UnboxTensorVecToFlagos(result);
   return result;
 }}"""
@@ -1429,7 +1577,7 @@ def gen_foreach(op, fn_type, ret_type, args, func=None):
         # single Tensor return (cat)
         return f"""{ret_type} {kn}({args_decl(args)}) {{
 {materialize_lines}  TensorListBoxingGuard guard;
-{box_lines}  auto result = {api}({call_args_str});
+{box_lines}  auto result = {gated_call(func, f"{api}({call_args_str})", redis_args_str)};
   UnboxToFlagos(result);
   return result;
 }}"""
@@ -1487,6 +1635,20 @@ def gen_foreach_out(op, fn_type, ret_type, args, func=None):
             call_arg_names.append(n)
     call_args_str = ", ".join(call_arg_names)
 
+    # redispatch faithful list spelling (see gen_foreach): cat.out needs an explicit
+    # ITensorListRef wrap; _foreach_*.out / split_copy.Tensor_out take at::TensorList.
+    redis_arg_names = []
+    _kinds = _symint_kind_by_name(func)
+    for t, n in args:
+        if "ITensorListRef" in t or "TensorList" in t:
+            mat_name = f"{n}_vec"
+            redis_arg_names.append(
+                f"at::ITensorListRef({mat_name})" if is_cat else mat_name
+            )
+        else:
+            redis_arg_names.append(_apply_symint(_kinds.get(n), n))
+    redis_args_str = ", ".join(redis_arg_names)
+
     # Return shape follows ret_type: void (no return) or single `Tensor&`
     # (return the lone out). tuple<Tensor&,...> is not produced here (skipped).
     ret_line = ""
@@ -1495,7 +1657,7 @@ def gen_foreach_out(op, fn_type, ret_type, args, func=None):
 
     return f"""{ret_type} {kn}({args_decl(args)}) {{
 {materialize_lines}  TensorListBoxingGuard guard;
-{box_lines}  {api}({call_args_str});{ret_line}
+{box_lines}  {gated_call(func, f"{api}({call_args_str})", redis_args_str)};{ret_line}
 }}"""
 
 
@@ -1636,17 +1798,27 @@ def gen_optlist(op, fn_type, ret_type, args, func=None):
     self_name = args[0][1]
     list_name = args[1][1]
     api = f"at::{at_api_base(op)}"
+    # No boxing guard here (manual box/unbox), so track redispatch-unsafe lazy
+    # bits (conj/neg/zerotensor) inline over self + the index tensors.
+    call = gated_call(
+        func,
+        f"{api}({self_name}, {list_name})",
+        f"{self_name}, {list_name}",
+        gate="(!redispatch_unsafe && CanBoxingRedispatch())",
+    )
     return f"""{ret_type} {kn}({args_decl(args)}) {{
+  bool redispatch_unsafe = HasBoxingUnsafeKey({self_name});
   BoxToCuda({self_name});
   std::vector<at::Tensor> boxed_holders;
   for (int64_t i = 0; i < static_cast<int64_t>({list_name}.size()); ++i) {{
     auto opt = {list_name}.get(i);
     if (opt.has_value() && opt->defined()) {{
+      redispatch_unsafe = redispatch_unsafe || HasBoxingUnsafeKey(*opt);
       BoxToCuda(*opt);
       boxed_holders.push_back(*opt);
     }}
   }}
-  auto result = {api}({self_name}, {list_name});
+  auto result = {call};
   UnboxToFlagos({self_name});
   for (auto& t : boxed_holders) {{
     UnboxToFlagos(t);
@@ -1695,11 +1867,21 @@ def api_headers(op_info: Dict) -> List[str]:
     """Header file names come from torchgen's authoritative func.root_name.
     (e.g. schema '__ilshift__.Scalar' -> root_name 'lshift' -> ATen/ops/lshift.h;
     'add.out' and 'add.Tensor' both -> 'add'.) Never derive the header from the
-    schema base by stripping underscores -- that mangles dunder operators."""
+    schema base by stripping underscores -- that mangles dunder operators.
+
+    Two headers per root:
+      <root>.h      -- the public at::<op>(...) convenience API used by the
+                       grad/autocast-on fallback branch.
+      <root>_ops.h  -- the at::_ops::<name>::redispatch(...) declarations used by
+                       the grad/autocast-off boxing fast path (CanBoxingRedispatch)."""
     bases = set()
     for op in op_info.values():
         bases.add(op["func"].root_name)
-    return [f"#include <ATen/ops/{b}.h>" for b in sorted(bases)]
+    lines = []
+    for b in sorted(bases):
+        lines.append(f"#include <ATen/ops/{b}.h>")
+        lines.append(f"#include <ATen/ops/{b}_ops.h>")
+    return lines
 
 
 # ============================================================================
