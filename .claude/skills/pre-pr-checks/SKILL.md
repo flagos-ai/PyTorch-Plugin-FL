@@ -4,14 +4,87 @@ description: >
   Run the checks CI enforces before opening or updating a pull request on
   torch_fl. Use this whenever you are about to `gh pr create`, push to a PR
   branch, or amend a commit that is already on a PR — and when a PR's `lint /
-  Lint` job has gone red. Covers: the exact pinned ruff version CI uses, the
-  two ruff commands that gate every job downstream, which interpreter to run
-  them with on vendor boxes, and how to update an existing PR afterwards.
+  Lint` job has gone red. Covers: rebasing onto the latest flagos/main first,
+  the exact pinned ruff version CI uses, the two ruff commands that gate every
+  job downstream, which interpreter to run them with on vendor boxes, and how
+  to update an existing PR afterwards.
 ---
 
 # Pre-PR checks (torch_fl)
 
-## Why this exists
+## Order of operations
+
+Every PR, no exceptions:
+
+1. **Rebase onto the latest `flagos/main`** — fetch first, then rebase, then
+   resolve conflicts. See below; this is the step that actually bites.
+2. **Lint locally** with the pinned ruff (`ruff check .`, `ruff format --check .`).
+3. **Run the tests** covering the change.
+4. *Then* `gh pr create` / `git push`.
+
+Doing 2 before 1 wastes the run: a rebase can reintroduce lint errors or pull in
+regenerated files, so lint has to come after.
+
+## Step 1: rebase onto the latest flagos/main
+
+**Always `git fetch flagos main` before you rebase.** A local `flagos/main` ref
+is a snapshot from whenever you last fetched, and this repo moves fast — on one
+occasion ten commits landed in the two days between a fetch and a PR. Basing a
+PR on a stale ref produces a diff full of conflicts that have nothing to do with
+your change:
+
+```bash
+git fetch flagos main
+git log --oneline -1 --format="%h %cd %s" flagos/main   # check the date, not just the sha
+git rebase flagos/main
+```
+
+### Check whether your commits already landed upstream
+
+The most confusing failure mode is a PR that conflicts with *itself*: a local
+commit was merged upstream through an earlier PR (usually squashed, so the sha
+differs and git cannot match them up), and the rebase tries to apply it a second
+time.
+
+```bash
+git log --oneline <old-base>..flagos/main    # look for your own commit subjects
+```
+
+If you find one, drop that commit from the branch rather than fighting the
+conflict — the upstream copy is authoritative.
+
+### Regenerate rather than merge generated files
+
+For conflicts inside generated artifacts (`csrc/aten/generated/*`,
+`torch_fl/configs/backends_*.conf`), do not hand-merge conflict markers. Take
+the upstream side, port only the *generator* change, and re-run codegen:
+
+```bash
+git checkout flagos/main -- csrc/aten/generated/ torch_fl/configs/
+FLAGOS_CODEGEN_ALL=1 /usr/bin/python3 scripts/codegen_ops.py
+```
+
+Then confirm idempotency — a second run must produce no diff:
+
+```bash
+FLAGOS_CODEGEN_ALL=1 /usr/bin/python3 scripts/codegen_ops.py
+git diff --quiet && echo "idempotent" || echo "generator is NOT idempotent"
+```
+
+### Do not clobber upstream changes to files you also touched
+
+`git checkout <your-commit> -- <file>` on a hand-written file silently discards
+whatever upstream did to it. Apply your side as a patch so a real conflict is
+surfaced instead of swallowed:
+
+```bash
+git diff <base> <your-commit> -- path/to/file.py > /tmp/change.patch
+git apply --3way /tmp/change.patch     # conflicts to resolve, not to lose
+```
+
+When resolving, keep **both** sides unless they genuinely contradict.
+
+## Why the lint step exists
 
 `.github/workflows/ci.yml` runs `lint` **first** and every other job declares
 `needs: lint`. A formatting slip therefore does not just fail one check — it
@@ -96,8 +169,12 @@ branches.
 
 Before `gh pr create` or any push to a PR branch:
 
-1. `ruff check .` → "All checks passed!"
-2. `ruff format --check .` → "N files already formatted", nothing to reformat
-3. Tests covering your change still pass (and re-run any file ruff reformatted)
-4. `git diff --stat` against the base — confirm the diff contains only what you
+1. `git fetch flagos main`, then `git rebase flagos/main` — conflicts resolved,
+   and any commit that already landed upstream dropped
+2. `git log --oneline flagos/main..HEAD` — only the commits you mean to ship
+3. `ruff check .` → "All checks passed!"
+4. `ruff format --check .` → "N files already formatted", nothing to reformat
+5. Tests covering your change still pass (and re-run any file ruff reformatted)
+6. If codegen ran: a second `FLAGOS_CODEGEN_ALL=1` run leaves no diff
+7. `git diff --stat flagos/main` — confirm the diff contains only what you
    intended, especially when generated files are involved
