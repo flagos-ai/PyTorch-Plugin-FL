@@ -1145,9 +1145,32 @@ _GEN_LIKE_BASES = {"randint_like", "rand_like", "randn_like"}
 _GEN_OUT_BASES = _GEN_FACTORY_BASES | _GEN_LIKE_BASES
 
 
+# Pure view/alias ops whose generated kernel MUST call at::native:: directly
+# instead of at::<op>. These ops are also registered on the PrivateUse1 key, so
+# calling the re-dispatchable at::<op>(self) from inside the kernel routes right
+# back into THIS kernel. Under eager, DeviceBoxingGuard hides the recursion by
+# rewriting self's device metadata to CUDA before the call. But that trick fails
+# for FakeTensors: their Python dispatch key sits ABOVE the backend keys, so the
+# metadata rewrite can't redirect dispatch -- at::<op>(self) re-dispatches to
+# PrivateUse1 -> infinite recursion -> stack overflow (segfault during
+# torch.compile / dynamo tracing of any model that hits detach, e.g. nn.Linear).
+# at::native::<op> is the metadata-only implementation and never re-dispatches,
+# matching how strided_ops.cc registers view/as_strided/transpose for Ascend.
+NATIVE_DIRECT_VIEW_OPS = {
+    "detach",
+}
+
+
 def gen_functional_pure(op, fn_type, ret_type, args, func=None):
     kn = kernel_name(fn_type)
     api = f"at::{at_api_base(op)}"
+
+    # Pure alias ops (detach): call at::native:: directly, no boxing, no
+    # re-dispatch. See NATIVE_DIRECT_VIEW_OPS for why re-dispatch is fatal.
+    if at_api_base(op) in NATIVE_DIRECT_VIEW_OPS:
+        return f"""{ret_type} {kn}({args_decl(args)}) {{
+  return at::native::{at_api_base(op)}({call_args(args)});
+}}"""
 
     # Box plain Tensor inputs AND optional<Tensor> inputs (e.g. conv/linear bias).
     # An optional<Tensor> that lives on flagos must be boxed to CUDA too, or the
@@ -1235,7 +1258,12 @@ def gen_inplace(op, fn_type, ret_type, args, func=None):
       - function-only (silu_/gelu_/celu_/leaky_relu_/...activations): call the free
         function `at::silu_(self, ...)` -- these have NO Tensor method, so the
         method syntax fails to compile.
-    Ops with both (fill_/zero_/relu_) work either way; we default to method."""
+    Ops with both (fill_/zero_/relu_) work either way; we default to method.
+
+    optional<Tensor> inputs must be materialized into a holder to be boxed by
+    DeviceBoxingGuard (same pattern as gen_functional_pure / gen_out_variant).
+    Missing this makes e.g. clamp_.Tensor pass unboxed flagos min/max into a
+    CUDA self -> "tensor does not have a device" / segfault."""
     kn = kernel_name(fn_type)
     # Box plain Tensor inputs AND optional<Tensor> inputs (e.g. clamp_.Tensor's
     # min/max). An optional<Tensor> on flagos must be boxed to CUDA too, or the

@@ -8051,10 +8051,7 @@ at::Tensor & DequantizeSelfOutKernelCuda(const at::Tensor & self, at::Tensor & o
 }
 
 at::Tensor DetachKernelCuda(const at::Tensor & self) {
-  DeviceBoxingGuard guard(self);
-  auto result = at::detach(self);
-  UnboxToFlagos(result);
-  return result;
+  return at::native::detach(self);
 }
 
 at::Tensor & DetachInplaceKernelCuda(at::Tensor & self) {

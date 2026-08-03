@@ -392,6 +392,56 @@ def patch_torch_cuda_for_flagos():
     torch.cuda.current_stream = lambda device=None: _StreamShim(_device_index(device))
     torch.cuda.default_stream = lambda device=None: _StreamShim(_device_index(device))
 
+    # torch.cuda.Event/Stream are dummy base classes in the CPU wheel and raise
+    # on construction. flagos ships working ones over the same physical GPU
+    # (its Event does real elapsed_time), so hand those out instead. inductor's
+    # kernel benchmarking constructs torch.cuda.Event(enable_timing=True).
+    if _flagos is not None:
+        if getattr(_flagos, "Event", None) is not None:
+            torch.cuda.Event = _flagos.Event
+        if getattr(_flagos, "Stream", None) is not None:
+            torch.cuda.Stream = _flagos.Stream
+
+    # Memory stats. Every torch.cuda.memory_* query goes through
+    # torch._C._cuda_memoryStats, which the CPU wheel does not build, so they all
+    # raise AttributeError. flagos delegates its allocator to
+    # c10::cuda::CUDACachingAllocator, so its own stats describe the very same
+    # pool -- route the CUDA queries there. inductor's autotuner needs these to
+    # size its benchmark scratch budget (copy_args_to_cpu_if_needed).
+    if _flagos is not None:
+        torch.cuda.memory_allocated = lambda device=None: _flagos.memory_allocated(
+            _device_index(device)
+        )
+        torch.cuda.memory_reserved = lambda device=None: _flagos.memory_reserved(
+            _device_index(device)
+        )
+
+        def _memory_stats(device=None):
+            """flagos stats under the nested keys torch.cuda callers expect.
+
+            flagos reports flat names (``peak_allocated_bytes``); torch.cuda's
+            schema is ``allocated_bytes.all.peak``. Emit both so either style of
+            lookup resolves.
+            """
+            stats = dict(_flagos.memory_stats(_device_index(device)))
+            for flat, nested in (
+                ("allocated_bytes", "allocated_bytes.all.current"),
+                ("peak_allocated_bytes", "allocated_bytes.all.peak"),
+                ("reserved_bytes", "reserved_bytes.all.current"),
+                ("peak_reserved_bytes", "reserved_bytes.all.peak"),
+            ):
+                if flat in stats:
+                    stats[nested] = stats[flat]
+            return stats
+
+        torch.cuda.memory_stats = _memory_stats
+        torch.cuda.max_memory_allocated = lambda device=None: _memory_stats(device).get(
+            "peak_allocated_bytes", 0
+        )
+        torch.cuda.max_memory_reserved = lambda device=None: _memory_stats(device).get(
+            "peak_reserved_bytes", 0
+        )
+
     # triton reads torch._C._cuda_getCurrentRawStream(idx) -> raw handle.
     try:
         torch._C._cuda_getCurrentRawStream = lambda idx=0: 0
