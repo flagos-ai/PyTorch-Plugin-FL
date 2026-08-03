@@ -352,6 +352,7 @@ __all__ = [
     "manual_seed_all",  # noqa: F405
     "get_rng_state",  # noqa: F405
     "set_rng_state",  # noqa: F405
+    "_is_in_bad_fork",  # noqa: F405  (torch.random._seed_custom_device probes it)
     "get_amp_supported_dtype",
     "Stream",
     "Event",

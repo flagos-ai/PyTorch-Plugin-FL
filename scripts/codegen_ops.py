@@ -1130,6 +1130,21 @@ def _generator_inject_line(args, device_expr):
     )
 
 
+# RNG bases whose *plain* overloads carry NO `Generator?` in the schema, so
+# _generator_inject_line above never fires for them and they would silently fall
+# back to ATen's own default CUDA generator -- unreachable from
+# torch.manual_seed on the CPU-torch wheel. Each base does expose a sibling ATen
+# overload with `optional<Generator>` inserted at a fixed position, so the
+# corresponding template threads the flagos shared generator in explicitly.
+# One set per template, because the insertion point differs:
+#   factory      -> right after the size/n/high value args (before dtype)
+#   *_like       -> right before dtype
+#   out-variant  -> before the first of names / memory_format / out
+_GEN_FACTORY_BASES = {"randint", "randperm", "rand", "randn"}
+_GEN_LIKE_BASES = {"randint_like", "rand_like", "randn_like"}
+_GEN_OUT_BASES = _GEN_FACTORY_BASES | _GEN_LIKE_BASES
+
+
 def gen_functional_pure(op, fn_type, ret_type, args, func=None):
     kn = kernel_name(fn_type)
     api = f"at::{at_api_base(op)}"
@@ -1156,6 +1171,38 @@ def gen_functional_pure(op, fn_type, ret_type, args, func=None):
         if guard_names
         else ""
     )
+
+    # Unified RNG for generator-LESS *_like overloads.
+    #
+    # randint_like/rand_like/randn_like carry a `self` tensor, so they land on
+    # this template rather than gen_factory -- and their plain overloads have no
+    # `Generator?` arg, so _generator_inject_line above emits nothing and
+    # at::randint_like(...) falls back to ATen's default CUDA generator, which
+    # torch.manual_seed cannot reach. Each of these bases exposes a sibling
+    # overload with `Generator?` inserted after the trailing value args and
+    # before dtype (verified in ATen/ops/randint_like.h), so inject the flagos
+    # shared generator at that position.
+    base = at_api_base(op)
+    if base in _GEN_LIKE_BASES and not any("Generator" in t for t, _ in args):
+        dtype_name = next((n for t, n in args if "optional<at::ScalarType>" in t), None)
+        if dtype_name is not None and guard_names:
+            gen_call_names = []
+            for _t, n in args:
+                if n == dtype_name:
+                    gen_call_names.append("_flagos_gen")
+                gen_call_names.append(n)
+            inject = (
+                "  ::std::optional<at::Generator> _flagos_gen = "
+                "at::native::flagos::GetFlagosDefaultCudaGenerator("
+                f"{guard_names[0]}.get_device());\n"
+            )
+            return f"""{ret_type} {kn}({args_decl(args)}) {{
+{holder_lines}  DeviceBoxingGuard guard({guard});
+{inject}  auto result = {api}({", ".join(gen_call_names)});
+  UnboxToFlagos(result);
+  return result;
+}}"""
+
     return f"""{ret_type} {kn}({args_decl(args)}) {{
 {holder_lines}  DeviceBoxingGuard guard({guard});
 {inject}  auto result = {api}({call_args(args)});
@@ -1252,6 +1299,38 @@ def gen_out_variant(op, fn_type, ret_type, args, func=None):
 
     device_source = out_names[0] if out_names else guard_names[0]
     inject = _generator_inject_line(args, f"{device_source}.get_device()")
+    call = call_args(args)
+
+    # Unified RNG for generator-LESS out-variants (rand.out, randint.out,
+    # randint_like.out, randperm.out, ...). Same gap as the gen_factory /
+    # gen_functional_pure cases: the plain overload carries no `Generator?`, so
+    # _generator_inject_line emits nothing and at::<base>_outf() falls back to
+    # ATen's default CUDA generator, which torch.manual_seed cannot reach.
+    #
+    # Every one of these bases exposes a sibling `_outf` overload with
+    # `optional<Generator>` inserted after the trailing value args and before the
+    # first trailing modifier -- `names` (rand/randn), `memory_format` (*_like),
+    # or the `out` tensor itself when neither is present. Verified across
+    # ATen/ops/{rand,randn,rand_like,randn_like,randint,randint_like,randperm}.h.
+    if base in _GEN_OUT_BASES and not any("Generator" in t for t, _ in args):
+        gen_call_names = []
+        placed = False
+        for t, n in args:
+            if not placed and (
+                "optional<at::DimnameList>" in t
+                or "optional<at::MemoryFormat>" in t
+                or n in out_names
+            ):
+                gen_call_names.append("_flagos_gen")
+                placed = True
+            gen_call_names.append(n)
+        if placed:
+            inject = (
+                "  ::std::optional<at::Generator> _flagos_gen = "
+                "at::native::flagos::GetFlagosDefaultCudaGenerator("
+                f"{device_source}.get_device());\n"
+            )
+            call = ", ".join(gen_call_names)
 
     if ret_type.startswith("::std::tuple"):
         # tuple<Tensor&,...>: _ret references the out tensors; unbox out names.
@@ -1259,7 +1338,7 @@ def gen_out_variant(op, fn_type, ret_type, args, func=None):
         #  named `result`, e.g. _linalg_det.result.)
         return f"""{ret_type} {kn}({args_decl(args)}) {{
 {holder_lines}  DeviceBoxingGuard guard({guard});
-{inject}  auto _ret = {api}({call_args(args)});
+{inject}  auto _ret = {api}({call});
 {unbox_lines}
   return _ret;
 }}"""
@@ -1267,7 +1346,7 @@ def gen_out_variant(op, fn_type, ret_type, args, func=None):
     out_name = out_names[0]
     return f"""{ret_type} {kn}({args_decl(args)}) {{
 {holder_lines}  DeviceBoxingGuard guard({guard});
-{inject}  {api}({call_args(args)});
+{inject}  {api}({call});
 {unbox_lines}
   return {out_name};
 }}"""
@@ -1507,7 +1586,6 @@ def gen_factory(op, fn_type, ret_type, args, func=None):
             # rand,randn}.h), so inject the flagos shared generator there to route
             # them through the same seedable generator FlagGems uses. randperm falls
             # out for free (its dominant randomness is an internal torch.randint).
-            _GEN_FACTORY_BASES = {"randint", "randperm", "rand", "randn"}
             if not has_gen_arg and base in _GEN_FACTORY_BASES:
                 # size is the first IntArrayRef/SymIntArrayRef positional (no self here)
                 size_name = next(
