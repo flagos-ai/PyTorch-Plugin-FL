@@ -221,6 +221,23 @@ class TestRngSeedSource:
 
     @pytest.mark.anyplatform
     @pytest.mark.main_ops
+    @pytest.mark.parametrize("attr", ["cuda", "flagos"])
+    def test_default_generators_iterable(self, attr):
+        # Upstream types default_generators as a *tuple*, so callers iterate it,
+        # slice it and list() it. Our shims are list-like proxies with no
+        # __iter__, which sends Python to the legacy protocol: __getitem__(0, 1,
+        # 2, ...) until IndexError. Unbounded __getitem__ therefore made
+        # `for g in default_generators` an infinite loop that allocated a fresh
+        # generator per step -- a hang, not an error, so nothing surfaced it.
+        gens = getattr(torch if attr == "cuda" else torch_fl, attr).default_generators
+        n = len(gens)
+        assert len(list(gens)) == n, "iteration does not stop at device_count"
+        assert len(gens[:2]) == min(2, n), "slicing is not supported"
+        with pytest.raises(IndexError):
+            gens[n]
+
+    @pytest.mark.anyplatform
+    @pytest.mark.main_ops
     def test_manual_seed_reaches_flagos_module(self):
         # torch.random._seed_custom_device only seeds this device module when it
         # exposes BOTH manual_seed_all and _is_in_bad_fork; missing either one
