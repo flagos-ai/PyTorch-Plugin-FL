@@ -19,6 +19,7 @@
 #include <kineto/ILoggerObserver.h>
 #include <kineto/libkineto.h>
 
+#include <atomic>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -109,6 +110,81 @@ namespace flagos {
 
 namespace detail {
 
+// --- record-layout self-check ------------------------------------------------
+//
+// The structs above mirror ONE CUPTI version's layout by hand. NVIDIA adds
+// fields and publishes a new CUpti_ActivityKernel<N> every few releases, so on a
+// different CUPTI the mirror can be wrong -- and the failure mode is silent: we
+// decode whatever bytes land at those offsets and emit a trace full of empty
+// names and zero durations (exactly the bug this file was fixed for once).
+//
+// So rather than trust the mirror, check the values it produces. A correct
+// decode has properties that garbage almost never satisfies, and each check is
+// version-independent -- it asserts something true of any sane kernel record,
+// not something true of cu12 specifically:
+//
+//   * end >= start                  (a kernel cannot finish before it starts)
+//   * duration is not absurd        (CUPTI timestamps are ns since boot; a
+//                                    multi-hour single kernel means the offsets
+//                                    are misaligned, not a slow kernel)
+//   * start is a plausible boot-relative ns timestamp, i.e. non-zero
+//   * name, if non-null, points at readable non-empty text
+//
+// On failure we drop the record and report once, naming the bound CUPTI version,
+// so the user gets "your CUPTI layout is unsupported" instead of a mysteriously
+// empty timeline.
+
+// A single kernel longer than this means we are reading the wrong offsets. Real
+// kernels run micro- to milliseconds; an hour is ~7 orders of magnitude beyond
+// anything legitimate, so this rejects garbage without risking a false positive
+// on a genuinely slow kernel.
+constexpr uint64_t kMaxPlausibleDurationNs = 3600ull * 1000 * 1000 * 1000;
+
+std::atomic<uint64_t> g_layout_reject_count{0};
+std::once_flag g_layout_warn_once;
+
+// Reports the first rejected record, then stays quiet: a bad layout rejects
+// every record, and one diagnostic is informative where thousands are noise.
+void reportLayoutMismatch(const char* what) {
+  auto& shim = CuptiShim::get();
+  std::call_once(g_layout_warn_once, [&] {
+    std::cerr
+        << "[flagos] CUPTI activity records failed the layout self-check ("
+        << what << ").\n"
+        << "[flagos]   bound CUPTI: "
+        << (shim.library_path[0] ? shim.library_path : "<unknown>")
+        << " (API version " << shim.api_version << ")\n"
+        << "[flagos]   This build mirrors the CUpti_ActivityKernel9 /"
+           " CUpti_ActivityMemcpy6 layouts by hand, so a CUPTI whose record\n"
+        << "[flagos]   layout differs cannot be decoded. GPU kernel events will"
+           " be missing from the trace; CPU-side profiling is unaffected.\n"
+        << "[flagos]   Set FLAGOS_CUPTI_LIBRARY to a matching libcupti, or"
+           " report this CUPTI version so its layout can be added.\n";
+  });
+  g_layout_reject_count.fetch_add(1, std::memory_order_relaxed);
+}
+
+// True when a decoded (start, end) pair is self-consistent.
+bool timestampsPlausible(uint64_t start, uint64_t end) {
+  if (start == 0 || end < start) {
+    return false;
+  }
+  return (end - start) <= kMaxPlausibleDurationNs;
+}
+
+// True when `name` is either absent or points at readable non-empty text.
+// A misaligned layout usually yields a wild pointer here; probing it with a
+// short bounded read is far cheaper than the SIGSEGV that blind trust invites.
+bool kernelNamePlausible(const char* name) {
+  if (name == nullptr) {
+    return true;  // absent is legal; we substitute a placeholder below
+  }
+  constexpr size_t kMaxNameLen = 4096;
+  size_t len = strnlen(name, kMaxNameLen);
+  return len > 0 && len < kMaxNameLen;
+}
+
+
 // Global session pointer for buffer callbacks (CUPTI callbacks are C-style,
 // cannot capture context).
 FlagosCuptiProfilerSession* g_active_session = nullptr;
@@ -165,6 +241,18 @@ void bufferCompleted(
         record->kind == CUPTI_ACTIVITY_KIND_KERNEL) {
       auto* kernel = reinterpret_cast<CUpti_ActivityKernel9_Compat*>(record);
 
+      // Validate before trusting the mirrored layout (see the self-check notes
+      // above). Emitting a record that failed these checks would put garbage
+      // timestamps into the trace, which is worse than omitting it.
+      if (!timestampsPlausible(kernel->start, kernel->end)) {
+        reportLayoutMismatch("kernel timestamps implausible");
+        continue;
+      }
+      if (!kernelNamePlausible(kernel->name)) {
+        reportLayoutMismatch("kernel name pointer unreadable");
+        continue;
+      }
+
       libkineto::GenericTraceActivity activity;
       activity.activityType = libkineto::ActivityType::CONCURRENT_KERNEL;
 
@@ -187,6 +275,11 @@ void bufferCompleted(
 
     } else if (record->kind == CUPTI_ACTIVITY_KIND_MEMCPY) {
       auto* memcpy = reinterpret_cast<CUpti_ActivityMemcpy_Compat*>(record);
+
+      if (!timestampsPlausible(memcpy->start, memcpy->end)) {
+        reportLayoutMismatch("memcpy timestamps implausible");
+        continue;
+      }
 
       libkineto::GenericTraceActivity activity;
       activity.activityType = libkineto::ActivityType::GPU_MEMCPY;

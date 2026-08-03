@@ -101,6 +101,15 @@ struct CuptiShim {
       CUpti_ExternalCorrelationKind, uint64_t) = nullptr;
   CUptiResult (*ActivityPopExternalCorrelationId)(
       CUpti_ExternalCorrelationKind, uint64_t*) = nullptr;
+  // Optional: only used for diagnostics, so a failure to resolve it is not fatal.
+  CUptiResult (*GetVersion)(uint32_t*) = nullptr;
+
+  // CUPTI API version of the bound library (0 when unknown). Callers use this to
+  // report *which* CUPTI they are talking to, so a record-layout mismatch is
+  // attributable instead of showing up as an unexplained empty trace.
+  uint32_t api_version = 0;
+  // Path of the library the symbols actually came from ("" when unknown).
+  const char* library_path = "";
 
   static CuptiShim& get() {
     static CuptiShim inst;
@@ -120,30 +129,53 @@ struct CuptiShim {
     // one), we arm an instance that is not wired to the running cu12.8 runtime,
     // and the buffer callbacks never fire (0 activities captured).
     //
-    // So: first bind to whatever libcupti is ALREADY loaded in the process
-    // (RTLD_DEFAULT via dlopen(NULL)), then fall back to the cu12 soname, and
-    // only then to generic/other-version paths.
-    void* handle = dlopen(nullptr, RTLD_LAZY | RTLD_GLOBAL);
-    if (handle && !dlsym(handle, "cuptiActivityRegisterCallbacks")) {
-      // Nothing CUPTI-shaped in the already-loaded set; fall through to explicit
-      // dlopen of a versioned library.
-      handle = nullptr;
+    // So the ONLY version-independent rule is: bind whatever libcupti is
+    // already loaded in this process (RTLD_DEFAULT via dlopen(NULL)), because
+    // that copy is by construction the one the running CUDA runtime pulled in.
+    // Naming a specific soname or an absolute /usr/local/cuda-<ver> path would
+    // just re-create the original bug on any other CUDA version.
+    // Escape hatch, checked FIRST so that an explicit path always wins. It has
+    // to outrank the already-loaded copy below, because the situation that
+    // motivates setting it -- a preloaded CUPTI whose record layout we cannot
+    // decode -- is exactly the situation where a preloaded copy exists. An
+    // override that only applied when nothing was loaded would be dead in the
+    // one case it is advertised for (see reportLayoutMismatch's diagnostic).
+    void* handle = nullptr;
+    if (const char* override_path = getenv("FLAGOS_CUPTI_LIBRARY")) {
+      handle = dlopen(override_path, RTLD_LAZY | RTLD_LOCAL);
+      if (!handle) {
+        fprintf(stderr,
+                "[flagos-cupti-shim] FLAGOS_CUPTI_LIBRARY=%s could not be "
+                "loaded: %s\n",
+                override_path, dlerror());
+      }
     }
 
     if (!handle) {
-      // Prefer the runtime-matching cu12 library; keep other versions as a
-      // last resort for environments that ship a single system CUPTI.
+      handle = dlopen(nullptr, RTLD_LAZY | RTLD_GLOBAL);
+      if (handle && !dlsym(handle, "cuptiActivityRegisterCallbacks")) {
+        // Nothing CUPTI-shaped in the already-loaded set; fall through to
+        // explicit dlopen of a versioned library.
+        handle = nullptr;
+      }
+    }
+
+    if (!handle) {
+      // Nothing preloaded: try sonames from newest to oldest, then the
+      // unversioned name (a devel symlink). This list is a *fallback ordering*,
+      // not a supported-version list -- an soname absent from it still works via
+      // FLAGOS_CUPTI_LIBRARY or by being preloaded, and the ordering only
+      // matters when several are installed but none is loaded.
       const char* candidates[] = {
+          "libcupti.so.13",
           "libcupti.so.12",
           "libcupti.so",
-          "libcupti.so.13",
-          "/usr/local/cuda-13.0/targets/x86_64-linux/lib/libcupti.so"
       };
       for (const char* name : candidates) {
-        handle = dlopen(name, RTLD_LAZY | RTLD_LOCAL);
         if (handle) {
           break;
         }
+        handle = dlopen(name, RTLD_LAZY | RTLD_LOCAL);
       }
     }
 
@@ -165,17 +197,33 @@ struct CuptiShim {
              "cuptiActivityPushExternalCorrelationId");
     LOAD_SYM(ActivityPopExternalCorrelationId,
              "cuptiActivityPopExternalCorrelationId");
+    LOAD_SYM(GetVersion, "cuptiGetVersion");
 
 #undef LOAD_SYM
 
+    // Record which library and which CUPTI API version we ended up bound to.
+    // Both are diagnostics only -- nothing branches on the version, since the
+    // whole point is to not hardcode version knowledge.
+    if (GetVersion) {
+      uint32_t v = 0;
+      if (GetVersion(&v) == CUPTI_SUCCESS) {
+        api_version = v;
+      }
+    }
+    if (ActivityRegisterCallbacks) {
+      Dl_info info;
+      if (dladdr(reinterpret_cast<void*>(ActivityRegisterCallbacks), &info) &&
+          info.dli_fname) {
+        library_path = info.dli_fname;
+      }
+    }
+
     if (getenv("FLAGOS_CUPTI_SHIM_DEBUG")) {
       if (ActivityRegisterCallbacks) {
-        Dl_info info;
-        if (dladdr(reinterpret_cast<void*>(ActivityRegisterCallbacks), &info) &&
-            info.dli_fname) {
-          fprintf(stderr, "[flagos-cupti-shim] bound cuptiActivityRegisterCallbacks -> %s\n",
-                  info.dli_fname);
-        }
+        fprintf(stderr,
+                "[flagos-cupti-shim] bound cuptiActivityRegisterCallbacks -> %s "
+                "(CUPTI API version %u)\n",
+                library_path[0] ? library_path : "<unknown>", api_version);
       } else {
         fprintf(stderr, "[flagos-cupti-shim] cuptiActivityRegisterCallbacks NOT resolved\n");
       }
