@@ -73,21 +73,43 @@ def _conf_flagos_python_ops() -> set[str]:
     return ops
 
 
-def _override_only_ops() -> set[str]:
-    """Ops with generated Python kernels retained only for explicit overrides."""
+def _codegen_op_set(name: str) -> set[str]:
+    """Read a ``name = {"op", ...}`` set literal out of the codegen source."""
     module = ast.parse(_read(_CODEGEN))
     for node in ast.walk(module):
         if not isinstance(node, ast.Assign):
             continue
         if not any(
-            isinstance(target, ast.Name) and target.id == "flaggems_recursive_fallback"
+            isinstance(target, ast.Name) and target.id == name
             for target in node.targets
         ):
             continue
         value = ast.literal_eval(node.value)
         assert isinstance(value, set) and all(isinstance(op, str) for op in value)
         return value
-    raise AssertionError("flaggems_recursive_fallback is missing from codegen_ops.py")
+    raise AssertionError(f"{name} is missing from codegen_ops.py")
+
+
+def _override_only_ops() -> set[str]:
+    """Ops with generated Python kernels retained only for explicit overrides.
+
+    Two sets in codegen_ops.py force a route back to the cuda boxing kernel:
+
+    ``flaggems_recursive_fallback`` -- gems re-enters ``torch.<op>`` for non-cuda
+    device types, which on a PrivateUse1 (flagos) tensor lands back on the same
+    flagos_python kernel and recurses forever.
+
+    ``flaggems_runtime_broken`` -- the gems call raises (required keyword-only
+    ``out``, a hard ``device.type == "cuda"`` assert, a DTK triton compile
+    failure) or returns wrong numerics on the flagos device.
+
+    In both cases the kernel stays generated and reachable via
+    ``FLAGOS_OP_<op>=flagos_python``, so it is a legitimate orphan on the
+    kernels side.
+    """
+    return _codegen_op_set("flaggems_recursive_fallback") | _codegen_op_set(
+        "flaggems_runtime_broken"
+    )
 
 
 def _op_to_wrapper() -> dict[str, str]:
@@ -96,10 +118,15 @@ def _op_to_wrapper() -> dict[str, str]:
 
 
 def _wrapper_to_dispatcher() -> dict[str, str]:
-    """WrapperFoo(...) { ... foo_dispatcher(...) } -> {WrapperFoo: foo_dispatcher}."""
+    """WrapperFoo(...) { ... foo_dispatcher(...) } -> {WrapperFoo: foo_dispatcher}.
+
+    The wrapper name is anchored to ``Wrapper`` because the file's own header
+    comment (``// ... m.impl() lines.``) otherwise matches ``(\\w+)\\([^;{]*\\)``
+    and consumes the first real wrapper definition along with it.
+    """
     return dict(
         re.findall(
-            r"(\w+)\([^;{]*\)\s*\{\s*(?:return\s+)?"
+            r"\b(Wrapper\w*)\([^;{]*\)\s*\{\s*(?:return\s+)?"
             r"(?:at::native::flagos::)?(\w+_dispatcher)\(",
             _read(_REGISTER_INC),
         )

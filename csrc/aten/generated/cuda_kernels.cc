@@ -7384,7 +7384,9 @@ at::Tensor & ClampInplaceKernelCuda(at::Tensor & self, const ::std::optional<at:
 }
 
 at::Tensor & ClampInplaceTensorKernelCuda(at::Tensor & self, const ::std::optional<at::Tensor> & min, const ::std::optional<at::Tensor> & max) {
-  DeviceBoxingGuard guard(self);
+  at::Tensor min_t = min.has_value() ? *min : at::Tensor();
+  at::Tensor max_t = max.has_value() ? *max : at::Tensor();
+  DeviceBoxingGuard guard(self, min_t, max_t);
   self.clamp_(min, max);
   return self;
 }
