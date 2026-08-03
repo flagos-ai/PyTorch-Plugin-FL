@@ -12034,10 +12034,11 @@ at::Tensor & NativeDropoutBackwardOutKernelCuda(const at::Tensor & grad_output, 
 }
 
 ::std::tuple<at::Tensor,at::Tensor,at::Tensor> NativeGroupNormKernelCuda(const at::Tensor & input, const ::std::optional<at::Tensor> & weight, const ::std::optional<at::Tensor> & bias, int64_t N, int64_t C, int64_t HxW, int64_t group, double eps) {
+  at::Tensor input_contiguous = input.is_contiguous() ? input : input.contiguous();
   at::Tensor weight_t = weight.has_value() ? *weight : at::Tensor();
   at::Tensor bias_t = bias.has_value() ? *bias : at::Tensor();
-  DeviceBoxingGuard guard(input, weight_t, bias_t);
-  auto result = at::native_group_norm(input, weight, bias, N, C, HxW, group, eps);
+  DeviceBoxingGuard guard(input_contiguous, weight_t, bias_t);
+  auto result = at::native_group_norm(input_contiguous, weight, bias, N, C, HxW, group, eps);
   UnboxToFlagos(std::get<0>(result));
   UnboxToFlagos(std::get<1>(result));
   UnboxToFlagos(std::get<2>(result));
