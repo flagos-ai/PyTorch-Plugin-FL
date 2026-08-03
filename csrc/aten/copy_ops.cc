@@ -10,6 +10,8 @@
 
 #include <ATen/native/Resize.h>
 #include <ATen/ops/_pin_memory.h>
+#include <ATen/ops/_to_copy.h>
+#include <ATen/ops/_to_copy_ops.h>
 #include <ATen/ops/copy_native.h>
 #include <include/flagos.h>
 #include "device_boxing.h"
@@ -295,6 +297,11 @@ at::Tensor _to_copy(
     int device_index =
         device.index() >= 0 ? device.index()
                             : (self.device().index() >= 0 ? self.device().index() : 0);
+#if defined(USE_ASCEND) || defined(USE_TSINGMICRO) || defined(USE_GCU) || \
+    defined(USE_MUSA)
+    // No CUDA runtime on these platforms: keep the explicit contiguous + memcpy
+    // path (a "CUDA" destination here is only reachable via shared-memory tricks
+    // that don't exist without cudart).
     at::Tensor self_contig = self.contiguous();
     at::Tensor temp = at::empty(
         self_contig.sizes(),
@@ -304,6 +311,25 @@ at::Tensor _to_copy(
       Memcpy(temp.data_ptr(), self_contig.data_ptr(), nbytes, MemcpyDeviceToDevice);
     }
     result = (dtype != self.scalar_type()) ? temp.to(dtype) : temp;
+#else
+    // CUDA platform fast path: flagos (PrivateUse1) and CUDA share the same GPU
+    // memory, so box self to CUDA and redispatch straight to the native CUDA
+    // _to_copy with an explicit CUDA DispatchKeySet. That skips re-entering the
+    // dispatcher from the top (no risk of routing back to PrivateUse1) and lets
+    // the native kernel read self's strides + cast dtype in one on-device pass,
+    // allocating the result directly on CUDA -- no intermediate contiguous copy
+    // or manual Memcpy. self is unboxed back to PrivateUse1 on guard teardown.
+    DeviceBoxingGuard guard(self);
+    result = at::_ops::_to_copy::redispatch(
+        c10::DispatchKeySet(c10::DispatchKey::CUDA),
+        self,
+        dtype,
+        /*layout=*/std::nullopt,
+        c10::Device(c10::kCUDA, device_index),
+        /*pin_memory=*/std::nullopt,
+        non_blocking,
+        memory_format);
+#endif
   } else if (src_is_flagos && dst_is_flagos) {
     int device_index = device.index() >= 0 ? device.index() : 0;
     at::Tensor self_contig = self.contiguous();
