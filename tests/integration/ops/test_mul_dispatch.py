@@ -108,12 +108,19 @@ class TestMulTensorDispatch:
     @pytest.mark.flaggems
     @pytest.mark.main_ops
     def test_dispatch_log_flaggems_runtime(self):
-        """With the FlagGems runtime path on, mul.Tensor routes to flagos_python."""
+        """With the FlagGems runtime path on, mul.Tensor stays on cuda boxing.
+
+        mul.Tensor is in codegen's ``flaggems_recursive_fallback``: gems' mul
+        re-enters ``torch.mul`` for non-cuda device types, which on a flagos
+        (PrivateUse1) tensor lands back on the same flagos_python kernel and
+        recurses forever. The kernel is still generated and reachable via the
+        explicit ``FLAGOS_OP_mul__Tensor`` override exercised above.
+        """
         result = _run_mul_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_USE_FLAGGEMS": "1"}
         )
         assert result.returncode == 0, f"Failed:\n{result.stderr}"
-        assert "[flagos dispatch] mul.Tensor -> flagos_python" in result.stderr
+        assert "[flagos dispatch] mul.Tensor -> cuda" in result.stderr
 
     @pytest.mark.cuda
     @pytest.mark.main_ops
