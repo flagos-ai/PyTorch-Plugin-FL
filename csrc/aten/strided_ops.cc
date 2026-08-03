@@ -19,6 +19,7 @@
 #include <ATen/ops/detach_native.h>
 #include <ATen/ops/t_native.h>
 #include <ATen/ops/unbind_native.h>
+#include <ATen/ops/unfold_native.h>
 
 namespace at::native::flagos {
 
@@ -101,6 +102,17 @@ at::Tensor unsqueeze(const at::Tensor& self, int64_t dim) {
 
 at::Tensor unsafe_view(const at::Tensor& self, at::IntArrayRef size) {
   return at::native::_unsafe_view(self, size);
+}
+
+// unfold constructs a strided view (extracting all sliding windows of `size`
+// along `dimension` with the given `step`); it is pure metadata, no GPU kernel.
+// at::native::unfold computes the new size/stride and calls as_strided, which
+// re-dispatches to the registered flagos as_strided. Without this registration
+// PyTorch has no PrivateUse1 unfold impl, and since view ops can't fall back to
+// CPU (storage can't be shared across devices) it returns an uninitialized
+// tensor -- callers like Tensor.repeat() then read garbage (SIGSEGV downstream).
+at::Tensor unfold(const at::Tensor& self, int64_t dimension, int64_t size, int64_t step) {
+  return at::native::unfold(self, dimension, size, step);
 }
 
 at::Tensor detach(const at::Tensor& self) {

@@ -139,6 +139,10 @@ at::Tensor WrapperNarrow(const at::Tensor& self, int64_t dim, int64_t start, int
   return at::native::flagos::narrow(self, dim, start, length);
 }
 
+at::Tensor WrapperUnfold(const at::Tensor& self, int64_t dimension, int64_t size, int64_t step) {
+  return at::native::flagos::unfold(self, dimension, size, step);
+}
+
 at::Tensor WrapperContiguous(
     const at::Tensor& self, at::MemoryFormat memory_format) {
   return at::native::flagos::contiguous(self, memory_format);
@@ -301,6 +305,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("view", WrapperView);
   m.impl("expand", WrapperExpand);
   m.impl("narrow", WrapperNarrow);
+  m.impl("unfold", WrapperUnfold);
   m.impl("contiguous", WrapperContiguous);
   m.impl("clone", WrapperClone);
   m.impl("_to_copy", WrapperToCopy);
