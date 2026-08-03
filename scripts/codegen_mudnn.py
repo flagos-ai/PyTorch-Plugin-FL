@@ -169,6 +169,47 @@ OPS = {
     # ---- misc ----
     "gelu": ("gelu", "GELU"),
     "_softmax": ("softmax_fwd", "SOFTMAX"),
+    # ---- P1: further unary modes (all verified against CPU) ----
+    "tan": ("unary", "TAN"),
+    # mudnn's ROUND is half-to-even, which is what aten does too: -2.5 -> -2,
+    # 0.5 -> 0, 3.5 -> 4. No correction needed.
+    "round": ("unary", "ROUND"),
+    "mish": ("unary", "MISH"),
+    "hardswish": ("unary", "HARDSWISH"),
+    # IS_NAN/IS_INF write a BOOL output, so they use the permissive predicate.
+    "isnan": ("unary_cmp", "IS_NAN"),
+    "isinf": ("unary_cmp", "IS_INF"),
+    "hardsigmoid": ("unary_two_const", ("HARDSIGMOID", "1.0 / 6.0", "0.5")),
+    "leaky_relu": ("unary_param", ("LEAKY_RELU", "negative_slope")),
+    "elu": ("elu", "ELU"),
+    "softplus": ("softplus", "SOFTPLUS"),
+    "clamp": ("clamp", "CLIP"),
+    "clamp_min": (
+        "clamp_one_sided",
+        ("CLIP", "min", "min.to<double>()", "std::numeric_limits<double>::infinity()"),
+    ),
+    "clamp_max": (
+        "clamp_one_sided",
+        ("CLIP", "max", "-std::numeric_limits<double>::infinity()", "max.to<double>()"),
+    ),
+    "logical_xor": ("binary_cmp", "LOGICAL_XOR"),
+    "floor_divide": ("binary", "FLOORDIV"),
+    # ---- P1: activation backwards ----
+    # SIGMOID_BW/TANH_BW take (grad, output); aten passes `output` in that slot
+    # too, so the template is shared. The rest take (grad, input).
+    "sigmoid_backward": ("binary_bw", "SIGMOID_BW"),
+    "tanh_backward": ("binary_bw", "TANH_BW"),
+    "silu_backward": ("binary_bw", "SILU_BW"),
+    "gelu_backward": ("gelu_bw", "GELU_NONE_BW"),
+    "threshold_backward": ("threshold_bw", "THRESHOLD_BW"),
+    "leaky_relu_backward": ("leaky_relu_bw", "LEAKY_RELU_BW"),
+    # ---- P1: ternary ----
+    "addcmul": ("ternary_value", "ADDCMUL_ALPHA"),
+    "addcdiv": ("ternary_value", "ADDCDIV_ALPHA"),
+    "where.self": ("where", "SELECT"),
+    # ---- P1: addmm family (three-branch, see T_ADDMM) ----
+    "addmm": ("addmm", "MatMul"),
+    "baddbmm": ("addmm", "BatchMatMul"),
 }
 
 # Ops in the GCU coverage set with no mudnn equivalent. Deliberately absent from
@@ -178,6 +219,8 @@ OPS = {
 # mudnn's Unary::Mode has SIN/COS/TAN/ACOS/ATAN but no SINH/COSH/ASIN, and
 # composing them from EXP (sinh = (e^x - e^-x)/2) would need several passes with
 # worse accuracy than the host, so it is not worth it for these three.
+# relu6 is CompositeImplicitAutograd -- it has no wrapper in register.inc and
+# decomposes into hardtanh, so mudnn's RELU6 mode is unreachable from here.
 NO_MUDNN_EQUIVALENT = ["sinh", "cosh", "asin"]
 
 # Ops handwritten elsewhere for MUSA would double-register the kMusa slot (which
@@ -588,12 +631,20 @@ at::Tensor {kernel}(
   }} else {{
     for (int64_t d = 0; d < ndim; ++d) norm_dims.push_back(d);
   }}
+  // aten's answer shape, and the *squeezed* shape mudnn must be handed. mudnn
+  // silently drops all but the first output element when the output still
+  // carries the reduced axes as extent-1 dims and the input is non-contiguous
+  // (measured on v3300: (4,5) stride (0,1) reduced over dim 0 into a [1,5]
+  // output writes only out[0]). Reducing into the squeezed shape is correct in
+  // every configuration probed, so keepdim is restored with a view afterwards.
   auto out_shape = self.sizes().vec();
   std::vector<int64_t> sorted_dims(norm_dims);
   std::sort(sorted_dims.rbegin(), sorted_dims.rend());
+  auto squeezed_shape = self.sizes().vec();
   for (int64_t d : sorted_dims) {{
     if (keepdim) out_shape[d] = 1;
     else out_shape.erase(out_shape.begin() + d);
+    squeezed_shape.erase(squeezed_shape.begin() + d);
   }}
 
   auto out_dtype = dtype.value_or(
@@ -601,12 +652,17 @@ at::Tensor {kernel}(
           ? at::kLong
           : self.scalar_type());
   auto self_c = self.scalar_type() == out_dtype ? self : self.to(out_dtype);
-  // A fully broadcast input would fault inside mudnn's multi-dim Reduce; see
-  // MudnnReduceWouldFault. Materializing it is enough to avoid that.
-  if (musa_ops::MudnnReduceWouldFault(self_c, norm_dims.size())) {{
+  // mudnn multi-dim Reduce (more than one axis at a time) silently ignores
+  // strides and reads the input as if contiguous (verified: (4,5) stride (0,1)
+  // reduced over all dims gives 210 = sum(1..20) instead of 60 = 4*sum(1..5)).
+  // Single-dim reduces honour strides correctly. Materializing once fixes both
+  // the stride bug and the SIGFPE on fully-broadcast multi-dim reduces.
+  if (norm_dims.size() > 1 && !self_c.is_contiguous()) {{
+    self_c = self_c.contiguous();
+  }} else if (musa_ops::MudnnReduceWouldFault(self_c, norm_dims.size())) {{
     self_c = self_c.contiguous();
   }}
-  auto out = at::empty(out_shape, self.options().dtype(out_dtype));
+  auto out = at::empty(squeezed_shape, self.options().dtype(out_dtype));
   std::vector<int> mudnn_dims = musa_ops::ToMudnnDims(norm_dims, ndim);
 
   musa_ops::MudnnTensorWrapper t_self(self_c);
@@ -618,7 +674,7 @@ at::Tensor {kernel}(
       "{at_op}", self,
       op.Run(_mudnn_h, t_out.get(), t_self.get(),
              musa_ops::MudnnWorkspaceFor(out)));
-  return out;
+  return keepdim ? out.view(out_shape) : out;
 }}
 
 REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kMusa, {kernel})
@@ -640,9 +696,13 @@ at::Tensor {kernel}(
   for (int64_t d = 0; d < self.dim(); ++d) {{
     mudnn_dims.push_back(static_cast<int>(d));
   }}
-  // A fully broadcast input would fault inside mudnn's multi-dim Reduce; see
-  // MudnnReduceWouldFault. Materializing it is enough to avoid that.
-  if (musa_ops::MudnnReduceWouldFault(self_c, mudnn_dims.size())) {{
+  // Reducing every dim at once is a multi-dim Reduce, which mudnn runs as if
+  // the input were contiguous -- it ignores strides outright, and faults on a
+  // fully-broadcast input. Materializing once covers both. Same measurement as
+  // in T_REDUCE_DIMS_DTYPE.
+  if (mudnn_dims.size() > 1 && !self_c.is_contiguous()) {{
+    self_c = self_c.contiguous();
+  }} else if (musa_ops::MudnnReduceWouldFault(self_c, mudnn_dims.size())) {{
     self_c = self_c.contiguous();
   }}
   auto out = at::empty({{}}, self.options().dtype(out_dtype));
@@ -707,6 +767,502 @@ at::Tensor {kernel}(const at::Tensor& self, int64_t dim, bool half_to_float) {{
 REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kMusa, {kernel})
 """
 
+# Activation backwards. mudnn spells these as Binary modes taking the gradient
+# and one saved tensor, so the whole family is one template plus a mode name.
+#
+# Which saved tensor is the second operand differs per mode and is NOT visible
+# in the header -- both orders return SUCCESS, only the numbers differ. Measured
+# against CPU formulas: SIGMOID_BW/TANH_BW consume the op's *output*
+# (g*y*(1-y), g*(1-y^2)), every other mode here consumes the *input*. aten
+# passes exactly that tensor in the same position either way, so `self` maps
+# straight through; the distinction is only documented, never branched on.
+T_BINARY_BW = """\
+at::Tensor {kernel}(const at::Tensor& grad_output, const at::Tensor& self) {{
+  if (!musa_ops::{dtype_pred}(grad_output.scalar_type()) ||
+      !musa_ops::{dtype_pred}(self.scalar_type())) {{
+    return at::{at_op}(grad_output.cpu(), self.cpu()).to(grad_output.device());
+  }}
+  auto result_dtype = at::result_type(grad_output, self);
+  auto grad_c = grad_output.scalar_type() == result_dtype
+      ? grad_output
+      : grad_output.to(result_dtype);
+  auto self_c = self.to(grad_output.device(), result_dtype);
+  auto out_shape = at::infer_size(grad_c.sizes(), self_c.sizes());
+  auto grad_b = grad_c.expand(out_shape);
+  auto self_b = self_c.expand(out_shape);
+  auto out = at::empty(out_shape, grad_output.options().dtype(result_dtype));
+
+  musa_ops::MudnnTensorWrapper t_grad(grad_b);
+  musa_ops::MudnnTensorWrapper t_self(self_b);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Binary op;
+  op.SetMode(musa_ops::mudnn::Binary::Mode::{mode});
+  EXEC_MUDNN_CMD(
+      "{at_op}", grad_output,
+      op.Run(_mudnn_h, t_out.get(), t_grad.get(), t_self.get()));
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kMusa, {kernel})
+"""
+
+# gelu_backward: aten spells the variant as a string, mudnn as two modes.
+T_GELU_BW = """\
+at::Tensor {kernel}(
+    const at::Tensor& grad_output,
+    const at::Tensor& self,
+    c10::string_view approximate) {{
+  if (!musa_ops::{dtype_pred}(grad_output.scalar_type()) ||
+      !musa_ops::{dtype_pred}(self.scalar_type())) {{
+    return at::{at_op}(grad_output.cpu(), self.cpu(), approximate)
+        .to(grad_output.device());
+  }}
+  auto result_dtype = at::result_type(grad_output, self);
+  auto grad_c = grad_output.scalar_type() == result_dtype
+      ? grad_output
+      : grad_output.to(result_dtype);
+  auto self_c = self.to(grad_output.device(), result_dtype);
+  auto out_shape = at::infer_size(grad_c.sizes(), self_c.sizes());
+  auto grad_b = grad_c.expand(out_shape);
+  auto self_b = self_c.expand(out_shape);
+  auto out = at::empty(out_shape, grad_output.options().dtype(result_dtype));
+
+  musa_ops::MudnnTensorWrapper t_grad(grad_b);
+  musa_ops::MudnnTensorWrapper t_self(self_b);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Binary op;
+  op.SetMode(
+      approximate == "tanh" ? musa_ops::mudnn::Binary::Mode::GELU_TANH_BW
+                            : musa_ops::mudnn::Binary::Mode::GELU_NONE_BW);
+  EXEC_MUDNN_CMD(
+      "{at_op}", grad_output,
+      op.Run(_mudnn_h, t_out.get(), t_grad.get(), t_self.get()));
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kMusa, {kernel})
+"""
+
+# threshold_backward(grad_output, self, threshold). mudnn's THRESHOLD_BW takes
+# the threshold as alpha; measured to match aten (grad passes where self >
+# threshold, 0 elsewhere).
+T_THRESHOLD_BW = """\
+at::Tensor {kernel}(
+    const at::Tensor& grad_output,
+    const at::Tensor& self,
+    const at::Scalar& threshold) {{
+  if (!musa_ops::{dtype_pred}(grad_output.scalar_type()) ||
+      !musa_ops::{dtype_pred}(self.scalar_type())) {{
+    return at::{at_op}(grad_output.cpu(), self.cpu(), threshold)
+        .to(grad_output.device());
+  }}
+  auto result_dtype = at::result_type(grad_output, self);
+  auto grad_c = grad_output.scalar_type() == result_dtype
+      ? grad_output
+      : grad_output.to(result_dtype);
+  auto self_c = self.to(grad_output.device(), result_dtype);
+  auto out_shape = at::infer_size(grad_c.sizes(), self_c.sizes());
+  auto grad_b = grad_c.expand(out_shape);
+  auto self_b = self_c.expand(out_shape);
+  auto out = at::empty(out_shape, grad_output.options().dtype(result_dtype));
+
+  musa_ops::MudnnTensorWrapper t_grad(grad_b);
+  musa_ops::MudnnTensorWrapper t_self(self_b);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Binary op;
+  op.SetMode(musa_ops::mudnn::Binary::Mode::{mode});
+  if (at::isIntegralType(result_dtype, true)) {{
+    op.SetAlpha(threshold.to<int64_t>());
+  }} else {{
+    op.SetAlpha(threshold.to<double>());
+  }}
+  EXEC_MUDNN_CMD(
+      "{at_op}", grad_output,
+      op.Run(_mudnn_h, t_out.get(), t_grad.get(), t_self.get()));
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kMusa, {kernel})
+"""
+
+# leaky_relu_backward(grad_output, self, negative_slope, self_is_result).
+# LEAKY_RELU_BW's alpha is the slope. `self_is_result` only tells autograd
+# whether `self` is the output rather than the input; for a leaky ReLU the
+# gradient test (`> 0`) gives the same answer either way, so it is unused.
+T_LEAKY_RELU_BW = """\
+at::Tensor {kernel}(
+    const at::Tensor& grad_output,
+    const at::Tensor& self,
+    const at::Scalar& negative_slope,
+    bool self_is_result) {{
+  if (!musa_ops::{dtype_pred}(grad_output.scalar_type()) ||
+      !musa_ops::{dtype_pred}(self.scalar_type())) {{
+    return at::{at_op}(
+               grad_output.cpu(), self.cpu(), negative_slope, self_is_result)
+        .to(grad_output.device());
+  }}
+  auto result_dtype = at::result_type(grad_output, self);
+  auto grad_c = grad_output.scalar_type() == result_dtype
+      ? grad_output
+      : grad_output.to(result_dtype);
+  auto self_c = self.to(grad_output.device(), result_dtype);
+  auto out_shape = at::infer_size(grad_c.sizes(), self_c.sizes());
+  auto grad_b = grad_c.expand(out_shape);
+  auto self_b = self_c.expand(out_shape);
+  auto out = at::empty(out_shape, grad_output.options().dtype(result_dtype));
+
+  musa_ops::MudnnTensorWrapper t_grad(grad_b);
+  musa_ops::MudnnTensorWrapper t_self(self_b);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Binary op;
+  op.SetMode(musa_ops::mudnn::Binary::Mode::{mode});
+  if (at::isIntegralType(result_dtype, true)) {{
+    op.SetAlpha(negative_slope.to<int64_t>());
+  }} else {{
+    op.SetAlpha(negative_slope.to<double>());
+  }}
+  EXEC_MUDNN_CMD(
+      "{at_op}", grad_output,
+      op.Run(_mudnn_h, t_out.get(), t_grad.get(), t_self.get()));
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kMusa, {kernel})
+"""
+
+# Ternary ops. Measured to map onto aten 1:1 with Run(out, self, t1, t2):
+# ADDCMUL_ALPHA is self + value*t1*t2, ADDCDIV_ALPHA is self + value*t1/t2.
+# All three operands broadcast against each other, and mudnn honours the
+# resulting 0-strides, so expand() alone is enough.
+T_TERNARY_VALUE = """\
+at::Tensor {kernel}(
+    const at::Tensor& self,
+    const at::Tensor& tensor1,
+    const at::Tensor& tensor2,
+    const at::Scalar& value) {{
+  if (!musa_ops::{dtype_pred}(self.scalar_type()) ||
+      !musa_ops::{dtype_pred}(tensor1.scalar_type()) ||
+      !musa_ops::{dtype_pred}(tensor2.scalar_type())) {{
+    return at::{at_op}(self.cpu(), tensor1.cpu(), tensor2.cpu(), value)
+        .to(self.device());
+  }}
+  auto result_dtype = at::result_type(self, tensor1);
+  result_dtype = at::promoteTypes(result_dtype, tensor2.scalar_type());
+  auto self_c = self.scalar_type() == result_dtype ? self : self.to(result_dtype);
+  auto t1_c = tensor1.to(self.device(), result_dtype);
+  auto t2_c = tensor2.to(self.device(), result_dtype);
+  auto out_shape = at::infer_size(self_c.sizes(), t1_c.sizes());
+  out_shape = at::infer_size(out_shape, t2_c.sizes());
+  auto self_b = self_c.expand(out_shape);
+  auto t1_b = t1_c.expand(out_shape);
+  auto t2_b = t2_c.expand(out_shape);
+  auto out = at::empty(out_shape, self.options().dtype(result_dtype));
+
+  musa_ops::MudnnTensorWrapper t_self(self_b);
+  musa_ops::MudnnTensorWrapper t_t1(t1_b);
+  musa_ops::MudnnTensorWrapper t_t2(t2_b);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Ternary op;
+  op.SetMode(musa_ops::mudnn::Ternary::Mode::{mode});
+  if (at::isIntegralType(result_dtype, true)) {{
+    op.SetAlpha(value.to<int64_t>());
+  }} else {{
+    op.SetAlpha(value.to<double>());
+  }}
+  EXEC_MUDNN_CMD(
+      "{at_op}", self,
+      op.Run(_mudnn_h, t_out.get(), t_self.get(), t_t1.get(), t_t2.get()));
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kMusa, {kernel})
+"""
+
+# where.self(condition, self, other) -> Ternary::SELECT(mask, x, y). The
+# condition is bool and stays bool; only the value operands promote.
+T_WHERE = """\
+at::Tensor {kernel}(
+    const at::Tensor& condition,
+    const at::Tensor& self,
+    const at::Tensor& other) {{
+  if (!musa_ops::{dtype_pred}(self.scalar_type()) ||
+      !musa_ops::{dtype_pred}(other.scalar_type()) ||
+      condition.scalar_type() != at::kBool) {{
+    return at::{at_op}(condition.cpu(), self.cpu(), other.cpu())
+        .to(self.device());
+  }}
+  auto result_dtype = at::result_type(self, other);
+  auto self_c = self.to(condition.device(), result_dtype);
+  auto other_c = other.to(condition.device(), result_dtype);
+  auto out_shape = at::infer_size(condition.sizes(), self_c.sizes());
+  out_shape = at::infer_size(out_shape, other_c.sizes());
+  auto cond_b = condition.expand(out_shape);
+  auto self_b = self_c.expand(out_shape);
+  auto other_b = other_c.expand(out_shape);
+  auto out = at::empty(out_shape, self.options().dtype(result_dtype));
+
+  musa_ops::MudnnTensorWrapper t_cond(cond_b);
+  musa_ops::MudnnTensorWrapper t_self(self_b);
+  musa_ops::MudnnTensorWrapper t_other(other_b);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Ternary op;
+  op.SetMode(musa_ops::mudnn::Ternary::Mode::{mode});
+  EXEC_MUDNN_CMD(
+      "{at_op}", self,
+      op.Run(_mudnn_h, t_out.get(), t_cond.get(), t_self.get(),
+             t_other.get()));
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kMusa, {kernel})
+"""
+
+# addmm/baddbmm: out = beta*self + alpha*(mat1 @ mat2).
+#
+# mudnn computes d = alpha*a@b + beta*c + gamma*bias, and which slot `self`
+# takes depends on its shape -- this mirrors torch_musa's own three-branch
+# dispatch (csrc/aten/ops/Matmul.cpp), verified numerically here:
+#   * self shaped like out -> the C slot, aten's beta -> SetBeta
+#   * self is 1-D of length N -> the bias slot with c aliasing d, so aten's
+#     beta must ride on *gamma* instead (SetBeta stays 0, or it would fold in
+#     the output buffer's prior contents)
+#   * anything else (a scalar, [M,1]) -> plain Run, then add the bias on the
+#     host side with a normal aten add.
+#
+# MatMul rejects non-contiguous operands ("MatMulRun only support contiguous
+# tensor"), unlike the elementwise ops, so mat1/mat2/self are materialized.
+T_ADDMM = """\
+at::Tensor {kernel}(
+    const at::Tensor& self,
+    const at::Tensor& mat1,
+    const at::Tensor& mat2,
+    const at::Scalar& beta,
+    const at::Scalar& alpha) {{
+  if (!musa_ops::{dtype_pred}(self.scalar_type()) ||
+      !musa_ops::{dtype_pred}(mat1.scalar_type()) ||
+      !musa_ops::{dtype_pred}(mat2.scalar_type())) {{
+    return at::{at_op}(self.cpu(), mat1.cpu(), mat2.cpu(), beta, alpha)
+        .to(self.device());
+  }}
+  std::vector<int64_t> out_shape = mat1.sizes().vec();
+  out_shape.back() = mat2.size(-1);
+  auto out = at::empty(out_shape, mat1.options());
+  auto mat1_c = mat1.contiguous();
+  auto mat2_c = mat2.contiguous();
+
+  musa_ops::MudnnTensorWrapper t_mat1(mat1_c);
+  musa_ops::MudnnTensorWrapper t_mat2(mat2_c);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::{mode} op;
+
+  const bool self_is_out_shaped = self.sizes().equals(out_shape);
+  const bool self_is_vector =
+      self.dim() == 1 && self.size(0) == out_shape.back();
+
+  if (self_is_out_shaped) {{
+    auto self_c = self.to(mat1.device(), mat1.scalar_type()).contiguous();
+    musa_ops::MudnnTensorWrapper t_self(self_c);
+    musa_ops::mudnn::Tensor empty_bias;
+    op.SetAlpha(alpha.to<double>());
+    op.SetBeta(beta.to<double>());
+    op.SetGamma(1.0);
+    EXEC_MUDNN_CMD(
+        "{at_op}", self,
+        op.RunWithBiasAdd(_mudnn_h, t_out.get(), t_mat1.get(), t_mat2.get(),
+                          t_self.get(), empty_bias,
+                          musa_ops::MudnnWorkspaceFor(out)));
+  }} else if (self_is_vector) {{
+    auto self_c = self.to(mat1.device(), mat1.scalar_type()).contiguous();
+    musa_ops::MudnnTensorWrapper t_self(self_c);
+    // c aliases d here, so beta must stay 0 and aten's beta rides on gamma.
+    op.SetAlpha(alpha.to<double>());
+    op.SetBeta(0.0);
+    op.SetGamma(beta.to<double>());
+    EXEC_MUDNN_CMD(
+        "{at_op}", self,
+        op.RunWithBiasAdd(_mudnn_h, t_out.get(), t_mat1.get(), t_mat2.get(),
+                          t_out.get(), t_self.get(),
+                          musa_ops::MudnnWorkspaceFor(out)));
+  }} else {{
+    op.SetAlpha(alpha.to<double>());
+    op.SetBeta(0.0);
+    op.SetGamma(1.0);
+    EXEC_MUDNN_CMD(
+        "{at_op}", self,
+        op.Run(_mudnn_h, t_out.get(), t_mat1.get(), t_mat2.get(),
+               musa_ops::MudnnWorkspaceFor(out)));
+    out.add_(self, beta);
+  }}
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kMusa, {kernel})
+"""
+
+# A unary predicate: same call shape as T_UNARY but the output is bool
+# (isnan, isinf). Verified that mudnn accepts a BOOL destination for these.
+T_UNARY_CMP = """\
+at::Tensor {kernel}(const at::Tensor& self) {{
+  if (!musa_ops::{dtype_pred}(self.scalar_type())) {{
+    return at::{at_op}(self.cpu()).to(self.device());
+  }}
+  auto out = at::empty(self.sizes(), self.options().dtype(at::kBool));
+  musa_ops::MudnnTensorWrapper t_self(self);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Unary op;
+  op.SetMode(musa_ops::mudnn::Unary::Mode::{mode});
+  EXEC_MUDNN_CMD("{at_op}", self, op.Run(_mudnn_h, t_out.get(), t_self.get()));
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kMusa, {kernel})
+"""
+
+# A unary mode configured by two fixed constants rather than by aten arguments.
+# mudnn's HARDSIGMOID is clamp(alpha*x + beta, 0, 1) with both defaulting to 0,
+# so leaving them unset returns all zeros. aten's hardsigmoid is alpha=1/6,
+# beta=0.5 (verified against CPU).
+T_UNARY_TWO_CONST = """\
+at::Tensor {kernel}(const at::Tensor& self) {{
+  if (!musa_ops::{dtype_pred}(self.scalar_type())) {{
+    return at::{at_op}(self.cpu()).to(self.device());
+  }}
+  auto out = at::empty(self.sizes(), self.options());
+  musa_ops::MudnnTensorWrapper t_self(self);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Unary op;
+  op.SetMode(musa_ops::mudnn::Unary::Mode::{mode});
+  op.SetAlpha(static_cast<double>({alpha}));
+  op.SetBeta(static_cast<double>({beta}));
+  EXEC_MUDNN_CMD("{at_op}", self, op.Run(_mudnn_h, t_out.get(), t_self.get()));
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kMusa, {kernel})
+"""
+
+# leaky_relu(self, negative_slope): one aten Scalar straight into alpha.
+T_UNARY_PARAM = """\
+at::Tensor {kernel}(const at::Tensor& self, const at::Scalar& {param}) {{
+  if (!musa_ops::{dtype_pred}(self.scalar_type())) {{
+    return at::{at_op}(self.cpu(), {param}).to(self.device());
+  }}
+  auto out = at::empty(self.sizes(), self.options());
+  musa_ops::MudnnTensorWrapper t_self(self);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Unary op;
+  op.SetMode(musa_ops::mudnn::Unary::Mode::{mode});
+  op.SetAlpha({param}.to<double>());
+  EXEC_MUDNN_CMD("{at_op}", self, op.Run(_mudnn_h, t_out.get(), t_self.get()));
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kMusa, {kernel})
+"""
+
+# clamp_min / clamp_max map onto CLIP, whose alpha is the lower bound and beta
+# the upper. Both default to 0 in mudnn, so the unused side must be set to an
+# explicit infinity or the op would clip against 0.
+T_CLAMP_ONE_SIDED = """\
+at::Tensor {kernel}(const at::Tensor& self, const at::Scalar& {param}) {{
+  if (!musa_ops::{dtype_pred}(self.scalar_type())) {{
+    return at::{at_op}(self.cpu(), {param}).to(self.device());
+  }}
+  auto out = at::empty(self.sizes(), self.options());
+  musa_ops::MudnnTensorWrapper t_self(self);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Unary op;
+  op.SetMode(musa_ops::mudnn::Unary::Mode::{mode});
+  op.SetAlpha({lo});
+  op.SetBeta({hi});
+  EXEC_MUDNN_CMD("{at_op}", self, op.Run(_mudnn_h, t_out.get(), t_self.get()));
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kMusa, {kernel})
+"""
+
+# clamp(self, min?, max?) -- both bounds optional; an absent bound becomes the
+# corresponding infinity.
+T_CLAMP = """\
+at::Tensor {kernel}(
+    const at::Tensor& self,
+    const ::std::optional<at::Scalar>& min,
+    const ::std::optional<at::Scalar>& max) {{
+  if (!musa_ops::{dtype_pred}(self.scalar_type())) {{
+    return at::{at_op}(self.cpu(), min, max).to(self.device());
+  }}
+  auto out = at::empty(self.sizes(), self.options());
+  musa_ops::MudnnTensorWrapper t_self(self);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Unary op;
+  op.SetMode(musa_ops::mudnn::Unary::Mode::{mode});
+  op.SetAlpha(
+      min.has_value() ? min.value().to<double>()
+                      : -std::numeric_limits<double>::infinity());
+  op.SetBeta(
+      max.has_value() ? max.value().to<double>()
+                      : std::numeric_limits<double>::infinity());
+  EXEC_MUDNN_CMD("{at_op}", self, op.Run(_mudnn_h, t_out.get(), t_self.get()));
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kMusa, {kernel})
+"""
+
+# softplus(self, beta, threshold). mudnn's setter names are inverted relative
+# to aten: SetAlpha carries aten's `beta`, SetBeta carries aten's `threshold`.
+# Leaving either unset returns inf.
+T_SOFTPLUS = """\
+at::Tensor {kernel}(
+    const at::Tensor& self,
+    const at::Scalar& beta,
+    const at::Scalar& threshold) {{
+  if (!musa_ops::{dtype_pred}(self.scalar_type())) {{
+    return at::{at_op}(self.cpu(), beta, threshold).to(self.device());
+  }}
+  auto out = at::empty(self.sizes(), self.options());
+  musa_ops::MudnnTensorWrapper t_self(self);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Unary op;
+  op.SetMode(musa_ops::mudnn::Unary::Mode::{mode});
+  op.SetAlpha(beta.to<double>());
+  op.SetBeta(threshold.to<double>());
+  EXEC_MUDNN_CMD("{at_op}", self, op.Run(_mudnn_h, t_out.get(), t_self.get()));
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kMusa, {kernel})
+"""
+
+# elu(self, alpha, scale, input_scale) computes
+# scale * (max(0,x) + min(0, alpha*(exp(input_scale*x)-1))). mudnn's ELU takes
+# only alpha, so a non-unit scale or input_scale has no expression here and
+# takes the CPU fallback rather than silently ignoring the argument.
+T_ELU = """\
+at::Tensor {kernel}(
+    const at::Tensor& self,
+    const at::Scalar& alpha,
+    const at::Scalar& scale,
+    const at::Scalar& input_scale) {{
+  if (!musa_ops::{dtype_pred}(self.scalar_type()) ||
+      scale.to<double>() != 1.0 || input_scale.to<double>() != 1.0) {{
+    return at::{at_op}(self.cpu(), alpha, scale, input_scale)
+        .to(self.device());
+  }}
+  auto out = at::empty(self.sizes(), self.options());
+  musa_ops::MudnnTensorWrapper t_self(self);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Unary op;
+  op.SetMode(musa_ops::mudnn::Unary::Mode::{mode});
+  op.SetAlpha(alpha.to<double>());
+  EXEC_MUDNN_CMD("{at_op}", self, op.Run(_mudnn_h, t_out.get(), t_self.get()));
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kMusa, {kernel})
+"""
+
 CATEGORIES = {
     "unary": T_UNARY,
     "unary_alpha_const": T_UNARY_ALPHA_CONST,
@@ -723,6 +1279,20 @@ CATEGORIES = {
     "reduce_all_dtype": T_REDUCE_ALL_DTYPE,
     "gelu": T_GELU,
     "softmax_fwd": T_SOFTMAX_FWD,
+    "unary_cmp": T_UNARY_CMP,
+    "unary_two_const": T_UNARY_TWO_CONST,
+    "unary_param": T_UNARY_PARAM,
+    "clamp_one_sided": T_CLAMP_ONE_SIDED,
+    "clamp": T_CLAMP,
+    "softplus": T_SOFTPLUS,
+    "elu": T_ELU,
+    "binary_bw": T_BINARY_BW,
+    "gelu_bw": T_GELU_BW,
+    "threshold_bw": T_THRESHOLD_BW,
+    "leaky_relu_bw": T_LEAKY_RELU_BW,
+    "ternary_value": T_TERNARY_VALUE,
+    "where": T_WHERE,
+    "addmm": T_ADDMM,
 }
 
 # Categories whose mudnn mode is arithmetic, and therefore rejects bool operands
@@ -742,6 +1312,18 @@ ARITHMETIC_CATEGORIES = {
     "matmul_out",
     "gelu",
     "softmax_fwd",
+    "unary_two_const",
+    "unary_param",
+    "clamp_one_sided",
+    "clamp",
+    "softplus",
+    "elu",
+    "binary_bw",
+    "gelu_bw",
+    "threshold_bw",
+    "leaky_relu_bw",
+    "ternary_value",
+    "addmm",
 }
 
 # The mudnn class each category configures, for symbol validation.
@@ -761,6 +1343,20 @@ CATEGORY_CLASS = {
     "reduce_all_dtype": "Reduce",
     "gelu": "Unary",
     "softmax_fwd": "Softmax",
+    "unary_cmp": "Unary",
+    "unary_two_const": "Unary",
+    "unary_param": "Unary",
+    "clamp_one_sided": "Unary",
+    "clamp": "Unary",
+    "softplus": "Unary",
+    "elu": "Unary",
+    "binary_bw": "Binary",
+    "gelu_bw": "Binary",
+    "threshold_bw": "Binary",
+    "leaky_relu_bw": "Binary",
+    "ternary_value": "Ternary",
+    "where": "Ternary",
+    "addmm": None,  # mode names the class itself (MatMul / BatchMatMul)
 }
 
 FILE_HEADER = """\
@@ -900,6 +1496,12 @@ def main():
             fmt["alpha"] = extra[0]
         elif cat == "unary_two_pass":
             fmt["mode2"], fmt["alpha"] = extra[0], extra[1]
+        elif cat == "unary_two_const":
+            fmt["alpha"], fmt["beta"] = extra[0], extra[1]
+        elif cat == "unary_param":
+            fmt["param"] = extra[0]
+        elif cat == "clamp_one_sided":
+            fmt["param"], fmt["lo"], fmt["hi"] = extra[0], extra[1], extra[2]
         bodies.append(CATEGORIES[cat].format(**fmt))
         covered.append((op, mode_name, cat))
 
