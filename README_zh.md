@@ -208,6 +208,78 @@ FLAGOS_DISABLE_CUDA_ASSETS=1 python -c "import torch_fl, torch; \
   print((x @ x).cpu())"
 ```
 
+**可选：PPU 上启用 FlagGems。** 构建时设 `FLAGGEMS_PYTHON=ON`（默认即为 ON），运行时设
+`FLAGOS_USE_FLAGGEMS=1`；`import torch_fl` 会自动选择 `backends_flaggems.conf`，把已发现
+的算子路由到 FlagGems 的 Triton 内核。PPU 不需要额外的兼容层，通用 CUDA shim 即可：
+`libcuda.so` 是真实驱动，`is_nvidia_cuda_available()` 成立，于是设置
+`GEMS_VENDOR=nvidia`，`triton.language.extra.cuda.libdevice` 也能正常解析（其中有 `pow`）。
+
+PPU 的 Triton 来自厂商私有 index 而非 PyPI，其版本号（`3.5.0+v0.2.0.ppu2.1.0`）不满足
+`triton>=3.5.1` 的约束。因此当检测到 `PPU_SDK` 时，`setup.py` 会移除 `flag_gems`/`triton`
+依赖，改由用户自行安装：
+
+```bash
+pip install triton==3.5.0+v0.2.0.ppu2.1.0   # 厂商 index，见下方说明
+pip install flag_gems
+
+FLAGOS_DISABLE_CUDA_ASSETS=1 FLAGOS_USE_FLAGGEMS=1 python -c "import torch_fl, torch; \
+  x = torch.randn(256, 256, device='flagos'); \
+  print(torch.allclose(torch.softmax(x, -1).cpu(), torch.softmax(x.cpu(), -1), atol=1e-3))"
+```
+
+> **排查：安装 PPU Triton 时报 `Invalid cross-device link`**
+>
+> 厂商的 `triton` sdist 实际是个下载器，它先取回真实 wheel，再 `rename()` 到 pip 缓存目录。
+> 若 pip 缓存与构建目录不在同一文件系统（例如缓存在 NFS、构建在 `/tmp`），该 rename 会以
+> `[Errno 18]` 失败。此时用 `curl` 手动下载它打印的 wheel 地址
+> （`Guessing wheel URL: ...`），再对该文件执行 `pip install` 即可。
+
+**可选：PPU 上启用 FlagCX。** 分布式训练默认即可用，走 NCCL 兜底：`PPU_SDK` 自带
+厂商适配的 `libnccl.so.2`，PPU 的 torch wheel 是 `USE_NCCL=1` 构建，因此
+`ProcessGroupNCCL` 原生存在，`ProcessGroupFlagOS` 直接在零拷贝 CUDA view 上使用它。
+若要改用 FlagCX（异构统一通信库），需从源码构建：
+
+```bash
+git clone https://github.com/FlagOpen/FlagCX.git && cd FlagCX
+# --depth 1 不会拉取 submodule；缺少 third-party/json 会导致构建失败：
+# "nlohmann/json.hpp: No such file or directory"
+git submodule update --init --depth 1 third-party/json
+
+make -j16 USE_PPU=1 \
+  DEVICE_HOME=/usr/local/PPU_SDK/CUDA_SDK \
+  CCL_HOME=/usr/local/PPU_SDK/CUDA_SDK
+
+# torch plugin 用 *nvidia* adaptor 构建，而非自动探测出的 `ppu`。两者生成的 torch
+# 侧代码完全一致（PPU 是 CUDA-ABI：同样的 CUDAStreamGuard、CUDAEvent、
+# devName="cuda"），但 FlagCX 只为 NVIDIA 和 MetaX adaptor 编译 extended_api
+# creator，所以 `nvidia` 能拿到更完整的 ProcessGroupFlagCX 绑定。而 `ppu` 目前
+# 还编不过 —— PPU 未被加入 plugin 的各 adaptor #ifdef 分支。
+cd plugin/torch && FLAGCX_ADAPTOR=nvidia FLAGCX_HOME=$(git rev-parse --show-toplevel) \
+  python setup.py install
+```
+
+之后 `import torch_fl` 会自动优先使用 FlagCX（`_try_build_flagcx` 在 NCCL 兜底之前
+执行）；除了把 `libflagcx.so` 放到加载路径上，无需额外环境变量：
+
+```bash
+LD_LIBRARY_PATH=/path/to/FlagCX/build/lib:$LD_LIBRARY_PATH \
+  python tests/manual/test_flagos_dist_live.py --world-size 4
+```
+
+**运行测试：**
+
+```bash
+# 纯 boxing
+FLAGOS_DISABLE_CUDA_ASSETS=1 pytest tests/unit tests/integration/ops \
+  tests/integration/test_factory_ops.py -q -m "not flaggems and not flaggems_python"
+
+# FlagGems 路线（首次很慢：Triton 需要逐个编译并 autotune）
+FLAGOS_DISABLE_CUDA_ASSETS=1 FLAGOS_USE_FLAGGEMS=1 pytest tests/integration/ops -q
+
+# 分布式（collectives + DDP）。默认走 NCCL；用 FlagCX 时加上 LD_LIBRARY_PATH。
+python tests/manual/test_flagos_dist_live.py --world-size 4
+```
+
 ### 从源码安装（海光 DCU 平台）
 
 海光 DCU（DTK）复用 **CUDA boxing 路线**，通过独立的 `ACCELERATOR=dcu` 分支支持。
@@ -276,14 +348,103 @@ pytest tests/integration/ops -q -m "not flaggems and not flaggems_python"
   这个绝对路径，而 glibc ≥ 2.34 已把 librt 合并进 libc，该文件不再存在。
   `ACCELERATOR=dcu` 分支会把这类悬空绝对路径改写为 `-lrt`。
 
+#### 在 DCU 上启用 FlagGems
+
+DTK 自带 Triton（`hcu` 后端）和 FlagGems，其 `hygon` vendor 声明的
+`device_name="cuda"` 正好契合 boxing 路线。两者都装在 DTK 的系统解释器里，因此
+直接把环境指过去即可，不要装 PyPI 上面向 NVIDIA 的 wheel：
+
+```bash
+pip install pyyaml sqlalchemy          # flag_gems 依赖
+mkdir -p /path/to/gems_path && cd /path/to/gems_path
+ln -s /usr/local/lib/python3.10/dist-packages/triton .
+ln -s /usr/local/lib/python3.10/dist-packages/flag_gems .
+
+ACCELERATOR=dcu FLAGGEMS_PYTHON=1 pip install --no-build-isolation -e .
+
+export PYTHONPATH=/path/to/gems_path
+export TRITON_BACKENDS_IN_TREE=1       # 该安装没有 dist-info，
+                                       # 基于 entry-point 的后端发现拿不到任何后端
+export FLAGOS_USE_FLAGGEMS=1
+pytest tests/integration/ops -q        # 无需再屏蔽 marker
+```
+
+DCU 构建会自动设置 `GEMS_VENDOR=hygon`，无需再手动导出。这一点不只影响 FlagGems：
+`GEMS_VENDOR` 同时决定通信 profile（见 `torch_fl/comm/process_group.py`），而 DCU
+属于 CUDA-ABI vendor，其 `ProcessGroupNCCL` 底层就是 RCCL。只有需要覆盖时才自行导出。
+
+DCU 构建会把 `ACCELERATOR=dcu` 记录到 `torch_fl/_build_config.py`，因此运行时只需
+`FLAGOS_USE_FLAGGEMS=1` 就会选中 `backends_dcu_flaggems.conf`，不必重新导出
+`ACCELERATOR`。该配置即 `backends_flaggems.conf`，只是把 `hcu` Triton 编译不了或
+跑不通的算子退回 cuda boxing 算子：`silu_backward`（`tl.math.div_rn` 缺少
+`create_precise_divf` lowering）与 `slice_backward`（单独跑结果正确，但其梯度喂给
+MIOpen 的 `convolution_backward` 会触发硬件 VMFault）。可用
+`FLAGOS_OP_<name>=flagos_python|cuda` 按算子覆盖。
+
+#### DCU 多卡
+
+开着 FlagGems 也可以多卡，走 FlagCX 或 RCCL 回退路径均可，无需额外配置：自动设置的
+`GEMS_VENDOR=hygon` 会把 `ProcessGroupFlagOS` 路由到 CUDA-ABI profile（零拷贝
+`_flagos_to_cuda_view` + `ProcessGroupNCCL`，在 DTK 上底层即 RCCL：
+`dist.is_nccl_available()` 为 `True`，`torch.cuda.nccl.version()` 返回
+`(2, 22, 3)`）。
+
+```bash
+export HSA_FORCE_FINE_GRAIN_PCIE=1     # 不设置时 RCCL 会告警；
+                                       # 影响多卡吞吐与稳定性
+python tests/manual/test_flagos_dist_live.py --world-size 2
+```
+
+这里的前提是工厂算子必须遵守传入的 `device` index：每个 rank>0 的 worker 都通过工厂
+算子建张量，若输出分配在 device 0 而 Triton kernel 在 device N 上启动，就是一次跨设备
+写入，会直接把 GPU 打挂。参见 `tests/integration/test_factory_device_index.py`。
+
+### 从源码安装（燧原 GCU 平台）
+
+燧原 GCU 走的是**原生算子路线**（与 Ascend 一致），而不是 CUDA boxing：
+TopsRider 软件栈里没有 CUDA runtime 可以 box，厂商的 `torch-gcu` wheel 自己要占用
+`PrivateUse1`，无法与 `torch_fl` 共存。因此本插件直接链接厂商库：
+
+- `libtopsrt.so`（tops runtime）承载设备 / 内存 / 流层。
+- `libtopsaten.so`（ATen 风格算子库）承载计算算子。它的调用形态是一次直调，
+  没有 aclnn 那样的 workspace/executor 两段式。
+
+```bash
+# 上游 CPU 版 torch 即可，不需要厂商 torch。
+pip install torch==2.10.0 --index-url https://download.pytorch.org/whl/cpu
+
+ACCELERATOR=gcu pip install --no-build-isolation -vvv -e .
+```
+
+算子由 `scripts/codegen_gcu.py` 生成。它会把每个算子与 `libtopsaten.so` 中实际存在的
+`topsaten::topsatenXxx`（demangle 后）符号比对，缺失的直接跳过，因此 codegen 不可能
+生成当前 SDK 里没有的调用。
+
+**GCU 平台注意事项：**
+
+- **没有 topsaten kernel 的算子完全不在 `PrivateUse1` 上注册**，因此会落到
+  `cpu_fallback` 而不是报错。要扩大覆盖面，只需扩充 `scripts/codegen_gcu.py`
+  里的 `OPS` 表。
+- **topsaten 没有 int64 kernel**：任何 `I64` 操作数都会返回 `NOT_SUPPORT`。
+  因此每个生成的 kernel 都会先判断 dtype，int64 情况下在 CPU 上算再拷回，
+  保证索引、mask、计数器这类张量可用。它同样拒绝 rank-0 形状，所以 0 维张量
+  会按 1 元素向量来描述。
+- **tops 设备指针是按设备绑定的**（没有统一寻址）：指针只在*当前*设备上有效，
+  所以 allocator 和每个 kernel 都会先切换设备，默认流也是每设备一条。
+- **带原生 kernel 的构建会安装一个 `lib/flagos_platform` 标记文件**，让
+  `torch_fl` 选用 `backends_gcu.conf`，而不是默认的 CUDA 路由。
+- 用 `-DGCU_KERNEL=OFF` 可以完全跳过 topsaten；此时 runtime 仍可用，
+  所有计算回落到 CPU。
+
 ### 构建环境变量
 
 | 变量 | 说明 |
 |------|------|
-| `ACCELERATOR` | 硬件平台：`cuda`（默认）、`metax`、`ascend`、`tsingmicro` 或 `dcu` |
+| `ACCELERATOR` | 硬件平台：`cuda`（默认）、`metax`、`ascend`、`tsingmicro`、`dcu` 或 `gcu` |
 | `FLAGOS_BUILD_JOBS` | 原生库并行编译线程数（默认 CPU 核数）；日志过长可设 `1` |
 | `CUDA_HOME` | CUDA toolkit 路径 |
 | `DTK_ROOT` | 海光 DTK 路径（依次回退到 `ROCM_PATH`、`/opt/dtk`；DCU 构建必需） |
+| `TOPS_HOME` | 燧原 TopsRider SDK 路径（默认 `/opt/tops`；GCU 构建必需） |
 | `METAX_PATH` | MetaX SDK 路径（默认 `/opt/maca`，metax 构建必需） |
 | `METAX_ARCH` / `METAX_MXCC` | 可选：GPU 架构或 mxcc/cucc 编译器路径 |
 | `METAX_KERNEL` | 启用 MetaX C++ kernel 构建（`ON`/`OFF`；`ACCELERATOR=metax` 时自动开启） |
@@ -293,6 +454,7 @@ pytest tests/integration/ops -q -m "not flaggems and not flaggems_python"
 | `FLAGGEMS_PYTHON` | 启用 FlagGems Python kernel 封装（`ON`/`OFF`，默认 `OFF`；设为 `1` 启用） |
 | `CUDA_KERNEL` | 启用 CUDA kernel 构建（`ON`/`OFF`，默认 `ON`；Ascend 设为 `0`） |
 | `ASCEND_KERNEL` | 启用 Ascend kernel 构建（`ON`/`OFF`，默认 `OFF`；Ascend 设为 `1`） |
+| `GCU_KERNEL` | 启用燧原 GCU topsaten kernel 构建（`ON`/`OFF`；`ACCELERATOR=gcu` 时自动开启） |
 
 ### 运行时环境变量
 

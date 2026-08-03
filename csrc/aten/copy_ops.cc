@@ -9,11 +9,16 @@
 #include "copy_dispatcher.h"
 
 #include <ATen/native/Resize.h>
+#include <ATen/ops/_pin_memory.h>
 #include <ATen/ops/copy_native.h>
 #include <include/flagos.h>
 #include "device_boxing.h"
 #ifdef USE_ASCEND
 #include "backends/ascend/ascend_copy.h"
+#endif
+
+#if defined(FLAGOS_MUSA_KERNEL)
+#include "backends/musa/mudnn_common.h"
 #endif
 
 namespace at::native::flagos {
@@ -68,7 +73,15 @@ at::Tensor _copy_from(
         Memcpy(dst.data_ptr(), self.data_ptr(), nbytes, MemcpyDeviceToDevice);
       }
     } else {
-#if !defined(USE_ASCEND) && !defined(USE_TSINGMICRO)
+#if defined(FLAGOS_MUSA_KERNEL)
+      // MUSA: mudnn handles strides and dtype casts on device in one pass
+      // (IDENTITY or CAST over stride-carrying Tensors). Without this,
+      // at::native::copy_ would route to the CUDA DispatchStub and fail with
+      // "missing kernel for cuda", since nothing ever fills the CUDA slot on
+      // this platform.
+      musa_ops::MudnnCopy(self, const_cast<at::Tensor&>(dst));
+#elif !defined(USE_ASCEND) && !defined(USE_TSINGMICRO) && !defined(USE_GCU) && \
+    !defined(USE_MUSA)
       // CUDA platform: use DeviceBoxingGuard to dispatch to native CUDA
       // strided copy kernel (handles strides, dtype casts on-device).
       DeviceBoxingGuard guard(self, dst);
@@ -143,7 +156,8 @@ at::Tensor _copy_from(
     } else {
       auto tmp = at::empty(self_contig.sizes(), dst.options());
       Memcpy(tmp.data_ptr(), self_contig.data_ptr(), nbytes, MemcpyHostToDevice);
-#if defined(USE_ASCEND) || defined(USE_TSINGMICRO)
+#if defined(USE_ASCEND) || defined(USE_TSINGMICRO) || defined(USE_GCU) || \
+    defined(USE_MUSA)
       at::native::flagos::_copy_from(tmp, dst, false);
 #else
       DeviceBoxingGuard guard(tmp, dst);
@@ -172,7 +186,8 @@ at::Tensor _copy_from(
     } else {
       auto tmp = at::empty(self_contig.sizes(), dst.options());
       Memcpy(tmp.data_ptr(), self_contig.data_ptr(), nbytes, MemcpyDeviceToDevice);
-#if defined(USE_ASCEND) || defined(USE_TSINGMICRO)
+#if defined(USE_ASCEND) || defined(USE_TSINGMICRO) || defined(USE_GCU) || \
+    defined(USE_MUSA)
       at::native::flagos::_copy_from(tmp, dst, false);
 #else
       DeviceBoxingGuard guard(tmp, dst);
@@ -233,12 +248,19 @@ at::Tensor _to_copy(
   TORCH_CHECK(
       !self.is_quantized(),
       "flagos _to_copy does not support quantized tensors yet");
-  TORCH_CHECK(
-      !pin_memory_opt.value_or(false),
-      "flagos _to_copy does not support pin_memory=True yet");
+  const bool want_pinned = pin_memory_opt.value_or(false);
   auto device = device_opt.value_or(self.device());
   auto dtype = dtype_opt.value_or(self.scalar_type());
   auto memory_format = memory_format_opt.value_or(c10::MemoryFormat::Preserve);
+
+  // pin_memory is a host-memory concept: only a CPU destination can be pinned.
+  // (Pinning is applied to the result CPU tensor below via _pin_memory, using
+  // the flagos host allocator = cudaMallocHost on MetaX.)
+  TORCH_CHECK(
+      !want_pinned || device.is_cpu(),
+      "flagos _to_copy: pin_memory=True is only valid for a CPU destination, "
+      "but got destination device ",
+      device);
 
   // Ascend NPU does not support float64; clamp to float32.
   if (dtype == at::kDouble && (device.is_privateuseone() || device.is_cuda())) {
@@ -285,15 +307,24 @@ at::Tensor _to_copy(
     int device_index = device.index() >= 0 ? device.index() : 0;
     at::Tensor self_contig = self.contiguous();
     if (dtype != self.scalar_type()) {
-#if defined(USE_ASCEND) || defined(USE_TSINGMICRO)
-      // Ascend / TsingMicro: no CUDA runtime for the dtype cast.
+#if defined(FLAGOS_MUSA_KERNEL)
+      // MUSA: mudnn's Unary::CAST converts dtype on device, so no CPU
+      // round-trip for a plain `.to(dtype)`.
+      result = at::empty(self_contig.sizes(), self_contig.options()
+          .dtype(dtype).device(c10::Device(c10::kPrivateUse1, device_index)));
+      musa_ops::MudnnCopy(self_contig, result);
+#elif defined(USE_ASCEND) || defined(USE_TSINGMICRO) || defined(USE_GCU) || \
+    defined(USE_MUSA)
+      // No CUDA runtime on these backends, so the CUDA TensorIterator cast
+      // below is unavailable.
 #ifdef USE_ASCEND
       // Ascend casts on-device via aclnnCast, avoiding the D2H->CPU->H2D
       // round-trip that dominated HF RMSNorm (two fp16<->fp32 casts per layer).
       result = ascend::DtypeCast(self_contig, dtype);
 #endif
       if (!result.defined()) {
-        // Fallback: CPU round-trip when no on-device cast is available.
+        // Fallback: CPU round-trip when no on-device cast is available
+        // (TsingMicro / GCU / MUSA, or an Ascend dtype pair aclnnCast rejects).
         size_t nbytes = self_contig.numel() * self_contig.element_size();
         at::Tensor cpu_tensor =
             at::empty(self_contig.sizes(), self_contig.options().device(at::kCPU));
@@ -384,6 +415,13 @@ at::Tensor _to_copy(
 
   if (memory_format != c10::MemoryFormat::Preserve) {
     result = result.contiguous(memory_format);
+  }
+
+  // Copy the result (CPU) into pinned host memory when requested. Guarded above
+  // so this only runs for a CPU destination; _pin_memory routes to the flagos
+  // host allocator (cudaMallocHost on MetaX) registered via the hooks.
+  if (want_pinned) {
+    result = at::_pin_memory(result, std::nullopt);
   }
 
   return result;

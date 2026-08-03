@@ -19,6 +19,7 @@ namespace at::native::flagos {
 // Determines which physical backend impl() dispatches to.
 // kUncached is a sentinel used by Dispatcher's per-op backend cache; it is
 // never stored in the BackendTable and never returned by GetBackendForOp.
+// Keep it last so the real backends stay contiguous.
 enum class Backend {
   kCuda,
   kFlagOs,
@@ -27,6 +28,7 @@ enum class Backend {
   kMusa,
   kMetax,
   kTsingMicro,
+  kGcu,
   kUncached
 };
 

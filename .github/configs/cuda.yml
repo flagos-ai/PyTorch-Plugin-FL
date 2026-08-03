@@ -1,0 +1,79 @@
+# Copyright 2026 FlagOS Contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+display_name: CUDA
+
+# Platform-specific preparation is implemented outside the common workflows.
+setup_script: .github/scripts/set_env_cuda.sh
+
+ci_image: harbor.baai.ac.cn/flagos-dev/pytorch-plugin-fl:manual-20260728-cuda-dev
+
+runner_labels:
+  - nv-8g-cicd-pytorch
+
+container_volumes:
+  - /data/models/Qwen/Qwen3-0.6B:/models/Qwen3-0.6B:ro
+
+integration_environment:
+  MODEL_PATH: /models/Qwen3-0.6B
+
+container_options: >-
+  --gpus all
+  --ipc=host
+  --shm-size=512g
+  --ulimit memlock=-1
+  --cap-add=SYS_PTRACE
+
+timeout_minutes: 60
+wheel_artifact_name: wheel-cuda
+
+# The common workflow only executes this platform-provided test manifest.
+integration_tests:
+  - name: Check model availability
+    command: test -d "$MODEL_PATH"
+  - name: Check device availability
+    command: |
+      python - <<'PY'
+      import torch
+      import torch_fl
+
+      assert torch.cuda.is_available(), "CUDA is unavailable"
+      assert torch_fl.flagos.is_available(), "flagos device is unavailable"
+      print(f"CUDA devices: {torch.cuda.device_count()}")
+      print(f"flagos devices: {torch_fl.flagos.device_count()}")
+      PY
+  - name: Check FlagGems routing consistency
+    command: >-
+      python -m pytest
+      tests/integration/ops/test_flaggems_conf_consistency.py
+      -v --tb=short
+  - name: Run operator tests (vendor backend, main ops)
+    command: >-
+      python -m pytest tests/integration/ops/
+      -m main_ops -v -s --tb=short
+  - name: Run operator tests (FlagGems runtime path, main ops)
+    command: >-
+      FLAGOS_USE_FLAGGEMS=1
+      python -m pytest tests/integration/ops/
+      -m "flaggems and main_ops" -v -s --tb=short
+  - name: Run general tests
+    command: python -m pytest tests/integration/test_factory_ops.py -v -s --tb=short
+  - name: Run inference tests
+    command: >-
+      python -m pytest tests/integration/test_qwen3_infer.py
+      --model "$MODEL_PATH" -v -s --tb=short
+  - name: Run training tests
+    command: >-
+      python -m pytest tests/integration/test_qwen3_train.py
+      --model "$MODEL_PATH" -v -s --tb=short

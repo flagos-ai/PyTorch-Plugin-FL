@@ -24,6 +24,7 @@ Run: pytest tests/unit/test_vendor_routing.py
 
 import sys
 import types
+import warnings
 
 import pytest
 
@@ -58,10 +59,87 @@ def test_unknown_vendor_falls_back_to_default_profile():
 
 
 def test_known_cuda_vendors():
-    for v in ("nvidia", "metax", "iluvatar", "kunlunxin", "du"):
+    for v in ("nvidia", "metax", "iluvatar", "kunlunxin", "du", "thead", "hygon"):
         prof = pg._get_profile(v)
         assert prof.flagcx_dev == "cuda"
         assert prof.view == "_flagos_to_cuda_view"
+
+
+def test_thead_ppu_routes_without_warning():
+    """PPU reports GEMS_VENDOR=thead from FlagGems' own detection (PPU_SDK set),
+    while torch_fl sets nvidia. Both must resolve to the same CUDA-ABI profile,
+    and thead must not trip the unknown-vendor warning."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # any warning fails the test
+        prof = pg._get_profile("thead")
+    assert prof.flagcx_dev == "cuda"
+    assert prof.native == "_try_build_nccl"
+    assert prof.view == pg._VENDOR_PROFILES["nvidia"].view
+
+
+def test_hygon_dcu_routes_without_warning():
+    """DCU (DTK) sets GEMS_VENDOR=hygon. torch there is a hipified CUDA build, so
+    flagos is a cuda alias and ProcessGroupNCCL is RCCL: the CUDA-ABI profile
+    applies verbatim. Must not trip the unknown-vendor warning -- before the row
+    existed, an unset GEMS_VENDOR on DCU landed on the ascend profile instead and
+    init_process_group failed with "no suitable inner backend"."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # any warning fails the test
+        prof = pg._get_profile("hygon")
+    assert prof.flagcx_dev == "cuda"
+    assert prof.native == "_try_build_nccl"
+    assert prof.view == pg._VENDOR_PROFILES["nvidia"].view
+
+
+# ---------------------------------------------------------------------------
+# Collective virtual coverage
+# ---------------------------------------------------------------------------
+
+
+def test_single_tensor_base_collectives_are_overridden():
+    """_allgather_base / _reduce_scatter_base are separate virtuals from
+    allgather / reduce_scatter. If they are not overridden, ProcessGroup's C++
+    base tries to resolve a Backend for the tensor's device and raises
+    "No backend type associated with device type flagos" -- which breaks
+    dist.all_gather_into_tensor / reduce_scatter_tensor, i.e. the FSDP and ZeRO
+    hot paths. Guard against silently dropping them again."""
+    for name in ("_allgather_base", "_reduce_scatter_base"):
+        assert name in pg.ProcessGroupFlagOS.__dict__, (
+            f"{name} not overridden on ProcessGroupFlagOS; "
+            f"dist.{'all_gather_into_tensor' if 'allgather' in name else 'reduce_scatter_tensor'}"
+            f" will fail on flagos tensors"
+        )
+
+
+def test_base_collectives_delegate_with_converted_views(monkeypatch):
+    """Both new virtuals must pass the flagos->cuda view through, not the raw
+    privateuseone tensor."""
+
+    class _FakeInner:
+        def __init__(self):
+            self.seen = {}
+
+        def _allgather_base(self, out, inp, opts):
+            self.seen["allgather"] = (out, inp)
+            return "work-ag"
+
+        def _reduce_scatter_base(self, out, inp, opts):
+            self.seen["rs"] = (out, inp)
+            return "work-rs"
+
+    obj = pg.ProcessGroupFlagOS.__new__(pg.ProcessGroupFlagOS)
+    obj._inner = _FakeInner()
+    # view_fn tags anything it converts so we can assert it was applied
+    obj._view_fn = lambda t: ("viewed", t)
+
+    class _FlagosTensor:
+        device = types.SimpleNamespace(type="flagos")
+
+    a, b = _FlagosTensor(), _FlagosTensor()
+    assert obj._allgather_base(a, b) == "work-ag"
+    assert obj._inner.seen["allgather"] == (("viewed", a), ("viewed", b))
+    assert obj._reduce_scatter_base(a, b) == "work-rs"
+    assert obj._inner.seen["rs"] == (("viewed", a), ("viewed", b))
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +232,47 @@ def test_musa_flagcx_ok_but_no_view_raises(monkeypatch):
     )
     with pytest.raises(NotImplementedError, match="no flagos->device view"):
         obj._build_inner(None, 0, 1, None)
+
+
+def test_flagcx_plain_signature_is_accepted(monkeypatch):
+    """FlagCX only compiles the extended_api creator for the NVIDIA and MetaX
+    adaptors; ppu/du/kunlunxin/ascend/enflame export the plain
+    (store, rank, size, timeout) form. Calling the extended form on those
+    raises TypeError ("incompatible function arguments"), which must be retried
+    as the plain form -- otherwise FlagCX silently degrades to NCCL."""
+    sentinel = object()
+    seen = {}
+
+    def creator(*args):
+        # extended form is (opts, extra) or (opts,); reject like pybind11 does
+        if len(args) < 3:
+            raise TypeError("createFlagcxBackend(): incompatible function arguments")
+        seen["args"] = args
+        return sentinel
+
+    fake_flagcx = types.ModuleType("flagcx")
+    fake_flagcx.createFlagcxBackend = creator
+    monkeypatch.setitem(sys.modules, "flagcx", fake_flagcx)
+
+    obj = pg.ProcessGroupFlagOS.__new__(pg.ProcessGroupFlagOS)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # must not warn on the expected retry
+        assert obj._try_build_flagcx("store", 1, 4, None) is True
+    assert obj._inner is sentinel
+    assert seen["args"] == ("store", 1, 4, None)
+
+
+def test_flagcx_both_signatures_failing_warns_and_falls_back(monkeypatch):
+    def creator(*args):
+        raise RuntimeError("boom")
+
+    fake_flagcx = types.ModuleType("flagcx")
+    fake_flagcx.createFlagcxBackend = creator
+    monkeypatch.setitem(sys.modules, "flagcx", fake_flagcx)
+
+    obj = pg.ProcessGroupFlagOS.__new__(pg.ProcessGroupFlagOS)
+    with pytest.warns(UserWarning, match="FlagCX init failed"):
+        assert obj._try_build_flagcx("store", 0, 1, None) is False
 
 
 def test_ascend_uses_hccl_native(monkeypatch):

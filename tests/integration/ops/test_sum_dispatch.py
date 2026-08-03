@@ -134,7 +134,18 @@ class TestSumDimDispatch:
         )
         assert "[flagos dispatch] sum.dim_IntList -> flagos_python" in result.stderr
 
+    @pytest.mark.flaggems
+    @pytest.mark.main_ops
+    def test_dispatch_log_flaggems_runtime(self):
+        """With the FlagGems runtime path on, sum.dim_IntList routes to flagos_python."""
+        result = _run_subprocess(
+            {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_USE_FLAGGEMS": "1"}
+        )
+        assert result.returncode == 0, f"Failed:\n{result.stderr}"
+        assert "[flagos dispatch] sum.dim_IntList -> flagos_python" in result.stderr
+
     @pytest.mark.cuda
+    @pytest.mark.main_ops
     def test_dispatch_log_cuda_override(self):
         result = _run_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_sum__dim_IntList": "cuda"}

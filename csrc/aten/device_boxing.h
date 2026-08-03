@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <ATen/core/IListRef.h>
 #include <ATen/core/Tensor.h>
 #include <c10/core/DeviceType.h>
 #include <c10/core/TensorImpl.h>

@@ -18,6 +18,7 @@ __all__ = [
     "manual_seed",
     "manual_seed_all",
     "initial_seed",
+    "_is_in_bad_fork",
 ]
 
 
@@ -66,3 +67,21 @@ def manual_seed_all(seed: int) -> None:
     for idx in range(device_count()):
         default_generator = _C._get_default_generator(idx)
         default_generator.manual_seed(seed)
+
+
+def _is_in_bad_fork() -> bool:
+    """Required, alongside `manual_seed_all`, by torch.random._seed_custom_device.
+
+    Without it `torch.manual_seed()` skips this device module entirely and warns
+    "Set seed for `flagos` device does not take effect" on every call -- which is
+    misleading twice over: the flagos RNG *is* seeded (the flaggems and native
+    CUDA paths both go through torch.cuda.manual_seed_all, patched by the vendor
+    shim), and the PrivateUse1 generator this module owns was simply never
+    reached. Defining it wires torch.manual_seed to that generator too, so
+    flagos.get_rng_state()/initial_seed() track the global seed.
+
+    flagos generators live in host memory and carry no fork-unsafe device
+    context (unlike CUDA's, which is why torch.cuda has a real check), so there
+    is no bad-fork state to detect.
+    """
+    return False

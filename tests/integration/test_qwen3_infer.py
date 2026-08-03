@@ -44,7 +44,8 @@ def ctx(request):
     t0 = time.time()
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     model = AutoModelForCausalLM.from_pretrained(
-        model_path, torch_dtype=torch.float16, device_map="cpu"
+        model_path,
+        dtype=torch.float16,
     )
     device = "flagos:0"
     model = model.to(device)

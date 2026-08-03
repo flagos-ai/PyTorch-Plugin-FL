@@ -76,6 +76,29 @@ def worker(rank: int, world_size: int):
     ok_ag = vals == [float(i + 1) for i in range(world_size)]
     print(f"[rank {rank}] all_gather -> {vals} {'OK' if ok_ag else 'FAIL'}")
 
+    # --- all_gather_into_tensor (_allgather_base) ---
+    # Separate virtual from allgather(); the FSDP/ZeRO parameter-gather path.
+    agb = torch.empty(world_size, device=dev)
+    dist.all_gather_into_tensor(agb, torch.full((1,), float(rank), device=dev))
+    ok_agb = agb.cpu().tolist() == [float(i) for i in range(world_size)]
+    print(
+        f"[rank {rank}] all_gather_into_tensor -> {agb.cpu().tolist()} "
+        f"{'OK' if ok_agb else 'FAIL'}"
+    )
+
+    # --- reduce_scatter_tensor (_reduce_scatter_base) ---
+    # FSDP gradient-reduction path. Every rank contributes the same arange, so
+    # rank r's shard is world_size * arange[2r : 2r+2].
+    rs_in = torch.arange(2 * world_size, dtype=torch.float32, device=dev)
+    rs_out = torch.empty(2, device=dev)
+    dist.reduce_scatter_tensor(rs_out, rs_in)
+    exp_rs = [float(world_size) * (2 * rank), float(world_size) * (2 * rank + 1)]
+    ok_rs = rs_out.cpu().tolist() == exp_rs
+    print(
+        f"[rank {rank}] reduce_scatter_tensor -> {rs_out.cpu().tolist()} "
+        f"(expect {exp_rs}) {'OK' if ok_rs else 'FAIL'}"
+    )
+
     # --- DDP forward/backward ---
     torch.manual_seed(0)
     model = nn.Sequential(nn.Linear(8, 8), nn.ReLU(), nn.Linear(8, 1)).to(dev)

@@ -28,7 +28,8 @@ For every vendor the inner-backend priority is FlagCX first, then the vendor's
 native backend (NCCL for CUDA-ABI vendors, HCCL for Ascend).
 
 View conversion
-    flagos tensors on CUDA-ABI vendors (nvidia/metax/iluvatar/kunlunxin/du)
+    flagos tensors on CUDA-ABI vendors
+    (nvidia/metax/iluvatar/kunlunxin/du/thead/hygon)
     share physical GPU memory with CUDA, so they are reinterpreted as CUDA
     tensors via a zero-copy shared-storage view (``_C._flagos_to_cuda_view``)
     before being handed to NCCL / FlagCX-cuda. The underlying buffer is the
@@ -69,7 +70,9 @@ from torch._C import _distributed_c10d as _c10d
 # cuda_alias vendors: flagos shares physical GPU memory with CUDA, so a flagos
 # tensor can be viewed as a cuda tensor zero-copy (_flagos_to_cuda_view) and
 # handed to NCCL/FlagCX-cuda directly. This is the property that makes the
-# CPU-torch + external libtorch_cuda scheme work.
+# CPU-torch + external libtorch_cuda scheme work. A hipified torch (hygon)
+# qualifies too: its HIP kernels register under the CUDA dispatch key and its
+# "NCCL" backend is RCCL, so the same row shape applies.
 # ---------------------------------------------------------------------------
 
 
@@ -91,6 +94,18 @@ _VENDOR_PROFILES = {
     "iluvatar": _VendorProfile("cuda", "_flagos_to_cuda_view", "_try_build_nccl"),
     "kunlunxin": _VendorProfile("cuda", "_flagos_to_cuda_view", "_try_build_nccl"),
     "du": _VendorProfile("cuda", "_flagos_to_cuda_view", "_try_build_nccl"),
+    # T-Head PPU (Zhenwu ZW810E). FlagGems reports vendor "thead" when PPU_SDK is
+    # set, while torch_fl sets GEMS_VENDOR=nvidia; list it so either value routes
+    # the same instead of going through the unknown-vendor warning. PPU_SDK ships
+    # a vendor-adapted libnccl.so.2 and its torch wheel is a real CUDA build, so
+    # ProcessGroupNCCL works on the zero-copy cuda view unchanged.
+    "thead": _VendorProfile("cuda", "_flagos_to_cuda_view", "_try_build_nccl"),
+    # Hygon DCU (DTK). torch is a hipified CUDA build, so flagos IS a cuda alias
+    # and the zero-copy view applies unchanged. Its ProcessGroupNCCL is RCCL
+    # under the hood (dist.is_nccl_available() True, torch.cuda.nccl.version()
+    # -> (2, 22, 3)); measured working for all_reduce / broadcast / all_gather /
+    # all_gather_into_tensor / reduce_scatter_tensor and DDP on 2 cards.
+    "hygon": _VendorProfile("cuda", "_flagos_to_cuda_view", "_try_build_nccl"),
     # Ascend: flagos is NOT a cuda alias; native fallback is HCCL. The flagos->
     # npu view is not implemented yet, so only the FlagCX(cann) path is viable.
     "ascend": _VendorProfile("cann", None, "_try_build_hccl"),
@@ -230,7 +245,7 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
         """Build a ProcessGroupNCCL (native binding, else _flagos_nccl ext).
 
         Returns True and sets self._inner on success. Covers all CUDA-ABI
-        vendors (nvidia/metax/iluvatar/kunlunxin/du).
+        vendors (nvidia/metax/iluvatar/kunlunxin/du/thead).
         """
         nccl_cls = getattr(torch.distributed, "ProcessGroupNCCL", None)
         if nccl_cls is not None:
@@ -290,6 +305,19 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
         Returns True and sets ``self._inner`` on success, False if flagcx is
         unavailable. Any hard failure is surfaced as a
         warning and treated as unavailable so we fall through to NCCL/HCCL.
+
+        Two creator signatures exist upstream. FlagCX only compiles the
+        extended_api form for the NVIDIA and MetaX adaptors (see the
+        ``#if (defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)) &&
+        defined(TORCH_VER_GE_250)`` guards in backend_flagcx.cpp); every other
+        adaptor -- ppu, du, kunlunxin, ascend, enflame, ... -- exports the plain
+        c10d form instead:
+
+            extended: createFlagcxBackend(_DistributedBackendOptions, Options)
+            plain:    createFlagcxBackend(store, rank, size, timeout)
+
+        We try extended first and fall back to plain, otherwise those adaptors
+        raise "incompatible function arguments" and silently degrade to NCCL.
         """
         try:
             import flagcx  # noqa: F401 — self-registers "flagcx" backend
@@ -332,10 +360,27 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
 
             self._inner = creator(opts, extra) if extra is not None else creator(opts)
             return True
+        except TypeError:
+            # Non-NVIDIA/MetaX adaptor: plain (store, rank, size, timeout) form.
+            pass
         except Exception as e:
             warnings.warn(
                 f"[ProcessGroupFlagOS] FlagCX init failed ({e}); "
                 f"falling back to vendor-native backend."
+            )
+            return False
+
+        try:
+            # timeout must be a duration; c10d hands us a datetime.timedelta,
+            # which pybind converts to std::chrono automatically. Older flagcx
+            # builds ignore the value but still require the argument.
+            self._inner = creator(store, rank, world_size, timeout)
+            return True
+        except Exception as e:
+            warnings.warn(
+                f"[ProcessGroupFlagOS] FlagCX init failed for both the "
+                f"extended_api and plain createFlagcxBackend signatures "
+                f"({e}); falling back to vendor-native backend."
             )
             return False
 
@@ -383,12 +428,35 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
             opts,
         )
 
+    def _allgather_base(self, output_tensor, input_tensor, opts=None):
+        # Single-tensor allgather (dist.all_gather_into_tensor). Distinct virtual
+        # from allgather(): if it is not overridden, ProcessGroup's C++ base
+        # resolves a Backend for the tensor's device and raises "No backend type
+        # associated with device type flagos". FSDP / ZeRO go through this path.
+        if opts is None:
+            opts = _c10d.AllgatherOptions()
+        return self._inner._allgather_base(
+            _to_comm(output_tensor, self._view_fn),
+            _to_comm(input_tensor, self._view_fn),
+            opts,
+        )
+
     def allgather_into_tensor_coalesced(self, output_tensors, input_tensors, opts=None):
         if opts is None:
             opts = _c10d.AllgatherOptions()
         return self._inner.allgather_into_tensor_coalesced(
             _tl(output_tensors, self._view_fn),
             _tl(input_tensors, self._view_fn),
+            opts,
+        )
+
+    def _allgather_base(self, output_tensor, input_tensor, opts=None):
+        # Backs the functional all_gather_into_tensor (single flat tensor in/out).
+        if opts is None:
+            opts = _c10d.AllgatherOptions()
+        return self._inner._allgather_base(
+            _to_comm(output_tensor, self._view_fn),
+            _to_comm(input_tensor, self._view_fn),
             opts,
         )
 
@@ -412,12 +480,34 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
             opts,
         )
 
+    def _reduce_scatter_base(self, output_tensor, input_tensor, opts=None):
+        # Single-tensor reduce_scatter (dist.reduce_scatter_tensor); same
+        # unoverridden-virtual trap as _allgather_base above. This is the hot
+        # path for FSDP gradient reduction.
+        if opts is None:
+            opts = _c10d.ReduceScatterOptions()
+        return self._inner._reduce_scatter_base(
+            _to_comm(output_tensor, self._view_fn),
+            _to_comm(input_tensor, self._view_fn),
+            opts,
+        )
+
     def reduce_scatter_tensor_coalesced(self, output_tensors, input_tensors, opts=None):
         if opts is None:
             opts = _c10d.ReduceScatterOptions()
         return self._inner.reduce_scatter_tensor_coalesced(
             _tl(output_tensors, self._view_fn),
             _tl(input_tensors, self._view_fn),
+            opts,
+        )
+
+    def _reduce_scatter_base(self, output_tensor, input_tensor, opts=None):
+        # Backs the functional reduce_scatter_tensor (single flat tensor in/out).
+        if opts is None:
+            opts = _c10d.ReduceScatterOptions()
+        return self._inner._reduce_scatter_base(
+            _to_comm(output_tensor, self._view_fn),
+            _to_comm(input_tensor, self._view_fn),
             opts,
         )
 

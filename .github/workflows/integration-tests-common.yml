@@ -1,0 +1,81 @@
+# Copyright 2026 FlagOS Contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Common Integration Tests
+
+on:
+  workflow_call:
+    inputs:
+      display_name:
+        required: true
+        type: string
+      setup_script:
+        required: true
+        type: string
+      image:
+        required: true
+        type: string
+      runs_on:
+        required: true
+        type: string
+      container_volumes:
+        required: true
+        type: string
+      container_options:
+        required: true
+        type: string
+      timeout_minutes:
+        required: true
+        type: number
+      integration_tests:
+        required: true
+        type: string
+      integration_environment:
+        required: true
+        type: string
+
+jobs:
+  integration-tests:
+    name: Integration tests (${{ inputs.display_name }})
+    runs-on: ${{ fromJson(inputs.runs_on) }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    container:
+      image: ${{ inputs.image }}
+      volumes: ${{ fromJson(inputs.container_volumes) }}
+      options: ${{ inputs.container_options }}
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare platform environment
+        env:
+          CI_STAGE: integration
+        run: bash "${{ inputs.setup_script }}"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . --no-build-isolation
+          python -m pip install pytest
+
+      - name: Run configured integration tests
+        env:
+          INTEGRATION_TESTS: ${{ inputs.integration_tests }}
+          INTEGRATION_ENVIRONMENT: ${{ inputs.integration_environment }}
+        run: |
+          set -euo pipefail
+          python .github/scripts/run_integration_tests.py

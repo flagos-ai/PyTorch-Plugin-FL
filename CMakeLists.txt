@@ -14,7 +14,7 @@
 
 cmake_minimum_required(VERSION 3.18 FATAL_ERROR)
 
-set(ACCELERATOR "cuda" CACHE STRING "Accelerator platform: cuda, metax, ascend, tsingmicro, or dcu")
+set(ACCELERATOR "cuda" CACHE STRING "Accelerator platform: cuda, metax, ascend, tsingmicro, dcu, gcu, or musa")
 
 # Kernel build options (can be overridden via -D flags from setup.py)
 option(CUDA_KERNEL "Build CUDA kernel implementations" ON)
@@ -22,6 +22,8 @@ option(FLAGGEMS_KERNEL "Build FlagGems C++ kernel wrappers (requires liboperator
 option(FLAGGEMS_PYTHON "Build FlagGems Python kernel wrappers (calls via Python, no C++ linking)" ON)
 option(METAX_KERNEL "Build MetaX kernel implementations" OFF)
 option(ASCEND_KERNEL "Build Ascend kernel implementations" OFF)
+option(GCU_KERNEL "Build Enflame GCU (topsaten) kernel implementations" OFF)
+option(MUSA_KERNEL "Build Moore Threads MUSA kernel implementations (mudnn)" OFF)
 
 if(ACCELERATOR STREQUAL "ascend")
   project(TORCH_FLAGOS CXX C)
@@ -56,6 +58,17 @@ elseif(ACCELERATOR STREQUAL "dcu")
   set(CUDA_KERNEL OFF CACHE BOOL "Build CUDA kernel implementations" FORCE)
   set(FLAGGEMS_KERNEL OFF CACHE BOOL "Build FlagGems kernel implementations" FORCE)
   project(TORCH_FLAGOS CXX C)
+elseif(ACCELERATOR STREQUAL "gcu")
+  project(TORCH_FLAGOS CXX C)
+elseif(ACCELERATOR STREQUAL "musa")
+  # Moore Threads MUSA takes the native operator route (like Ascend/GCU), not
+  # CUDA boxing: the MUSA toolkit ships no CUDA runtime, so there is no vendor
+  # dispatch key to box into. The generated kernels call mudnn -- the vendor's
+  # torch-independent kernel library -- directly.
+  set(MUSA_KERNEL ON CACHE BOOL "Build MUSA kernel implementations" FORCE)
+  set(CUDA_KERNEL OFF CACHE BOOL "Build CUDA kernel implementations" FORCE)
+  set(FLAGGEMS_KERNEL OFF CACHE BOOL "Build FlagGems kernel implementations" FORCE)
+  project(TORCH_FLAGOS CXX C)
 else()
   # project(... CUDA) runs nvcc compiler-id before find_package(CUDAToolkit); conda
   # layouts need CUDAToolkit_ROOT (headers under targets/x86_64-linux/include).
@@ -84,7 +97,8 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 if(NOT ACCELERATOR STREQUAL "metax" AND NOT ACCELERATOR STREQUAL "ascend"
-   AND NOT ACCELERATOR STREQUAL "tsingmicro" AND NOT ACCELERATOR STREQUAL "dcu")
+   AND NOT ACCELERATOR STREQUAL "tsingmicro" AND NOT ACCELERATOR STREQUAL "dcu"
+   AND NOT ACCELERATOR STREQUAL "gcu" AND NOT ACCELERATOR STREQUAL "musa")
   set(CMAKE_CUDA_STANDARD 17)
   set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 endif()
@@ -202,6 +216,115 @@ elseif(ACCELERATOR STREQUAL "dcu")
 
   # Pre-create torch::cudart so PyTorch's cuda.cmake is skipped entirely
   # (guard: if(TARGET torch::cudart) return()).
+elseif(ACCELERATOR STREQUAL "gcu")
+  # Enflame TopsRider SDK: tops runtime (libtopsrt) + topsaten operator library.
+  if(NOT TOPS_ROOT)
+    set(TOPS_ROOT "$ENV{TOPS_HOME}")
+  endif()
+  if(NOT TOPS_ROOT)
+    set(TOPS_ROOT "/opt/tops")
+  endif()
+  message(STATUS "Enflame TopsRider SDK path: ${TOPS_ROOT}")
+
+  add_library(cuda_runtime_compat INTERFACE IMPORTED)
+  set_target_properties(cuda_runtime_compat PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "${TOPS_ROOT}/include"
+  )
+  target_link_directories(cuda_runtime_compat INTERFACE "${TOPS_ROOT}/lib")
+  target_link_libraries(cuda_runtime_compat INTERFACE topsrt)
+
+  set(CUDA_RUNTIME_LIB cuda_runtime_compat)
+
+  # Embed the tops library path in RPATH so LD_LIBRARY_PATH is not needed at runtime.
+  list(APPEND CMAKE_INSTALL_RPATH "${TOPS_ROOT}/lib")
+
+  # topsaten (the aten-style op library) ships in the distro paths, not under
+  # ${TOPS_ROOT}/lib; its headers live in ${TOPS_ROOT}/include/gcu.
+  if(GCU_KERNEL)
+    find_library(TOPSATEN_LIB topsaten
+        PATHS "${TOPS_ROOT}/lib" /usr/lib /usr/lib64)
+    if(NOT TOPSATEN_LIB)
+      message(FATAL_ERROR
+        "GCU_KERNEL=ON but libtopsaten.so was not found (searched "
+        "${TOPS_ROOT}/lib, /usr/lib, /usr/lib64). Install the TopsRider "
+        "topsaten package, or build with -DGCU_KERNEL=OFF to fall back to CPU "
+        "for all compute ops.")
+    endif()
+    find_path(TOPSATEN_INCLUDE_DIR topsaten/topsaten.h
+        PATHS "${TOPS_ROOT}/include/gcu" /usr/include/gcu)
+    if(NOT TOPSATEN_INCLUDE_DIR)
+      message(FATAL_ERROR
+        "GCU_KERNEL=ON but topsaten/topsaten.h was not found (searched "
+        "${TOPS_ROOT}/include/gcu, /usr/include/gcu).")
+    endif()
+    set(TOPSATEN_INCLUDE_DIRS "${TOPSATEN_INCLUDE_DIR}" "${TOPS_ROOT}/include")
+    message(STATUS "topsaten library: ${TOPSATEN_LIB}")
+    message(STATUS "topsaten include: ${TOPSATEN_INCLUDE_DIR}")
+    get_filename_component(_topsaten_libdir "${TOPSATEN_LIB}" DIRECTORY)
+    list(APPEND CMAKE_INSTALL_RPATH "${_topsaten_libdir}")
+  endif()
+
+  add_library(torch::cudart INTERFACE IMPORTED)
+  if(NOT TARGET CUDA::nvToolsExt)
+    add_library(CUDA::nvToolsExt INTERFACE IMPORTED)
+  endif()
+elseif(ACCELERATOR STREQUAL "musa")
+  # Moore Threads MUSA toolkit: musart runtime. There is no libcudart shim here
+  # (unlike MetaX/DCU), so nothing pretends to be CUDA -- cuda_runtime_compat
+  # points at the native musa* headers and libmusart, and the runtime sources
+  # under csrc/runtime/accelerator/musa/ call musaMalloc/musaStreamCreate/etc.
+  if(NOT MUSA_HOME)
+    set(MUSA_HOME "$ENV{MUSA_HOME}")
+  endif()
+  if(NOT MUSA_HOME)
+    set(MUSA_HOME "/usr/local/musa")
+  endif()
+  if(NOT EXISTS "${MUSA_HOME}/include/musa_runtime.h")
+    message(FATAL_ERROR
+        "ACCELERATOR=musa selected, but the MUSA toolkit was not found "
+        "(no ${MUSA_HOME}/include/musa_runtime.h). Set MUSA_HOME to a valid "
+        "MUSA installation.")
+  endif()
+  message(STATUS "Moore Threads MUSA toolkit path: ${MUSA_HOME}")
+
+  add_library(cuda_runtime_compat INTERFACE IMPORTED)
+  set_target_properties(cuda_runtime_compat PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "${MUSA_HOME}/include"
+  )
+  target_link_directories(cuda_runtime_compat INTERFACE "${MUSA_HOME}/lib")
+  target_link_libraries(cuda_runtime_compat INTERFACE musart)
+
+  set(CUDA_RUNTIME_LIB cuda_runtime_compat)
+
+  # Embed the MUSA library path in RPATH so LD_LIBRARY_PATH is not needed.
+  list(APPEND CMAKE_INSTALL_RPATH "${MUSA_HOME}/lib")
+
+  # Compute ops go through mudnn (libmudnn.so), the vendor's kernel library.
+  # It links against musart only and pulls in no torch symbols, so it ships in
+  # the MUSA toolkit next to musart and needs no separate root: no torch_musa
+  # package, no extracted tree, no version pinning against the active torch.
+  #
+  # (The earlier route called torch_musa's flat at::musa::* API from
+  # libmusa_python.so. That library links against torch and embeds its C++
+  # object layout, which pinned the plugin to one exact torch build --
+  # sizeof(c10::MessageLogger) changed 408 -> 400 between 2.9.1 and 2.10 and
+  # corrupted the vendor .so's stack. mudnn has no such coupling.)
+  if(MUSA_KERNEL)
+    find_library(MUDNN_LIB mudnn PATHS "${MUSA_HOME}/lib" NO_DEFAULT_PATH)
+    if(NOT MUDNN_LIB)
+      message(FATAL_ERROR
+          "MUSA_KERNEL=ON but libmudnn.so was not found under ${MUSA_HOME}/lib. "
+          "Install the mudnn component of the MUSA toolkit, or build with "
+          "-DMUSA_KERNEL=OFF to fall back to CPU for compute ops.")
+    endif()
+    if(NOT EXISTS "${MUSA_HOME}/include/mudnncxx/mudnn.h")
+      message(FATAL_ERROR
+          "MUSA_KERNEL=ON but the mudnn C++ headers were not found "
+          "(no ${MUSA_HOME}/include/mudnncxx/mudnn.h).")
+    endif()
+    message(STATUS "mudnn op library: ${MUDNN_LIB}")
+  endif()
+
   add_library(torch::cudart INTERFACE IMPORTED)
   if(NOT TARGET CUDA::nvToolsExt)
     add_library(CUDA::nvToolsExt INTERFACE IMPORTED)
@@ -339,10 +462,26 @@ if(FLAGGEMS_KERNEL)
   find_package(FlagGems REQUIRED PATHS "${FLAGGEMS_DIR}" NO_DEFAULT_PATH)
 
   # Embed liboperators.so dir into RPATH so it's found at runtime without LD_LIBRARY_PATH
-  set(_flaggems_libdir "${FLAGGEMS_DIR}/lib")
-  get_target_property(_flaggems_lib_location operators IMPORTED_LOCATION_RELEASE)
+  if(TARGET FlagGems::operators)
+    set(_flaggems_operators_target FlagGems::operators)
+  elseif(TARGET operators)
+    set(_flaggems_operators_target operators)
+  else()
+    message(FATAL_ERROR "FlagGems package does not export an operators target")
+  endif()
+
+  get_filename_component(_flaggems_libdir "${FLAGGEMS_DIR}/../.." ABSOLUTE)
+  get_target_property(
+    _flaggems_lib_location
+    ${_flaggems_operators_target}
+    IMPORTED_LOCATION_RELEASE
+  )
   if(NOT _flaggems_lib_location)
-    get_target_property(_flaggems_lib_location operators IMPORTED_LOCATION)
+    get_target_property(
+      _flaggems_lib_location
+      ${_flaggems_operators_target}
+      IMPORTED_LOCATION
+    )
   endif()
   if(_flaggems_lib_location)
     get_filename_component(_flaggems_libdir "${_flaggems_lib_location}" DIRECTORY)

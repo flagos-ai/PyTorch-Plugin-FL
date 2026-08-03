@@ -18,27 +18,71 @@ import pytest
 
 
 def _detect_platform() -> str:
-    """Infer the active hardware/backend platform from env."""
+    """Infer the active hardware/backend platform.
+
+    ACCELERATOR is a *build*-time variable, so it is usually absent when running
+    the tests against an installed wheel. The lib/flagos_platform marker that
+    native-kernel builds write is authoritative in that case, and the resolved
+    FLAGOS_BACKEND_CONFIG name is the last resort.
+    """
     accelerator = os.environ.get("ACCELERATOR", "").lower()
     if accelerator == "ascend":
         return "ascend"
     if accelerator in ("metax", "maca"):
         return "metax"
+    if accelerator == "musa":
+        return "musa"
+
+    try:
+        import torch_fl
+
+        marker = os.path.join(
+            os.path.dirname(torch_fl.__file__), "lib", "flagos_platform"
+        )
+        with open(marker) as f:
+            platform = f.read().strip().lower()
+        if platform:
+            return platform
+    except (ImportError, OSError):
+        pass
 
     backend_cfg = os.environ.get("FLAGOS_BACKEND_CONFIG", "").lower()
     if "ascend" in backend_cfg:
         return "ascend"
     if "metax" in backend_cfg:
         return "metax"
+    if "musa" in backend_cfg:
+        return "musa"
     return "default"
 
 
 # Markers to skip per platform (tests for other backends are not compiled/available).
 _PLATFORM_SKIP_MARKERS: dict[str, tuple[str, ...]] = {
-    "metax": ("cuda", "ascend"),
-    "ascend": ("cuda", "metax"),
-    "default": ("metax", "ascend"),
+    "metax": ("cuda", "ascend", "musa"),
+    "ascend": ("cuda", "metax", "musa"),
+    # MUSA builds compile no CUDA boxing kernels (no cudart on the platform), so
+    # `-> cuda` routing assertions cannot hold; nor is FlagGems built.
+    "musa": ("cuda", "metax", "ascend", "flaggems_python"),
+    # GCU is in the same position as MUSA: the tops stack ships no CUDA runtime,
+    # so no boxing kernels are compiled and FlagGems is not built either.
+    "gcu": ("cuda", "metax", "ascend", "musa", "flaggems_python"),
+    "default": ("metax", "ascend", "musa"),
 }
+
+
+def _flaggems_cpp_enabled() -> bool:
+    """True when the FlagGems C++ runtime path is switched on (FLAGOS_USE_FLAGGEMS_CPP=1).
+
+    Tests marked ``flaggems_cpp`` require a wheel built with FLAGGEMS_KERNEL=ON
+    (liboperators.so linked in) and FLAGOS_USE_FLAGGEMS_CPP=1 at runtime; they
+    are skipped when the env var is off (default).
+    """
+    return os.environ.get("FLAGOS_USE_FLAGGEMS_CPP", "0").lower() not in (
+        "0",
+        "",
+        "off",
+        "false",
+    )
 
 
 def _flaggems_enabled() -> bool:
@@ -69,7 +113,19 @@ def pytest_collection_modifyitems(
     if platform == "metax" and os.environ.get("FLAGOS_METAX_BOXING", "0") == "1":
         markers_to_skip.append("metax")
     flaggems_on = _flaggems_enabled()
+    flaggems_cpp_on = _flaggems_cpp_enabled()
     for item in items:
+        # The FlagGems C++ path requires a FLAGGEMS_KERNEL=ON wheel and runtime env.
+        if item.get_closest_marker("flaggems_cpp") and not flaggems_cpp_on:
+            item.add_marker(
+                pytest.mark.skip(
+                    reason=(
+                        "FlagGems C++ path is off "
+                        "(set FLAGOS_USE_FLAGGEMS_CPP=1 with a FLAGGEMS_KERNEL=ON wheel)"
+                    )
+                )
+            )
+            continue
         # The flaggems runtime path is a runtime switch, not a build/platform gate:
         # skip its tests only when the switch is off, on any platform.
         if item.get_closest_marker("flaggems") and not flaggems_on:
@@ -97,10 +153,21 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "cuda: requires CUDA platform")
     config.addinivalue_line("markers", "metax: requires MetaX platform")
     config.addinivalue_line("markers", "ascend: requires Ascend platform")
+    config.addinivalue_line("markers", "musa: requires Moore Threads MUSA platform")
     config.addinivalue_line(
         "markers",
         "flaggems: requires the FlagGems runtime path on (FLAGOS_USE_FLAGGEMS=1)",
     )
     config.addinivalue_line(
+        "markers",
+        "flaggems_cpp: requires torch_fl built with FLAGGEMS_KERNEL=ON and "
+        "FLAGOS_USE_FLAGGEMS_CPP=1 at runtime",
+    )
+    config.addinivalue_line(
         "markers", "flaggems_python: requires FlagGems Python wrapper backend"
+    )
+    config.addinivalue_line(
+        "markers",
+        "main_ops: representative operator in the CI smoke subset "
+        "(select with -m main_ops); orthogonal to the backend markers",
     )

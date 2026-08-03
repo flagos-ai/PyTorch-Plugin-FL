@@ -61,6 +61,11 @@ jobs:
           ACCELERATOR=metax pip install -e . --no-build-isolation
           pip install pytest
 
+      - name: Check FlagGems routing consistency (conf <-> codegen)
+        run: |
+          export LD_LIBRARY_PATH=/opt/maca-3.3.0/tools/cu-bridge/lib:$LD_LIBRARY_PATH
+          pytest tests/integration/ops/test_flaggems_conf_consistency.py -v --tb=short
+
       - name: Run ops tests
         run: |
           export LD_LIBRARY_PATH=/opt/maca-3.3.0/tools/cu-bridge/lib:$LD_LIBRARY_PATH

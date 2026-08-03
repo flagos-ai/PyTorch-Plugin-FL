@@ -42,6 +42,7 @@ Usage:
 """
 
 import os
+import pathlib
 import subprocess
 import sys
 
@@ -51,6 +52,11 @@ import torch_fl  # noqa: F401
 
 
 DEVICE = "flagos:0"
+
+# The pure-boxing conf shipped alongside torch_fl (every op -> cuda). Used by
+# TestNewOpDispatchRouting to assert boxing routing independently of the
+# ambient FLAGOS_USE_FLAGGEMS setting.
+_BOXING_CONF = pathlib.Path(torch_fl.__file__).parent / "configs" / "backends_cuda.conf"
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +286,12 @@ class TestNewOpDispatchRouting:
     A regression here (op silently handled by cpu_fallback) would still produce
     correct numbers but lose the whole point of the CUDA registration, so we
     assert on the dispatch log explicitly.
+
+    This is a property of the *boxing* conf, so the subprocess pins
+    FLAGOS_BACKEND_CONFIG=backends_cuda.conf. Without that pin the assertion
+    depends on the ambient FLAGOS_USE_FLAGGEMS: with the FlagGems path on,
+    these ops legitimately route to flagos_python instead (that routing is
+    covered by the per-op ``@flaggems`` tests).
     """
 
     ROUTED_OPS = [
@@ -299,6 +311,10 @@ class TestNewOpDispatchRouting:
     def test_dispatches_to_cuda(self, op, snippet):
         env = os.environ.copy()
         env["FLAGOS_LOG_DISPATCH"] = "1"
+        # Pin the boxing conf: FLAGOS_BACKEND_CONFIG wins over FLAGOS_USE_FLAGGEMS
+        # in _select_backend_config(), so this asserts the boxing routing whether
+        # or not the ambient env has the FlagGems path switched on.
+        env["FLAGOS_BACKEND_CONFIG"] = str(_BOXING_CONF)
         code = f"import torch_fl, torch; {snippet}"
         result = subprocess.run(
             [sys.executable, "-c", code],

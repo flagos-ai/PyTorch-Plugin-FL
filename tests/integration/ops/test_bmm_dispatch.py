@@ -67,22 +67,31 @@ def cuda_ref():
 
 
 def _run_bmm_subprocess(
-    extra_env: dict, use_out: bool = False, check: bool = True
+    extra_env: dict,
+    use_out: bool = False,
+    check: bool = True,
+    stub_python_op: bool = False,
 ) -> subprocess.CompletedProcess:
     """Run a minimal bmm call in a subprocess and return the result."""
     env = os.environ.copy()
     env.update(extra_env)
+    setup = "import torch_fl, torch; "
+    if stub_python_op:
+        # This test only verifies routing; avoid triggering FlagGems BMM autotuning.
+        setup += (
+            "import flag_gems.ops; "
+            "flag_gems.ops.bmm = lambda *args: "
+            "(_ for _ in ()).throw(RuntimeError('bmm dispatch sentinel')); "
+        )
     if use_out:
-        code = (
-            "import torch_fl, torch; "
+        code = setup + (
             "a = torch.randn(2,4,4,device='flagos:0'); "
             "b = torch.randn(2,4,4,device='flagos:0'); "
             "out = torch.empty(2,4,4,device='flagos:0'); "
             "torch.bmm(a, b, out=out)"
         )
     else:
-        code = (
-            "import torch_fl, torch; "
+        code = setup + (
             "a = torch.randn(2,4,4,device='flagos:0'); "
             "b = torch.randn(2,4,4,device='flagos:0'); "
             "torch.bmm(a, b)"
@@ -92,6 +101,7 @@ def _run_bmm_subprocess(
         env=env,
         capture_output=True,
         text=True,
+        timeout=60,
     )
     if check:
         assert result.returncode == 0, (
@@ -247,12 +257,14 @@ class TestBmmDispatchLog:
         result = _run_bmm_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP_bmm": "flaggems_python"},
             check=False,
+            stub_python_op=True,
         )
         assert "[flagos dispatch] bmm -> flagos_python" in result.stderr, (
             f"Expected flagos_python dispatch log, got:\n{result.stderr}"
         )
 
     @pytest.mark.flaggems
+    @pytest.mark.main_ops
     def test_dispatch_log_flaggems_runtime(self):
         """With the FlagGems runtime path on, bmm routes to flagos_python."""
         result = _run_bmm_subprocess(
@@ -263,6 +275,7 @@ class TestBmmDispatchLog:
         )
 
     @pytest.mark.cuda
+    @pytest.mark.main_ops
     def test_dispatch_log_cuda_override(self):
         """FLAGOS_OP_bmm=cuda overrides to cuda backend."""
         result = _run_bmm_subprocess(

@@ -16,6 +16,24 @@ import os
 import sys
 
 
+def _build_accelerator() -> str:
+    """Accelerator this wheel was built for, lowercased ("" if unknown).
+
+    Reads the ACCELERATOR env var first, then the _build_config.py that setup.py
+    writes at build time. The generated file is what makes a DCU wheel
+    self-describing: _select_backend_config() runs before `import torch`, so it
+    cannot inspect torch.version.hip to detect DCU on its own.
+    """
+    env = os.environ.get("ACCELERATOR", "").strip().lower()
+    if env:
+        return env
+    try:
+        from torch_fl._build_config import ACCELERATOR as built
+    except ImportError:
+        return ""
+    return str(built).strip().lower()
+
+
 def _select_backend_config() -> None:
     """Pick the op-routing config file based on the FLAGOS_USE_FLAGGEMS switch.
 
@@ -24,9 +42,16 @@ def _select_backend_config() -> None:
     Python-path kernel. Both kernel sets are compiled into the wheel, so the
     choice is purely runtime:
 
+      * FLAGOS_USE_FLAGGEMS_CPP=1              -> backends_flaggems_cpp.conf
       * FLAGOS_USE_FLAGGEMS=1                  -> backends_flaggems.conf
       * FLAGOS_USE_FLAGGEMS=1 + METAX_BOXING=1 -> backends_metax_flaggems.conf
+      * FLAGOS_USE_FLAGGEMS=1 + ACCELERATOR=dcu -> backends_dcu_flaggems.conf
       * unset / 0                              -> backends_cuda.conf (pure boxing)
+
+    FLAGOS_USE_FLAGGEMS_CPP=1 activates the C++ FlagGems path (kFlagOs,
+    backends_flaggems_cpp.conf): 18 ops route to the flag_gems C++ runtime
+    (liboperators.so, no GIL), the remainder fall back to flagos_python.
+    Only valid when torch_fl was built with FLAGGEMS_KERNEL=ON.
 
     On an Ascend NPU box (detected via /dev/davinci*), the ACL C++ backend is the
     only usable one, so the choice is instead:
@@ -37,7 +62,9 @@ def _select_backend_config() -> None:
 
     The MetaX flaggems conf mirrors backends_flaggems.conf but routes the ops
     triton-metax cannot run (mm/bmm/mean.dim) back to the cuda boxing kernel
-    (maca libtorch_cuda) instead of flagos_python. An explicit
+    (maca libtorch_cuda) instead of flagos_python. The DCU one does the same for
+    the ops DTK's triton (hcu backend) cannot run -- slice_backward (hardware
+    VMFault) and silu_backward (missing div_rn lowering). An explicit
     FLAGOS_BACKEND_CONFIG always wins (advanced/testing use), and the per-op
     FLAGOS_OP_<name> overrides in common.cc still apply on top. This must run
     before the first op dispatch triggers BackendTable() init; setting it at
@@ -45,6 +72,26 @@ def _select_backend_config() -> None:
     """
     if os.environ.get("FLAGOS_BACKEND_CONFIG"):
         return
+    # A vendor build whose kernels are native (no CUDA boxing) records its
+    # platform in lib/flagos_platform; its own conf is the only valid routing.
+    marker = os.path.join(os.path.dirname(__file__), "lib", "flagos_platform")
+    if os.path.exists(marker):
+        with open(marker) as f:
+            platform = f.read().strip()
+        platform_conf = os.path.join(
+            os.path.dirname(__file__), "configs", f"backends_{platform}.conf"
+        )
+        if os.path.exists(platform_conf):
+            os.environ["FLAGOS_BACKEND_CONFIG"] = platform_conf
+            return
+    use_flaggems_cpp = os.environ.get("FLAGOS_USE_FLAGGEMS_CPP", "0") not in (
+        "0",
+        "",
+        "off",
+        "OFF",
+        "false",
+        "FALSE",
+    )
     use_flaggems = os.environ.get("FLAGOS_USE_FLAGGEMS", "0") not in (
         "0",
         "",
@@ -83,8 +130,12 @@ def _select_backend_config() -> None:
             os.environ["FLAGOS_BACKEND_CONFIG"] = conf_path
         return
 
-    if use_flaggems and metax_boxing:
+    if use_flaggems_cpp:
+        conf_name = "backends_flaggems_cpp.conf"
+    elif use_flaggems and metax_boxing:
         conf_name = "backends_metax_flaggems.conf"
+    elif use_flaggems and _build_accelerator() == "dcu":
+        conf_name = "backends_dcu_flaggems.conf"
     elif use_flaggems:
         conf_name = "backends_flaggems.conf"
     else:
@@ -210,7 +261,52 @@ def _preload_cuda_assets() -> None:
             _try(p)
 
 
+def _disable_vendor_backend_autoload() -> None:
+    """Stop a vendor PrivateUse1 backend from claiming the key before flagos.
+
+    torch_musa ships a `torch.backends` entry point, so a bare `import torch`
+    autoloads it, and it calls rename_privateuse1_backend("musa") + registers the
+    PrivateUse1 hooks/allocator. flagos wants that same single key, and PyTorch
+    allows exactly one owner: our later rename raises "already been set!
+    Current backend: musa".
+
+    torch.__init__ honours TORCH_DEVICE_BACKEND_AUTOLOAD=0 to skip entry-point
+    autoloading, so set it before `import torch`. Nothing of torch_musa is
+    needed either way: the MUSA operator route calls mudnn, which is part of the
+    MUSA toolkit and independent of the vendor's torch plugin.
+
+    An explicit user setting always wins, so exporting
+    TORCH_DEVICE_BACKEND_AUTOLOAD=1 restores stock torch_musa behaviour (useful
+    for A/B testing against the vendor plugin, with torch_fl not imported).
+    """
+    if _build_accelerator() != "musa":
+        return
+    os.environ.setdefault("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")
+
+
+def _check_privateuse1_unclaimed() -> None:
+    """Fail with an actionable message if a vendor plugin already took the key.
+
+    PrivateUse1 admits exactly one backend name. `import torch` autoloads any
+    `torch.backends` entry point -- torch_musa has one -- so when torch is
+    imported before torch_fl, the name is already "musa" and our rename raises a
+    bare "already been set!". _disable_vendor_backend_autoload only covers the
+    torch_fl-first order, since by the time we run in the other order torch has
+    already been initialised.
+    """
+    current = torch._C._get_privateuse1_backend_name()
+    if current in ("privateuseone", "flagos"):
+        return
+    raise RuntimeError(
+        f"PrivateUse1 is already claimed by the '{current}' backend, so torch_fl "
+        "cannot register 'flagos'. A vendor plugin was autoloaded by `import "
+        "torch` before torch_fl. Either import torch_fl first, or export "
+        "TORCH_DEVICE_BACKEND_AUTOLOAD=0 before starting Python."
+    )
+
+
 _preload_cuda_assets()
+_disable_vendor_backend_autoload()
 
 import torch  # noqa: E402
 
@@ -250,13 +346,32 @@ _stream_api_path = _os.path.join(_os.path.dirname(__file__), "lib", "libstream_a
 if _os.path.exists(_stream_api_path):
     ctypes.CDLL(_stream_api_path, mode=ctypes.RTLD_GLOBAL)
 
+# Checked *before* loading _C, not just before the rename: libtorch_fl.so
+# registers the AutogradPrivateUse1 fallback at dlopen time, and a vendor plugin
+# that already registered one makes that a std::terminate ("Tried to register
+# multiple backend fallbacks for the same dispatch key") -- an abort we cannot
+# catch or report. Running the check first turns that into the actionable
+# message below.
+_check_privateuse1_unclaimed()
+
 import torch_fl._C  # type: ignore[misc]  # noqa: E402, F401
+
+
 from . import flagos  # noqa: E402
 
 
 torch.utils.rename_privateuse1_backend("flagos")
 torch._register_device_module("flagos", flagos)
 torch.utils.generate_methods_for_privateuse1_backend(for_storage=True)
+
+# torch::utils::device_lazy_init(PrivateUse1) imports the module named
+# `torch_<backend_name>` and calls its _lazy_init(). It only does so once some
+# library has called set_requires_device_init(PrivateUse1, true) -- which
+# some vendor libraries do, so the very first flagos factory call can raise
+# "No module named 'torch_flagos'". Publishing the device module under that name
+# satisfies the lookup; flagos._lazy_init is the real initializer, so this is a
+# rename, not a stub. Harmless on backends that never trigger lazy init.
+sys.modules.setdefault("torch_flagos", flagos)
 
 # Enable swap_tensors in Module._apply so that .to("flagos") preserves weight
 # tying.  Without this, _apply creates new Parameter objects for PrivateUse1
@@ -352,6 +467,15 @@ def _patch_flaggems_codegen_config():
       CPU-frozen torch wheel against maca's libtorch_cuda.so. Auto-selected when
       FLAGOS_METAX_BOXING=1 (or FLAGOS_METAX_COMPAT=1) and a MetaX card is present.
 
+    - Hygon DCU (DTK): set GEMS_VENDOR=hygon so FlagGems uses its _hygon
+      codegen config (triton hcu backend, triton_extra_name="hip"). No
+      torch.cuda shim is needed -- DTK ships a hipified torch with a real,
+      working torch.cuda. This branch must precede the generic-NVIDIA one:
+      is_nvidia_cuda_available() is False on DTK (there is no libcuda.so, only
+      libgalaxyhip), so without it DCU would reach the ascend fallback and get
+      GEMS_VENDOR=ascend -- which also breaks the comm layer, since that vendor
+      selects the HCCL profile (see comm/process_group.py _VENDOR_PROFILES).
+
     - Ascend (fallback): set GEMS_VENDOR=ascend so FlagGems uses the ASCEND
       codegen config (prefer_block_pointer=False, avoiding a triton-ascend
       tl.make_block_ptr bug), and register torch.flagos as a torch.npu shim so
@@ -377,6 +501,16 @@ def _patch_flaggems_codegen_config():
             os.environ.setdefault("GEMS_VENDOR", "metax")
             patch_torch_cuda_for_metax()
             return
+
+    # --- Hygon DCU branch (DTK) ---
+    # Keyed on the build accelerator rather than probing the runtime: DTK's torch
+    # is hipified, so torch.cuda/torch.version.hip look "cuda-ish" and no
+    # libcuda.so probe can tell the two apart. Must come before both the generic
+    # NVIDIA branch (which no-ops here anyway -- no libcuda.so) and the ascend
+    # fallback. setdefault so an explicit GEMS_VENDOR still wins.
+    if _build_accelerator() == "dcu" and os.environ.get("GEMS_VENDOR") != "ascend":
+        os.environ.setdefault("GEMS_VENDOR", "hygon")
+        return
 
     # --- Generic NVIDIA CUDA branch (default) ---
     if (

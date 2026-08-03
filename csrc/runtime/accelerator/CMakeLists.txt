@@ -22,6 +22,10 @@ elseif(ACCELERATOR STREQUAL "tsingmicro")
   project(FLAGOS_RUNTIME CXX C)
 elseif(ACCELERATOR STREQUAL "dcu")
   project(FLAGOS_RUNTIME CXX C)
+elseif(ACCELERATOR STREQUAL "gcu")
+  project(FLAGOS_RUNTIME CXX C)
+elseif(ACCELERATOR STREQUAL "musa")
+  project(FLAGOS_RUNTIME CXX C)
 else()
   project(FLAGOS_RUNTIME CUDA CXX C)
 endif()
@@ -87,6 +91,27 @@ elseif(ACCELERATOR STREQUAL "dcu")
 
   target_include_directories(${LIBRARY_NAME} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR})
   target_link_libraries(${LIBRARY_NAME} PRIVATE ${CUDA_RUNTIME_LIB})
+elseif(ACCELERATOR STREQUAL "gcu")
+  file(GLOB SOURCE_FILES "${CMAKE_CURRENT_SOURCE_DIR}/gcu/*.cc")
+
+  add_library(${LIBRARY_NAME} SHARED ${SOURCE_FILES})
+
+  target_include_directories(${LIBRARY_NAME} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR} ${TOPS_ROOT}/include)
+  target_link_directories(${LIBRARY_NAME} PRIVATE ${TOPS_ROOT}/lib)
+  target_link_libraries(${LIBRARY_NAME} PRIVATE topsrt)
+elseif(ACCELERATOR STREQUAL "musa")
+  # Moore Threads MUSA. The toolkit ships no libcudart shim (unlike MetaX/DCU),
+  # so musa/ holds a native port of the CUDA runtime sources onto the musa* API.
+  # musa_runtime.h is plain C, so host g++ compiles it -- no mcc, no CUDA
+  # language, and libmusart.so.5 is the only runtime dependency.
+  file(GLOB SOURCE_FILES "${CMAKE_CURRENT_SOURCE_DIR}/musa/*.cc")
+
+  add_library(${LIBRARY_NAME} SHARED ${SOURCE_FILES})
+
+  target_include_directories(${LIBRARY_NAME} PUBLIC
+      ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR} ${MUSA_HOME}/include)
+  target_link_directories(${LIBRARY_NAME} PRIVATE ${MUSA_HOME}/lib)
+  target_link_libraries(${LIBRARY_NAME} PRIVATE musart)
 else()
   file(GLOB SOURCE_FILES "${CMAKE_CURRENT_SOURCE_DIR}/cuda/*.cc")
 

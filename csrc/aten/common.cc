@@ -31,8 +31,12 @@ std::string DefaultConfigPath() {
       const char* platform = nullptr;
 #if defined(USE_TSINGMICRO)
       platform = "tsingmicro";
+#elif defined(USE_GCU)
+      platform = "gcu";
 #elif defined(USE_ASCEND)
       platform = "ascend";
+#elif defined(USE_MUSA)
+      platform = "musa";
 #endif
       if (platform) {
         // dir is <prefix>/torch_fl/lib, configs are at <prefix>/torch_fl/configs/
@@ -96,8 +100,12 @@ std::unordered_map<std::string, Backend> LoadBackendConfig() {
       table[op] = Backend::kMetax;
     } else if (val == "tsingmicro") {
       table[op] = Backend::kTsingMicro;
+    } else if (val == "gcu") {
+      table[op] = Backend::kGcu;
     } else if (val == "ascend") {
       table[op] = Backend::kAscend;
+    } else if (val == "musa") {
+      table[op] = Backend::kMusa;
     } else if (val == "flagos" || val == "flaggems") {
       table[op] = Backend::kFlagOs;
     } else if (val == "flagos_python" || val == "flaggems_python") {
@@ -130,9 +138,15 @@ std::unordered_map<std::string, Backend> LoadBackendConfig() {
     } else if (v == "tsingmicro") {
       table[op] = Backend::kTsingMicro;
       fprintf(stderr, "[flagos] env override: %s -> tsingmicro\n", op.c_str());
+    } else if (v == "gcu") {
+      table[op] = Backend::kGcu;
+      fprintf(stderr, "[flagos] env override: %s -> gcu\n", op.c_str());
     } else if (v == "ascend") {
       table[op] = Backend::kAscend;
       fprintf(stderr, "[flagos] env override: %s -> ascend\n", op.c_str());
+    } else if (v == "musa") {
+      table[op] = Backend::kMusa;
+      fprintf(stderr, "[flagos] env override: %s -> musa\n", op.c_str());
     } else if (v == "flagos" || v == "flaggems") {
       table[op] = Backend::kFlagOs;
       fprintf(stderr, "[flagos] env override: %s -> flaggems\n", op.c_str());

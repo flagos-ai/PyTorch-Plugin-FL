@@ -195,6 +195,7 @@ class TestMmDispatchLog:
         )
 
     @pytest.mark.flaggems
+    @pytest.mark.main_ops
     def test_dispatch_log_flaggems_runtime(self):
         """With the FlagGems runtime path on, mm routes to flagos_python."""
         result = _run_mm_subprocess(
@@ -205,6 +206,7 @@ class TestMmDispatchLog:
         )
 
     @pytest.mark.cuda
+    @pytest.mark.main_ops
     def test_dispatch_log_cuda_override(self):
         """FLAGOS_OP_mm=cuda overrides to cuda backend."""
         result = _run_mm_subprocess(

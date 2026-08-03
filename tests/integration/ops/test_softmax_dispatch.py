@@ -113,6 +113,7 @@ class TestSoftmaxDispatch:
         assert "[flagos dispatch] _softmax -> flagos_python" in result.stderr
 
     @pytest.mark.flaggems
+    @pytest.mark.main_ops
     def test_dispatch_log_flaggems_runtime(self):
         """With the FlagGems runtime path on, _softmax routes to flagos_python."""
         result = _run_softmax_subprocess(
@@ -122,6 +123,7 @@ class TestSoftmaxDispatch:
         assert "[flagos dispatch] _softmax -> flagos_python" in result.stderr
 
     @pytest.mark.cuda
+    @pytest.mark.main_ops
     def test_dispatch_log_cuda(self):
         result = _run_softmax_subprocess(
             {"FLAGOS_LOG_DISPATCH": "1", "FLAGOS_OP__softmax": "cuda"}

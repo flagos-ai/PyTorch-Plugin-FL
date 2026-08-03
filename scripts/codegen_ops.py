@@ -856,11 +856,17 @@ def gen_flaggems_python_kernel(
     if category == "factory":
         # Factory: pass only the shape/scalar positionals; the factory caller
         # injects device=flagos/layout=strided/pin_memory=None and forwards
-        # dtype. `kwargs` here carries the positional (aten_type, name) list.
+        # dtype + device. `kwargs` here carries the positional (aten_type, name) list.
         positional = kwargs or []
         pos_names = [n for _t, n in positional]
         dtype_name = next((a.name for a in aten_args if a.name == "dtype"), None)
         dtype_expr = dtype_name if dtype_name else "::std::nullopt"
+        # Forward the aten `device` arg so the output lands on the requested
+        # index. Without it the caller fell back to a hardcoded index 0, which
+        # allocated on device 0 while the Triton kernel launched on the current
+        # device -- a cross-device write that faults the GPU on multi-card runs.
+        device_name = next((a.name for a in aten_args if a.name == "device"), None)
+        device_expr = device_name if device_name else "::std::nullopt"
         pos_init = "{" + ", ".join(pos_names) + "}"
         infer = ""
         # arange: gems defaults dtype=None to int64 unconditionally, but aten
@@ -882,7 +888,7 @@ def gen_flaggems_python_kernel(
         body = (
             f"{infer}"
             f'  auto result = CallPythonOp_Factory("{gems_func}", '
-            f"{pos_init}, {dtype_expr});\n"
+            f"{pos_init}, {dtype_expr}, {device_expr});\n"
             f"  UnboxToFlagos(result);\n"
             f"  return result;"
         )
@@ -891,16 +897,20 @@ def gen_flaggems_python_kernel(
     if category == "like_factory":
         # *_like: pass the source tensor (+ full_like's fill_value); the caller
         # injects device=flagos/layout/memory_format/pin_memory and forwards
-        # dtype (nullopt -> None means "same as self"). `kwargs` here carries the
-        # non-option positional (aten_type, name) list.
+        # dtype (nullopt -> None means "same as self") + device. `kwargs` here
+        # carries the non-option positional (aten_type, name) list.
         positional = kwargs or []
         pos_names = [n for _t, n in positional]
         dtype_name = next((a.name for a in aten_args if a.name == "dtype"), None)
         dtype_expr = dtype_name if dtype_name else "::std::nullopt"
+        # See the factory branch: forwarded so the result honors the requested
+        # device index. nullopt here means "same device as self".
+        device_name = next((a.name for a in aten_args if a.name == "device"), None)
+        device_expr = device_name if device_name else "::std::nullopt"
         pos_init = "{" + ", ".join(pos_names) + "}"
         body = (
             f'  auto result = CallPythonOp_LikeFactory("{gems_func}", '
-            f"{pos_init}, {dtype_expr});\n"
+            f"{pos_init}, {dtype_expr}, {device_expr});\n"
             f"  UnboxToFlagos(result);\n"
             f"  return result;"
         )
@@ -1124,6 +1134,37 @@ def optional_tensor_names(args: List[Tuple[str, str]]) -> List[str]:
     return [n for t, n in args if "optional<at::Tensor>" in t]
 
 
+def _generator_inject_line(args, device_expr):
+    """If this op's schema carries a trailing `Generator?`, emit a line that
+    fills an absent generator with the flagos shared CUDA generator (the one
+    FlagGems reads), so torch.manual_seed unifies native + flaggems RNG.
+    Returns '' for non-RNG ops. `device_expr` is a C++ expr yielding int64
+    device index in the kernel body scope."""
+    has_gen = any("Generator" in t for t, _ in args)
+    if not has_gen:
+        return ""
+    # The generator parameter is always named `generator` in the faithful sig.
+    return (
+        f"  if (!generator.has_value()) generator = "
+        f"at::native::flagos::GetFlagosDefaultCudaGenerator({device_expr});\n"
+    )
+
+
+# RNG bases whose *plain* overloads carry NO `Generator?` in the schema, so
+# _generator_inject_line above never fires for them and they would silently fall
+# back to ATen's own default CUDA generator -- unreachable from
+# torch.manual_seed on the CPU-torch wheel. Each base does expose a sibling ATen
+# overload with `optional<Generator>` inserted at a fixed position, so the
+# corresponding template threads the flagos shared generator in explicitly.
+# One set per template, because the insertion point differs:
+#   factory      -> right after the size/n/high value args (before dtype)
+#   *_like       -> right before dtype
+#   out-variant  -> before the first of names / memory_format / out
+_GEN_FACTORY_BASES = {"randint", "randperm", "rand", "randn"}
+_GEN_LIKE_BASES = {"randint_like", "rand_like", "randn_like"}
+_GEN_OUT_BASES = _GEN_FACTORY_BASES | _GEN_LIKE_BASES
+
+
 def gen_functional_pure(op, fn_type, ret_type, args, func=None):
     kn = kernel_name(fn_type)
     api = f"at::{at_api_base(op)}"
@@ -1145,9 +1186,46 @@ def gen_functional_pure(op, fn_type, ret_type, args, func=None):
         guard_names.append(f"{on}_t")
     guard = ", ".join(guard_names)
 
+    inject = (
+        _generator_inject_line(args, f"{guard_names[0]}.get_device()")
+        if guard_names
+        else ""
+    )
+
+    # Unified RNG for generator-LESS *_like overloads.
+    #
+    # randint_like/rand_like/randn_like carry a `self` tensor, so they land on
+    # this template rather than gen_factory -- and their plain overloads have no
+    # `Generator?` arg, so _generator_inject_line above emits nothing and
+    # at::randint_like(...) falls back to ATen's default CUDA generator, which
+    # torch.manual_seed cannot reach. Each of these bases exposes a sibling
+    # overload with `Generator?` inserted after the trailing value args and
+    # before dtype (verified in ATen/ops/randint_like.h), so inject the flagos
+    # shared generator at that position.
+    base = at_api_base(op)
+    if base in _GEN_LIKE_BASES and not any("Generator" in t for t, _ in args):
+        dtype_name = next((n for t, n in args if "optional<at::ScalarType>" in t), None)
+        if dtype_name is not None and guard_names:
+            gen_call_names = []
+            for _t, n in args:
+                if n == dtype_name:
+                    gen_call_names.append("_flagos_gen")
+                gen_call_names.append(n)
+            inject = (
+                "  ::std::optional<at::Generator> _flagos_gen = "
+                "at::native::flagos::GetFlagosDefaultCudaGenerator("
+                f"{guard_names[0]}.get_device());\n"
+            )
+            return f"""{ret_type} {kn}({args_decl(args)}) {{
+{holder_lines}  DeviceBoxingGuard guard({guard});
+{inject}  auto result = {api}({", ".join(gen_call_names)});
+  UnboxToFlagos(result);
+  return result;
+}}"""
+
     return f"""{ret_type} {kn}({args_decl(args)}) {{
 {holder_lines}  DeviceBoxingGuard guard({guard});
-  auto result = {api}({call_args(args)});
+{inject}  auto result = {api}({call_args(args)});
   UnboxToFlagos(result);
   return result;
 }}"""
@@ -1215,9 +1293,10 @@ def gen_inplace(op, fn_type, ret_type, args, func=None):
         ret_line = ""
     else:
         ret_line = f"\n  return {self_name};"
+    inject = _generator_inject_line(args, "self.get_device()")
     return f"""{ret_type} {kn}({args_decl(args)}) {{
 {holder_lines}  DeviceBoxingGuard guard({guard});
-  {body_call}{ret_line}
+{inject}  {body_call}{ret_line}
 }}"""
 
 
@@ -1250,13 +1329,48 @@ def gen_out_variant(op, fn_type, ret_type, args, func=None):
 
     unbox_lines = "\n".join(f"  UnboxToFlagos({n});" for n in out_names)
 
+    device_source = out_names[0] if out_names else guard_names[0]
+    inject = _generator_inject_line(args, f"{device_source}.get_device()")
+    call = call_args(args)
+
+    # Unified RNG for generator-LESS out-variants (rand.out, randint.out,
+    # randint_like.out, randperm.out, ...). Same gap as the gen_factory /
+    # gen_functional_pure cases: the plain overload carries no `Generator?`, so
+    # _generator_inject_line emits nothing and at::<base>_outf() falls back to
+    # ATen's default CUDA generator, which torch.manual_seed cannot reach.
+    #
+    # Every one of these bases exposes a sibling `_outf` overload with
+    # `optional<Generator>` inserted after the trailing value args and before the
+    # first trailing modifier -- `names` (rand/randn), `memory_format` (*_like),
+    # or the `out` tensor itself when neither is present. Verified across
+    # ATen/ops/{rand,randn,rand_like,randn_like,randint,randint_like,randperm}.h.
+    if base in _GEN_OUT_BASES and not any("Generator" in t for t, _ in args):
+        gen_call_names = []
+        placed = False
+        for t, n in args:
+            if not placed and (
+                "optional<at::DimnameList>" in t
+                or "optional<at::MemoryFormat>" in t
+                or n in out_names
+            ):
+                gen_call_names.append("_flagos_gen")
+                placed = True
+            gen_call_names.append(n)
+        if placed:
+            inject = (
+                "  ::std::optional<at::Generator> _flagos_gen = "
+                "at::native::flagos::GetFlagosDefaultCudaGenerator("
+                f"{device_source}.get_device());\n"
+            )
+            call = ", ".join(gen_call_names)
+
     if ret_type.startswith("::std::tuple"):
         # tuple<Tensor&,...>: _ret references the out tensors; unbox out names.
         # (local is _ret, not result, because some ops have an out arg literally
         #  named `result`, e.g. _linalg_det.result.)
         return f"""{ret_type} {kn}({args_decl(args)}) {{
 {holder_lines}  DeviceBoxingGuard guard({guard});
-  auto _ret = {api}({call_args(args)});
+{inject}  auto _ret = {api}({call});
 {unbox_lines}
   return _ret;
 }}"""
@@ -1264,7 +1378,7 @@ def gen_out_variant(op, fn_type, ret_type, args, func=None):
     out_name = out_names[0]
     return f"""{ret_type} {kn}({args_decl(args)}) {{
 {holder_lines}  DeviceBoxingGuard guard({guard});
-  {api}({call_args(args)});
+{inject}  {api}({call});
 {unbox_lines}
   return {out_name};
 }}"""
@@ -1291,9 +1405,10 @@ def gen_tuple_return(op, fn_type, ret_type, args, func=None):
     unbox_lines = "\n".join(
         f"  UnboxToFlagos(std::get<{i}>(result));" for i in range(ntuple)
     )
+    inject = _generator_inject_line(args, f"{tensor_arg_names(args)[0]}.get_device()")
     return f"""{ret_type} {kn}({args_decl(args)}) {{
 {holder_lines}  DeviceBoxingGuard guard({guard});
-  auto result = {api}({call_args(args)});
+{inject}  auto result = {api}({call_args(args)});
 {unbox_lines}
   return result;
 }}"""
@@ -1491,11 +1606,59 @@ def gen_factory(op, fn_type, ret_type, args, func=None):
                 "::std::optional<at::Device>(_cuda_dev)" if n == device_arg else n
                 for _, n in args
             ]
+            has_gen_arg = any("Generator" in t for t, _ in args)
+            # Unified RNG for generator-LESS factory overloads.
+            #
+            # torch.randint(...) / torch.randperm(...) call the overloads WITHOUT a
+            # `Generator?` arg, so _generator_inject_line (which only fires when the
+            # schema already carries one) does nothing and at::randint(...) falls back
+            # to ATen's default CUDA generator -- unreachable from torch.manual_seed.
+            # These bases all expose a sibling overload with `Generator?` inserted
+            # right after the size arg (verified in ATen/ops/{randint,randperm,
+            # rand,randn}.h), so inject the flagos shared generator there to route
+            # them through the same seedable generator FlagGems uses. randperm falls
+            # out for free (its dominant randomness is an internal torch.randint).
+            if not has_gen_arg and base in _GEN_FACTORY_BASES:
+                # size is the first IntArrayRef/SymIntArrayRef positional (no self here)
+                size_name = next(
+                    (n for t, n in args if "ArrayRef" in t and "Dimname" not in t),
+                    size_arg,
+                )
+                gen_call_names = []
+                for _t, n in args:
+                    cn = (
+                        "::std::optional<at::Device>(_cuda_dev)"
+                        if n == device_arg
+                        else n
+                    )
+                    gen_call_names.append(cn)
+                    if n == size_name:
+                        gen_call_names.append("_flagos_gen")
+                inject = (
+                    "  ::std::optional<at::Generator> _flagos_gen = "
+                    "at::native::flagos::GetFlagosDefaultCudaGenerator(_cuda_dev.index());\n"
+                )
+                make = (
+                    f"  at::Device _req_dev = {device_arg}.has_value() ? *{device_arg} "
+                    f": at::Device(at::kPrivateUse1, 0);\n"
+                    "  at::Device _cuda_dev = _req_dev.type() == at::kPrivateUse1\n"
+                    "      ? at::Device(at::kCUDA, _req_dev.index()) : _req_dev;\n"
+                    f"{inject}"
+                    f"  auto result = at::{base}({', '.join(gen_call_names)});\n"
+                    "  if (result.device().type() == at::kCUDA) UnboxToFlagos(result);"
+                )
+                return f"""{ret_type} {kn}({args_decl(args)}) {{
+{options}
+{make}
+  return result;
+}}"""
+            inject = _generator_inject_line(args, "_cuda_dev.index()")
             make = (
                 f"  at::Device _req_dev = {device_arg}.has_value() ? *{device_arg} "
                 f": at::Device(at::kPrivateUse1, 0);\n"
                 "  at::Device _cuda_dev = _req_dev.type() == at::kPrivateUse1\n"
                 "      ? at::Device(at::kCUDA, _req_dev.index()) : _req_dev;\n"
+                f"{inject}"
                 f"  auto result = at::{base}({', '.join(call_names)});\n"
                 "  if (result.device().type() == at::kCUDA) UnboxToFlagos(result);"
             )
@@ -1753,6 +1916,7 @@ def main():
         "",
         '#include "ops.h"',
         '#include "../device_boxing.h"',
+        '#include "../backends/flagos/python_op_caller.h"',
         "",
         "#include <vector>",
         "#include <tuple>",
@@ -1882,6 +2046,26 @@ def main():
         conf_path.write_text("\n".join(conf_lines) + "\n")
         print(f"   regenerated {conf_path.name} with {len(op_info)} cuda routes")
 
+        # Ops whose flag_gems implementation falls back to `torch.<op>` when the
+        # input is not on a "cuda" device. Our flagos tensors are genuinely
+        # PrivateUse1 (device.type == "flagos"), so that fallback re-enters the
+        # PrivateUse1 dispatcher, lands on the same flagos_python kernel, and
+        # recurses until RecursionError. Unlike the device-assert ops (which
+        # raise, and are dropped from codegen via FLAGGEMS_PYTHON_SKIP) the
+        # kernel itself is fine -- only the route is wrong -- so the kernel stays
+        # generated (reachable via FLAGOS_OP_<op>=flagos_python for debugging)
+        # and just the default route goes to the cuda boxing kernel.
+        #
+        # Verified against flag_gems v5.3.1 by scanning every routed op for a
+        # `device.type != "cuda"` guard whose body re-enters torch.<same op>:
+        # mul is the only one. as_strided_copy / conv_transpose2d / scaled_mm
+        # have the same guard but return a clone / None / False, so they degrade
+        # safely. mul_.Tensor is also safe: it calls the gems helper with out=A,
+        # which exits via `torch.mul(..., out=)` -> mul.out -> cuda.
+        flaggems_recursive_fallback = {
+            "mul.Tensor",
+        }
+
         # backends_flaggems.conf: same cuda routes, but the auto-discovered
         # FlagGems Python-path ops are flipped to flagos_python. Used for testing
         # / running the FlagGems path (FLAGOS_BACKEND_CONFIG=...backends_flaggems.conf).
@@ -1891,16 +2075,27 @@ def main():
             "# Regenerated by scripts/codegen_ops.py with FLAGOS_CODEGEN_ALL=1.",
             "# Same as backends_cuda.conf, but the auto-discovered FlagGems ops are",
             "# routed to the flagos_python (kFlagOsPython) slot; all others to cuda.",
+            "# Exception: ops in flaggems_recursive_fallback stay on cuda -- their",
+            "# gems implementation re-enters torch.<op> for non-cuda device types,",
+            "# which would recurse forever on a PrivateUse1 (flagos) tensor.",
             "#",
             "# Format: op_name = backend   (backend: flaggems | flagos_python | cuda)",
             "",
         ]
+        n_fg_fallback = 0
         for op in sorted(op_info):
-            backend = "flagos_python" if op in flaggems_py else "cuda"
+            if op in flaggems_recursive_fallback:
+                backend = "cuda"
+                if op in flaggems_py:
+                    n_fg_fallback += 1
+            else:
+                backend = "flagos_python" if op in flaggems_py else "cuda"
             fg_lines.append(f"{op} = {backend}")
         fg_conf_path.write_text("\n".join(fg_lines) + "\n")
         print(
-            f"   regenerated {fg_conf_path.name} with {len(flaggems_py)} flagos_python routes"
+            f"   regenerated {fg_conf_path.name} with "
+            f"{len(flaggems_py) - n_fg_fallback} flagos_python routes "
+            f"({n_fg_fallback} recursive-fallback ops forced back to cuda)"
         )
 
         # backends_metax_flaggems.conf: identical to backends_flaggems.conf, but
@@ -1915,8 +2110,9 @@ def main():
         #   - flag_gems device-guarded ops: several flag_gems kernels check
         #     tensor.device.type against flag_gems.device (== "cuda") and either
         #     (a) fall back to torch.<op> -> re-enters flagos_python dispatch ->
-        #         infinite recursion (mul.Tensor, conv_transpose2d, scaled_mm,
-        #         as_strided_copy), or
+        #         infinite recursion (flaggems_recursive_fallback above, folded in
+        #         below -- that set is device-independent, so it applies here too),
+        #         or
         #     (b) raise ValueError("Inputs must be cuda tensors ...")
         #         (embedding_dense_backward, i0, reflection_pad2d, soft_margin_loss,
         #          special_i0e, special_i1, ...).
@@ -1924,7 +2120,7 @@ def main():
         #     Route these to the cuda boxing kernel (runs directly on maca
         #     libtorch_cuda). Derived from flag_gems ops that guard on device.type.
         # Grow this set as testing reveals more triton-metax / flag_gems gaps.
-        metax_triton_fallback = {
+        metax_triton_fallback = flaggems_recursive_fallback | {
             "mm",
             "mm.out",
             "bmm",
@@ -1932,7 +2128,7 @@ def main():
             "mean.dim",
             # flag_gems ops that guard on device.type == "cuda" (recurse or raise
             # on the flagos device); route to cuda boxing instead of flagos_python.
-            "mul.Tensor",
+            # (mul.Tensor and friends come in via flaggems_recursive_fallback.)
             "conv_transpose2d",
             "scaled_mm",
             "as_strided_copy",
@@ -1960,6 +2156,14 @@ def main():
             "special_gammainc",
             "special_scaled_modified_bessel_k1",
             "_upsample_nearest_exact1d",
+            # slice_backward: FlagGems' slice_backward_kernel does an out-of-bounds
+            # access on large tensors (e.g. grad_output [1, 6144, 35] scattered into
+            # [1, 6144, 32], as in Qwen3.5 linear-attn conv1d bwd), raising an
+            # Xnack Error / ATU Fault (0x8) in the shader. On MetaX that fault
+            # DISABLES the whole process's mcruntime (mcGetDevice ->
+            # mcErrorIllegalAddress), poisoning every subsequent op -- unrecoverable
+            # in-process. Route to the cuda boxing kernel, which is bounds-safe.
+            "slice_backward",
         }
         mfg_conf_path = repo_root / "torch_fl/configs/backends_metax_flaggems.conf"
         mfg_lines = [
@@ -1986,6 +2190,58 @@ def main():
         print(
             f"   regenerated {mfg_conf_path.name} "
             f"({n_metax_fallback} flaggems ops forced back to cuda)"
+        )
+
+        # backends_dcu_flaggems.conf: identical to backends_flaggems.conf, but the
+        # ops DTK's triton (the `hcu` backend) cannot run are forced back to the
+        # cuda boxing kernel (which on DCU is libtorch_hip via the CUDA dispatch
+        # key). Selected at runtime by ACCELERATOR=dcu + FLAGOS_USE_FLAGGEMS=1.
+        #   - slice_backward: the flag_gems kernel triggers a hardware VMFault
+        #     ("Invalid address access") on hcu. It only manifests once the
+        #     grad it produces is consumed by MIOpen's convolution_backward
+        #     (tests/integration/ops/test_conv1d_dispatch.py, C=6144 depthwise);
+        #     the kernel's own output metadata and values check out, so this is a
+        #     hcu codegen bug, not a shape/stride mismatch on our side.
+        #   - silu_backward: the flag_gems kernel calls tl.math.div_rn, whose
+        #     lowering (builder.create_precise_divf) is missing in hcu triton --
+        #     it returns None, so compilation dies with
+        #     AttributeError("'NoneType' object has no attribute 'type'").
+        # flaggems_recursive_fallback is folded in: that set is device-independent
+        # (the guard those kernels trip is device.type != "cuda", true for any
+        # PrivateUse1 tensor), so it applies on DCU exactly as on metax.
+        # Note this fallback set overlaps metax_triton_fallback's slice_backward
+        # entry by coincidence, not cause: metax hits an out-of-bounds Xnack fault
+        # inside the gems kernel, DCU faults only downstream in MIOpen.
+        # Grow this set as testing reveals more triton-hcu gaps.
+        dcu_triton_fallback = flaggems_recursive_fallback | {
+            "slice_backward",
+            "silu_backward",
+        }
+        dfg_conf_path = repo_root / "torch_fl/configs/backends_dcu_flaggems.conf"
+        dfg_lines = [
+            "# flagos op backend config -- AUTO-GENERATED (dcu boxing + flaggems)",
+            "# Regenerated by scripts/codegen_ops.py with FLAGOS_CODEGEN_ALL=1.",
+            "# Same as backends_flaggems.conf, but ops DTK's triton (hcu backend)",
+            "# cannot run fall back to the cuda boxing kernel -- which on DCU is",
+            "# libtorch_hip, reached via the CUDA dispatch key.",
+            "# Selected at runtime by ACCELERATOR=dcu + FLAGOS_USE_FLAGGEMS=1.",
+            "#",
+            "# Format: op_name = backend   (backend: flaggems | flagos_python | cuda)",
+            "",
+        ]
+        n_dcu_fallback = 0
+        for op in sorted(op_info):
+            if op in dcu_triton_fallback:
+                backend = "cuda"
+                if op in flaggems_py:
+                    n_dcu_fallback += 1
+            else:
+                backend = "flagos_python" if op in flaggems_py else "cuda"
+            dfg_lines.append(f"{op} = {backend}")
+        dfg_conf_path.write_text("\n".join(dfg_lines) + "\n")
+        print(
+            f"   regenerated {dfg_conf_path.name} "
+            f"({n_dcu_fallback} flaggems ops forced back to cuda)"
         )
 
     print("\nDone. Files in:", out_dir)

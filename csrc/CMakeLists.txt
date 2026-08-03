@@ -19,6 +19,8 @@ option(FLAGGEMS_KERNEL "Build FlagGems C++ kernel wrappers (requires liboperator
 option(FLAGGEMS_PYTHON "Build FlagGems Python kernel wrappers (calls via Python, no C++ linking)" ON)
 option(METAX_KERNEL "Build MetaX kernel implementations" OFF)
 option(ASCEND_KERNEL "Build Ascend kernel implementations" OFF)
+option(GCU_KERNEL "Build Enflame GCU (topsaten) kernel implementations" OFF)
+option(MUSA_KERNEL "Build Moore Threads MUSA kernel implementations (mudnn)" OFF)
 
 file(GLOB_RECURSE SOURCE_FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/*.cc"
@@ -34,12 +36,16 @@ list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/runtime/accelerator/ascend/stream_api
 if(NOT CUDA_KERNEL)
   list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/cuda/.*")
 endif()
-if(NOT FLAGGEMS_KERNEL AND NOT FLAGGEMS_PYTHON)
-  # Neither C++ nor Python wrappers: exclude entire flagos backend
+if(NOT FLAGGEMS_KERNEL AND NOT FLAGGEMS_PYTHON AND NOT CUDA_KERNEL)
+  # Nothing needs python_op_caller: exclude entire flagos backend
   # (only python_op_caller.{h,cc} lives here now). The generated
   # flaggems_python_kernels.cc stays but is a no-op without FLAGOS_FLAGGEMS_PYTHON.
   list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/flagos/.*")
 endif()
+# CUDA_KERNEL path: cuda_kernels.cc's native RNG kernels unconditionally call
+# GetFlagosDefaultCudaGenerator() (unified-RNG generator injection) regardless
+# of the FlagGems dispatch path, so python_op_caller.cc must stay in the build
+# whenever CUDA_KERNEL is on -- even with FLAGGEMS_KERNEL=OFF FLAGGEMS_PYTHON=OFF.
 # FLAGGEMS_PYTHON path: keep csrc/aten/backends/flagos/python_op_caller.cc and
 # build csrc/aten/generated/flaggems_python_kernels.cc with FLAGOS_FLAGGEMS_PYTHON
 # defined (below). The stale C++/python_wrapper files were removed; nothing to
@@ -50,10 +56,33 @@ endif()
 if(NOT ASCEND_KERNEL)
   list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/ascend/.*")
 endif()
+if(NOT GCU_KERNEL)
+  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/gcu/.*")
+endif()
+if(NOT MUSA_KERNEL)
+  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/musa/.*")
+endif()
 
 if(ACCELERATOR STREQUAL "metax")
   list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/cuda/.*")
   list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/metax/.*\\.cu$")
+endif()
+
+if(ACCELERATOR STREQUAL "gcu")
+  # The generated CUDA boxing kernels re-dispatch PrivateUse1 -> CUDA, which
+  # needs a CUDA-capable libtorch. GCU has no CUDA runtime at all (the tops
+  # stack exports no cuda symbols), so drop them along with the CUDA backend.
+  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/cuda/.*")
+  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/generated/cuda_kernels\\.cc$")
+endif()
+
+if(ACCELERATOR STREQUAL "musa")
+  # Same reasoning as gcu: torch_musa registers under PrivateUse1, never the
+  # CUDA key, and the MUSA toolkit exports no cuda symbols -- so the generated
+  # CUDA boxing kernels have nothing to dispatch into. The musa wrappers under
+  # aten/backends/musa/generated/ replace them.
+  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/cuda/.*")
+  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/generated/cuda_kernels\\.cc$")
 endif()
 
 set(_torch_fl_sources ${SOURCE_FILES})
@@ -91,6 +120,12 @@ target_compile_definitions(${LIBRARY_NAME} PRIVATE
 # python_op_caller only when the Python FlagGems path is requested.
 if(FLAGGEMS_PYTHON)
   target_compile_definitions(${LIBRARY_NAME} PRIVATE FLAGOS_FLAGGEMS_PYTHON)
+endif()
+
+# Compile the FlagGems C++ dispatch kernels (flaggems_cpp_kernels.cc, guarded by
+# this macro) only when linking against liboperators.so is requested.
+if(FLAGGEMS_KERNEL)
+  target_compile_definitions(${LIBRARY_NAME} PRIVATE FLAGOS_FLAGGEMS_CPP)
 endif()
 
 # The CPU-only torch wheel ships c10/cuda headers but not the CUDA-build-only
@@ -140,6 +175,31 @@ elseif(ACCELERATOR STREQUAL "dcu")
   # delegation -- the DCU wheel exports c10::hip, not c10::cuda).
   target_compile_definitions(${LIBRARY_NAME} PRIVATE USE_DCU=1)
   target_link_libraries(${LIBRARY_NAME} PRIVATE ${_torch_fl_link_libs})
+elseif(ACCELERATOR STREQUAL "musa")
+  target_compile_definitions(${LIBRARY_NAME} PRIVATE USE_MUSA=1)
+  target_link_libraries(${LIBRARY_NAME} PRIVATE ${_torch_fl_link_libs})
+  if(MUSA_KERNEL)
+    # FLAGOS_MUSA_KERNEL gates the m.impl subset in register.cc, mirroring
+    # FLAGOS_GCU_KERNEL.
+    target_compile_definitions(${LIBRARY_NAME} PRIVATE FLAGOS_MUSA_KERNEL=1)
+    # mudnn's headers and library both live in the MUSA toolkit, already on the
+    # include path via cuda_runtime_compat. Nothing vendor-specific to stage: no
+    # torch_musa tree, and so none of the header-shadowing hazards it brought
+    # (it re-shipped ~1341 of torch's own ATen/ops/*_ops.h frozen at the
+    # vendor's torch version).
+    target_link_libraries(${LIBRARY_NAME} PRIVATE ${MUDNN_LIB})
+  endif()
+elseif(ACCELERATOR STREQUAL "gcu")
+  target_compile_definitions(${LIBRARY_NAME} PRIVATE USE_GCU=1)
+  target_link_libraries(${LIBRARY_NAME} PRIVATE ${_torch_fl_link_libs})
+  if(GCU_KERNEL)
+    # FLAGOS_GCU_KERNEL gates the m.impl subset in register.cc: without the
+    # topsaten kernels there is nothing to register on PrivateUse1.
+    target_compile_definitions(${LIBRARY_NAME} PRIVATE FLAGOS_GCU_KERNEL=1)
+    target_include_directories(${LIBRARY_NAME} PRIVATE
+        ${TOPSATEN_INCLUDE_DIRS})
+    target_link_libraries(${LIBRARY_NAME} PRIVATE ${TOPSATEN_LIB})
+  endif()
 else()
   target_link_libraries(${LIBRARY_NAME} PRIVATE ${_torch_fl_link_libs})
 endif()
@@ -183,3 +243,13 @@ install(TARGETS ${LIBRARY_NAME}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
+
+if(ACCELERATOR STREQUAL "gcu" OR ACCELERATOR STREQUAL "musa")
+  # torch_fl/__init__.py pins backends_cuda.conf by default, which on GCU/MUSA
+  # would route every op to the (absent) CUDA kernels. Record the platform next
+  # to the libs so the Python side can pick backends_<platform>.conf instead.
+  set(_flagos_platform_marker "${CMAKE_CURRENT_BINARY_DIR}/flagos_platform")
+  file(WRITE "${_flagos_platform_marker}" "${ACCELERATOR}\n")
+  install(FILES "${_flagos_platform_marker}"
+      DESTINATION ${CMAKE_INSTALL_LIBDIR})
+endif()

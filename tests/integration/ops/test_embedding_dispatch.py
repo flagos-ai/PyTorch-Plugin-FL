@@ -168,6 +168,7 @@ class TestEmbeddingDispatchLog:
         assert "[flagos dispatch] embedding -> flagos_python" in result.stderr
 
     @pytest.mark.flaggems
+    @pytest.mark.main_ops
     def test_dispatch_log_flaggems_runtime(self):
         """With the FlagGems runtime path on, embedding routes to flagos_python.
 
@@ -183,6 +184,7 @@ class TestEmbeddingDispatchLog:
         )
 
     @pytest.mark.cuda
+    @pytest.mark.main_ops
     def test_dispatch_log_cuda_override(self):
         result = _run_embedding_subprocess(
             {

@@ -12,8 +12,14 @@
 #include <c10/core/Allocator.h>
 #include <c10/core/Device.h>
 
-#if !defined(USE_ASCEND) && !defined(USE_TSINGMICRO)
+#if !defined(USE_ASCEND) && !defined(USE_TSINGMICRO) && !defined(USE_GCU) && \
+    !defined(USE_MUSA)
 #include <cuda_runtime.h>
+#endif
+#if defined(USE_MUSA)
+// MUSA has no cudart shim (unlike metax/dcu), so the pinned-pointer probe below
+// uses the musa* spelling of the same API.
+#include <musa_runtime.h>
 #endif
 #include <include/flagos.h>
 
@@ -48,7 +54,19 @@ struct HooksInterface : public at::PrivateUse1HooksInterface {
       return true;
     }
 
-#if !defined(USE_ASCEND) && !defined(USE_TSINGMICRO)
+#if defined(USE_MUSA)
+    // Same fallback as the CUDA branch below, in musa* spelling: torch_musa's
+    // pinned allocator uses musaMallocHost, so those pointers are absent from
+    // flagos's registry yet still valid pinned memory for DDP.
+    musaPointerAttributes musa_attr{};
+    musaError_t merr = musaPointerGetAttributes(&musa_attr, data);
+    if (merr == musaSuccess && musa_attr.type == musaMemoryTypeHost) {
+      return true;
+    }
+    if (merr != musaSuccess) {
+      musaGetLastError();
+    }
+#elif !defined(USE_ASCEND) && !defined(USE_TSINGMICRO) && !defined(USE_GCU)
     // Fallback: check if it's CUDA pinned memory
     // This is needed because when CUDA is present, PyTorch's pinned memory
     // allocator defaults to CUDA's cudaMallocHost, which won't be in flagos's

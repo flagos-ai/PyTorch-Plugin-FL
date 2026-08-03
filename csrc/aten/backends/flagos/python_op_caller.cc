@@ -6,7 +6,12 @@
 #include <pybind11/stl.h>
 #include <torch/csrc/autograd/python_variable.h>
 #include <torch/csrc/utils/pybind.h>
+#include <torch/csrc/Generator.h>
+#include <ATen/core/Generator.h>
 #include <ATen/core/ivalue.h>
+#include <c10/core/DeviceGuard.h>
+
+#include "runtime/functions.h"
 
 #include <mutex>
 #include <unordered_map>
@@ -64,13 +69,30 @@ PythonOpCache& GetCache() {
   return *cache;
 }
 
+// Resolve the flagos device a factory call should produce on.
+//
+// Mirrors aten factory semantics (and csrc/aten/empty.cc): an absent device, or
+// one carrying no index, means "the current device". Hardcoding index 0 here
+// used to allocate the output on device 0 while gems' Triton kernel launched on
+// whatever the current device was -- on a multi-GPU run that is a cross-device
+// write, which faults the GPU (VMFault / "Invalid address access") instead of
+// raising, and it also made torch.ones(..., device="flagos:1") report device 0.
+c10::Device ResolveFactoryDevice(std::optional<at::Device> device) {
+  if (device.has_value() && device->has_index()) {
+    return *device;
+  }
+  return c10::Device(c10::DeviceType::PrivateUse1, c10::flagos::CurrentDevice());
+}
+
 // Convert at::Tensor to Python THPVariable.
 // CPU scalar tensors are moved to the flagos device since FlagGems kernels
 // cannot access CPU memory.
 py::object TensorToPython(const at::Tensor& t) {
   if (!t.defined()) return py::none();
   if (t.device().is_cpu() && t.dim() == 0) {
-    auto dev_t = t.to(c10::Device(c10::DeviceType::PrivateUse1, 0));
+    // Current device, not index 0: a scalar operand feeding a computation on
+    // device N must not drag that computation back to device 0.
+    auto dev_t = t.to(ResolveFactoryDevice(std::nullopt));
     PyObject* obj = THPVariable_Wrap(dev_t);
     return py::reinterpret_steal<py::object>(obj);
   }
@@ -364,19 +386,26 @@ at::Tensor CallPythonOp_GenericKw(const char* func_name,
 
 at::Tensor CallPythonOp_Factory(const char* func_name,
                                 const std::vector<c10::IValue>& args,
-                                std::optional<at::ScalarType> dtype) {
+                                std::optional<at::ScalarType> dtype,
+                                std::optional<at::Device> device) {
   auto& cache = GetCache();
   cache.EnsureInitialized();
+  // Set the device before entering Python: gems' internal torch.empty and the
+  // Triton launch both read the *current* device, so they must see the one we
+  // are about to name in the device kwarg.
+  const auto target = ResolveFactoryDevice(device);
+  const c10::DeviceGuard device_guard(target);
   py::gil_scoped_acquire gil;
   auto func = cache.GetFunc(func_name);
   py::tuple py_args = BuildPyArgs(args, func_name);
 
   static py::module_ torch_mod = py::module_::import("torch");
-  // device=flagos:0 -> gems' internal torch.empty(...) allocates on PrivateUse1
-  // via our own allocator (no recursion, no CUDA copy). Uses the registered
-  // PrivateUse1 backend name so it stays correct if the alias changes.
+  // device=flagos:<idx> -> gems' internal torch.empty(...) allocates on
+  // PrivateUse1 via our own allocator (no recursion, no CUDA copy). Uses the
+  // registered PrivateUse1 backend name so it stays correct if the alias changes.
   py::object flagos_dev = torch_mod.attr("device")(
-      torch_mod.attr("_C").attr("_get_privateuse1_backend_name")(), 0);
+      torch_mod.attr("_C").attr("_get_privateuse1_backend_name")(),
+      static_cast<int>(target.index()));
   py::object result = func(
       *py_args,
       "dtype"_a = OptionalDtypeToPython(dtype),
@@ -388,18 +417,34 @@ at::Tensor CallPythonOp_Factory(const char* func_name,
 
 at::Tensor CallPythonOp_LikeFactory(const char* func_name,
                                     const std::vector<c10::IValue>& args,
-                                    std::optional<at::ScalarType> dtype) {
+                                    std::optional<at::ScalarType> dtype,
+                                    std::optional<at::Device> device) {
   auto& cache = GetCache();
   cache.EnsureInitialized();
+  // For *_like, an absent device means "same as self" (not "current device"), so
+  // fall back to args[0]'s device before ResolveFactoryDevice's current-device
+  // default. args[0] is the source tensor by construction -- see the header.
+  std::optional<at::Device> device_hint = device;
+  if ((!device_hint.has_value() || !device_hint->has_index()) && !args.empty() &&
+      args[0].isTensor()) {
+    const auto& self = args[0].toTensor();
+    if (self.defined() && self.device().is_privateuseone() &&
+        self.device().has_index()) {
+      device_hint = self.device();
+    }
+  }
+  const auto target = ResolveFactoryDevice(device_hint);
+  const c10::DeviceGuard device_guard(target);
   py::gil_scoped_acquire gil;
   auto func = cache.GetFunc(func_name);
   py::tuple py_args = BuildPyArgs(args, func_name);
 
   static py::module_ torch_mod = py::module_::import("torch");
-  // device=flagos:0 -> gems' internal torch.empty_like(self, device=...) stays
-  // on PrivateUse1 (no CUDA round-trip). dtype=None means "same as self".
+  // device=flagos:<idx> -> gems' internal torch.empty_like(self, device=...)
+  // stays on PrivateUse1 (no CUDA round-trip). dtype=None means "same as self".
   py::object flagos_dev = torch_mod.attr("device")(
-      torch_mod.attr("_C").attr("_get_privateuse1_backend_name")(), 0);
+      torch_mod.attr("_C").attr("_get_privateuse1_backend_name")(),
+      static_cast<int>(target.index()));
   py::object result = func(
       *py_args,
       "dtype"_a = OptionalDtypeToPython(dtype),
@@ -471,6 +516,29 @@ std::vector<at::Tensor> CallPythonOp_GenericTuple(
     out.push_back(PythonToTensor(py::reinterpret_borrow<py::object>(seq[i])));
   }
   return out;
+}
+
+at::Generator GetFlagosDefaultCudaGenerator(int64_t device_index) {
+  static std::mutex cache_mu;
+  static std::unordered_map<int64_t, at::Generator> gen_cache;
+  {
+    std::lock_guard<std::mutex> lk(cache_mu);
+    auto it = gen_cache.find(device_index);
+    if (it != gen_cache.end()) {
+      return it->second;
+    }
+  }
+  py::gil_scoped_acquire gil;
+  py::module_ torch_cuda = py::module_::import("torch.cuda");
+  py::object gens = torch_cuda.attr("default_generators");
+  py::object py_gen = gens[py::cast(device_index)];
+  // torch.Generator -> at::Generator via THPGenerator unpack.
+  at::Generator gen = py_gen.cast<at::Generator>();
+  {
+    std::lock_guard<std::mutex> lk(cache_mu);
+    gen_cache[device_index] = gen;
+  }
+  return gen;
 }
 
 } // namespace at::native::flagos
