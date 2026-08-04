@@ -136,3 +136,75 @@ resize_as.out
 resize_as_sparse.out
 sparse_resize.out
 sparse_resize_and_clear.out
+
+# --- vendor-only fused ops (present only in some vendor torch wheels) ---
+# Hygon DTK's torch wheel ships 64 extra native_fuse_* ops and its bundled
+# torchgen yaml declares them, so codegen picks them up on a DCU box but not
+# on an upstream-torch box. Generating them would put DTK-only ATen/ops/
+# native_fuse_*.h includes into the shared cuda_kernels.cc and DTK-only routes
+# into the shared backends_cuda.conf, breaking the NVIDIA/MetaX builds. Skipped
+# so codegen output stays identical no matter which wheel it runs against.
+native_fuse_bias_dropout_add
+native_fuse_bias_dropout_add_backward
+native_fuse_bias_dropout_add_backward.out
+native_fuse_bias_dropout_add.out
+native_fuse_bias_gelu
+native_fuse_bias_gelu_backward
+native_fuse_bias_gelu_backward.out
+native_fuse_bias_gelu.out
+native_fuse_bias_swiglu
+native_fuse_bias_swiglu_backward
+native_fuse_bias_swiglu_backward.out
+native_fuse_bias_swiglu.out
+native_fuse_celu_gn
+native_fuse_celu_gn_backward
+native_fuse_celu_gn_backward.out
+native_fuse_celu_gn.out
+native_fuse_ctc_loss
+native_fuse_ctc_loss_backward
+native_fuse_ctc_loss_backward.out
+native_fuse_ctc_loss.out
+native_fuse_dropout_add
+native_fuse_dropout_add_backward
+native_fuse_dropout_add_backward.out
+native_fuse_dropout_add.out
+native_fuse_gn_silu
+native_fuse_gn_silu_backward
+native_fuse_gn_silu_backward.out
+native_fuse_gn_silu.out
+native_fuse_group_norm
+native_fuse_group_norm_backward
+native_fuse_group_norm_backward.out
+native_fuse_group_norm.out
+native_fuse_layer_norm
+native_fuse_layer_norm_backward
+native_fuse_layer_norm_backward.out
+native_fuse_layer_norm.out
+native_fuse_ln_add_dropout
+native_fuse_ln_add_dropout_backward
+native_fuse_ln_add_dropout_backward.out
+native_fuse_ln_add_dropout_bias
+native_fuse_ln_add_dropout_bias_backward
+native_fuse_ln_add_dropout_bias_backward.out
+native_fuse_ln_add_dropout_bias.out
+native_fuse_ln_add_dropout.out
+native_fuse_ln_dropout
+native_fuse_ln_dropout_backward
+native_fuse_ln_dropout_backward.out
+native_fuse_ln_dropout.out
+native_fuse_rmsnorm
+native_fuse_rmsnorm_backward
+native_fuse_rmsnorm_backward.out
+native_fuse_rmsnorm.out
+native_fuse_rn_add_dropout
+native_fuse_rn_add_dropout_backward
+native_fuse_rn_add_dropout_backward.out
+native_fuse_rn_add_dropout_bias
+native_fuse_rn_add_dropout_bias_backward
+native_fuse_rn_add_dropout_bias_backward.out
+native_fuse_rn_add_dropout_bias.out
+native_fuse_rn_add_dropout.out
+native_fuse_rn_dropout
+native_fuse_rn_dropout_backward
+native_fuse_rn_dropout_backward.out
+native_fuse_rn_dropout.out
