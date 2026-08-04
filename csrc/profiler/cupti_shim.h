@@ -58,6 +58,62 @@ typedef enum {
   CUPTI_EXTERNAL_CORRELATION_KIND_CUSTOM0 = 3
 } CUpti_ExternalCorrelationKind;
 
+// Runtime API callback id -> human name, for naming CUPTI_ACTIVITY_KIND_RUNTIME
+// records. Values are CUPTI_RUNTIME_TRACE_CBID_* from cupti_runtime_cbid.h,
+// cross-checked three ways: the pip cu12 header (nvidia/cuda_cupti/include), the
+// system CUDA-13.0 header, and cuptiGetCallbackName(CUPTI_CB_DOMAIN_RUNTIME_API,
+// cbid) queried against the live library -- all 22 entries agree. These ids are
+// append-only across CUPTI major versions, so a hardcoded subset is safe.
+//
+// Getting one of these wrong is invisible at runtime: you get a plausible but
+// wrong label rather than an error. Before this mapping existed, EVERY runtime
+// record was hardcoded to "cudaLaunchKernel", which reported a 21.9ms blocking
+// synchronize as a kernel launch.
+//
+// This is deliberately a static table rather than a cuptiGetCallbackName() call:
+// that symbol is not in the shim's dlsym set, it returns the versioned spelling
+// (`cudaLaunchKernel_v7000`) rather than the name torch-cuda's trace uses, and
+// resolving it per record would put a library call on the hot parse path.
+//
+// The `_ptsz` ("per-thread default stream") forms are distinct cbids for the
+// same API and MUST map to the same name -- a build compiled with
+// --default-stream per-thread emits only those, and would otherwise fall
+// through to the generic default.
+inline const char* cuptiRuntimeCbidToName(uint32_t cbid) {
+  switch (cbid) {
+    // --- launches ---
+    case 211: return "cudaLaunchKernel";                 // _v7000
+    case 214: return "cudaLaunchKernel";                 // _ptsz_v7000
+    case 269: return "cudaLaunchCooperativeKernel";      // _v9000
+    case 270: return "cudaLaunchCooperativeKernel";      // _ptsz_v9000
+    case 430: return "cudaLaunchKernelExC";              // _v11060
+    case 431: return "cudaLaunchKernelExC";              // _ptsz_v11060
+    // --- transfers ---
+    case 31:  return "cudaMemcpy";                       // _v3020
+    case 41:  return "cudaMemcpyAsync";                  // _v3020
+    case 225: return "cudaMemcpyAsync";                  // _ptsz_v7000
+    case 49:  return "cudaMemset";                       // _v3020
+    case 51:  return "cudaMemsetAsync";                  // _v3020
+    case 235: return "cudaMemsetAsync";                  // _ptsz_v7000
+    // --- synchronization (the entries most often misread as launches) ---
+    case 131: return "cudaStreamSynchronize";            // _v3020
+    case 239: return "cudaStreamSynchronize";            // _ptsz_v7000
+    case 165: return "cudaDeviceSynchronize";            // _v3020
+    case 137: return "cudaEventSynchronize";             // _v3020
+    case 135: return "cudaEventRecord";                  // _v3020
+    case 242: return "cudaEventRecord";                  // _ptsz_v7000
+    case 147: return "cudaStreamWaitEvent";              // _v3020
+    case 247: return "cudaStreamWaitEvent";              // _ptsz_v7000
+    // --- allocation ---
+    case 20:  return "cudaMalloc";                       // _v3020
+    case 22:  return "cudaFree";                         // _v3020
+    // Unmapped ids keep a generic label rather than a guessed one: the record is
+    // still a real runtime call worth showing, and mislabeling it is worse than
+    // leaving it unnamed.
+    default:  return "cudaRuntime";
+  }
+}
+
 // Opaque activity record base
 struct CUpti_Activity;
 

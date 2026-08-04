@@ -4,7 +4,8 @@ Verification gate for profiler parity design foundation (Task 1, one-shot).
 Tests 3 claims:
 1. Chrome trace contains *renderable* flow arrows (ac2g, paired s<->f, count > 0)
 2. key_averages() shows aten::mm with self_device_time_total > 0, and that value
-   equals the summed duration of the sgemm kernel events in the same trace
+   equals the summed duration of the device events (sgemm kernels + the cuBLAS
+   workspace memsets) linked to aten::mm in the same trace
 3. Runtime events appear with a recognizable runtime category
 
 Plus a capture-window containment check: no runtime/kernel/memcpy event may fall
@@ -85,26 +86,59 @@ def verify_flow_arrows(trace):
     return len(paired_ids), ok
 
 
-def sgemm_kernel_time(trace):
-    """Ground truth for metric 2: total device time of the matmul kernels.
+def aten_mm_device_time(trace):
+    """Ground truth for metric 2: total device time aten::mm actually owns.
 
-    aten::mm's attributed time must equal the sum of the kernel events it
+    aten::mm's attributed time must equal the sum of the device events it
     actually launched. Without this cross-check, `device_time > 0` also passes
     when a stray unrelated kernel's time is misattributed to aten::mm.
+
+    ORIGINALLY this summed only the sgemm kernel events, because those were the
+    only device activities collected. Task 3 added MEMSET collection, and cuBLAS
+    zeroes a 512B workspace per gemm -- so aten::mm now legitimately owns 5
+    memsets (~2us each) in addition to its 5 sgemm kernels, and a sgemm-only
+    ground truth under-counts by exactly that amount.
+    Verified by same-binary A/B: with MEMSET disabled at the ActivityEnable call
+    and nothing else changed, attribution returns to the sgemm sum exactly
+    (816.059us vs 816.059us, delta 0.000us).
+
+    So the truth is now "every device event linked to aten::mm", which is
+    STRICTER than the old form, not looser: it still catches a missing/extra
+    kernel (~163us), and additionally catches a memset misattributed to the
+    wrong op. The sgemm sub-total is still asserted separately below so that
+    losing kernel collection entirely cannot pass.
     """
+    events = trace.get("traceEvents", [])
+    # cpu_op "External id" -> op name, to attribute device events to their op.
+    op_by_ext = {}
+    for e in events:
+        if e.get("cat") == "cpu_op":
+            ext = (e.get("args") or {}).get("External id")
+            if ext is not None:
+                op_by_ext[ext] = e.get("name")
+
+    def linked_to_mm(e):
+        ext = (e.get("args") or {}).get("External id")
+        return op_by_ext.get(ext) == "aten::mm"
+
     kernels = [
-        e
-        for e in trace.get("traceEvents", [])
+        e for e in events
         if e.get("cat") == "kernel" and "sgemm" in e.get("name", "").lower()
     ]
-    total = sum(e.get("dur", 0) for e in kernels)
-    print(f"Ground truth: {len(kernels)} sgemm kernel events, sum dur={total}us")
-    return total, len(kernels)
+    memsets = [e for e in events if e.get("cat") == "gpu_memset" and linked_to_mm(e)]
+
+    kernel_total = sum(e.get("dur", 0) for e in kernels)
+    memset_total = sum(e.get("dur", 0) for e in memsets)
+    print(f"Ground truth: {len(kernels)} sgemm kernel events, sum dur={kernel_total}us")
+    print(f"              + {len(memsets)} memset events linked to aten::mm, "
+          f"sum dur={memset_total}us")
+    print(f"              = {kernel_total + memset_total}us total")
+    return kernel_total + memset_total, len(kernels)
 
 
 def verify_device_time_attribution(prof, trace):
     """Metric 2: aten::mm self_device_time_total, cross-checked against the
-    kernel events in the same trace."""
+    device events in the same trace."""
     key_avg = prof.key_averages()
     mm_events = [e for e in key_avg if "mm" in e.key.lower()]
     for evt in mm_events:
@@ -121,7 +155,7 @@ def verify_device_time_attribution(prof, trace):
         return None, False
 
     print(f"aten::mm self_device_time_total={attributed}us")
-    truth, n_kernels = sgemm_kernel_time(trace)
+    truth, n_kernels = aten_mm_device_time(trace)
     if n_kernels == 0:
         print("  FAIL: no sgemm kernel events to cross-check against")
         return attributed, False
@@ -130,7 +164,7 @@ def verify_device_time_attribution(prof, trace):
     # modes it guards: one extra/missing kernel would shift this by ~163us.
     delta = abs(attributed - truth)
     ok = attributed > 0 and delta <= max(1.0, 0.01 * truth)
-    print(f"  cross-check: attributed={attributed}us vs kernel sum={truth}us "
+    print(f"  cross-check: attributed={attributed}us vs device event sum={truth}us "
           f"delta={delta:.3f}us -> {'MATCH' if ok else 'MISMATCH'}")
     return attributed, ok
 
@@ -198,6 +232,34 @@ def window_containment(trace):
     return ok
 
 
+def verify_kernel_dominates(trace):
+    """Guard against the ground truth in metric 2 degenerating.
+
+    Metric 2 now sums kernels + memsets. If kernel collection silently broke and
+    only memsets survived, both sides of that comparison would shrink together
+    and still "MATCH". Assert separately that the sgemm kernels are present and
+    account for the bulk of aten::mm's device time (they are ~163us each vs
+    ~2us per memset, so >90% is a wide margin around the real ~98.9%).
+    """
+    events = trace.get("traceEvents", [])
+    op_by_ext = {
+        (e.get("args") or {}).get("External id"): e.get("name")
+        for e in events if e.get("cat") == "cpu_op"
+    }
+    sgemm = [e for e in events
+             if e.get("cat") == "kernel" and "sgemm" in e.get("name", "").lower()]
+    memsets = [e for e in events if e.get("cat") == "gpu_memset"
+               and op_by_ext.get((e.get("args") or {}).get("External id")) == "aten::mm"]
+    k = sum(e.get("dur", 0) for e in sgemm)
+    m = sum(e.get("dur", 0) for e in memsets)
+    share = k / (k + m) if (k + m) else 0.0
+    print(f"sgemm kernels: {len(sgemm)} ({k:.1f}us), aten::mm memsets: "
+          f"{len(memsets)} ({m:.1f}us) -> kernels are {share:.1%} of the total")
+    ok = len(sgemm) >= 5 and share > 0.90
+    print(f"  kernel dominance: {'OK' if ok else 'DEGENERATE'}")
+    return ok
+
+
 def main():
     print("=== Profiler Foundation Verification Gate ===")
     prof = run_traced_ops()
@@ -219,6 +281,8 @@ def main():
         flow_count, m1 = verify_flow_arrows(trace)
         print("\n--- Metric 2: device time attribution ---")
         device_time, m2 = verify_device_time_attribution(prof, trace)
+        m2b = verify_kernel_dominates(trace)
+        m2 = m2 and m2b
         print("\n--- Metric 3: runtime events ---")
         runtime_cat = verify_runtime_category(
             trace, expected_cats={"privateuse1_runtime", "cuda_runtime"}

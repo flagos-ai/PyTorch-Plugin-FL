@@ -14,30 +14,29 @@
 
 #pragma once
 
+#include "device_tracer.h"
+
 #include <kineto/IActivityProfiler.h>
 #include <memory>
 #include <set>
 #include <string>
 #include <vector>
 
-// Forward declarations for CUPTI callback friend functions
-struct CUctx_st;
-typedef struct CUctx_st* CUcontext;
-
 namespace c10 {
 namespace flagos {
 
-// Forward declare callback for friend declaration
-namespace detail {
-void bufferCompleted(CUcontext, uint32_t, uint8_t*, size_t, size_t);
-}
-
 /**
  * FlagosCuptiProfilerSession: IActivityProfilerSession implementation that
- * uses CUPTI Activity API to collect GPU kernel traces.
+ * collects a device timeline through the vendor-neutral DeviceTracer interface.
+ *
+ * This class is the kineto *adaptor*: it knows about kineto activity types,
+ * flow arrows and correlation linking, and nothing at all about CUPTI. All
+ * vendor specifics live behind DeviceTracer (see cupti_device_tracer.cc).
  */
 class FlagosCuptiProfilerSession : public libkineto::IActivityProfilerSession {
  public:
+  FlagosCuptiProfilerSession();
+
   void start() override;
   void stop() override;
   void processTrace(libkineto::ActivityLogger& logger) override;
@@ -57,11 +56,12 @@ class FlagosCuptiProfilerSession : public libkineto::IActivityProfilerSession {
   void pushCorrelationId(uint64_t id) override;
   void popCorrelationId() override;
 
-  friend void detail::bufferCompleted(CUcontext, uint32_t, uint8_t*, size_t, size_t);
-
  private:
   friend class FlagosCuptiProfiler;
-  std::vector<libkineto::GenericTraceActivity> activities_;
+  std::unique_ptr<profiler::DeviceTracer> tracer_;
+  // Drained from the tracer in stop(); converted to kineto activities in
+  // processTrace so both overloads see the same data.
+  std::vector<profiler::DeviceEvent> events_;
 };
 
 /**
