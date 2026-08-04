@@ -84,6 +84,53 @@ c10::Device ResolveFactoryDevice(std::optional<at::Device> device) {
   return c10::Device(c10::DeviceType::PrivateUse1, c10::flagos::CurrentDevice());
 }
 
+// Resolve the device a *non-factory* Python call must run on: the device of its
+// first indexed flagos tensor operand, or nullopt to leave the current device
+// alone.
+//
+// Same hazard the factory callers guard against, reached from the other side.
+// gems allocates its own intermediates with `device=input.device` but launches
+// Triton on the *current* device, so calling an op on a tensor that lives on
+// device N while the current device is M reads and writes across devices. That
+// does not raise -- it faults the GPU (segfault / VMFault / "Invalid address
+// access"), which is how multinomial on flagos:1 died before this guard.
+//
+// Guarding here also fixes TensorToPython's CPU-scalar hop, which resolves to
+// the current device: under the guard that is now the operand's device rather
+// than whatever was current at entry.
+std::optional<c10::Device> DeviceOfTensor(const at::Tensor& t) {
+  if (t.defined() && t.device().is_privateuseone() && t.device().has_index()) {
+    return t.device();
+  }
+  return std::nullopt;
+}
+
+// Same, for the boxed-argument callers: first tensor (or first tensor in a
+// tensor list) that names a device wins. Non-tensor leading args are skipped,
+// so ops like `topk(values, k)` still resolve correctly.
+std::optional<c10::Device> DeviceOfArgs(const std::vector<c10::IValue>& args) {
+  for (const auto& arg : args) {
+    if (arg.isTensor()) {
+      if (auto dev = DeviceOfTensor(arg.toTensor())) return dev;
+    } else if (arg.isTensorList()) {
+      for (const at::Tensor& t : arg.toTensorList()) {
+        if (auto dev = DeviceOfTensor(t)) return dev;
+      }
+    }
+  }
+  return std::nullopt;
+}
+
+// Same, for the fixed-arity callers: first tensor operand naming a device wins.
+template <typename... Ts>
+std::optional<c10::Device> DeviceOfFirst(const at::Tensor& t, const Ts&... rest) {
+  if (auto dev = DeviceOfTensor(t)) return dev;
+  if constexpr (sizeof...(rest) > 0) {
+    return DeviceOfFirst(rest...);
+  }
+  return std::nullopt;
+}
+
 // Convert at::Tensor to Python THPVariable.
 // CPU scalar tensors are moved to the flagos device since FlagGems kernels
 // cannot access CPU memory.
@@ -227,6 +274,7 @@ py::tuple BuildPyArgs(const std::vector<c10::IValue>& args, const char* func_nam
 at::Tensor CallPythonOp_T(const char* func_name, const at::Tensor& self) {
   auto& cache = GetCache();
   cache.EnsureInitialized();
+  const c10::OptionalDeviceGuard device_guard(DeviceOfFirst(self));
   py::gil_scoped_acquire gil;
   auto func = cache.GetFunc(func_name);
   py::object result = func(TensorToPython(self));
@@ -236,6 +284,7 @@ at::Tensor CallPythonOp_T(const char* func_name, const at::Tensor& self) {
 at::Tensor& CallPythonOp_T_inplace(const char* func_name, at::Tensor& self) {
   auto& cache = GetCache();
   cache.EnsureInitialized();
+  const c10::OptionalDeviceGuard device_guard(DeviceOfFirst(self));
   py::gil_scoped_acquire gil;
   auto func = cache.GetFunc(func_name);
   func(TensorToPython(self));
@@ -245,6 +294,7 @@ at::Tensor& CallPythonOp_T_inplace(const char* func_name, at::Tensor& self) {
 at::Tensor CallPythonOp_TT(const char* func_name, const at::Tensor& a, const at::Tensor& b) {
   auto& cache = GetCache();
   cache.EnsureInitialized();
+  const c10::OptionalDeviceGuard device_guard(DeviceOfFirst(a, b));
   py::gil_scoped_acquire gil;
   auto func = cache.GetFunc(func_name);
   py::object result = func(TensorToPython(a), TensorToPython(b));
@@ -254,6 +304,7 @@ at::Tensor CallPythonOp_TT(const char* func_name, const at::Tensor& a, const at:
 at::Tensor CallPythonOp_TTS(const char* func_name, const at::Tensor& a, const at::Tensor& b, const at::Scalar& alpha) {
   auto& cache = GetCache();
   cache.EnsureInitialized();
+  const c10::OptionalDeviceGuard device_guard(DeviceOfFirst(a, b));
   py::gil_scoped_acquire gil;
   auto func = cache.GetFunc(func_name);
   py::object result = func(TensorToPython(a), TensorToPython(b), "alpha"_a = ScalarToPython(alpha));
@@ -263,6 +314,7 @@ at::Tensor CallPythonOp_TTS(const char* func_name, const at::Tensor& a, const at
 at::Tensor CallPythonOp_TS(const char* func_name, const at::Tensor& self, const at::Scalar& other) {
   auto& cache = GetCache();
   cache.EnsureInitialized();
+  const c10::OptionalDeviceGuard device_guard(DeviceOfFirst(self));
   py::gil_scoped_acquire gil;
   auto func = cache.GetFunc(func_name);
   py::object result = func(TensorToPython(self), ScalarToPython(other));
@@ -272,6 +324,7 @@ at::Tensor CallPythonOp_TS(const char* func_name, const at::Tensor& self, const 
 at::Tensor CallPythonOp_TIB(const char* func_name, const at::Tensor& self, int64_t dim, bool flag) {
   auto& cache = GetCache();
   cache.EnsureInitialized();
+  const c10::OptionalDeviceGuard device_guard(DeviceOfFirst(self));
   py::gil_scoped_acquire gil;
   auto func = cache.GetFunc(func_name);
   py::object result = func(TensorToPython(self), py::int_(dim), py::bool_(flag));
@@ -283,6 +336,7 @@ at::Tensor CallPythonOp_TOIB(const char* func_name, const at::Tensor& self,
                               std::optional<at::ScalarType> dtype) {
   auto& cache = GetCache();
   cache.EnsureInitialized();
+  const c10::OptionalDeviceGuard device_guard(DeviceOfFirst(self));
   py::gil_scoped_acquire gil;
   auto func = cache.GetFunc(func_name);
   py::object result = func(
@@ -296,6 +350,7 @@ at::Tensor CallPythonOp_TOIB(const char* func_name, const at::Tensor& self,
 at::Tensor CallPythonOp_TTT(const char* func_name, const at::Tensor& a, const at::Tensor& b, const at::Tensor& c) {
   auto& cache = GetCache();
   cache.EnsureInitialized();
+  const c10::OptionalDeviceGuard device_guard(DeviceOfFirst(a, b, c));
   py::gil_scoped_acquire gil;
   auto func = cache.GetFunc(func_name);
   py::object result = func(TensorToPython(a), TensorToPython(b), TensorToPython(c));
@@ -306,6 +361,7 @@ at::Tensor CallPythonOp_TD(const char* func_name, const at::Tensor& self,
                             std::optional<at::ScalarType> dtype) {
   auto& cache = GetCache();
   cache.EnsureInitialized();
+  const c10::OptionalDeviceGuard device_guard(DeviceOfFirst(self));
   py::gil_scoped_acquire gil;
   auto func = cache.GetFunc(func_name);
   py::object result = func(TensorToPython(self), "dtype"_a = OptionalDtypeToPython(dtype));
@@ -316,6 +372,11 @@ at::Tensor CallPythonOp_ListI(const char* func_name,
                               const at::ITensorListRef& tensors, int64_t dim) {
   auto& cache = GetCache();
   cache.EnsureInitialized();
+  std::optional<c10::Device> list_dev;
+  for (const auto& t : tensors) {
+    if ((list_dev = DeviceOfTensor(t))) break;
+  }
+  const c10::OptionalDeviceGuard device_guard(list_dev);
   py::gil_scoped_acquire gil;
   auto func = cache.GetFunc(func_name);
   py::list py_tensors;
@@ -331,6 +392,7 @@ at::Tensor CallPythonOp_Embedding(const char* func_name, const at::Tensor& weigh
                                   bool scale_grad_by_freq, bool sparse) {
   auto& cache = GetCache();
   cache.EnsureInitialized();
+  const c10::OptionalDeviceGuard device_guard(DeviceOfFirst(weight, indices));
   py::gil_scoped_acquire gil;
   auto func = cache.GetFunc(func_name);
   py::object result = func(
@@ -342,6 +404,7 @@ at::Tensor CallPythonOp_Embedding(const char* func_name, const at::Tensor& weigh
 at::Tensor CallPythonOp_Generic(const char* func_name, const std::vector<c10::IValue>& args) {
   auto& cache = GetCache();
   cache.EnsureInitialized();
+  const c10::OptionalDeviceGuard device_guard(DeviceOfArgs(args));
 
   py::gil_scoped_acquire gil;
   auto func = cache.GetFunc(func_name);
@@ -376,6 +439,7 @@ at::Tensor CallPythonOp_GenericKw(const char* func_name,
                                   const std::vector<PyKwarg>& kwargs) {
   auto& cache = GetCache();
   cache.EnsureInitialized();
+  const c10::OptionalDeviceGuard device_guard(DeviceOfArgs(args));
 
   py::gil_scoped_acquire gil;
   auto func = cache.GetFunc(func_name);
@@ -459,6 +523,7 @@ at::Tensor CallPythonOp_RandomInplace(const char* func_name,
                                       const std::vector<c10::IValue>& args) {
   auto& cache = GetCache();
   cache.EnsureInitialized();
+  const c10::OptionalDeviceGuard device_guard(DeviceOfArgs(args));
   py::gil_scoped_acquire gil;
   auto func = cache.GetFunc(func_name);
   py::tuple py_args = BuildPyArgs(args, func_name);
@@ -475,6 +540,7 @@ std::vector<at::Tensor> CallPythonOp_GenericKwTuple(
     const std::vector<PyKwarg>& kwargs, int64_t n) {
   auto& cache = GetCache();
   cache.EnsureInitialized();
+  const c10::OptionalDeviceGuard device_guard(DeviceOfArgs(args));
 
   py::gil_scoped_acquire gil;
   auto func = cache.GetFunc(func_name);
@@ -498,6 +564,7 @@ std::vector<at::Tensor> CallPythonOp_GenericTuple(
     const char* func_name, const std::vector<c10::IValue>& args, int64_t n) {
   auto& cache = GetCache();
   cache.EnsureInitialized();
+  const c10::OptionalDeviceGuard device_guard(DeviceOfArgs(args));
 
   py::gil_scoped_acquire gil;
   auto func = cache.GetFunc(func_name);
