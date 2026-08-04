@@ -222,20 +222,28 @@ inline mudnn::MemoryMaintainer MudnnWorkspaceFor(const at::Tensor& reference) {
   };
 }
 
-// True when mudnn's Reduce would fault on this input rather than return a
-// status. Measured on mudnn v3300: a Reduce over *more than one* dim whose input
-// is fully 0-strided (every dim with extent > 1 has stride 0, i.e. the whole
-// tensor is a broadcast of a single element) raises SIGFPE inside the vendor
-// library -- an uncatchable crash, not a NOT_SUPPORTED status. A single-dim
-// reduce over the same input is fine, and so is a multi-dim reduce as soon as
-// any one stride is non-zero.
+// True when mudnn's Reduce misbehaves on this input and it must be materialized
+// first. The trigger is an input that is a *broadcast of a single element* --
+// every dim with extent > 1 has stride 0 -- which reaches real code through bias
+// gradients: `linear(x, w, b).sum()` backward reduces a grad_output that
+// autograd produced as `ones.expand(...)`, whose storage is one float.
 //
-// Kernels check this and materialize the input with a contiguous copy first. It
-// reaches real code through convolution bias gradients: `conv(x, w, b).sum()`
-// backward reduces a grad_output that autograd produced with `ones.expand()`.
-inline bool MudnnReduceWouldFault(
-    const at::Tensor& self, size_t num_reduced_dims) {
-  if (num_reduced_dims <= 1) {
+// Two distinct failures were measured on mudnn v3300, both silent in the status:
+//
+//   - Reducing over *more than one* dim raises SIGFPE inside the vendor library
+//     -- an uncatchable crash, not a NOT_SUPPORTED status.
+//   - Reducing over a *single* dim intermittently writes only out[0] and leaves
+//     the remaining output elements untouched, so the answer is whatever the
+//     caching allocator last left in that block. Observed as a wrong bias
+//     gradient (`[4, 34, 38, 42, 46]` where elements 1.. were a previous op's
+//     result); the same reduce on a materialized copy is always correct.
+//
+// A multi-dim reduce is fine as soon as any one stride is non-zero, but the
+// single-dim partial write does not reproduce standalone, so this predicate does
+// not try to be narrower than "fully 0-strided". The copy it forces is one
+// element wide on input, so the cost is a single small materialization.
+inline bool MudnnReduceNeedsContiguous(const at::Tensor& self) {
+  if (self.is_contiguous()) {
     return false;
   }
   for (int64_t d = 0; d < self.dim(); ++d) {

@@ -675,11 +675,14 @@ at::Tensor {kernel}(
   // mudnn multi-dim Reduce (more than one axis at a time) silently ignores
   // strides and reads the input as if contiguous (verified: (4,5) stride (0,1)
   // reduced over all dims gives 210 = sum(1..20) instead of 60 = 4*sum(1..5)).
-  // Single-dim reduces honour strides correctly. Materializing once fixes both
-  // the stride bug and the SIGFPE on fully-broadcast multi-dim reduces.
+  // Single-dim reduces honour strides correctly, except on a fully-broadcast
+  // input (a 0-stride view of one element), where a single-dim reduce
+  // intermittently writes only out[0]. MudnnReduceNeedsContiguous catches
+  // that; together the two branches cover the stride bug, the SIGFPE and the
+  // partial write.
   if (norm_dims.size() > 1 && !self_c.is_contiguous()) {{
     self_c = self_c.contiguous();
-  }} else if (musa_ops::MudnnReduceWouldFault(self_c, norm_dims.size())) {{
+  }} else if (musa_ops::MudnnReduceNeedsContiguous(self_c)) {{
     self_c = self_c.contiguous();
   }}
   auto out = at::empty(squeezed_shape, self.options().dtype(out_dtype));
@@ -718,11 +721,11 @@ at::Tensor {kernel}(
   }}
   // Reducing every dim at once is a multi-dim Reduce, which mudnn runs as if
   // the input were contiguous -- it ignores strides outright, and faults on a
-  // fully-broadcast input. Materializing once covers both. Same measurement as
-  // in T_REDUCE_DIMS_DTYPE.
+  // fully-broadcast input, which also breaks the single-dim path. Materializing
+  // once covers all of it. Same measurement as in T_REDUCE_DIMS_DTYPE.
   if (mudnn_dims.size() > 1 && !self_c.is_contiguous()) {{
     self_c = self_c.contiguous();
-  }} else if (musa_ops::MudnnReduceWouldFault(self_c, mudnn_dims.size())) {{
+  }} else if (musa_ops::MudnnReduceNeedsContiguous(self_c)) {{
     self_c = self_c.contiguous();
   }}
   auto out = at::empty({{}}, self.options().dtype(out_dtype));
@@ -854,7 +857,7 @@ at::Tensor {kernel}(
   auto self_c = self;
   if (norm_dims.size() > 1 && !self_c.is_contiguous()) {{
     self_c = self_c.contiguous();
-  }} else if (musa_ops::MudnnReduceWouldFault(self_c, norm_dims.size())) {{
+  }} else if (musa_ops::MudnnReduceNeedsContiguous(self_c)) {{
     self_c = self_c.contiguous();
   }}
   auto out = at::empty(squeezed_shape, self.options());
@@ -989,7 +992,7 @@ at::Tensor {kernel}(
   auto self_c = self;
   if (norm_dims.size() > 1 && !self_c.is_contiguous()) {{
     self_c = self_c.contiguous();
-  }} else if (musa_ops::MudnnReduceWouldFault(self_c, norm_dims.size())) {{
+  }} else if (musa_ops::MudnnReduceNeedsContiguous(self_c)) {{
     self_c = self_c.contiguous();
   }}
   auto out = at::empty(squeezed_shape, self.options());
@@ -1049,7 +1052,7 @@ at::Tensor {kernel}(
   auto self_c = self;
   if (norm_dims.size() > 1 && !self_c.is_contiguous()) {{
     self_c = self_c.contiguous();
-  }} else if (musa_ops::MudnnReduceWouldFault(self_c, norm_dims.size())) {{
+  }} else if (musa_ops::MudnnReduceNeedsContiguous(self_c)) {{
     self_c = self_c.contiguous();
   }}
   auto out = at::empty(squeezed_shape, self.options());
