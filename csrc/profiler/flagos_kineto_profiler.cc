@@ -68,6 +68,82 @@ std::atomic<uint64_t> g_correlation_pop_count{0};
 
 namespace {
 
+// True when `v` may be written into the trace JSON *unquoted*.
+//
+// Why this exists: kineto's GenericTraceActivity::addMetadata stores every value
+// with quoted=false, and metadataJson() then emits it as `"key": <raw>`. That is
+// fine only while every value happens to be a JSON literal. The moment one bare
+// identifier goes through -- a kernel name, a memory-kind label, an "N/A" -- the
+// emitted object is `"key": N/A`, which is not JSON. And because kineto
+// concatenates all activities into ONE document, that single event invalidates
+// the ENTIRE trace file: json.load() fails on the whole thing, not just its own
+// event, so the failure is wildly disproportionate to the mistake that caused it.
+//
+// DeviceEvent::metadata is std::map<string,string>, so by the time we get here
+// even genuinely numeric values are text -- we cannot switch on a static type
+// and must classify by textual form instead.
+//
+// Deliberately conservative: anything not provably a JSON literal is quoted. A
+// spuriously quoted number renders as a string in a trace viewer (cosmetic); an
+// unquoted non-literal breaks the file (fatal). This is NOT a JSON validator --
+// it only needs to be sound in the "may I skip quoting?" direction.
+bool metadataValueIsJsonLiteral(const std::string& v) {
+  if (v.empty()) {
+    return false;
+  }
+  if (v == "true" || v == "false" || v == "null") {
+    return true;
+  }
+  // Bracketed lists: our "grid"/"block" values are built as "[8,16,5]". Trusting
+  // the brackets is enough here because we are the only producer of them.
+  if (v.front() == '[' && v.back() == ']') {
+    return true;
+  }
+  // Optionally-signed integer or fixed-point decimal: -?[0-9]+(\.[0-9]+)?
+  // Exponent notation is intentionally NOT accepted -- we never emit it, and
+  // every form this classifier accepts is one more thing that has to be right.
+  size_t i = (v[0] == '-' || v[0] == '+') ? 1 : 0;
+  size_t digits_before = 0;
+  while (i < v.size() && v[i] >= '0' && v[i] <= '9') {
+    ++i;
+    ++digits_before;
+  }
+  if (digits_before == 0) {
+    return false;
+  }
+  if (i == v.size()) {
+    return true;  // pure integer
+  }
+  if (v[i] != '.') {
+    return false;
+  }
+  ++i;
+  size_t digits_after = 0;
+  while (i < v.size() && v[i] >= '0' && v[i] <= '9') {
+    ++i;
+    ++digits_after;
+  }
+  return i == v.size() && digits_after > 0;
+}
+
+// Minimal escaping for the quoted path. addMetadataQuoted wraps the value in
+// quotes but does NOT escape anything inside it, so an embedded `"` or `\` would
+// terminate the string early and -- again -- corrupt the whole document. Only
+// these two characters can do that; control characters would technically also be
+// illegal JSON but no value we produce contains them, and a full escaper is more
+// machinery than this needs.
+std::string escapeForJsonString(const std::string& v) {
+  std::string out;
+  out.reserve(v.size());
+  for (char c : v) {
+    if (c == '"' || c == '\\') {
+      out.push_back('\\');
+    }
+    out.push_back(c);
+  }
+  return out;
+}
+
 libkineto::ActivityType toKinetoActivityType(profiler::EventKind kind) {
   switch (kind) {
     case profiler::EventKind::Kernel:
@@ -104,7 +180,13 @@ libkineto::GenericTraceActivity toActivity(const profiler::DeviceEvent& ev) {
   }
 
   for (const auto& [key, value] : ev.metadata) {
-    activity.addMetadata(key, value);
+    // addMetadata is kineto's UNQUOTED path (see metadataValueIsJsonLiteral).
+    // Route anything that is not a bare JSON literal through the quoted one.
+    if (metadataValueIsJsonLiteral(value)) {
+      activity.addMetadata(key, value);
+    } else {
+      activity.addMetadataQuoted(key, escapeForJsonString(value));
+    }
   }
   return activity;
 }
