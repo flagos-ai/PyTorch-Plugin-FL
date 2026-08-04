@@ -41,6 +41,15 @@ class FlagosCuptiProfilerSession : public libkineto::IActivityProfilerSession {
   void start() override;
   void stop() override;
   void processTrace(libkineto::ActivityLogger& logger) override;
+  // 4-arg overload: kineto hands us a callback that resolves a *torch*
+  // correlation id to the CPU op activity, plus the capture window. This is the
+  // only hook through which a plugin session can set `linked` / flow ids, i.e.
+  // the only way to get ac2g flow arrows and per-op device-time attribution.
+  void processTrace(
+      libkineto::ActivityLogger& logger,
+      libkineto::getLinkedActivityCallback getLinkedActivity,
+      int64_t startTime,
+      int64_t endTime) override;
   std::unique_ptr<libkineto::DeviceInfo> getDeviceInfo() override;
   std::vector<libkineto::ResourceInfo> getResourceInfos() override;
   std::unique_ptr<libkineto::CpuTraceBuffer> getTraceBuffer() override;
