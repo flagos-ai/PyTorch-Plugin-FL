@@ -23,9 +23,9 @@ Everything here asserts on STRUCTURE, never on counts or durations. This runs on
 a shared GPU where both drift between runs, so "exactly 18 flow arrows" would
 flake; "every flow arrow is paired" would not.
 
-This file also carries forward the checks proven in
-``tests/scratch/verify_correlation_foundation.py`` (the one-shot verification
-gate), which is deleted once this test exists.
+This file also carries forward the checks proven in the one-shot verification
+gate ``tests/scratch/verify_correlation_foundation.py``, which was deleted once
+these tests existed -- this is now their only home.
 
 Run:
     PYTHONPATH=$(pwd) bash scripts/with_cuda_libtorch.sh \
@@ -445,4 +445,119 @@ def test_runtime_names_come_from_cbid(profile_result, baseline):
     assert "cbid" in _arg_key_union(trace, runtime_cat), (
         "Runtime events carry no 'cbid' arg, so their names cannot be "
         "cbid-derived regardless of what they say."
+    )
+
+
+# Device/runtime categories subject to the capture-window filter. cpu_op is
+# excluded: torch, not our tracer, decides when those are recorded.
+WINDOW_TRACKED_CATEGORIES = (
+    "privateuse1_runtime",
+    "kernel",
+    "gpu_memcpy",
+    "gpu_memset",
+)
+
+
+@pytest.mark.main_ops
+def test_capture_window_containment(profile_result):
+    """Assertion 6: no device or runtime event escapes the capture window.
+
+    Ported from the deleted ``tests/scratch/verify_correlation_foundation.py``'s
+    ``window_containment`` (Task 1 finding 5). The bug it guards:
+    ``processTrace``'s ``[startTime, endTime]``
+    window was originally ignored outright, so the trace carried activity from
+    before profiling even started -- measured at 66 of 258 runtime events ending
+    before the first cpu_op, including a 250ms entry inside a 157ms span. The
+    filter now lives at ``csrc/profiler/flagos_kineto_profiler.cc`` (``in_window``
+    in the 4-arg ``processTrace``); this is what proves it still runs.
+
+    THE WINDOW IS THE ``cat == "Trace"`` SPAN, not the cpu_op extent. That
+    distinction is the whole reason this check is subtle: the cpu_op extent ends
+    at the last op, while the real window runs on to profiler stop, so a
+    perfectly legitimate trailing launch (the closing cudaDeviceSynchronize,
+    measured landing ~30us after the final cpu_op) reads as a violation against
+    the cpu_op proxy. Take the LONGEST span -- more than one may be emitted.
+
+    SEMANTICS: strict CONTAINMENT (every event lies wholly within the window),
+    not the interval OVERLAP the original asserted. Three reasons:
+
+    1. It is what libkineto's own ``outOfRange`` rule means, so it matches what a
+       trace consumer expects of the file.
+    2. It is strictly stronger -- it catches everything overlap catches, plus an
+       event only partly inside.
+    3. Overlap has a vacuity hole that containment closes for free: an event long
+       enough to straddle the *entire* window is neither "entirely before" nor
+       "entirely after", so it passes an overlap test trivially. The original had
+       to bolt on a separate ``longest <= window width`` heuristic to cover
+       exactly that. Under containment, ``ts >= lo and ts + dur <= hi`` implies
+       ``dur <= hi - lo``, so the heuristic is subsumed and no longer needed.
+
+    Measured before adopting it: containment holds on real traces with room to
+    spare -- 3 captures, 271 tracked events each, zero violations, the tightest
+    margins being ~1.0-1.7ms at the start and ~30us at the end.
+
+    Note the assertion is deliberately STRONGER than the C++ predicate, which is
+    an overlap test (``end_ns >= startTime && start_ns <= endTime``). A straddling
+    activity would therefore be emitted by the filter and rejected here. That has
+    not been observed, and the end-side margin is structural (profiler stop
+    necessarily follows the last runtime call it profiles). If this ever does fail
+    by a small straddle at the window *start*, read it as a finding about a
+    genuinely in-flight activity at profiler start -- report it rather than
+    quietly relaxing this back to overlap.
+    """
+    _, trace = profile_result
+
+    spans = _events_in(trace, "Trace")
+    # Fail, do not fail-open. The original returned True when no span existed,
+    # so a trace that lost its span entirely -- which is also how this check
+    # loses its window -- reported PASS.
+    assert spans, (
+        'No cat == "Trace" span event in the trace, so the capture window is '
+        "unknown and containment cannot be checked. This is a failure, not a "
+        "skip: without the span there is nothing to bound the events against.\n"
+        f"  categories present: {sorted(_event_categories(trace))}"
+    )
+
+    span = max(spans, key=lambda e: e.get("dur", 0))
+    lo = span["ts"]
+    hi = lo + span.get("dur", 0)
+    assert hi > lo, (
+        f"Capture window {span.get('name')!r} has non-positive duration "
+        f"(ts={lo}, dur={span.get('dur')}); nothing can be contained in it."
+    )
+
+    tracked = [
+        e for e in trace.get("traceEvents", [])
+        if e.get("cat") in WINDOW_TRACKED_CATEGORIES
+    ]
+    # Without this the containment loop below is vacuous over an empty list.
+    assert tracked, (
+        "No device or runtime events at all, so containment holds trivially and "
+        "this assertion tests nothing. The workload is expected to produce "
+        f"events in {list(WINDOW_TRACKED_CATEGORIES)}; trace has "
+        f"{sorted(_event_categories(trace))}"
+    )
+
+    starts_early = [e for e in tracked if e["ts"] < lo]
+    ends_late = [e for e in tracked if e["ts"] + e.get("dur", 0) > hi]
+    violations = starts_early + ends_late
+
+    def _describe(e):
+        end = e["ts"] + e.get("dur", 0)
+        return (
+            f"    cat={e['cat']} name={e.get('name', '')[:60]!r} "
+            f"dur={e.get('dur')}us  starts {e['ts'] - lo:+.1f}us / "
+            f"ends {end - hi:+.1f}us relative to the window"
+        )
+
+    assert not violations, (
+        "Events fall outside the capture window -- the processTrace window "
+        "filter (flagos_kineto_profiler.cc, `in_window`) is not being applied, "
+        "or the window itself is wrong.\n"
+        f"  window {span.get('name')!r}: [{lo}, {hi}] ({hi - lo:.1f}us)\n"
+        f"  {len(starts_early)} of {len(tracked)} tracked events start before "
+        f"the window\n"
+        f"  {len(ends_late)} of {len(tracked)} tracked events end after it\n"
+        f"  breakdown: {dict(Counter(e['cat'] for e in violations))}\n"
+        + "\n".join(_describe(e) for e in violations[:5])
     )
