@@ -172,12 +172,12 @@ def test_stage_b_correlation_or_degrade():
     if not os.path.exists(lib_path):
         pytest.skip(f"libtorch_fl.so not found at {lib_path}")
     lib = ctypes.CDLL(lib_path)
-    lib.flagos_cupti_get_correlation_push_count.restype = ctypes.c_uint64
-    lib.flagos_cupti_get_correlation_pop_count.restype = ctypes.c_uint64
-    lib.flagos_cupti_reset_correlation_counters.argtypes = []
+    lib.flagos_kineto_get_correlation_push_count.restype = ctypes.c_uint64
+    lib.flagos_kineto_get_correlation_pop_count.restype = ctypes.c_uint64
+    lib.flagos_kineto_reset_correlation_counters.argtypes = []
 
     # Reset counters before profiling
-    lib.flagos_cupti_reset_correlation_counters()
+    lib.flagos_kineto_reset_correlation_counters()
 
     x = torch.randn(512, 512, device="flagos")
     torch.flagos.synchronize()
@@ -186,8 +186,8 @@ def test_stage_b_correlation_or_degrade():
         torch.flagos.synchronize()
 
     # Check that push/pop were called
-    push_count = lib.flagos_cupti_get_correlation_push_count()
-    pop_count = lib.flagos_cupti_get_correlation_pop_count()
+    push_count = lib.flagos_kineto_get_correlation_push_count()
+    pop_count = lib.flagos_kineto_get_correlation_pop_count()
     assert push_count > 0, "pushCorrelationId was never called"
     assert pop_count > 0, "popCorrelationId was never called"
     print(f"Correlation push/pop called: {push_count}/{pop_count} times")

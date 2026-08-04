@@ -26,16 +26,17 @@ namespace c10 {
 namespace flagos {
 
 /**
- * FlagosCuptiProfilerSession: IActivityProfilerSession implementation that
+ * FlagosKinetoProfilerSession: IActivityProfilerSession implementation that
  * collects a device timeline through the vendor-neutral DeviceTracer interface.
  *
- * This class is the kineto *adaptor*: it knows about kineto activity types,
- * flow arrows and correlation linking, and nothing at all about CUPTI. All
- * vendor specifics live behind DeviceTracer (see cupti_device_tracer.cc).
+ * This class is the kineto adaptor: it knows about kineto activity types,
+ * flow arrows and correlation linking, and nothing at all about vendor-specific
+ * tracing APIs. All vendor specifics live behind DeviceTracer (see
+ * cupti_device_tracer.cc for NVIDIA/CUDA, future *_device_tracer.cc for others).
  */
-class FlagosCuptiProfilerSession : public libkineto::IActivityProfilerSession {
+class FlagosKinetoProfilerSession : public libkineto::IActivityProfilerSession {
  public:
-  FlagosCuptiProfilerSession();
+  FlagosKinetoProfilerSession();
 
   void start() override;
   void stop() override;
@@ -57,7 +58,7 @@ class FlagosCuptiProfilerSession : public libkineto::IActivityProfilerSession {
   void popCorrelationId() override;
 
  private:
-  friend class FlagosCuptiProfiler;
+  friend class FlagosKinetoProfiler;
   std::unique_ptr<profiler::DeviceTracer> tracer_;
   // Drained from the tracer in stop(); converted to kineto activities in
   // processTrace so both overloads see the same data.
@@ -65,10 +66,11 @@ class FlagosCuptiProfilerSession : public libkineto::IActivityProfilerSession {
 };
 
 /**
- * FlagosCuptiProfiler: IActivityProfiler implementation for flagos backend
- * that provides CONCURRENT_KERNEL and GPU_MEMCPY activities via CUPTI.
+ * FlagosKinetoProfiler: IActivityProfiler implementation for flagos backend
+ * that provides CONCURRENT_KERNEL, GPU_MEMCPY, GPU_MEMSET, and PRIVATEUSE1_RUNTIME
+ * activities via a vendor-agnostic DeviceTracer interface.
  */
-class FlagosCuptiProfiler : public libkineto::IActivityProfiler {
+class FlagosKinetoProfiler : public libkineto::IActivityProfiler {
  public:
   const std::string& name() const override;
   const std::set<libkineto::ActivityType>& availableActivities() const override;
@@ -85,17 +87,17 @@ class FlagosCuptiProfiler : public libkineto::IActivityProfiler {
 };
 
 /**
- * registerFlagosCuptiProfiler: Register the CUPTI profiler with kineto.
- * Called automatically at static initialization time if CUPTI is available.
+ * registerFlagosKinetoProfiler: Register the kineto profiler with libkineto.
+ * Called automatically at static initialization time if a DeviceTracer is available.
  */
-void registerFlagosCuptiProfiler();
+void registerFlagosKinetoProfiler();
 
 }  // namespace flagos
 }  // namespace c10
 
 // C API for testing correlation push/pop calls
 extern "C" {
-__attribute__((visibility("default"))) uint64_t flagos_cupti_get_correlation_push_count();
-__attribute__((visibility("default"))) uint64_t flagos_cupti_get_correlation_pop_count();
-__attribute__((visibility("default"))) void flagos_cupti_reset_correlation_counters();
+__attribute__((visibility("default"))) uint64_t flagos_kineto_get_correlation_push_count();
+__attribute__((visibility("default"))) uint64_t flagos_kineto_get_correlation_pop_count();
+__attribute__((visibility("default"))) void flagos_kineto_reset_correlation_counters();
 }

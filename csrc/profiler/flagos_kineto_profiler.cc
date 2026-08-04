@@ -28,7 +28,7 @@
 #define FMT_HEADER_ONLY 1
 #include <fmt/format.h>
 
-#include "flagos_cupti_profiler.h"
+#include "flagos_kineto_profiler.h"
 #include "device_tracer.h"
 
 #include <kineto/ActivityType.h>
@@ -46,16 +46,16 @@
 #include <utility>
 #include <vector>
 
-// Diagnostic logging is gated behind FLAGOS_CUPTI_SHIM_DEBUG=1 so that normal
+// Diagnostic logging is gated behind FLAGOS_KINETO_SHIM_DEBUG=1 so that normal
 // profiling runs stay quiet.
 namespace {
-inline bool flagos_cupti_debug() {
-  static const bool on = (std::getenv("FLAGOS_CUPTI_SHIM_DEBUG") != nullptr);
+inline bool flagos_kineto_debug() {
+  static const bool on = (std::getenv("FLAGOS_KINETO_SHIM_DEBUG") != nullptr);
   return on;
 }
 }  // namespace
-#define FLAGOS_CUPTI_LOG(expr) \
-  do { if (flagos_cupti_debug()) { std::cerr << expr; } } while (0)
+#define FLAGOS_KINETO_LOG(expr) \
+  do { if (flagos_kineto_debug()) { std::cerr << expr; } } while (0)
 
 namespace c10 {
 namespace flagos {
@@ -112,12 +112,12 @@ libkineto::GenericTraceActivity toActivity(const profiler::DeviceEvent& ev) {
 }  // namespace
 }  // namespace detail
 
-// ===== FlagosCuptiProfilerSession Implementation =====
+// ===== FlagosKinetoProfilerSession Implementation =====
 
-FlagosCuptiProfilerSession::FlagosCuptiProfilerSession()
+FlagosKinetoProfilerSession::FlagosKinetoProfilerSession()
     : tracer_(profiler::MakeDeviceTracer()) {}
 
-void FlagosCuptiProfilerSession::start() {
+void FlagosKinetoProfilerSession::start() {
   events_.clear();
   if (tracer_ && tracer_->available()) {
     tracer_->start();
@@ -125,7 +125,7 @@ void FlagosCuptiProfilerSession::start() {
   status_ = libkineto::TraceStatus::RECORDING;
 }
 
-void FlagosCuptiProfilerSession::stop() {
+void FlagosKinetoProfilerSession::stop() {
   if (tracer_ && tracer_->available()) {
     tracer_->stop();
     // Drain here rather than in processTrace: stop() is where the tracer has
@@ -134,24 +134,24 @@ void FlagosCuptiProfilerSession::stop() {
     events_ = tracer_->drain();
   }
   status_ = libkineto::TraceStatus::PROCESSING;
-  FLAGOS_CUPTI_LOG("[flagos] session stop: drained " << events_.size()
+  FLAGOS_KINETO_LOG("[flagos] session stop: drained " << events_.size()
                    << " device events\n");
 }
 
-void FlagosCuptiProfilerSession::processTrace(libkineto::ActivityLogger& logger) {
-  FLAGOS_CUPTI_LOG("[flagos] processTrace(1-arg) called with "
+void FlagosKinetoProfilerSession::processTrace(libkineto::ActivityLogger& logger) {
+  FLAGOS_KINETO_LOG("[flagos] processTrace(1-arg) called with "
                    << events_.size() << " events\n");
   for (const auto& ev : events_) {
     detail::toActivity(ev).log(logger);
   }
 }
 
-void FlagosCuptiProfilerSession::processTrace(
+void FlagosKinetoProfilerSession::processTrace(
     libkineto::ActivityLogger& logger,
     libkineto::getLinkedActivityCallback getLinkedActivity,
     int64_t startTime,
     int64_t endTime) {
-  FLAGOS_CUPTI_LOG("[flagos] processTrace(4-arg) called with "
+  FLAGOS_KINETO_LOG("[flagos] processTrace(4-arg) called with "
                    << events_.size() << " events, window=[" << startTime
                    << "," << endTime << "]\n");
 
@@ -263,14 +263,14 @@ void FlagosCuptiProfilerSession::processTrace(
   // resolver was present but rejected every id, and the empty-resolver case is
   // called out explicitly above. Previously a bare "linked 0/N" conflated all
   // three.
-  FLAGOS_CUPTI_LOG("[flagos] processTrace(4-arg) linked " << linked_count << "/"
+  FLAGOS_KINETO_LOG("[flagos] processTrace(4-arg) linked " << linked_count << "/"
                    << link_candidates << " link candidates (of "
                    << events_.size() << " events, resolver="
                    << (have_resolver ? "present" : "EMPTY") << "), dropped "
                    << dropped_out_of_window << " outside the capture window\n");
 }
 
-std::unique_ptr<libkineto::DeviceInfo> FlagosCuptiProfilerSession::getDeviceInfo() {
+std::unique_ptr<libkineto::DeviceInfo> FlagosKinetoProfilerSession::getDeviceInfo() {
   return std::make_unique<libkineto::DeviceInfo>(
       /*id=*/0,
       /*sortIndex=*/0,
@@ -278,7 +278,7 @@ std::unique_ptr<libkineto::DeviceInfo> FlagosCuptiProfilerSession::getDeviceInfo
       /*label=*/"GPU");
 }
 
-std::vector<libkineto::ResourceInfo> FlagosCuptiProfilerSession::getResourceInfos() {
+std::vector<libkineto::ResourceInfo> FlagosKinetoProfilerSession::getResourceInfos() {
   std::vector<libkineto::ResourceInfo> resources;
   // Report up to 32 streams (will only show streams that actually had activity)
   for (int i = 0; i < 32; ++i) {
@@ -291,32 +291,32 @@ std::vector<libkineto::ResourceInfo> FlagosCuptiProfilerSession::getResourceInfo
   return resources;
 }
 
-std::unique_ptr<libkineto::CpuTraceBuffer> FlagosCuptiProfilerSession::getTraceBuffer() {
+std::unique_ptr<libkineto::CpuTraceBuffer> FlagosKinetoProfilerSession::getTraceBuffer() {
   return nullptr;  // We use processTrace instead
 }
 
-void FlagosCuptiProfilerSession::pushCorrelationId(uint64_t id) {
+void FlagosKinetoProfilerSession::pushCorrelationId(uint64_t id) {
   if (tracer_ && tracer_->available()) {
     tracer_->pushCorrelation(id);
     detail::g_correlation_push_count.fetch_add(1, std::memory_order_relaxed);
   }
 }
 
-void FlagosCuptiProfilerSession::popCorrelationId() {
+void FlagosKinetoProfilerSession::popCorrelationId() {
   if (tracer_ && tracer_->available()) {
     tracer_->popCorrelation();
     detail::g_correlation_pop_count.fetch_add(1, std::memory_order_relaxed);
   }
 }
 
-// ===== FlagosCuptiProfiler Implementation =====
+// ===== FlagosKinetoProfiler Implementation =====
 
-const std::string& FlagosCuptiProfiler::name() const {
-  static const std::string kName = "flagos_cupti";
+const std::string& FlagosKinetoProfiler::name() const {
+  static const std::string kName = "flagos";
   return kName;
 }
 
-const std::set<libkineto::ActivityType>& FlagosCuptiProfiler::availableActivities() const {
+const std::set<libkineto::ActivityType>& FlagosKinetoProfiler::availableActivities() const {
   static const std::set<libkineto::ActivityType> kActivities = {
       libkineto::ActivityType::CONCURRENT_KERNEL,
       libkineto::ActivityType::GPU_MEMCPY,
@@ -326,26 +326,26 @@ const std::set<libkineto::ActivityType>& FlagosCuptiProfiler::availableActivitie
   return kActivities;
 }
 
-std::unique_ptr<libkineto::IActivityProfilerSession> FlagosCuptiProfiler::configure(
+std::unique_ptr<libkineto::IActivityProfilerSession> FlagosKinetoProfiler::configure(
     const std::set<libkineto::ActivityType>& activityTypes,
     const libkineto::Config& config) {
-  FLAGOS_CUPTI_LOG("[flagos] FlagosCuptiProfiler::configure called with " << activityTypes.size() << " activity types\n");
-  return std::make_unique<FlagosCuptiProfilerSession>();
+  FLAGOS_KINETO_LOG("[flagos] FlagosKinetoProfiler::configure called with " << activityTypes.size() << " activity types\n");
+  return std::make_unique<FlagosKinetoProfilerSession>();
 }
 
-std::unique_ptr<libkineto::IActivityProfilerSession> FlagosCuptiProfiler::configure(
+std::unique_ptr<libkineto::IActivityProfilerSession> FlagosKinetoProfiler::configure(
     int64_t profileStartTime,
     int64_t profileDuration,
     const std::set<libkineto::ActivityType>& activityTypes,
     const libkineto::Config& config) {
-  return std::make_unique<FlagosCuptiProfilerSession>();
+  return std::make_unique<FlagosKinetoProfilerSession>();
 }
 
 // ===== Registration =====
 
-void registerFlagosCuptiProfiler() {
+void registerFlagosKinetoProfiler() {
   libkineto::api().registerProfilerFactory(
-      []() { return std::make_unique<FlagosCuptiProfiler>(); });
+      []() { return std::make_unique<FlagosKinetoProfiler>(); });
 }
 
 // Static initialization: register the kineto profiler when a device tracer is
@@ -353,19 +353,19 @@ void registerFlagosCuptiProfiler() {
 // arms the vendor library before the first device context; this registrar only
 // cares whether a tracer exists at all.
 namespace {
-struct CuptiProfilerRegistrar {
-  CuptiProfilerRegistrar() {
+struct KinetoProfilerRegistrar {
+  KinetoProfilerRegistrar() {
     auto tracer = profiler::MakeDeviceTracer();
     if (tracer && tracer->available()) {
-      registerFlagosCuptiProfiler();
-      FLAGOS_CUPTI_LOG("[flagos] FlagosCuptiProfiler registered with kineto\n");
+      registerFlagosKinetoProfiler();
+      FLAGOS_KINETO_LOG("[flagos] FlagosKinetoProfiler registered with kineto\n");
     } else {
-      FLAGOS_CUPTI_LOG("[flagos] no device tracer available, "
-                       "FlagosCuptiProfiler not registered\n");
+      FLAGOS_KINETO_LOG("[flagos] no device tracer available, "
+                       "FlagosKinetoProfiler not registered\n");
     }
   }
 };
-static CuptiProfilerRegistrar g_registrar;
+static KinetoProfilerRegistrar g_registrar;
 }  // namespace
 
 }  // namespace flagos
@@ -374,17 +374,17 @@ static CuptiProfilerRegistrar g_registrar;
 // C API for testing correlation push/pop calls
 extern "C" {
 __attribute__((visibility("default")))
-uint64_t flagos_cupti_get_correlation_push_count() {
+uint64_t flagos_kineto_get_correlation_push_count() {
   return c10::flagos::detail::g_correlation_push_count.load(std::memory_order_relaxed);
 }
 
 __attribute__((visibility("default")))
-uint64_t flagos_cupti_get_correlation_pop_count() {
+uint64_t flagos_kineto_get_correlation_pop_count() {
   return c10::flagos::detail::g_correlation_pop_count.load(std::memory_order_relaxed);
 }
 
 __attribute__((visibility("default")))
-void flagos_cupti_reset_correlation_counters() {
+void flagos_kineto_reset_correlation_counters() {
   c10::flagos::detail::g_correlation_push_count.store(0, std::memory_order_relaxed);
   c10::flagos::detail::g_correlation_pop_count.store(0, std::memory_order_relaxed);
 }
