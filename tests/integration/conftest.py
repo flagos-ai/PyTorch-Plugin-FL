@@ -66,6 +66,16 @@ def pytest_addoption(parser):
 
 
 def pytest_configure(config):
+    # `main_ops` is CI's selection hook (`-m main_ops`). It was registered only in
+    # tests/integration/ops/conftest.py, so tests using it directly under
+    # tests/integration/ raised PytestUnknownMarkWarning -- and would hard-error
+    # under --strict-markers. Registering it here covers the whole directory.
+    config.addinivalue_line(
+        "markers",
+        "main_ops: representative test in the CI smoke subset "
+        "(select with -m main_ops)",
+    )
+
     import torch_fl  # noqa: F401
 
     if not torch_fl.flagos.is_available():
