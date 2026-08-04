@@ -14,6 +14,7 @@
 
 #include "flagos_cupti_profiler.h"
 #include "cupti_shim.h"
+#include "device_tracer.h"
 
 #include <kineto/ActivityType.h>
 #include <kineto/ILoggerObserver.h>
@@ -705,3 +706,19 @@ void flagos_cupti_reset_correlation_counters() {
   c10::flagos::detail::g_correlation_pop_count.store(0, std::memory_order_relaxed);
 }
 }
+
+// Temporary stub for device_tracer.h factory — moved to cupti_device_tracer.cc in Task 3
+namespace c10::flagos::profiler {
+class StubCuptiTracer : public DeviceTracer {
+ public:
+  bool available() const override { return false; }
+  void start() override {}
+  void stop() override {}
+  std::vector<DeviceEvent> drain() override { return {}; }
+  int deviceCount() const override { return 0; }
+};
+
+std::unique_ptr<DeviceTracer> MakeDeviceTracer() {
+  return std::make_unique<StubCuptiTracer>();
+}
+}  // namespace c10::flagos::profiler
