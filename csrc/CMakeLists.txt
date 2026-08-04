@@ -156,6 +156,33 @@ if(CUPTI_INCLUDE_DIR)
   target_compile_definitions(${LIBRARY_NAME} PRIVATE FLAGOS_HAVE_CUPTI=1)
 endif()
 
+# cuda_occupancy.h -- CUDA's occupancy calculator, used by the device tracer to
+# compute the kernel "est. achieved occupancy %" that torch-cuda's trace carries.
+#
+# Unlike the CUPTI headers above this is genuinely version-INsensitive: it is a
+# pure-header calculator with no linking, no CUDA context, and no dependence on
+# activity-record layouts -- it takes device attributes and a launch config as
+# plain integers. So any toolkit's copy will do, and no cu12-vs-cu13 hazard
+# applies. Note it ships in the CUDA *runtime* include dir, NOT alongside the
+# CUPTI headers, hence a separate search.
+#
+# Optional by design: without it we simply omit the three occupancy fields
+# rather than fail the build, so a machine with no CUDA toolkit headers still
+# gets everything else in the trace.
+find_path(CUDA_OCCUPANCY_INCLUDE_DIR cuda_occupancy.h
+  PATHS "$ENV{CUDA_HOME}/include"
+        "$ENV{CUDA_HOME}/targets/x86_64-linux/include"
+        /usr/local/cuda/include
+        /usr/local/cuda/targets/x86_64-linux/include
+        /usr/local/cuda-13.0/targets/x86_64-linux/include)
+if(CUDA_OCCUPANCY_INCLUDE_DIR)
+  target_include_directories(${LIBRARY_NAME} PRIVATE ${CUDA_OCCUPANCY_INCLUDE_DIR})
+  target_compile_definitions(${LIBRARY_NAME} PRIVATE FLAGOS_HAVE_CUDA_OCCUPANCY=1)
+  message(STATUS "cuda_occupancy.h found: ${CUDA_OCCUPANCY_INCLUDE_DIR}")
+else()
+  message(STATUS "cuda_occupancy.h NOT found; kernel occupancy fields will be omitted")
+endif()
+
 # Build stream_api as a standalone shared lib so liboperators.so can resolve it at runtime
 if(FLAGGEMS_KERNEL AND ACCELERATOR STREQUAL "ascend")
   add_library(stream_api SHARED "${CMAKE_CURRENT_SOURCE_DIR}/runtime/accelerator/ascend/stream_api.cc")

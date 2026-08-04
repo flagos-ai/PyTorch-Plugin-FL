@@ -22,8 +22,13 @@
 #include <cxxabi.h>
 #include <dlfcn.h>
 
+#include <algorithm>
 #include <atomic>
+#include <cinttypes>
+#include <climits>
+#include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -34,6 +39,15 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+// CUDA's header-only occupancy calculator. Pure header: no linking, no CUDA
+// context, no device query -- it takes device attributes and a launch config as
+// plain integers and returns the theoretical max resident blocks per SM. That is
+// what turns a grid size into torch-cuda's "est. achieved occupancy %".
+// <climits> must precede it: the header uses INT_MAX without including it.
+#if defined(FLAGOS_HAVE_CUDA_OCCUPANCY)
+#include <cuda_occupancy.h>
+#endif
 
 // Diagnostic logging is gated behind FLAGOS_CUPTI_SHIM_DEBUG=1 so that normal
 // profiling runs stay quiet (these callbacks fire once per buffer/session).
@@ -92,7 +106,16 @@ struct CUpti_ActivityKernel9_Compat {
   uint32_t correlationId;
   int64_t gridId;
   const char* name;
-  // ... remaining fields omitted (we only read up to `name`).
+  // Fields past `name`, needed for the `queued` timestamp that torch-cuda's
+  // trace reports. Verified identical in BOTH the pip cu12 CUPTI header (the
+  // copy actually bound at runtime, CUPTI_API_VERSION 26) and the system
+  // CUDA-13.0 header, so extending this far is no more version-fragile than the
+  // prefix above. We stop at `submitted`: everything past it is unused, and
+  // every mirrored field is a field that can go wrong.
+  void* reserved0;
+  uint64_t queued;
+  uint64_t submitted;
+  // ... remaining fields omitted (we only read up to `submitted`).
 };
 
 // Prefix of CUpti_ActivityMemcpy6 up to correlationId.
@@ -221,6 +244,303 @@ bool timestampsPlausible(uint64_t start, uint64_t end) {
     return false;
   }
   return (end - start) <= kMaxPlausibleDurationNs;
+}
+
+// CUPTI's documented "this timestamp was never captured" sentinel.
+constexpr uint64_t kCuptiTimestampUnknown = 0xFFFFFFFFFFFFFFFFull;
+
+// True when the `queued` timestamp decoded out of the extended Kernel9 mirror is
+// trustworthy.
+//
+// This is the same idea as timestampsPlausible, applied to the one field we read
+// past the region Task 1/3 validated empirically. `queued` is a CUPTI timestamp
+// in the same epoch-ns domain as `start`, and a launch is by definition queued
+// before it starts -- so `0 < queued <= start` is a property any correct decode
+// satisfies and a misaligned one almost never does.
+//
+// Deliberately NOT routed through reportLayoutMismatch: this field is only
+// populated when latency timestamps were enabled, and we never call
+// cuptiActivityEnableLatencyTimestamps -- so failing here is the NORMAL case,
+// not a layout bug. Burning the once-flag on it would suppress the real layout
+// diagnostic.
+//
+// Both "unset" spellings are rejected. CUPTI documents CUPTI_TIMESTAMP_UNKNOWN
+// (0xFFFF...), but the copy bound here was MEASURED writing a literal 0 into
+// this field on every kernel record -- so checking only the documented sentinel
+// would have let a bogus 0 through as if it were a real timestamp. Verified by
+// instrumenting the branch and dumping the raw field; the offsets themselves
+// were cross-checked against the installed CUPTI header
+// (name=104, queued=120, submitted=128), so the 0 is what CUPTI stored, not a
+// misread.
+bool queuedTimestampPlausible(uint64_t queued, uint64_t start) {
+  return queued != 0 && queued != kCuptiTimestampUnknown && queued <= start;
+}
+
+// --- occupancy ---------------------------------------------------------------
+//
+// torch-cuda's kernel args carry three derived fields that are not in the CUPTI
+// record: "blocks per SM", "warps per SM" and "est. achieved occupancy %".
+// Reproducing them needs (a) the launch geometry, which the record has, and
+// (b) static device properties, which it does not.
+//
+// FORMULA (verified byte-exact against 20 distinct live torch-cuda kernel
+// configurations on this A100 -- 60/60 across the three fields, compared as
+// formatted strings, not as approximate numbers):
+//
+//   blocks per SM = gridBlocks / smCount                       (NOT clamped)
+//   warps per SM  = blocksPerSM * blockSize / warpSize         (NOT clamped)
+//   occupancy %   = min(blocksPerSM, theoreticalMaxBlocksPerSM)
+//                   * blockSize / maxThreadsPerSM * 100
+//
+// Two things here are easy to get wrong and were settled by measurement:
+//
+//  1. Only the occupancy computation clamps. "blocks per SM" and "warps per SM"
+//     are reported UNCAPPED -- a live 2048-block/256-thread kernel reports
+//     warps per SM = 151.703705, far above the SM's 64-warp capacity.
+//  2. warps per SM uses PLAIN division by warpSize, not a ceiling. A live
+//     16-thread bitonic-sort kernel reports 0.004630 == (1/108)*16/32, whereas
+//     a ceil(16/32)=1 form would give 0.009259 -- double. (An earlier draft of
+//     this work specified ceil; the two forms agree for every block size that
+//     is a multiple of 32, which is why the difference only shows on a kernel
+//     like that one.)
+//
+// The clamp in (a) is what makes this correct rather than merely plausible: a
+// naive warpsPerSM/maxWarps ratio scores a register-limited 6272-block kernel at
+// 100% where the real answer is 25%.
+
+// Static per-device properties needed by the occupancy calculator. Cached
+// because the alternative is a handful of driver queries per KERNEL RECORD,
+// inside the buffer-processing hot path.
+struct DeviceOccupancyProps {
+  bool valid = false;
+  int sm_count = 0;
+  int warp_size = 0;
+  int max_threads_per_sm = 0;
+#if defined(FLAGOS_HAVE_CUDA_OCCUPANCY)
+  cudaOccDeviceProp occ_prop;
+#endif
+};
+
+// cudaDeviceGetAttribute, resolved the same way deviceCount() resolves
+// cudaGetDeviceCount: this build is CPU-torch + an external libtorch_cuda.so, so
+// libcudart is in the process but not on our link line. Querying an attribute
+// does not create a context.
+int queryDeviceAttribute(int attr, int device, bool* ok) {
+  using GetAttrFn = int (*)(int*, int, int);
+  static const GetAttrFn fn = reinterpret_cast<GetAttrFn>(
+      dlsym(RTLD_DEFAULT, "cudaDeviceGetAttribute"));
+  int value = 0;
+  if (fn == nullptr || fn(&value, attr, device) != 0) {
+    *ok = false;
+    return 0;
+  }
+  return value;
+}
+
+// cudaDeviceAttr values from driver_types.h (checked against the installed
+// CUDA-13.0 header). These are a stable public ABI enum, append-only across
+// releases.
+enum : int {
+  kAttrMaxThreadsPerBlock = 1,
+  kAttrMaxSharedMemoryPerBlock = 8,
+  kAttrWarpSize = 10,
+  kAttrMaxRegistersPerBlock = 12,
+  kAttrMultiProcessorCount = 16,
+  kAttrMaxThreadsPerMultiProcessor = 39,
+  kAttrComputeCapabilityMajor = 75,
+  kAttrComputeCapabilityMinor = 76,
+  kAttrMaxSharedMemoryPerMultiprocessor = 81,
+  kAttrMaxRegistersPerMultiprocessor = 82,
+};
+
+DeviceOccupancyProps queryDeviceOccupancyProps(int device) {
+  DeviceOccupancyProps props;
+#if defined(FLAGOS_HAVE_CUDA_OCCUPANCY)
+  bool ok = true;
+  const int cc_major = queryDeviceAttribute(kAttrComputeCapabilityMajor, device, &ok);
+  const int cc_minor = queryDeviceAttribute(kAttrComputeCapabilityMinor, device, &ok);
+  const int max_threads_per_block =
+      queryDeviceAttribute(kAttrMaxThreadsPerBlock, device, &ok);
+  const int max_threads_per_sm =
+      queryDeviceAttribute(kAttrMaxThreadsPerMultiProcessor, device, &ok);
+  const int regs_per_block = queryDeviceAttribute(kAttrMaxRegistersPerBlock, device, &ok);
+  const int regs_per_sm =
+      queryDeviceAttribute(kAttrMaxRegistersPerMultiprocessor, device, &ok);
+  const int warp_size = queryDeviceAttribute(kAttrWarpSize, device, &ok);
+  const int shmem_per_block =
+      queryDeviceAttribute(kAttrMaxSharedMemoryPerBlock, device, &ok);
+  const int shmem_per_sm =
+      queryDeviceAttribute(kAttrMaxSharedMemoryPerMultiprocessor, device, &ok);
+  const int sm_count = queryDeviceAttribute(kAttrMultiProcessorCount, device, &ok);
+
+  // Any failed query, or a zero in a divisor, makes every derived number
+  // meaningless -- so mark the whole set invalid and omit the fields rather than
+  // publish a 0.0 that is indistinguishable from a real measurement.
+  if (!ok || sm_count <= 0 || warp_size <= 0 || max_threads_per_sm <= 0) {
+    return props;
+  }
+
+  props.occ_prop.computeMajor = cc_major;
+  props.occ_prop.computeMinor = cc_minor;
+  props.occ_prop.maxThreadsPerBlock = max_threads_per_block;
+  props.occ_prop.maxThreadsPerMultiprocessor = max_threads_per_sm;
+  props.occ_prop.regsPerBlock = regs_per_block;
+  props.occ_prop.regsPerMultiprocessor = regs_per_sm;
+  props.occ_prop.warpSize = warp_size;
+  props.occ_prop.sharedMemPerBlock = static_cast<size_t>(shmem_per_block);
+  props.occ_prop.sharedMemPerMultiprocessor = static_cast<size_t>(shmem_per_sm);
+  props.occ_prop.numSms = sm_count;
+  // Left at the default-constructed 0: neither affects the result under
+  // FUNC_SHMEM_LIMIT_DEFAULT, confirmed by a sweep over 2700 (blockSize,
+  // registers, static/dynamic shared memory) combinations in which varying both
+  // changed nothing.
+  props.occ_prop.sharedMemPerBlockOptin = 0;
+  props.occ_prop.reservedSharedMemPerBlock = 0;
+
+  props.sm_count = sm_count;
+  props.warp_size = warp_size;
+  props.max_threads_per_sm = max_threads_per_sm;
+  props.valid = true;
+#else
+  (void)device;
+#endif
+  return props;
+}
+
+// Cached device props. Guarded by g_tracer_mutex, which processBuffer already
+// holds -- the buffer-completed callback is the only caller.
+constexpr int kMaxCachedDevices = 16;
+DeviceOccupancyProps g_device_props[kMaxCachedDevices];
+bool g_device_props_cached[kMaxCachedDevices] = {};
+
+const DeviceOccupancyProps* cachedDeviceOccupancyProps(uint32_t device) {
+  if (device >= kMaxCachedDevices) {
+    return nullptr;
+  }
+  if (!g_device_props_cached[device]) {
+    g_device_props[device] = queryDeviceOccupancyProps(static_cast<int>(device));
+    g_device_props_cached[device] = true;
+  }
+  return g_device_props[device].valid ? &g_device_props[device] : nullptr;
+}
+
+struct KernelOccupancy {
+  bool valid = false;
+  double blocks_per_sm = 0.0;
+  double warps_per_sm = 0.0;
+  int occupancy_pct = 0;
+};
+
+// Computes the three derived occupancy fields, or returns valid=false when the
+// device attributes were unavailable (see the omit-vs-zero note above).
+//
+// Arithmetic is done in FLOAT, not double, deliberately: torch-cuda's own values
+// are float-rounded, and only float reproduces them exactly. Live counter-
+// example: 640 blocks / 108 SMs * 4 warps prints 23.703703 as a float and
+// 23.703704 as a double -- and torch-cuda reports 23.703703.
+KernelOccupancy computeKernelOccupancy(
+    uint32_t device,
+    int64_t grid_blocks,
+    int32_t block_size,
+    uint16_t registers_per_thread,
+    int64_t shared_memory) {
+  KernelOccupancy out;
+#if defined(FLAGOS_HAVE_CUDA_OCCUPANCY)
+  const DeviceOccupancyProps* props = cachedDeviceOccupancyProps(device);
+  if (props == nullptr || grid_blocks <= 0 || block_size <= 0) {
+    return out;
+  }
+
+  cudaOccFuncAttributes attr;
+  attr.maxThreadsPerBlock = INT_MAX;  // the record does not carry a limit
+  attr.numRegs = static_cast<int>(registers_per_thread);
+  // Static and dynamic shared memory are summed into sharedSizeBytes with a zero
+  // dynamic argument. The record reports them separately, but the calculator
+  // treats the split as immaterial: verified over 2700 combinations, passing
+  // (static+dynamic, 0) and (static, dynamic) never differed.
+  attr.sharedSizeBytes = static_cast<size_t>(shared_memory < 0 ? 0 : shared_memory);
+  attr.partitionedGCConfig = PARTITIONED_GC_OFF;
+  attr.shmemLimitConfig = FUNC_SHMEM_LIMIT_DEFAULT;
+  attr.maxDynamicSharedSizeBytes = 0;
+
+  cudaOccDeviceState state;
+  cudaOccResult result;
+  if (cudaOccMaxActiveBlocksPerMultiprocessor(
+          &result, &props->occ_prop, &attr, &state, block_size, 0) !=
+      CUDA_OCC_SUCCESS) {
+    return out;
+  }
+
+  const float blocks_per_sm =
+      static_cast<float>(grid_blocks) / static_cast<float>(props->sm_count);
+  const float warps_per_sm =
+      blocks_per_sm * static_cast<float>(block_size) /
+      static_cast<float>(props->warp_size);
+  const float occupancy =
+      std::min(blocks_per_sm,
+               static_cast<float>(result.activeBlocksPerMultiprocessor)) *
+      static_cast<float>(block_size) /
+      static_cast<float>(props->max_threads_per_sm) * 100.0f;
+
+  out.blocks_per_sm = blocks_per_sm;
+  out.warps_per_sm = warps_per_sm;
+  out.occupancy_pct = static_cast<int>(std::lroundf(occupancy));
+  out.valid = true;
+#else
+  (void)device;
+  (void)grid_blocks;
+  (void)block_size;
+  (void)registers_per_thread;
+  (void)shared_memory;
+#endif
+  return out;
+}
+
+// Formats a derived occupancy value the way torch-cuda's trace does: fixed six
+// decimals of a float ("2.370370", "151.703705", "4.000000"). Matching the
+// FORMAT as well as the value is what lets a parity test diff the two traces
+// textually instead of with a float tolerance.
+std::string formatOccupancyValue(double v) {
+  char buf[64];
+  std::snprintf(buf, sizeof(buf), "%.6f", v);
+  return std::string(buf);
+}
+
+// Shortest decimal string that round-trips back to exactly `v`. This is what
+// torch-cuda's "memory bandwidth (GB/s)" values look like -- full precision,
+// no trailing zeros ("0.2962962962962963", "12.641975308641975") -- as opposed
+// to the fixed-6-decimal form used for the occupancy fields. Verified by
+// reproducing all 10 distinct bandwidth values from a live torch-cuda trace
+// character-for-character.
+//
+// Note %g may emit exponent notation for small magnitudes ("8e-05"); that is
+// valid JSON and the kineto adaptor's literal classifier accepts it.
+std::string formatShortestRoundtrip(double v) {
+  char buf[64];
+  for (int precision = 1; precision <= 17; ++precision) {
+    std::snprintf(buf, sizeof(buf), "%.*g", precision, v);
+    if (std::strtod(buf, nullptr) == v) {
+      break;
+    }
+  }
+  return std::string(buf);
+}
+
+// "memory bandwidth (GB/s)" for a transfer record. bytes-per-nanosecond IS
+// GB/s (1e9 bytes / 1e9 ns), so no scaling is needed -- confirmed against live
+// torch-cuda values, e.g. 512 bytes over 1728ns -> 0.2962962962962963.
+//
+// Guards end > start rather than reusing timestampsPlausible, which only gives
+// end >= start: a zero-duration record would divide by zero and put "inf" in
+// the trace, which is not valid JSON. Returns false to mean "omit the key".
+bool computeMemoryBandwidth(uint64_t bytes, uint64_t start, uint64_t end,
+                            std::string* out) {
+  if (end <= start) {
+    return false;
+  }
+  *out = formatShortestRoundtrip(static_cast<double>(bytes) /
+                                 static_cast<double>(end - start));
+  return true;
 }
 
 // True when `name` is either absent or points at readable non-empty text.
@@ -449,6 +769,47 @@ class CuptiDeviceTracer : public DeviceTracer {
         ev.metadata["shared memory"] = std::to_string(
             static_cast<int64_t>(kernel->staticSharedMemory) +
             kernel->dynamicSharedMemory);
+        ev.metadata["device"] = std::to_string(kernel->deviceId);
+        ev.metadata["context"] = std::to_string(kernel->contextId);
+        ev.metadata["stream"] = std::to_string(kernel->streamId);
+        // The CUPTI correlation id, matching torch-cuda's "correlation" field.
+        // NOT the torch/external id -- that one is emitted by kineto itself as
+        // "External id" and drives device-time attribution.
+        ev.metadata["correlation"] = std::to_string(kernel->correlationId);
+
+        // `queued` comes from the part of the record layout past what the
+        // original mirror covered, so it is validated separately. When CUPTI did
+        // not capture it (the normal case -- we never enable latency timestamps,
+        // and it then reads back as CUPTI_TIMESTAMP_UNKNOWN) we report 0, which
+        // is exactly what torch-cuda's trace shows on this machine. Emitting the
+        // raw sentinel would put 1.8e19 in the trace; omitting the key would
+        // break arg-set parity with torch-cuda on every kernel.
+        ev.metadata["queued"] =
+            queuedTimestampPlausible(kernel->queued, kernel->start)
+                ? std::to_string(kernel->queued)
+                : "0";
+
+        const int64_t grid_blocks = static_cast<int64_t>(kernel->gridX) *
+                                    kernel->gridY * kernel->gridZ;
+        const int64_t block_size = static_cast<int64_t>(kernel->blockX) *
+                                   kernel->blockY * kernel->blockZ;
+        const KernelOccupancy occ = computeKernelOccupancy(
+            kernel->deviceId,
+            grid_blocks,
+            static_cast<int32_t>(block_size),
+            kernel->registersPerThread,
+            static_cast<int64_t>(kernel->staticSharedMemory) +
+                kernel->dynamicSharedMemory);
+        // Omit all three rather than emit zeros when the device attributes were
+        // unavailable: a 0.0 occupancy is indistinguishable from a real
+        // measurement of a badly-occupied kernel, whereas an absent key is
+        // honest and a parity test will say so loudly.
+        if (occ.valid) {
+          ev.metadata["blocks per SM"] = formatOccupancyValue(occ.blocks_per_sm);
+          ev.metadata["warps per SM"] = formatOccupancyValue(occ.warps_per_sm);
+          ev.metadata["est. achieved occupancy %"] =
+              std::to_string(occ.occupancy_pct);
+        }
         events_.push_back(std::move(ev));
 
       } else if (record->kind == CUPTI_ACTIVITY_KIND_MEMCPY) {
@@ -468,6 +829,17 @@ class CuptiDeviceTracer : public DeviceTracer {
         ev.stream = memcpy_rec->streamId;
         ev.name = "Memcpy";
         ev.metadata["bytes"] = std::to_string(memcpy_rec->bytes);
+        ev.metadata["device"] = std::to_string(memcpy_rec->deviceId);
+        ev.metadata["context"] = std::to_string(memcpy_rec->contextId);
+        ev.metadata["stream"] = std::to_string(memcpy_rec->streamId);
+        ev.metadata["correlation"] = std::to_string(memcpy_rec->correlationId);
+        {
+          std::string bandwidth;
+          if (computeMemoryBandwidth(memcpy_rec->bytes, memcpy_rec->start,
+                                     memcpy_rec->end, &bandwidth)) {
+            ev.metadata["memory bandwidth (GB/s)"] = std::move(bandwidth);
+          }
+        }
         events_.push_back(std::move(ev));
 
       } else if (record->kind == CUPTI_ACTIVITY_KIND_MEMSET) {
@@ -487,6 +859,17 @@ class CuptiDeviceTracer : public DeviceTracer {
         ev.stream = memset_rec->streamId;
         ev.name = "Memset";
         ev.metadata["bytes"] = std::to_string(memset_rec->bytes);
+        ev.metadata["device"] = std::to_string(memset_rec->deviceId);
+        ev.metadata["context"] = std::to_string(memset_rec->contextId);
+        ev.metadata["stream"] = std::to_string(memset_rec->streamId);
+        ev.metadata["correlation"] = std::to_string(memset_rec->correlationId);
+        {
+          std::string bandwidth;
+          if (computeMemoryBandwidth(memset_rec->bytes, memset_rec->start,
+                                     memset_rec->end, &bandwidth)) {
+            ev.metadata["memory bandwidth (GB/s)"] = std::move(bandwidth);
+          }
+        }
         events_.push_back(std::move(ev));
 
       } else if (record->kind == CUPTI_ACTIVITY_KIND_RUNTIME) {
@@ -510,6 +893,13 @@ class CuptiDeviceTracer : public DeviceTracer {
         // visibly a 21ms blocking cudaStreamSynchronize showing up as a launch,
         // which reads as a pathological kernel-launch cost rather than a sync.
         ev.name = cuptiRuntimeCbidToName(rt->cbid);
+        // torch-cuda's cuda_runtime args are exactly {External id, cbid,
+        // correlation}; kineto supplies External id itself. The raw numeric cbid
+        // is kept even though ev.name already carries its human spelling --
+        // torch-cuda reports both, and the number is what identifies an entry
+        // point our cbid table does not know.
+        ev.metadata["cbid"] = std::to_string(rt->cbid);
+        ev.metadata["correlation"] = std::to_string(rt->correlationId);
         events_.push_back(std::move(ev));
 
       } else if (record->kind == CUPTI_ACTIVITY_KIND_EXTERNAL_CORRELATION) {

@@ -99,9 +99,14 @@ bool metadataValueIsJsonLiteral(const std::string& v) {
   if (v.front() == '[' && v.back() == ']') {
     return true;
   }
-  // Optionally-signed integer or fixed-point decimal: -?[0-9]+(\.[0-9]+)?
-  // Exponent notation is intentionally NOT accepted -- we never emit it, and
-  // every form this classifier accepts is one more thing that has to be right.
+  // Optionally-signed number: -?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?
+  //
+  // The exponent branch is NOT hypothetical: "memory bandwidth (GB/s)" is
+  // formatted with shortest-roundtrip %g to match torch-cuda byte-for-byte, and
+  // %g switches to exponent form for small magnitudes (a 4-byte copy over a long
+  // interval yields "8e-05"). Exponent notation is valid JSON, so rejecting it
+  // here would quote a number that torch-cuda emits bare -- a silent parity
+  // break rather than a crash, which is the harder kind to notice.
   size_t i = (v[0] == '-' || v[0] == '+') ? 1 : 0;
   size_t digits_before = 0;
   while (i < v.size() && v[i] >= '0' && v[i] <= '9') {
@@ -111,19 +116,32 @@ bool metadataValueIsJsonLiteral(const std::string& v) {
   if (digits_before == 0) {
     return false;
   }
-  if (i == v.size()) {
-    return true;  // pure integer
-  }
-  if (v[i] != '.') {
-    return false;
-  }
-  ++i;
-  size_t digits_after = 0;
-  while (i < v.size() && v[i] >= '0' && v[i] <= '9') {
+  if (i < v.size() && v[i] == '.') {
     ++i;
-    ++digits_after;
+    size_t digits_after = 0;
+    while (i < v.size() && v[i] >= '0' && v[i] <= '9') {
+      ++i;
+      ++digits_after;
+    }
+    if (digits_after == 0) {
+      return false;  // "1." is not valid JSON
+    }
   }
-  return i == v.size() && digits_after > 0;
+  if (i < v.size() && (v[i] == 'e' || v[i] == 'E')) {
+    ++i;
+    if (i < v.size() && (v[i] == '+' || v[i] == '-')) {
+      ++i;
+    }
+    size_t exp_digits = 0;
+    while (i < v.size() && v[i] >= '0' && v[i] <= '9') {
+      ++i;
+      ++exp_digits;
+    }
+    if (exp_digits == 0) {
+      return false;  // "1e" / "1e+" is not a number
+    }
+  }
+  return i == v.size();
 }
 
 // Minimal escaping for the quoted path. addMetadataQuoted wraps the value in
