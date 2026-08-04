@@ -2,9 +2,13 @@
 Verification gate for profiler parity design foundation (Task 1, one-shot).
 
 Tests 3 claims:
-1. Chrome trace contains flow arrows (ac2g category, count > 0)
-2. key_averages() shows aten::mm with self_device_time_total > 0
+1. Chrome trace contains *renderable* flow arrows (ac2g, paired s<->f, count > 0)
+2. key_averages() shows aten::mm with self_device_time_total > 0, and that value
+   equals the summed duration of the sgemm kernel events in the same trace
 3. Runtime events appear with a recognizable runtime category
+
+Plus a capture-window containment check: no runtime/kernel/memcpy event may fall
+outside the CPU op window.
 
 NOTE on metric 1: kineto's chrome-trace writer does NOT emit a top-level
 "flowEvents" array (the brief's scaffold assumed one). Flow arrows are ordinary
@@ -42,32 +46,93 @@ def run_traced_ops():
 
 
 def verify_flow_arrows(trace):
-    """Metric 1: ac2g flow count."""
+    """Metric 1: count of *renderable* (paired) ac2g flow arrows.
+
+    A bare count of ac2g entries is NOT a valid check: an earlier iteration of
+    this work emitted 203 unpaired 'f' halves, which no viewer can draw, and a
+    `count > 0` assertion passed anyway. An arrow is renderable only when an 's'
+    half and an 'f' half share a flow id, so we count matched ids.
+    """
     top_level = [e for e in trace.get("flowEvents", []) if e.get("cat") == "ac2g"]
     inline = [
         e
         for e in trace.get("traceEvents", [])
         if e.get("cat") == "ac2g" and e.get("ph") in ("s", "f")
     ]
-    total = len(top_level) + len(inline)
-    print(f"Flow arrows (ac2g): {total}  "
+    flows = top_level + inline
+    phases = Counter(e.get("ph") for e in flows)
+    start_ids = {e["id"] for e in flows if e.get("ph") == "s"}
+    finish_ids = {e["id"] for e in flows if e.get("ph") == "f"}
+    paired_ids = start_ids & finish_ids
+
+    print(f"ac2g entries: {len(flows)} "
           f"(top-level flowEvents={len(top_level)}, inline ph=s/f={len(inline)})")
-    return total
+    print(f"  ph counts: {dict(phases)}")
+    print(f"  ids: s={len(start_ids)} f={len(finish_ids)} paired={len(paired_ids)}")
+
+    dangling_s = start_ids - finish_ids
+    dangling_f = finish_ids - start_ids
+    if dangling_s or dangling_f:
+        print(f"  DANGLING: {len(dangling_s)} 's' without 'f', "
+              f"{len(dangling_f)} 'f' without 's'")
+
+    ok = (
+        len(paired_ids) > 0
+        and phases.get("s", 0) == phases.get("f", 0)
+        and start_ids == finish_ids
+    )
+    print(f"Flow arrows (paired, renderable): {len(paired_ids)}")
+    return len(paired_ids), ok
 
 
-def verify_device_time_attribution(prof):
-    """Metric 2: aten::mm self_device_time_total."""
+def sgemm_kernel_time(trace):
+    """Ground truth for metric 2: total device time of the matmul kernels.
+
+    aten::mm's attributed time must equal the sum of the kernel events it
+    actually launched. Without this cross-check, `device_time > 0` also passes
+    when a stray unrelated kernel's time is misattributed to aten::mm.
+    """
+    kernels = [
+        e
+        for e in trace.get("traceEvents", [])
+        if e.get("cat") == "kernel" and "sgemm" in e.get("name", "").lower()
+    ]
+    total = sum(e.get("dur", 0) for e in kernels)
+    print(f"Ground truth: {len(kernels)} sgemm kernel events, sum dur={total}us")
+    return total, len(kernels)
+
+
+def verify_device_time_attribution(prof, trace):
+    """Metric 2: aten::mm self_device_time_total, cross-checked against the
+    kernel events in the same trace."""
     key_avg = prof.key_averages()
     mm_events = [e for e in key_avg if "mm" in e.key.lower()]
     for evt in mm_events:
         print(f"  {evt.key}: self_device_time_total={evt.self_device_time_total}us "
               f"device_time_total={evt.device_time_total}us count={evt.count}")
+
+    attributed = None
     for evt in mm_events:
         if "aten::mm" in evt.key:
-            print(f"aten::mm self_device_time_total={evt.self_device_time_total}us")
-            return evt.self_device_time_total
-    print("aten::mm NOT FOUND in key_averages()")
-    return None
+            attributed = evt.self_device_time_total
+            break
+    if attributed is None:
+        print("aten::mm NOT FOUND in key_averages()")
+        return None, False
+
+    print(f"aten::mm self_device_time_total={attributed}us")
+    truth, n_kernels = sgemm_kernel_time(trace)
+    if n_kernels == 0:
+        print("  FAIL: no sgemm kernel events to cross-check against")
+        return attributed, False
+
+    # Tolerance is generous in absolute terms but far tighter than the failure
+    # modes it guards: one extra/missing kernel would shift this by ~163us.
+    delta = abs(attributed - truth)
+    ok = attributed > 0 and delta <= max(1.0, 0.01 * truth)
+    print(f"  cross-check: attributed={attributed}us vs kernel sum={truth}us "
+          f"delta={delta:.3f}us -> {'MATCH' if ok else 'MISMATCH'}")
+    return attributed, ok
 
 
 def verify_runtime_category(trace, expected_cats):
@@ -92,10 +157,45 @@ def kernel_event_summary(trace):
         k for k in kernels if (k.get("args") or {}).get("correlation") not in (None, 0)
     ]
     print(f"Kernel events: {len(kernels)} (with non-zero correlation arg: {len(with_corr)})")
-    if kernels:
-        k = kernels[0]
-        print(f"  sample kernel: name={k.get('name')!r} dur={k.get('dur')} args={k.get('args')}")
     return len(kernels)
+
+
+def window_containment(trace):
+    """Finding 5 check: no device/runtime event may sit outside the capture window.
+
+    The authoritative window is the "PyTorch Profiler" trace span (cat "Trace"),
+    which is what kineto passes to processTrace as [startTime, endTime]. The
+    cpu_op extent is a poor proxy: it ends at the last op, while the real window
+    runs to profiler stop, so a legitimate trailing launch looks like a
+    violation.
+    """
+    ev = trace.get("traceEvents", [])
+    span = [e for e in ev if e.get("cat") == "Trace"]
+    if not span:
+        print("no Trace span event; cannot check window containment")
+        return True
+    s = max(span, key=lambda e: e.get("dur", 0))
+    lo = s["ts"]
+    hi = lo + s.get("dur", 0)
+    width = hi - lo
+
+    tracked = [
+        e for e in ev
+        if e.get("cat") in ("privateuse1_runtime", "kernel", "gpu_memcpy")
+    ]
+    before = [e for e in tracked if e["ts"] + e.get("dur", 0) < lo]
+    after = [e for e in tracked if e["ts"] > hi]
+    longest = max((e.get("dur", 0) for e in tracked), default=0)
+
+    print(f"capture window ({s['name']}): span={width:.1f}us")
+    print(f"  events entirely before window: {len(before)}/{len(tracked)}")
+    print(f"  events entirely after window : {len(after)}/{len(tracked)}")
+    print(f"  longest tracked event: {longest:.1f}us (window span {width:.1f}us)")
+    for e in (before + after)[:5]:
+        print(f"    OUT: cat={e['cat']} name={e['name'][:50]!r} dur={e.get('dur')}")
+    ok = not before and not after and longest <= width
+    print(f"  window containment: {'OK' if ok else 'VIOLATED'}")
+    return ok
 
 
 def main():
@@ -116,24 +216,25 @@ def main():
             trace = json.load(f)
 
         print("\n--- Metric 1: flow arrows ---")
-        flow_count = verify_flow_arrows(trace)
+        flow_count, m1 = verify_flow_arrows(trace)
         print("\n--- Metric 2: device time attribution ---")
-        device_time = verify_device_time_attribution(prof)
+        device_time, m2 = verify_device_time_attribution(prof, trace)
         print("\n--- Metric 3: runtime events ---")
         runtime_cat = verify_runtime_category(
             trace, expected_cats={"privateuse1_runtime", "cuda_runtime"}
         )
+        m3 = runtime_cat is not None
         print("\n--- Context ---")
         kernel_event_summary(trace)
+        print("\n--- Capture-window containment (finding 5) ---")
+        m4 = window_containment(trace)
 
         print("\n=== RESULT ===")
-        m1 = flow_count > 0
-        m2 = device_time is not None and device_time > 0
-        m3 = runtime_cat is not None
-        print(f"  metric1 flow arrows        : {'PASS' if m1 else 'FAIL'} ({flow_count})")
+        print(f"  metric1 paired flow arrows  : {'PASS' if m1 else 'FAIL'} ({flow_count})")
         print(f"  metric2 aten::mm dev time   : {'PASS' if m2 else 'FAIL'} ({device_time}us)")
         print(f"  metric3 runtime category    : {'PASS' if m3 else 'FAIL'} ({runtime_cat})")
-        if m1 and m2 and m3:
+        print(f"  window containment          : {'PASS' if m4 else 'FAIL'}")
+        if m1 and m2 and m3 and m4:
             print("ALL METRICS PASSED")
             return 0
         print("SOME METRICS FAILED")

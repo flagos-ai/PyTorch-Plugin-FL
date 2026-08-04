@@ -26,6 +26,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <unordered_map>
 #include <vector>
@@ -224,10 +225,19 @@ std::mutex g_session_mutex;
 // writes it; processTrace reads it after stop()).
 std::unordered_map<uint32_t, uint64_t> g_external_correlation;
 
-int32_t lookupExternalCorrelation(uint32_t cupti_correlation_id) {
+// Returns the torch correlation id for a CUPTI correlation id, or nullopt when
+// no EXTERNAL_CORRELATION record mapped it (GPU work issued outside a profiled
+// RecordFunction: allocator traffic, warmup, pre-window kernels).
+//
+// This MUST NOT collapse "not found" onto 0: correlation id 0 is meaningful in
+// torch's scheme (autograd/profiler.py treats corr_id == 0 as a *frontend*
+// function event). Returning 0 for a miss would hand id 0 to getLinkedActivity
+// for every unmapped activity, and any kineto that resolves it would silently
+// attribute all of that device time to one wrong CPU op.
+std::optional<int32_t> lookupExternalCorrelation(uint32_t cupti_correlation_id) {
   auto it = g_external_correlation.find(cupti_correlation_id);
   if (it == g_external_correlation.end()) {
-    return 0;
+    return std::nullopt;
   }
   return static_cast<int32_t>(it->second);
 }
@@ -361,6 +371,19 @@ void bufferCompleted(
       // CUPTI correlation ids into torch correlation ids.
       auto* ext =
           reinterpret_cast<CUpti_ActivityExternalCorrelation_Compat*>(record);
+
+      // This record has no timestamps to sanity-check, but it is the branch
+      // whose silent misdecode is *least* visible: a wrong layout yields
+      // garbage externalIds, getLinkedActivity then returns nullptr for
+      // everything, and per-op device time silently reverts to 0 with no
+      // diagnostic at all. externalKind is the one field we can verify --
+      // pushCorrelationId only ever pushes CUSTOM0, so anything else means we
+      // are reading the wrong offsets.
+      if (ext->externalKind != CUPTI_EXTERNAL_CORRELATION_KIND_CUSTOM0) {
+        reportLayoutMismatch("external correlation kind unexpected");
+        continue;
+      }
+
       g_external_correlation[ext->correlationId] = ext->externalId;
     }
   }
@@ -453,33 +476,63 @@ void FlagosCuptiProfilerSession::processTrace(
                    << activities_.size() << " activities, window=[" << startTime
                    << "," << endTime << "]\n");
 
-  // Correlation ids that actually have a device-side activity. A flow needs both
-  // ends: emitting an 's' half for a runtime call that launched nothing (e.g.
-  // cudaStreamSynchronize, cudaMalloc) leaves a dangling arrow, which is not
-  // what torch+cuda produces.
+  // Capture-window predicate.
+  //
+  // UNITS (verified, not assumed): kineto's startTime/endTime are ns since the
+  // UNIX epoch, and CUPTI's record timestamps are the same domain --
+  // cuptiGetTimestamp() was measured 2.7us away from CLOCK_REALTIME, i.e. both
+  // are realtime-epoch ns, so these compare directly with no scaling.
+  // (CLOCK_MONOTONIC/BOOTTIME are ~1.78e18 ns away, so a boot-relative reading
+  // of either side would have been off by ~56 years and filtered everything.)
+  auto in_window = [startTime, endTime](
+                       const libkineto::GenericTraceActivity& a) {
+    return a.endTime >= startTime && a.startTime <= endTime;
+  };
+
+  // Correlation ids that actually have a device-side activity *that we will
+  // emit*. A flow needs both ends: emitting an 's' half for a runtime call that
+  // launched nothing (e.g. cudaStreamSynchronize, cudaMalloc) -- or whose kernel
+  // fell outside the window -- leaves a dangling arrow, which is not what
+  // torch+cuda produces.
   std::set<int32_t> device_correlations;
   for (const auto& activity : activities_) {
-    if (activity.activityType != libkineto::ActivityType::PRIVATEUSE1_RUNTIME) {
+    if (activity.activityType != libkineto::ActivityType::PRIVATEUSE1_RUNTIME &&
+        in_window(activity)) {
       device_correlations.insert(activity.id);
     }
   }
 
   size_t linked_count = 0;
+  size_t dropped_out_of_window = 0;
   for (auto& activity : activities_) {
+    // Drop activities outside the capture window. CUPTI keeps recording into
+    // its buffers across the whole process lifetime (and our activity kinds are
+    // armed at import time), so without this the trace carries launches from
+    // before profiling started -- measured at 66/258 runtime events ending
+    // before the first cpu_op, including a 250ms entry against a 157ms span.
+    if (!in_window(activity)) {
+      ++dropped_out_of_window;
+      continue;
+    }
+
+
     // Resolve the CPU op that produced this device/runtime activity. The
     // callback is keyed on the *torch* correlation id, which is what
     // pushCorrelationId() published to CUPTI as an external correlation; the
-    // EXTERNAL_CORRELATION records give us cupti-id -> torch-id.
-    int32_t torch_corr = detail::lookupExternalCorrelation(activity.id);
-    if (const auto* cpu_activity = getLinkedActivity(torch_corr)) {
-      // MEASURED (Task 1 ablation): setting `linked` is what makes torch's
-      // _parse_kineto_results attribute device time to the CPU op. With this
-      // line removed and everything else identical, aten::mm's
-      // self_device_time_total drops from ~816us to 0. The spec's "device time
-      // attribution is free" claim holds only in the sense that no Python-side
-      // change is needed -- this pointer is mandatory.
-      activity.linked = cpu_activity;
-      ++linked_count;
+    // EXTERNAL_CORRELATION records give us cupti-id -> torch-id. An absent
+    // mapping means "no CPU op to link to" -- we must NOT fall back to id 0,
+    // which is a valid torch correlation id (see lookupExternalCorrelation).
+    if (auto torch_corr = detail::lookupExternalCorrelation(activity.id)) {
+      if (const auto* cpu_activity = getLinkedActivity(*torch_corr)) {
+        // MEASURED (Task 1 ablation): setting `linked` is what makes torch's
+        // _parse_kineto_results attribute device time to the CPU op. With this
+        // line removed and everything else identical, aten::mm's
+        // self_device_time_total drops from ~816us to 0. The spec's "device
+        // time attribution is free" claim holds only in the sense that no
+        // Python-side change is needed -- this pointer is mandatory.
+        activity.linked = cpu_activity;
+        ++linked_count;
+      }
     }
 
     // Flow arrow ("ac2g"): kineto's chrome writer emits one half per activity --
@@ -500,7 +553,8 @@ void FlagosCuptiProfilerSession::processTrace(
   }
 
   FLAGOS_CUPTI_LOG("[flagos] processTrace(4-arg) linked " << linked_count << "/"
-                   << activities_.size() << " activities to CPU ops\n");
+                   << activities_.size() << " activities to CPU ops, dropped "
+                   << dropped_out_of_window << " outside the capture window\n");
 }
 
 std::unique_ptr<libkineto::DeviceInfo> FlagosCuptiProfilerSession::getDeviceInfo() {
@@ -599,18 +653,26 @@ struct CuptiProfilerRegistrar {
       // only in session start() (long after libtorch_cuda has initialized its
       // own CUPTI state) captured nothing. We enable here and keep the enables
       // in start() as a harmless re-assertion.
+      //
+      // KERNEL and MEMCPY only. RUNTIME and EXTERNAL_CORRELATION are armed in
+      // session start() instead, because they are NOT free for non-profiling
+      // users: RUNTIME instruments every CUDA runtime API entry/exit on the CPU
+      // side, and arming it here cost a MEASURED ~+24% on a launch-bound
+      // workload (10.6us -> 12.9us per op, 3 A/B pairs, far outside the ~0.1ms
+      // run-to-run spread) for anyone who merely imports torch_fl. The
+      // constraint the memory records is that *callback registration* precede
+      // the first CUDA context -- which this still satisfies -- not that every
+      // activity kind be armed at import. Verified: all three trace metrics
+      // still pass with these two armed in start().
       FLAGOS_CUPTI_LOG("[flagos] Registering CUPTI activity callbacks...\n");
       CUptiResult res = shim.ActivityRegisterCallbacks(
           detail::bufferRequested, detail::bufferCompleted);
       FLAGOS_CUPTI_LOG("[flagos] ActivityRegisterCallbacks result: " << res << "\n");
       CUptiResult en_k = shim.ActivityEnable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL);
       CUptiResult en_m = shim.ActivityEnable(CUPTI_ACTIVITY_KIND_MEMCPY);
-      CUptiResult en_r = shim.ActivityEnable(CUPTI_ACTIVITY_KIND_RUNTIME);
-      CUptiResult en_e =
-          shim.ActivityEnable(CUPTI_ACTIVITY_KIND_EXTERNAL_CORRELATION);
       FLAGOS_CUPTI_LOG("[flagos] init ActivityEnable KERNEL=" << en_k
-                << " MEMCPY=" << en_m << " RUNTIME=" << en_r
-                << " EXTERNAL_CORRELATION=" << en_e << "\n");
+                << " MEMCPY=" << en_m
+                << " (RUNTIME/EXTERNAL_CORRELATION deferred to start())\n");
 
       registerFlagosCuptiProfiler();
       FLAGOS_CUPTI_LOG("[flagos] FlagosCuptiProfiler registered with kineto\n");
