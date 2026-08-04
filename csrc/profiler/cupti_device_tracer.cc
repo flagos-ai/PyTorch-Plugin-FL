@@ -566,6 +566,22 @@ namespace {
 void bufferRequested(uint8_t** buffer, size_t* size, size_t* maxNumRecords) {
   FLAGOS_CUPTI_LOG("[flagos] CUPTI bufferRequested callback invoked\n");
   *buffer = (uint8_t*)aligned_alloc(kBufferAlignment, kBufferSize);
+  if (*buffer == nullptr) {
+    // Under memory pressure an 8MB allocation can fail. Handing CUPTI a null
+    // pointer while still claiming *size = 8MB invites it to write into address
+    // 0; the documented way to decline a buffer is a null pointer with a zero
+    // size. Degrade to dropped records (cuptiActivityGetNumDroppedRecords will
+    // account for them) rather than crashing the profiled process.
+    *size = 0;
+    *maxNumRecords = 0;
+    static std::once_flag warn_once;
+    std::call_once(warn_once, [] {
+      std::cerr << "[flagos] CUPTI activity buffer allocation failed ("
+                << kBufferSize << " bytes); activity records will be dropped "
+                   "while memory is short. The trace will be incomplete.\n";
+    });
+    return;
+  }
   *size = kBufferSize;
   *maxNumRecords = 0;  // no limit
 }

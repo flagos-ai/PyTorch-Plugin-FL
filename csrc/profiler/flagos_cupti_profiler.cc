@@ -40,6 +40,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <string>
 #include <utility>
@@ -179,7 +180,34 @@ void FlagosCuptiProfilerSession::processTrace(
     }
   }
 
+  // Whether kineto actually handed us a resolver. An EMPTY callback is a total
+  // loss of linking: every activity is then emitted with linked == nullptr,
+  // which is precisely the ablation state Task 1 measured returning aten::mm's
+  // self_device_time_total to 0. That degradation is otherwise completely
+  // silent, so warn once, unconditionally -- this is the breadcrumb a
+  // "device time is mysteriously 0" report needs, and it must not be gated
+  // behind FLAGOS_CUPTI_SHIM_DEBUG for exactly that reason. Same rationale and
+  // shape as the tracer's reportLayoutMismatch: rare by construction, and
+  // catastrophic when it happens.
+  const bool have_resolver = static_cast<bool>(getLinkedActivity);
+  if (!have_resolver) {
+    static std::once_flag warn_once;
+    std::call_once(warn_once, [] {
+      std::cerr
+          << "[flagos] kineto called processTrace with an EMPTY "
+             "getLinkedActivity callback.\n"
+          << "[flagos]   Device activities cannot be linked to the CPU ops that"
+             " issued them, so per-operator\n"
+          << "[flagos]   device time (self_device_time_total) will be 0 and"
+             " ac2g flow arrows will be absent.\n"
+          << "[flagos]   The device timeline itself is unaffected. This"
+             " indicates a libkineto that does not supply\n"
+          << "[flagos]   the resolver to plugin profiler sessions.\n";
+    });
+  }
+
   size_t linked_count = 0;
+  size_t link_candidates = 0;
   size_t dropped_out_of_window = 0;
   for (const auto& ev : events_) {
     // Drop activities outside the capture window. The tracer keeps recording
@@ -200,15 +228,18 @@ void FlagosCuptiProfilerSession::processTrace(
     // external_correlation_id. An absent mapping means "no CPU op to link to" --
     // we must NOT fall back to id 0, which is a valid torch correlation id
     // (hence the optional; see device_tracer.h).
-    if (ev.external_correlation_id.has_value() && getLinkedActivity) {
-      if (const auto* cpu_activity =
-              getLinkedActivity(*ev.external_correlation_id)) {
-        // MEASURED (Task 1 ablation): setting `linked` is what makes torch's
-        // _parse_kineto_results attribute device time to the CPU op. With this
-        // line removed and everything else identical, aten::mm's
-        // self_device_time_total drops from ~816us to 0.
-        activity.linked = cpu_activity;
-        ++linked_count;
+    if (ev.external_correlation_id.has_value()) {
+      ++link_candidates;
+      if (have_resolver) {
+        if (const auto* cpu_activity =
+                getLinkedActivity(*ev.external_correlation_id)) {
+          // MEASURED (Task 1 ablation): setting `linked` is what makes torch's
+          // _parse_kineto_results attribute device time to the CPU op. With this
+          // line removed and everything else identical, aten::mm's
+          // self_device_time_total drops from ~816us to 0.
+          activity.linked = cpu_activity;
+          ++linked_count;
+        }
       }
     }
 
@@ -226,8 +257,16 @@ void FlagosCuptiProfilerSession::processTrace(
     activity.log(logger);
   }
 
+  // Report candidates alongside linked, so the three failure modes are
+  // distinguishable in a log: "0/0 candidates" means nothing was profiled or the
+  // tracer resolved no external correlations, "0/N candidates" means the
+  // resolver was present but rejected every id, and the empty-resolver case is
+  // called out explicitly above. Previously a bare "linked 0/N" conflated all
+  // three.
   FLAGOS_CUPTI_LOG("[flagos] processTrace(4-arg) linked " << linked_count << "/"
-                   << events_.size() << " activities to CPU ops, dropped "
+                   << link_candidates << " link candidates (of "
+                   << events_.size() << " events, resolver="
+                   << (have_resolver ? "present" : "EMPTY") << "), dropped "
                    << dropped_out_of_window << " outside the capture window\n");
 }
 

@@ -6,7 +6,8 @@ Tests 3 claims:
 2. key_averages() shows aten::mm with self_device_time_total > 0, and that value
    equals the summed duration of the device events (sgemm kernels + the cuBLAS
    workspace memsets) linked to aten::mm in the same trace
-3. Runtime events appear with a recognizable runtime category
+3. Runtime events appear with a recognizable runtime category, and their names
+   actually come from the cbid mapping rather than a hardcoded constant
 
 Plus a capture-window containment check: no runtime/kernel/memcpy event may fall
 outside the CPU op window.
@@ -184,6 +185,45 @@ def verify_runtime_category(trace, expected_cats):
     return sorted(actual)[0]
 
 
+def verify_runtime_names_from_cbid(trace, expected_cats):
+    """Metric 3b: runtime event names must actually come from the cbid mapping.
+
+    INTERIM GUARD (Task 3 review). The cbid->name table in cupti_shim.h is this
+    layer's only defence against a class of bug whose signature is "a plausible
+    but wrong label rather than an error": before it existed, EVERY runtime
+    record was hardcoded to "cudaLaunchKernel", and a 21.9ms blocking
+    synchronize was reported as a kernel launch. Nothing in the build re-checks
+    that table, so a regression in Task 4/5 would be silent.
+
+    The cheap invariant that catches exactly the old hardcode: a real workload
+    calls more than one runtime API, so at least one runtime event must carry a
+    name that is neither the generic `default:` fallback ("cudaRuntime") nor
+    "cudaLaunchKernel". If the mapping is bypassed or reverted to a constant,
+    every name collapses to one of those two and this fails.
+
+    A proper table-driven test belongs in Task 6's integration test (the repo
+    has no C++ test harness today); this only has to hold the line until then.
+    """
+    runtime_events = [
+        e for e in trace.get("traceEvents", []) if e.get("cat") in expected_cats
+    ]
+    names = Counter(e.get("name") for e in runtime_events)
+    generic = {"cudaRuntime", "cudaLaunchKernel"}
+    specific = {n: c for n, c in names.items() if n not in generic}
+    print(f"Runtime event names: {dict(names)}")
+    if not runtime_events:
+        print("  FAIL: no runtime events at all to check names on")
+        return False
+    print(f"  names beyond {sorted(generic)}: {dict(specific) or 'NONE'}")
+    ok = bool(specific)
+    print(f"  cbid->name mapping in effect: {'OK' if ok else 'NOT IN EFFECT'}")
+    if not ok:
+        print("    Every runtime event is 'cudaRuntime' or 'cudaLaunchKernel'.")
+        print("    Either the cbid table regressed to a hardcoded name, or the")
+        print("    runtime name is no longer sourced from the record's cbid.")
+    return ok
+
+
 def kernel_event_summary(trace):
     """Context: how many device kernels landed, and do they carry a correlation?"""
     kernels = [e for e in trace.get("traceEvents", []) if e.get("cat") == "kernel"]
@@ -288,6 +328,9 @@ def main():
             trace, expected_cats={"privateuse1_runtime", "cuda_runtime"}
         )
         m3 = runtime_cat is not None
+        m3b = verify_runtime_names_from_cbid(
+            trace, expected_cats={"privateuse1_runtime", "cuda_runtime"}
+        )
         print("\n--- Context ---")
         kernel_event_summary(trace)
         print("\n--- Capture-window containment (finding 5) ---")
@@ -297,8 +340,9 @@ def main():
         print(f"  metric1 paired flow arrows  : {'PASS' if m1 else 'FAIL'} ({flow_count})")
         print(f"  metric2 aten::mm dev time   : {'PASS' if m2 else 'FAIL'} ({device_time}us)")
         print(f"  metric3 runtime category    : {'PASS' if m3 else 'FAIL'} ({runtime_cat})")
+        print(f"  metric3b cbid->name mapping : {'PASS' if m3b else 'FAIL'}")
         print(f"  window containment          : {'PASS' if m4 else 'FAIL'}")
-        if m1 and m2 and m3 and m4:
+        if m1 and m2 and m3 and m3b and m4:
             print("ALL METRICS PASSED")
             return 0
         print("SOME METRICS FAILED")
