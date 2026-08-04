@@ -9,7 +9,10 @@
 // check, whereas an unregistered op simply reaches the cpu_fallback. So this
 // file is exactly the MUSA coverage set.
 
+  m.impl("_log_softmax", WrapperPrivLogSoftmax);
+  m.impl("_log_softmax_backward_data", WrapperPrivLogSoftmaxBackwardData);
   m.impl("_softmax", WrapperPrivSoftmax);
+  m.impl("_softmax_backward_data", WrapperPrivSoftmaxBackwardData);
   m.impl("abs", WrapperAbs);
   m.impl("acos", WrapperAcos);
   m.impl("add.Scalar", WrapperAddScalar);
@@ -17,6 +20,10 @@
   m.impl("addcdiv", WrapperAddcdiv);
   m.impl("addcmul", WrapperAddcmul);
   m.impl("addmm", WrapperAddmm);
+  m.impl("all.dim", WrapperAllDim);
+  m.impl("amax", WrapperAmax);
+  m.impl("amin", WrapperAmin);
+  m.impl("any.dim", WrapperAnyDim);
   m.impl("atan", WrapperAtan);
   m.impl("baddbmm", WrapperBaddbmm);
   m.impl("bmm", WrapperBmm);
@@ -54,6 +61,7 @@
   m.impl("le.Tensor", WrapperLeTensor);
   m.impl("leaky_relu", WrapperLeakyRelu);
   m.impl("leaky_relu_backward", WrapperLeakyReluBackward);
+  m.impl("linalg_vector_norm", WrapperLinalgVectorNorm);
   m.impl("log", WrapperLog);
   m.impl("log10", WrapperLog10);
   m.impl("log1p", WrapperLog1p);
@@ -72,11 +80,14 @@
   m.impl("mm.out", WrapperMmOut);
   m.impl("mul.Scalar", WrapperMulScalar);
   m.impl("mul.Tensor", WrapperMulTensor);
+  m.impl("native_layer_norm", WrapperNativeLayerNorm);
+  m.impl("native_layer_norm_backward", WrapperNativeLayerNormBackward);
   m.impl("ne.Scalar", WrapperNeScalar);
   m.impl("ne.Tensor", WrapperNeTensor);
   m.impl("neg", WrapperNeg);
   m.impl("pow.Tensor_Scalar", WrapperPowTensorScalar);
   m.impl("pow.Tensor_Tensor", WrapperPowTensorTensor);
+  m.impl("prod.dim_int", WrapperProdDimInt);
   m.impl("reciprocal", WrapperReciprocal);
   m.impl("relu", WrapperRelu);
   m.impl("remainder.Scalar", WrapperRemainderScalar);
@@ -91,6 +102,7 @@
   m.impl("sin", WrapperSin);
   m.impl("softplus", WrapperSoftplus);
   m.impl("sqrt", WrapperSqrt);
+  m.impl("std.correction", WrapperStdCorrection);
   m.impl("sub.Scalar", WrapperSubScalar);
   m.impl("sub.Tensor", WrapperSubTensor);
   m.impl("sum", WrapperSum);
@@ -100,4 +112,5 @@
   m.impl("tanh_backward", WrapperTanhBackward);
   m.impl("threshold_backward", WrapperThresholdBackward);
   m.impl("trunc", WrapperTrunc);
+  m.impl("var.correction", WrapperVarCorrection);
   m.impl("where.self", WrapperWhereSelf);
