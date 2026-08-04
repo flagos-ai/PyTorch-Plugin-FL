@@ -13,9 +13,10 @@
 #include <ATen/ops/copy_native.h>
 #include <include/flagos.h>
 #include "device_boxing.h"
-#ifdef USE_ASCEND
+// Included unconditionally: the #else branches below cover TsingMicro, GCU and
+// MUSA-without-mudnn as well as Ascend, and this header supplies inline no-op
+// fallbacks for those platforms.
 #include "backends/ascend/ascend_copy.h"
-#endif
 
 #if defined(FLAGOS_MUSA_KERNEL)
 #include "backends/musa/mudnn_common.h"
