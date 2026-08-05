@@ -36,20 +36,15 @@ list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/runtime/accelerator/ascend/stream_api
 if(NOT CUDA_KERNEL)
   list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/cuda/.*")
 endif()
-if(NOT FLAGGEMS_KERNEL AND NOT FLAGGEMS_PYTHON AND NOT CUDA_KERNEL)
-  # Nothing needs python_op_caller: exclude entire flagos backend
-  # (only python_op_caller.{h,cc} lives here now). The generated
-  # flaggems_python_kernels.cc stays but is a no-op without FLAGOS_FLAGGEMS_PYTHON.
-  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/flagos/.*")
-endif()
-# CUDA_KERNEL path: cuda_kernels.cc's native RNG kernels unconditionally call
-# GetFlagosDefaultCudaGenerator() (unified-RNG generator injection) regardless
-# of the FlagGems dispatch path, so python_op_caller.cc must stay in the build
-# whenever CUDA_KERNEL is on -- even with FLAGGEMS_KERNEL=OFF FLAGGEMS_PYTHON=OFF.
 # FLAGGEMS_PYTHON path: keep csrc/aten/backends/flagos/python_op_caller.cc and
 # build csrc/aten/generated/flaggems_python_kernels.cc with FLAGOS_FLAGGEMS_PYTHON
 # defined (below). The stale C++/python_wrapper files were removed; nothing to
 # exclude here.
+#
+# The flagos backend (python_op_caller.{h,cc}) is excluded further down, once the
+# per-accelerator rules have settled whether generated/cuda_kernels.cc is in the
+# build -- it calls GetFlagosDefaultCudaGenerator(), which python_op_caller.cc
+# defines.
 if(NOT METAX_KERNEL)
   list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/metax/.*")
 endif()
@@ -83,6 +78,40 @@ if(ACCELERATOR STREQUAL "musa")
   # aten/backends/musa/generated/ replace them.
   list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/cuda/.*")
   list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/generated/cuda_kernels\\.cc$")
+endif()
+
+# Drop the flagos backend (only python_op_caller.{h,cc} lives here) when nothing
+# left in SOURCE_FILES needs it. Three independent consumers:
+#
+#   * the FlagGems dispatch paths (FLAGGEMS_KERNEL / FLAGGEMS_PYTHON), which call
+#     into Python through it;
+#   * generated/cuda_kernels.cc, whose native RNG kernels call
+#     GetFlagosDefaultCudaGenerator() unconditionally since the unified-RNG
+#     generator injection, regardless of the FlagGems dispatch path;
+#   * the MetaX boxing build, whose vendor runtime calls the same provider even
+#     with FlagGems off.
+#
+# The second consumer is why this test runs *here* and looks at the source list
+# instead of at CUDA_KERNEL: cuda_kernels.cc is generated code under
+# aten/generated/, so the CUDA_KERNEL option does not govern it -- the gcu/musa
+# blocks above do, by accelerator. Keying on CUDA_KERNEL instead left dcu
+# (CUDA_KERNEL=OFF, both FLAGGEMS_* OFF, cuda_kernels.cc still compiled, since
+# the DTK torch wheel is hipified and registers HIP kernels under the CUDA key)
+# linking with an undefined GetFlagosDefaultCudaGenerator.
+set(_needs_python_op_caller OFF)
+if(FLAGGEMS_KERNEL OR FLAGGEMS_PYTHON)
+  set(_needs_python_op_caller ON)
+endif()
+if(ACCELERATOR STREQUAL "metax" AND FLAGOS_METAX_BOXING)
+  set(_needs_python_op_caller ON)
+endif()
+foreach(_src IN LISTS SOURCE_FILES)
+  if(_src MATCHES ".*/aten/generated/cuda_kernels\\.cc$")
+    set(_needs_python_op_caller ON)
+  endif()
+endforeach()
+if(NOT _needs_python_op_caller)
+  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/flagos/.*")
 endif()
 
 set(_torch_fl_sources ${SOURCE_FILES})
@@ -149,6 +178,20 @@ if(FLAGGEMS_KERNEL)
     list(APPEND _torch_fl_link_libs FlagGems::operators)
   elseif(TARGET operators)
     list(APPEND _torch_fl_link_libs operators)
+  endif()
+endif()
+
+if(ACCELERATOR STREQUAL "metax" AND FLAGOS_METAX_BOXING)
+  # The CPU TorchConfig used for the isolated Python environment does not
+  # declare MetaX's forked CUDA runtime. Link it directly so vendor-only ATen
+  # symbols are resolved by ELF instead of being left to process-global lookup.
+  set(_metax_torch_lib "$ENV{FLAGOS_MACA_TORCH_LIB}")
+  if(IS_DIRECTORY "${_metax_torch_lib}")
+    if(EXISTS "${_metax_torch_lib}/libtorch_cuda.so")
+      list(APPEND _torch_fl_link_libs
+        "${_metax_torch_lib}/libtorch_cuda.so")
+      target_link_options(${LIBRARY_NAME} PRIVATE "-Wl,--no-as-needed")
+    endif()
   endif()
 endif()
 

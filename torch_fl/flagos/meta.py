@@ -15,9 +15,34 @@
 # Meta functions for FlagOS device
 # These are used by torch.compile and other meta-dispatch mechanisms
 
+"""
+Meta tensor implementations for shape inference during torch.compile tracing.
 
-# You can add meta implementations here if needed
-# For example:
-# @impl("aten::some_op", "Meta")
-# def some_op_meta(self):
-#     return torch.empty_like(self)
+When torch.compile traces a model with flagos tensors, it needs to infer output
+shapes without executing kernels. We register meta implementations that compute
+output shapes/dtypes for ops that don't have default meta kernels.
+
+Most ops inherit meta kernels from their CPU/CUDA implementations. We only need
+to register meta kernels for:
+1. Custom ops specific to flagos
+2. Ops where the default meta kernel is incorrect for our backend
+3. Ops that torch.compile explicitly requires but are missing
+
+Start with a minimal set and expand as needed based on compile errors.
+"""
+
+
+# Meta kernels are registered via torch.library.impl
+# Format: @torch.library.impl("aten::op_name", "Meta")
+
+# Example: if we had a custom flagos-specific op
+# @torch.library.impl("flagos::custom_op", "Meta")
+# def custom_op_meta(input: Tensor, alpha: float) -> Tensor:
+#     return torch.empty_like(input)
+
+
+# Most standard ops (mm, add, conv, etc.) already have meta kernels from
+# torch's default registrations. We inherit those automatically.
+
+# Placeholder for future custom meta implementations as needed
+# (torch.compile will error with specific op names if meta kernels are missing)

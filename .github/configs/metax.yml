@@ -1,0 +1,125 @@
+# Copyright 2026 FlagOS Contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+display_name: MetaX
+
+setup_script: .github/scripts/set_env_metax.sh
+
+ci_image: harbor.baai.ac.cn/flagos-dev/pytorch-plugin-fl:manual-20260731-metax-dev
+
+runner_labels:
+  - mx-8g-cicd-pytorch
+
+container_volumes: []
+
+integration_environment: {}
+
+container_options: >-
+  --privileged
+  --ipc=host
+  --shm-size=512g
+  --ulimit memlock=-1
+  --cap-add=SYS_PTRACE
+
+timeout_minutes: 60
+wheel_artifact_name: wheel-metax
+# Keep MetaX integration self-contained; transferring the ~670MB wheel through
+# the Actions artifact service can exceed the self-hosted runner job timeout.
+integration_wheel_source: local-build
+
+integration_tests:
+  - name: Diagnose bundled MetaX ELF symbols (temporary)
+    command: |
+      python - <<'PY'
+      from pathlib import Path
+      import sysconfig
+
+      package_root = Path(sysconfig.get_paths()["purelib"]) / "torch_fl"
+      symbol = "_ZN2at6native6flagos29GetFlagosDefaultCudaGeneratorEl"
+      libraries = [package_root / "lib" / "libtorch_fl.so"]
+      libraries.extend(sorted((package_root / "lib_maca").glob("*.so*")))
+
+      print(f"package_root={package_root}")
+      print(f"symbol={symbol}")
+      for library in libraries:
+          print(f"--- {library}")
+          print(f"exists={library.is_file()}")
+      PY
+      SYM='_ZN2at6native6flagos29GetFlagosDefaultCudaGeneratorEl'
+      ROOT="$(python -c 'import sysconfig; from pathlib import Path; print(Path(sysconfig.get_paths()["purelib"]) / "torch_fl")')"
+      for lib in "$ROOT/lib/libtorch_fl.so" "$ROOT"/lib_maca/*.so*; do
+        [[ -f "$lib" ]] || continue
+        echo "--- $lib"
+        nm -D --defined-only "$lib" 2>/dev/null | grep "$SYM" || true
+      done
+      for lib in "$ROOT/lib"/libflagos.so* "$ROOT/lib"/libtorch_bindings.so* \
+                 /opt/maca/lib/*.so* /opt/maca/tools/cu-bridge/lib/*.so*; do
+        [[ -f "$lib" ]] || continue
+        nm -D --defined-only "$lib" 2>/dev/null | grep "$SYM" && echo "provider=$lib" || true
+      done
+      readelf -d "$ROOT/lib/libtorch_fl.so" | grep 'NEEDED\|RPATH\|RUNPATH' || true
+
+  - name: Check isolated MetaX environment
+    command: |
+      python - <<'PY'
+      from pathlib import Path
+
+      import torch_fl
+      import torch
+
+      torch_fl_path = Path(torch_fl.__file__).resolve()
+      torch_path = Path(torch.__file__).resolve()
+
+      assert torch.__version__.startswith("2.10.0+cpu"), torch.__version__
+      assert str(torch_path).startswith("/opt/venv/"), torch_path
+      assert "/opt/conda/" not in str(torch_path), torch_path
+      assert torch.cuda.is_available(), "MetaX devices are unavailable"
+      assert torch.cuda.device_count() == 8, torch.cuda.device_count()
+      assert torch_fl.flagos.is_available(), "flagos device is unavailable"
+      assert torch_fl.flagos.device_count() == 8, torch_fl.flagos.device_count()
+
+      print(f"PyTorch: {torch.__version__}")
+      print(f"torch: {torch_path}")
+      print(f"torch_fl: {torch_fl_path}")
+      print(f"MetaX devices: {torch.cuda.device_count()}")
+      print(f"flagos devices: {torch_fl.flagos.device_count()}")
+      PY
+
+  - name: Run representative MetaX operator tests
+    command: >-
+      python -m pytest
+      tests/integration/ops/test_abs_dispatch.py
+      tests/integration/ops/test_add_dispatch.py
+      tests/integration/ops/test_bmm_dispatch.py
+      tests/integration/ops/test_cat_dispatch.py
+      tests/integration/ops/test_div_scalar_dispatch.py
+      tests/integration/ops/test_embedding_dispatch.py
+      tests/integration/ops/test_mean_dispatch.py
+      tests/integration/ops/test_mm_dispatch.py
+      tests/integration/ops/test_mul_dispatch.py
+      tests/integration/ops/test_mul_scalar_dispatch.py
+      tests/integration/ops/test_neg_dispatch.py
+      tests/integration/ops/test_nll_loss_dispatch.py
+      tests/integration/ops/test_silu_dispatch.py
+      tests/integration/ops/test_softmax_dispatch.py
+      tests/integration/ops/test_sum_dispatch.py
+      tests/integration/ops/test_where_dispatch.py
+      -m "not flaggems and not flaggems_python and not flaggems_cpp"
+      --maxfail=1 -v -s --tb=long
+
+  - name: Run general factory and autograd tests
+    command: >-
+      python -m pytest
+      tests/integration/test_factory_ops.py
+      -v -s --tb=short

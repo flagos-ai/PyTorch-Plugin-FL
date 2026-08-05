@@ -32,6 +32,12 @@ on:
         required: false
         type: boolean
         default: true
+      integration_wheel_source:
+        required: false
+        type: string
+        default: auto
+        description: >-
+          Wheel source for integration tests: auto, artifact, or local-build.
       timeout_minutes:
         required: false
         type: number
@@ -55,6 +61,7 @@ jobs:
       container_options: ${{ steps.config.outputs.container_options }}
       timeout_minutes: ${{ steps.config.outputs.timeout_minutes }}
       wheel_artifact_name: ${{ steps.config.outputs.wheel_artifact_name }}
+      integration_wheel_source: ${{ steps.config.outputs.integration_wheel_source }}
       integration_tests: ${{ steps.config.outputs.integration_tests }}
       integration_environment: ${{ steps.config.outputs.integration_environment }}
     steps:
@@ -87,6 +94,31 @@ jobs:
           ARTIFACT_NAME=$(yq -r '.wheel_artifact_name' "$CONFIG_FILE")
           INTEGRATION_TESTS=$(yq -o=json -I=0 '.integration_tests // []' "$CONFIG_FILE")
           INTEGRATION_ENVIRONMENT=$(yq -o=json -I=0 '.integration_environment // {}' "$CONFIG_FILE")
+          CONFIG_WHEEL_SOURCE=$(yq -r '.integration_wheel_source // "auto"' "$CONFIG_FILE")
+          INTEGRATION_WHEEL_SOURCE="${{ inputs.integration_wheel_source }}"
+
+          if [[ "$INTEGRATION_WHEEL_SOURCE" == "auto" ]]; then
+            INTEGRATION_WHEEL_SOURCE="$CONFIG_WHEEL_SOURCE"
+          fi
+          if [[ "$INTEGRATION_WHEEL_SOURCE" == "auto" ]]; then
+            if [[ "${{ inputs.run_build }}" == "true" ]]; then
+              INTEGRATION_WHEEL_SOURCE="artifact"
+            else
+              INTEGRATION_WHEEL_SOURCE="local-build"
+            fi
+          fi
+          if [[ "$INTEGRATION_WHEEL_SOURCE" != "artifact" &&
+                "$INTEGRATION_WHEEL_SOURCE" != "local-build" ]]; then
+            echo "::error::integration_wheel_source must be artifact or local-build"
+            exit 1
+          fi
+          if [[ "${{ inputs.run_integration_tests }}" == "true" &&
+                "$INTEGRATION_WHEEL_SOURCE" == "artifact" &&
+                ( "${{ inputs.run_build }}" != "true" ||
+                  "${{ inputs.upload_artifact }}" != "true" ) ]]; then
+            echo "::error::artifact integration requires run_build and upload_artifact"
+            exit 1
+          fi
 
           if [[ "${{ inputs.timeout_minutes }}" -gt 0 ]]; then
             TIMEOUT_MINUTES="${{ inputs.timeout_minutes }}"
@@ -118,6 +150,7 @@ jobs:
           printf '%s=%s\n' container_options "$OPTIONS" >> "$GITHUB_OUTPUT"
           printf '%s=%s\n' timeout_minutes "$TIMEOUT_MINUTES" >> "$GITHUB_OUTPUT"
           printf '%s=%s\n' wheel_artifact_name "$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
+          printf '%s=%s\n' integration_wheel_source "$INTEGRATION_WHEEL_SOURCE" >> "$GITHUB_OUTPUT"
           printf '%s=%s\n' runs_on "$RUNS_ON" >> "$GITHUB_OUTPUT"
           printf '%s=%s\n' container_volumes "$VOLUMES" >> "$GITHUB_OUTPUT"
           printf '%s=%s\n' integration_tests "$INTEGRATION_TESTS" >> "$GITHUB_OUTPUT"
@@ -158,5 +191,7 @@ jobs:
       container_volumes: ${{ needs.configuration.outputs.container_volumes }}
       container_options: ${{ needs.configuration.outputs.container_options }}
       timeout_minutes: ${{ fromJson(needs.configuration.outputs.timeout_minutes) }}
+      artifact_name: ${{ needs.configuration.outputs.wheel_artifact_name }}
+      wheel_source: ${{ needs.configuration.outputs.integration_wheel_source }}
       integration_tests: ${{ needs.configuration.outputs.integration_tests }}
       integration_environment: ${{ needs.configuration.outputs.integration_environment }}

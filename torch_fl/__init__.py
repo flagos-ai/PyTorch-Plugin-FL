@@ -898,6 +898,22 @@ def _patch_ddp_for_flagos():
 
 _patch_ddp_for_flagos()
 
+
+# Register torch.compile backend for flagos device (torch 2.0+)
+def _register_compile_backend():
+    """Register the 'flagos' backend with torch._dynamo if available."""
+    try:
+        from torch_fl.compile.inductor_backend import register_backend
+
+        register_backend()
+    except (ImportError, AttributeError):
+        # torch._dynamo not available (torch < 2.0) or inductor missing
+        pass
+
+
+_register_compile_backend()
+
+
 __all__ = [
     "flagos",
     "distributed",

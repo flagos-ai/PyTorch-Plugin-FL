@@ -83,15 +83,19 @@ def main():
 
     command_environment = os.environ.copy()
     command_environment.update(environment)
+    workdir = os.environ.get("INTEGRATION_WORKDIR")
+    if workdir and not os.path.isdir(workdir):
+        raise SystemExit(f"INTEGRATION_WORKDIR does not exist: {workdir}")
     for index, test in enumerate(tests, start=1):
         print(
             f"===== [{index}/{len(tests)}] {test['name']} =====",
             flush=True,
         )
         result = subprocess.run(
-            ["bash", "-lc", f"set -euo pipefail\n{test['command']}"],
+            ["bash", "-c", f"set -euo pipefail\n{test['command']}"],
             check=False,
             env=command_environment,
+            cwd=workdir,
         )
         if result.returncode:
             print(

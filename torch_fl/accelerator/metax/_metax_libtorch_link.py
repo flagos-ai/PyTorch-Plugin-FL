@@ -39,6 +39,7 @@ idempotent, gated on ``FLAGOS_METAX_BOXING=1``, and a no-op when the active torc
 already IS the MetaX wheel.
 """
 
+import ctypes
 import importlib.util
 import os
 
@@ -60,6 +61,7 @@ _CUDA_SO = (
 )
 
 _done = False
+_runtime_handles = []
 
 
 def _active_torch_lib():
@@ -160,7 +162,7 @@ def ensure_maca_libtorch_links():
     No-op unless FLAGOS_METAX_BOXING=1.  Idempotent; reversible via _orig_backup.
     Returns True if links are in place (or already were), False if skipped.
     """
-    global _done
+    global _done, _runtime_handles
     if _done:
         return True
     if os.environ.get("FLAGOS_METAX_BOXING", "0") != "1":
@@ -180,6 +182,36 @@ def ensure_maca_libtorch_links():
         _link_one(active, backup, name, os.path.join(maca, name), required=True)
     for name in _CUDA_SO:
         _link_one(active, backup, name, os.path.join(maca, name), required=False)
+
+    # A CPU-only torch wheel does not load the forked runtime itself. Load the
+    # complete bundled dependency set globally before torch_fl._C loads. In
+    # particular, GetFlagosDefaultCudaGenerator is provided by the forked
+    # ATen runtime and is not guaranteed to be in libtorch_cuda.so itself.
+    # Loading only the CUDA library can leave its CPU dependency RTLD_LOCAL,
+    # so libtorch_fl.so cannot resolve that symbol later.
+    load_order = (
+        "libc10.so",
+        "libtorch_cpu.so",
+        "libtorch.so",
+        "libtorch_global_deps.so",
+        "libc10_cuda.so",
+        "libtorch_cuda_linalg.so",
+        "libtorch_cuda.so",
+        "libtorch_python.so",
+    )
+    for name in load_order:
+        path = os.path.join(active, name)
+        if not os.path.exists(path):
+            if name in _CORE_SO:
+                raise FileNotFoundError(f"MetaX libtorch runtime missing: {path}")
+            continue
+        try:
+            _runtime_handles.append(ctypes.CDLL(path, mode=ctypes.RTLD_GLOBAL))
+        except OSError as exc:
+            raise RuntimeError(
+                f"Failed to load MetaX libtorch runtime: {path}"
+            ) from exc
+
     _done = True
     return True
 

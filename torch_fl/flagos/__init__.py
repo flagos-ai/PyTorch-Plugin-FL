@@ -155,9 +155,28 @@ from .random import *  # noqa: F403, E402
 
 # default_generators: list of one Generator per device, required by FlagGems
 class _DefaultGenerators:
-    """Lazy list-like accessor for per-device default generators."""
+    """Lazy list-like accessor for per-device default generators.
+
+    Bounds-checked so iteration terminates: with no ``__iter__``, Python's
+    legacy protocol calls ``__getitem__(0, 1, 2, ...)`` until IndexError, and
+    an out-of-range index otherwise surfaces as a RuntimeError from C++ (which
+    aborts iteration instead of ending it).
+    """
+
+    def __iter__(self):
+        return (self[i] for i in range(len(self)))
 
     def __getitem__(self, device):
+        n = len(self)
+        if isinstance(device, slice):
+            return tuple(self[i] for i in range(*device.indices(n)))
+        device = int(device)
+        if device < 0:  # negative indices wrap, as on a list
+            device += n
+        if not 0 <= device < n:
+            raise IndexError(
+                f"device index {device} out of range for {n} flagos device(s)"
+            )
         return _C._get_default_generator(device)
 
     def __len__(self):

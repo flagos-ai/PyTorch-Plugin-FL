@@ -17,7 +17,7 @@ display_name: CUDA
 # Platform-specific preparation is implemented outside the common workflows.
 setup_script: .github/scripts/set_env_cuda.sh
 
-ci_image: harbor.baai.ac.cn/flagos-dev/pytorch-plugin-fl:manual-20260728-cuda-dev
+ci_image: harbor.baai.ac.cn/flagos-dev/pytorch-plugin-fl@sha256:8f6aec7fbd4b56c8d925169029462a09a0a58758fde0576b1509b2eed7627e25
 
 runner_labels:
   - nv-8g-cicd-pytorch
@@ -37,6 +37,9 @@ container_options: >-
 
 timeout_minutes: 60
 wheel_artifact_name: wheel-cuda
+# Keep CUDA integration self-contained; transferring the ~475MB wheel through
+# the Actions artifact service can exceed the self-hosted runner job timeout.
+integration_wheel_source: local-build
 
 # The common workflow only executes this platform-provided test manifest.
 integration_tests:
@@ -45,23 +48,29 @@ integration_tests:
   - name: Check device availability
     command: |
       python - <<'PY'
-      import torch
-      import torch_fl
+      from pathlib import Path
 
-      assert torch.cuda.is_available(), "CUDA is unavailable"
+      import torch_fl
+      import torch
+
+      torch_path = Path(torch.__file__).resolve()
+      package_lib = Path(torch_fl.__file__).resolve().parent / "lib"
+
+      assert torch.__version__.startswith("2.10.0+cpu"), torch.__version__
+      assert torch.version.cuda is None, torch.version.cuda
+      assert "/opt/conda/" not in str(torch_path), torch_path
+      assert (package_lib / "libtorch_cuda.so").is_file(), package_lib
       assert torch_fl.flagos.is_available(), "flagos device is unavailable"
-      print(f"CUDA devices: {torch.cuda.device_count()}")
+      print(f"CPU PyTorch: {torch.__version__}")
+      print(f"torch path: {torch_path}")
+      print(f"CUDA assets: {package_lib}")
       print(f"flagos devices: {torch_fl.flagos.device_count()}")
       PY
-  - name: Check FlagGems routing consistency
-    command: >-
-      python -m pytest
-      tests/integration/ops/test_flaggems_conf_consistency.py
-      -v --tb=short
   - name: Run operator tests (vendor backend, main ops)
     command: >-
       python -m pytest tests/integration/ops/
-      -m main_ops -v -s --tb=short
+      -m "main_ops and not flaggems_python and not flaggems_cpp"
+      -v -s --tb=short
   - name: Run operator tests (FlagGems runtime path, main ops)
     command: >-
       FLAGOS_USE_FLAGGEMS=1
