@@ -274,8 +274,17 @@ if(ACCELERATOR STREQUAL "metax")
   # the target's /opt/maca driver install. Disabling INSTALL_RPATH_USE_LINK_PATH
   # stops CMake from appending the imported torch target's build-machine link
   # dir. Mirrors scripts/bundle_maca_libtorch.sh's patchelf pass.
+  set(_metax_rpath
+      "$ORIGIN:$ORIGIN/../lib_maca:${METAX_PATH}/lib:${METAX_PATH}/lib64:/opt/maca/lib:/opt/maca/lib64")
+  # Setting INSTALL_RPATH explicitly discards the entries the top-level
+  # CMakeLists appended to CMAKE_INSTALL_RPATH, including FlagGems'
+  # liboperators.so dir. Re-add it so the C++ FlagGems path (FLAGGEMS_KERNEL,
+  # kFlagOs) resolves liboperators.so without LD_LIBRARY_PATH.
+  if(FLAGGEMS_KERNEL AND _flaggems_libdir)
+    set(_metax_rpath "${_metax_rpath}:${_flaggems_libdir}")
+  endif()
   set_target_properties(${LIBRARY_NAME} PROPERTIES
-    INSTALL_RPATH "$ORIGIN:$ORIGIN/../lib_maca:${METAX_PATH}/lib:${METAX_PATH}/lib64:/opt/maca/lib:/opt/maca/lib64"
+    INSTALL_RPATH "${_metax_rpath}"
     INSTALL_RPATH_USE_LINK_PATH OFF
     BUILD_WITH_INSTALL_RPATH ON
   )

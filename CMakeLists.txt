@@ -43,7 +43,17 @@ elseif(ACCELERATOR STREQUAL "metax")
     set(METAX_KERNEL ON CACHE BOOL "Build MetaX kernel implementations" FORCE)
   endif()
   set(CUDA_KERNEL OFF CACHE BOOL "Build CUDA kernel implementations" FORCE)
-  set(FLAGGEMS_KERNEL OFF CACHE BOOL "Build FlagGems kernel implementations" FORCE)
+  # FlagGems C++ dispatch (kFlagOs) needs liboperators.so. FlagGems can be built
+  # for MetaX (cpp/ -DFLAGGEMS_BACKEND=MACA), and its kernels reach the device
+  # through the same DeviceBoxingGuard the boxing path uses, so the C++ path
+  # works here too -- but only in boxing mode, and only when the caller points
+  # FlagGems_DIR/FLAGGEMS_DIR at a MACA-built FlagGems. Default stays OFF so a
+  # plain metax build needs no FlagGems.
+  if(NOT FLAGOS_METAX_BOXING)
+    set(FLAGGEMS_KERNEL OFF CACHE BOOL "Build FlagGems kernel implementations" FORCE)
+  elseif(NOT FLAGGEMS_KERNEL)
+    set(FLAGGEMS_KERNEL OFF CACHE BOOL "Build FlagGems kernel implementations" FORCE)
+  endif()
   project(TORCH_FLAGOS CXX C)
 elseif(ACCELERATOR STREQUAL "tsingmicro")
   project(TORCH_FLAGOS CXX C)
