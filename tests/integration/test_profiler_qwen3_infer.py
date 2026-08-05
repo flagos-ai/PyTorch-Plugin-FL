@@ -39,9 +39,9 @@ def model_and_tokenizer(request):
     """Load Qwen3 model once for all tests.
 
     Uses the shared --model option (default Qwen/Qwen3-0.6B) like the other
-    integration tests, so a local path can be supplied. The host has no network
-    access, so this requires the offline HF env vars, e.g.:
-        HF_HOME=/nfs/lvyufeng/hf_cache HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+    integration tests, so a local path can be supplied. On a host without
+    network access, point HF at a pre-populated cache and run offline:
+        HF_HOME=<your-hf-cache-dir> HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
     """
     from transformers import AutoModelForCausalLM, AutoTokenizer
 

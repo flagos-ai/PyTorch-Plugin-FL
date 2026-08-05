@@ -25,11 +25,11 @@ training steps. Verifies that:
      (i.e. the ProcessGroupFlagOS all_reduce actually synchronised them).
   4. Loss decreases / stays finite over a handful of steps.
 
-Requires:
-    HF_HOME=/nfs/lvyufeng/hf_cache HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+Requires (point HF_HOME at a pre-populated cache to run without network):
+    HF_HOME=<your-hf-cache-dir> HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 
 Run:
-    HF_HOME=/nfs/lvyufeng/hf_cache HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+    HF_HOME=<your-hf-cache-dir> HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
         python tests/manual/test_qwen3_ddp_live.py --world-size 2
 """
 
