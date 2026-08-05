@@ -20,8 +20,16 @@ Run (must go through the CUDA libtorch preload wrapper):
       tests/unit/test_profiler_privateuse1.py -v
 """
 
-import os, sys
+import ctypes
+import glob
+import json
+import os
+import tempfile
+
+import pytest
 import torch
+from torch.profiler import ProfilerActivity, profile
+
 import torch_fl  # noqa: F401
 
 
@@ -64,12 +72,6 @@ def test_guard_stream_is_real_not_synthetic():
     assert s0.stream_id != s1.stream_id or s0.stream_id != s2.stream_id
 
 
-from torch.profiler import profile, ProfilerActivity
-import pytest
-import ctypes
-import glob
-
-
 @pytest.mark.skip(
     reason="torch 2.11.0+cpu wheel's kineto does not invoke PRIVATEUSE1_FALLBACK "
     "stubs at runtime (registerPrivateUse1Methods API exists but dispatcher never "
@@ -80,14 +82,18 @@ import glob
 def test_stage_a_privateuse1_device_time():
     x = torch.randn(1024, 1024, device="flagos")
     torch.flagos.synchronize()
-    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.PrivateUse1]) as prof:
+    with profile(
+        activities=[ProfilerActivity.CPU, ProfilerActivity.PrivateUse1]
+    ) as prof:
         for _ in range(5):
-            y = x @ x
+            x @ x
         torch.flagos.synchronize()
     ka = prof.key_averages()
     # 至少一个条目有非零 device self-time
     dev_times = [getattr(e, "self_device_time_total", 0) for e in ka]
-    assert any(t > 0 for t in dev_times), f"no device time recorded: max={max(dev_times, default=0)}"
+    assert any(t > 0 for t in dev_times), (
+        f"no device time recorded: max={max(dev_times, default=0)}"
+    )
 
 
 def test_cupti_library_locatable():
@@ -95,8 +101,11 @@ def test_cupti_library_locatable():
     candidates = ["libcupti.so.13", "libcupti.so.12", "libcupti.so"]
     candidates += glob.glob("/usr/local/cuda-13.0/targets/*/lib/libcupti.so*")
     candidates += glob.glob(
-        os.path.join(os.path.dirname(os.__file__),
-                     "../site-packages/nvidia/cuda_cupti/lib/libcupti.so*"))
+        os.path.join(
+            os.path.dirname(os.__file__),
+            "../site-packages/nvidia/cuda_cupti/lib/libcupti.so*",
+        )
+    )
     loaded = None
     for c in candidates:
         try:
@@ -105,10 +114,6 @@ def test_cupti_library_locatable():
         except OSError:
             continue
     assert loaded is not None, f"cannot dlopen libcupti from {candidates}"
-
-
-import json
-import tempfile
 
 
 def test_stage_b_chrome_trace_has_gpu_kernels():
@@ -121,9 +126,11 @@ def test_stage_b_chrome_trace_has_gpu_kernels():
     N = 10
     x = torch.randn(1024, 1024, device="flagos")
     torch.flagos.synchronize()
-    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.PrivateUse1]) as prof:
+    with profile(
+        activities=[ProfilerActivity.CPU, ProfilerActivity.PrivateUse1]
+    ) as prof:
         for _ in range(N):
-            y = x @ x
+            x @ x
         torch.flagos.synchronize()
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
         path = f.name
@@ -131,25 +138,43 @@ def test_stage_b_chrome_trace_has_gpu_kernels():
     with open(path) as fh:
         data = json.load(fh)
     events = data.get("traceEvents", data) if isinstance(data, dict) else data
-    kernel_like = [e for e in events
-                   if isinstance(e, dict) and (
-                       e.get("cat") in ("kernel", "Kernel", "gpu_op") or
-                       "kernel" in str(e.get("name", "")).lower())]
+    kernel_like = [
+        e
+        for e in events
+        if isinstance(e, dict)
+        and (
+            e.get("cat") in ("kernel", "Kernel", "gpu_op")
+            or "kernel" in str(e.get("name", "")).lower()
+        )
+    ]
     assert len(kernel_like) > 0, "no GPU kernel events in chrome trace"
 
     # Names must be real (not empty / not the "kernel" placeholder we emit when
     # CUPTI hands us a null name pointer) and at least one matmul kernel must
     # have a non-zero duration -- both regress to garbage if the CUPTI activity
     # record layout / enum values are wrong.
-    named = [e for e in kernel_like
-             if e.get("name") and e.get("name") not in ("kernel", "Memcpy")]
-    assert named, f"kernel events have no real names: {[e.get('name') for e in kernel_like][:5]}"
-    sgemm = [e for e in named if "sgemm" in str(e.get("name", "")).lower()
-             or "gemm" in str(e.get("name", "")).lower()]
-    assert sgemm, f"no matmul (sgemm) kernel captured; names={[e.get('name') for e in named][:5]}"
+    named = [
+        e
+        for e in kernel_like
+        if e.get("name") and e.get("name") not in ("kernel", "Memcpy")
+    ]
+    assert named, (
+        f"kernel events have no real names: {[e.get('name') for e in kernel_like][:5]}"
+    )
+    sgemm = [
+        e
+        for e in named
+        if "sgemm" in str(e.get("name", "")).lower()
+        or "gemm" in str(e.get("name", "")).lower()
+    ]
+    assert sgemm, (
+        f"no matmul (sgemm) kernel captured; names={[e.get('name') for e in named][:5]}"
+    )
     # We launched N matmuls; expect roughly N sgemm launches (allow some slack).
     assert len(sgemm) >= N // 2, f"expected ~{N} sgemm kernels, got {len(sgemm)}"
-    assert any(e.get("dur", 0) > 0 for e in sgemm), "all sgemm kernel durations are zero"
+    assert any(e.get("dur", 0) > 0 for e in sgemm), (
+        "all sgemm kernel durations are zero"
+    )
 
 
 def test_stage_b_correlation_or_degrade():
@@ -166,7 +191,6 @@ def test_stage_b_correlation_or_degrade():
     push/pop were invoked. This proves the correlation bridge is correctly wired,
     even though it can't function in this environment.
     """
-    import ctypes
     # Load libtorch_fl.so to access the C API counters
     lib_path = os.path.join(os.path.dirname(torch_fl.__file__), "lib", "libtorch_fl.so")
     if not os.path.exists(lib_path):
@@ -181,8 +205,10 @@ def test_stage_b_correlation_or_degrade():
 
     x = torch.randn(512, 512, device="flagos")
     torch.flagos.synchronize()
-    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.PrivateUse1]) as prof:
-        y = x @ x
+    with profile(
+        activities=[ProfilerActivity.CPU, ProfilerActivity.PrivateUse1]
+    ) as prof:
+        x @ x
         torch.flagos.synchronize()
 
     # Check that push/pop were called
@@ -199,21 +225,34 @@ def test_stage_b_correlation_or_degrade():
     with open(path) as fh:
         data = json.load(fh)
     events = data.get("traceEvents", data) if isinstance(data, dict) else data
-    flows = [e for e in events if isinstance(e, dict) and e.get("ph") in ("s", "t", "f")]
-    kernels = [e for e in events if isinstance(e, dict)
-               and "kernel" in str(e.get("name", "")).lower()]
+    flows = [
+        e for e in events if isinstance(e, dict) and e.get("ph") in ("s", "t", "f")
+    ]
+    kernels = [
+        e
+        for e in events
+        if isinstance(e, dict) and "kernel" in str(e.get("name", "")).lower()
+    ]
 
     # 达标: 有 flow 事件连接 op↔kernel；降级: push/pop 被调用即可
     if flows:
         print(f"correlation OK: {len(flows)} flow events")
     elif len(kernels) > 0:
-        print(f"DEGRADED: {len(kernels)} kernel events present but no op<->kernel correlation")
-        print("  Reason: CPU-wheel CUPTI buffer callbacks never invoked (CUDA init race)")
+        print(
+            f"DEGRADED: {len(kernels)} kernel events present but no op<->kernel correlation"
+        )
+        print(
+            "  Reason: CPU-wheel CUPTI buffer callbacks never invoked (CUDA init race)"
+        )
     else:
         # Neither flows nor kernels: CUPTI didn't capture GPU activities, but
         # push/pop were called, proving the correlation bridge is correctly wired.
-        print("DEGRADED: push/pop called correctly, but CUPTI captured 0 GPU activities")
-        print("  Reason: CPU-wheel CUPTI buffer callbacks never invoked (CUDA init race)")
-        print("  Follow-up: requires torch+cuda wheel or custom torch build with working CUPTI")
-
-
+        print(
+            "DEGRADED: push/pop called correctly, but CUPTI captured 0 GPU activities"
+        )
+        print(
+            "  Reason: CPU-wheel CUPTI buffer callbacks never invoked (CUDA init race)"
+        )
+        print(
+            "  Follow-up: requires torch+cuda wheel or custom torch build with working CUPTI"
+        )

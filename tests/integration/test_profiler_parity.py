@@ -42,7 +42,9 @@ import torch
 
 import torch_fl  # noqa: F401  (registers the flagos PrivateUse1 backend)
 
-_BASELINE_PATH = Path(__file__).resolve().parents[1] / "data" / "profiler_cuda_baseline.json"
+_BASELINE_PATH = (
+    Path(__file__).resolve().parents[1] / "data" / "profiler_cuda_baseline.json"
+)
 
 DEVICE = "flagos:0"
 
@@ -527,7 +529,8 @@ def test_capture_window_containment(profile_result):
     )
 
     tracked = [
-        e for e in trace.get("traceEvents", [])
+        e
+        for e in trace.get("traceEvents", [])
         if e.get("cat") in WINDOW_TRACKED_CATEGORIES
     ]
     # Without this the containment loop below is vacuous over an empty list.

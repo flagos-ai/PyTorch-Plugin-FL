@@ -154,8 +154,7 @@ def main():
 
     baseline = {
         "generated_by": (
-            f"torch {torch.__version__} / {device_name} / "
-            f"gen_profiler_baseline.py"
+            f"torch {torch.__version__} / {device_name} / gen_profiler_baseline.py"
         ),
         "note": (
             "Structure only. Counts and durations are deliberately absent -- "

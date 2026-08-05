@@ -27,7 +27,7 @@ import tempfile
 
 import pytest
 import torch
-import torch_fl
+import torch_fl  # noqa: F401  -- registers the "flagos" PrivateUse1 device
 from torch.profiler import ProfilerActivity, profile
 
 
@@ -47,9 +47,9 @@ def model_and_tokenizer(request):
 
     model_path = request.config.getoption("--model")
     tokenizer = AutoTokenizer.from_pretrained(model_path)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_path, dtype=torch.float16
-    ).to("flagos")
+    model = AutoModelForCausalLM.from_pretrained(model_path, dtype=torch.float16).to(
+        "flagos"
+    )
     model.eval()
     return model, tokenizer
 
@@ -60,7 +60,9 @@ def test_profiler_qwen3_basic(model_and_tokenizer):
     ids = tokenizer("Hello world", return_tensors="pt").input_ids.to("flagos")
 
     torch.flagos.synchronize()
-    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.PrivateUse1]) as prof:
+    with profile(
+        activities=[ProfilerActivity.CPU, ProfilerActivity.PrivateUse1]
+    ) as prof:
         with torch.no_grad():
             model(ids)
         torch.flagos.synchronize()
@@ -77,7 +79,9 @@ def test_profiler_qwen3_chrome_trace_kernels(model_and_tokenizer):
     ids = tokenizer("Hello world", return_tensors="pt").input_ids.to("flagos")
 
     torch.flagos.synchronize()
-    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.PrivateUse1]) as prof:
+    with profile(
+        activities=[ProfilerActivity.CPU, ProfilerActivity.PrivateUse1]
+    ) as prof:
         with torch.no_grad():
             model(ids)
         torch.flagos.synchronize()
@@ -90,8 +94,12 @@ def test_profiler_qwen3_chrome_trace_kernels(model_and_tokenizer):
         trace_data = json.load(fh)
 
     events = trace_data["traceEvents"]
-    kernels = [e for e in events if "kernel" in str(e.get("name", "")).lower()
-               or e.get("cat") in ("kernel", "Kernel")]
+    kernels = [
+        e
+        for e in events
+        if "kernel" in str(e.get("name", "")).lower()
+        or e.get("cat") in ("kernel", "Kernel")
+    ]
 
     print(f"qwen3 trace: {len(kernels)} kernel events, saved to {path}")
     print(f"Total trace events: {len(events)}")
@@ -104,10 +112,16 @@ def test_profiler_qwen3_chrome_trace_kernels(model_and_tokenizer):
     # CPU-torch + external libtorch_cuda stack (no CUDA wheel). A Qwen3 forward
     # pass runs many matmuls/elementwise kernels, so expect a substantial count.
     assert len(kernels) > 0, "no GPU kernel events captured in qwen3 trace"
-    named = [e for e in kernels
-             if e.get("name") and e.get("name") not in ("kernel", "Memcpy")]
+    named = [
+        e
+        for e in kernels
+        if e.get("name") and e.get("name") not in ("kernel", "Memcpy")
+    ]
     assert named, "GPU kernel events have no real names (CUPTI record decode broken)"
-    assert any(e.get("dur", 0) > 0 for e in named), \
+    assert any(e.get("dur", 0) > 0 for e in named), (
         "all GPU kernel durations are zero (CUPTI timestamp decode broken)"
-    print(f"✓ GPU kernel timeline captured: {len(named)} named kernels, "
-          f"sample={named[0].get('name')[:60]!r} dur={named[0].get('dur')}")
+    )
+    print(
+        f"✓ GPU kernel timeline captured: {len(named)} named kernels, "
+        f"sample={named[0].get('name')[:60]!r} dur={named[0].get('dur')}"
+    )
