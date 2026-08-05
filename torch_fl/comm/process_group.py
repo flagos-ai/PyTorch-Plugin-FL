@@ -428,19 +428,6 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
             opts,
         )
 
-    def _allgather_base(self, output_tensor, input_tensor, opts=None):
-        # Single-tensor allgather (dist.all_gather_into_tensor). Distinct virtual
-        # from allgather(): if it is not overridden, ProcessGroup's C++ base
-        # resolves a Backend for the tensor's device and raises "No backend type
-        # associated with device type flagos". FSDP / ZeRO go through this path.
-        if opts is None:
-            opts = _c10d.AllgatherOptions()
-        return self._inner._allgather_base(
-            _to_comm(output_tensor, self._view_fn),
-            _to_comm(input_tensor, self._view_fn),
-            opts,
-        )
-
     def allgather_into_tensor_coalesced(self, output_tensors, input_tensors, opts=None):
         if opts is None:
             opts = _c10d.AllgatherOptions()
@@ -451,7 +438,11 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
         )
 
     def _allgather_base(self, output_tensor, input_tensor, opts=None):
-        # Backs the functional all_gather_into_tensor (single flat tensor in/out).
+        # Single-tensor allgather, backing the functional
+        # dist.all_gather_into_tensor. A distinct virtual from allgather(): if it
+        # is not overridden, ProcessGroup's C++ base resolves a Backend for the
+        # tensor's device and raises "No backend type associated with device type
+        # flagos". FSDP / ZeRO go through this path.
         if opts is None:
             opts = _c10d.AllgatherOptions()
         return self._inner._allgather_base(
@@ -480,18 +471,6 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
             opts,
         )
 
-    def _reduce_scatter_base(self, output_tensor, input_tensor, opts=None):
-        # Single-tensor reduce_scatter (dist.reduce_scatter_tensor); same
-        # unoverridden-virtual trap as _allgather_base above. This is the hot
-        # path for FSDP gradient reduction.
-        if opts is None:
-            opts = _c10d.ReduceScatterOptions()
-        return self._inner._reduce_scatter_base(
-            _to_comm(output_tensor, self._view_fn),
-            _to_comm(input_tensor, self._view_fn),
-            opts,
-        )
-
     def reduce_scatter_tensor_coalesced(self, output_tensors, input_tensors, opts=None):
         if opts is None:
             opts = _c10d.ReduceScatterOptions()
@@ -502,7 +481,9 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
         )
 
     def _reduce_scatter_base(self, output_tensor, input_tensor, opts=None):
-        # Backs the functional reduce_scatter_tensor (single flat tensor in/out).
+        # Single-tensor reduce_scatter, backing the functional
+        # dist.reduce_scatter_tensor; same unoverridden-virtual trap as
+        # _allgather_base above. Hot path for FSDP gradient reduction.
         if opts is None:
             opts = _c10d.ReduceScatterOptions()
         return self._inner._reduce_scatter_base(

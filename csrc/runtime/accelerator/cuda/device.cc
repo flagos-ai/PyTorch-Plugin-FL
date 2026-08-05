@@ -15,13 +15,6 @@
 #include <include/flagos.h>
 #include <cuda_runtime.h>
 
-namespace {
-
-// Current device index (thread local for multi-threading support)
-thread_local int gCurrentDevice = 0;
-
-} // namespace
-
 Error_t GetDeviceCount(int* count) {
   if (!count) {
     return ErrorUnknown;
@@ -38,13 +31,21 @@ Error_t GetDeviceCount(int* count) {
   return Success;
 }
 
+// Ask the driver rather than caching the index ourselves. flagos aliases the
+// same physical device as torch's CUDA backend, and cudaSetDevice's current
+// device is already thread-local, so a shadow copy here can only diverge from
+// it: torch.cuda.set_device() moves the driver's index without going through
+// our SetDevice, leaving the cached value stale. Any DeviceGuard that then
+// reads the stale value as "previous" restores the process to a device that was
+// never current -- observed as a flagos allocation resetting
+// torch.cuda.current_device() back to 0.
 Error_t GetDevice(int* device) {
   if (!device) {
     return ErrorUnknown;
   }
 
-  *device = gCurrentDevice;
-  return Success;
+  cudaError_t err = cudaGetDevice(device);
+  return (err == cudaSuccess) ? Success : ErrorUnknown;
 }
 
 Error_t SetDevice(int device) {
@@ -60,7 +61,6 @@ Error_t SetDevice(int device) {
     return ErrorUnknown;
   }
 
-  gCurrentDevice = device;
   return Success;
 }
 
