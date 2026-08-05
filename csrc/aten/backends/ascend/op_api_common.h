@@ -620,7 +620,33 @@ void ExecAscendCached(const char* api_name, const char* ws_name,
 
 } // namespace at::native::flagos::ascend
 
+// EXEC_ASCEND_CMD_SIG(aclnn_api, ws_sig, ...) is EXEC_ASCEND_CMD with an
+// explicitly-typed GetWorkspaceSize pointer. `ws_sig` is the callee's full
+// parenthesized parameter list, e.g.
+//
+//   EXEC_ASCEND_CMD_SIG(aclnnInplaceNormal,
+//       (const aclTensor*, float, float, int64_t, int64_t,
+//        uint64_t*, aclOpExecutor**),
+//       acl_out.get(), 0.0f, 1.0f, seed, 0)
+//
+// Use this for ANY aclnn entry that declares a `float` (or any other narrow
+// arithmetic) parameter. The default macro calls through `int (*)(...)`, so
+// every argument goes through varargs default promotion: a `float` is passed as
+// a 64-bit `double` in a v-register, and a callee prototyped `float std` reads
+// only the low 32 bits of that double. For std=1.0 (0x3FF0000000000000) the low
+// half is exactly 0, so aclnnInplaceNormal saw std=0 and torch.randn() silently
+// returned all zeros. Passing `0.0`/`1.0` instead of `0.0f`/`1.0f` does NOT help
+// -- the promotion makes both spellings identical. Only a correctly-typed
+// pointer puts the bits where the callee looks. Most aclnn entries declare
+// `double` (aclnnInplaceUniform, aclnnInplaceRandom), which is why the variadic
+// path works for them and this variant is only needed for the exceptions.
+#define EXEC_ASCEND_CMD_SIG(aclnn_api, ws_sig, ...)                           \
+  EXEC_ASCEND_CMD_IMPL_(aclnn_api, int(*) ws_sig, __VA_ARGS__)
+
 #define EXEC_ASCEND_CMD(aclnn_api, ...)                                       \
+  EXEC_ASCEND_CMD_IMPL_(aclnn_api, int (*)(...), __VA_ARGS__)
+
+#define EXEC_ASCEND_CMD_IMPL_(aclnn_api, ws_fn_type, ...)                     \
   do {                                                                        \
     static void* opApiFuncAddr = nullptr;                                     \
     static void* getWorkspaceSizeFuncAddr = nullptr;                          \
@@ -636,7 +662,7 @@ void ExecAscendCached(const char* api_name, const char* ws_name,
     TORCH_CHECK(getWorkspaceSizeFuncAddr && opApiFuncAddr,                     \
         "Failed to load symbols for " #aclnn_api ": ", dlerror());            \
                                                                               \
-    typedef int (*GetWorkspaceSizeFunc)(...);                                  \
+    using GetWorkspaceSizeFunc = ws_fn_type;                                   \
     auto getWorkspaceSize =                                                   \
         reinterpret_cast<GetWorkspaceSizeFunc>(getWorkspaceSizeFuncAddr);      \
     int ws_ret = getWorkspaceSize(__VA_ARGS__, &workspace_size, &executor);    \

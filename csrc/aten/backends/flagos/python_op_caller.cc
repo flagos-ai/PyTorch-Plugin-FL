@@ -54,8 +54,21 @@ struct PythonOpCache {
       // _FULL_CONFIG regardless of whether flag_gems.ops re-exports it.
       std::string module_path = qual.substr(0, dot);
       std::string func_name = qual.substr(dot + 1);
-      py::module_ mod = py::module_::import(module_path.c_str());
-      func = mod.attr(func_name.c_str());
+      try {
+        py::module_ mod = py::module_::import(module_path.c_str());
+        func = mod.attr(func_name.c_str());
+      } catch (const py::error_already_set&) {
+        // The qualname is recorded on whichever box ran the discovery codegen, so
+        // a vendor-private override module gets frozen into the generated file:
+        // 28 of these say "_hygon.ops.<op>" (mul, mm, silu, sort, ...), which
+        // does not exist on an Ascend host -> ModuleNotFoundError: No module
+        // named '_hygon.ops.mul' the first time FlagGems mode multiplied two
+        // tensors. flag_gems.ops re-exports the vendor-resolved callable for
+        // every one of them, so retry there; the dotted path stays the preferred
+        // lookup because it pins the exact _FULL_CONFIG entry when it does exist.
+        PyErr_Clear();
+        func = ops_module.attr(func_name.c_str());
+      }
     }
     func_cache[name] = func;
     return func;

@@ -44,8 +44,18 @@ at::Tensor RandnKernelAscend(at::IntArrayRef size,
   namespace ascend = at::native::flagos::ascend;
   auto out = make_empty(size, dtype, layout, device, pin_memory);
   ascend::AclTensorWrapper acl_out(out);
-  EXEC_ASCEND_CMD(aclnnInplaceNormal, const_cast<aclTensor*>(acl_out.get()),
-                  0.0f, 1.0f, next_seed(), static_cast<int64_t>(0));
+  // Must use the typed EXEC_ASCEND_CMD_SIG, not plain EXEC_ASCEND_CMD.
+  // aclnnInplaceNormalGetWorkspaceSize declares `float mean, float std`, and the
+  // plain macro calls through `int (*)(...)`: varargs promotion passes the float
+  // as a 64-bit double, and the callee's `float` read takes only its low 32 bits
+  // -- which for 1.0 is exactly 0. That gave std=0, i.e. torch.randn() silently
+  // returning all zeros. (Contrast rand/randint: aclnnInplaceUniform and
+  // aclnnInplaceRandom declare `double`, so the variadic path is fine there.)
+  EXEC_ASCEND_CMD_SIG(aclnnInplaceNormal,
+                      (const aclTensor*, float, float, int64_t, int64_t,
+                       uint64_t*, aclOpExecutor**),
+                      const_cast<aclTensor*>(acl_out.get()), 0.0f, 1.0f,
+                      next_seed(), static_cast<int64_t>(0));
   return out;
 }
 

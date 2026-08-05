@@ -61,15 +61,39 @@ std::string DefaultConfigPath() {
   return FLAGOS_SOURCE_ROOT "/torch_fl/configs/backends.conf";
 }
 
-std::unordered_map<std::string, Backend> LoadBackendConfig() {
-  std::unordered_map<std::string, Backend> table;
+std::string TrimStr(std::string s) {
+  size_t l = s.find_first_not_of(" \t\r\n");
+  size_t r = s.find_last_not_of(" \t\r\n");
+  return (l == std::string::npos) ? "" : s.substr(l, r - l + 1);
+}
 
-  const char* env = std::getenv("FLAGOS_BACKEND_CONFIG");
-  std::string path = env ? env : DefaultConfigPath();
+// Parse one conf file into `table`. Later assignments win, so a caller that
+// wants to override an inherited route just restates the op after the
+// `include`.
+//
+// A line of the form `include <path>` splices another conf in at that point.
+// Relative paths resolve against the including file's directory. This lets a
+// hybrid conf (e.g. backends_ascend_flagos_py.conf) inherit the full vendor
+// baseline and state only its own overrides, instead of duplicating every op.
+// Duplicating was the previous arrangement and it silently rotted: the Ascend
+// baseline grew to 223 ops via codegen while the hybrid conf stayed at 55, so
+// 168 ops fell through to Backend::kFlagOs -- which has no kernel registered in
+// an Ascend build, surfacing as "<op>: backend not registered" at runtime.
+//
+// `depth` bounds include recursion so a cyclic include can't hang import.
+void ParseConfigInto(const std::string& path,
+                     std::unordered_map<std::string, Backend>& table,
+                     int depth = 0) {
+  if (depth > 8) {
+    fprintf(stderr, "[flagos] include nesting too deep at %s, skipping\n",
+            path.c_str());
+    return;
+  }
 
   std::ifstream f(path);
   if (!f.is_open()) {
-    return table;
+    fprintf(stderr, "[flagos] cannot open backend config %s\n", path.c_str());
+    return;
   }
 
   fprintf(stderr, "[flagos] loading backend config from %s\n", path.c_str());
@@ -81,13 +105,26 @@ std::unordered_map<std::string, Backend> LoadBackendConfig() {
     if (comment != std::string::npos) line = line.substr(0, comment);
 
     auto eq = line.find('=');
-    if (eq == std::string::npos) continue;
+    if (eq == std::string::npos) {
+      // `include <path>` -- the only non-assignment directive. Anything else
+      // without an '=' stays silently ignored, as before.
+      std::string t = TrimStr(line);
+      if (t.rfind("include", 0) == 0 && t.size() > 7 &&
+          (t[7] == ' ' || t[7] == '\t')) {
+        std::string inc = TrimStr(t.substr(7));
+        if (inc.empty()) continue;
+        if (inc[0] != '/') {
+          auto slash = path.rfind('/');
+          if (slash != std::string::npos) {
+            inc = path.substr(0, slash + 1) + inc;
+          }
+        }
+        ParseConfigInto(inc, table, depth + 1);
+      }
+      continue;
+    }
 
-    auto trim = [](std::string s) {
-      size_t l = s.find_first_not_of(" \t\r\n");
-      size_t r = s.find_last_not_of(" \t\r\n");
-      return (l == std::string::npos) ? "" : s.substr(l, r - l + 1);
-    };
+    auto trim = [](std::string s) { return TrimStr(std::move(s)); };
 
     std::string op = trim(line.substr(0, eq));
     std::string val = trim(line.substr(eq + 1));
@@ -115,6 +152,15 @@ std::unordered_map<std::string, Backend> LoadBackendConfig() {
       table[op] = Backend::kFlagOs;
     }
   }
+}
+
+std::unordered_map<std::string, Backend> LoadBackendConfig() {
+  std::unordered_map<std::string, Backend> table;
+
+  const char* env = std::getenv("FLAGOS_BACKEND_CONFIG");
+  std::string path = env ? env : DefaultConfigPath();
+
+  ParseConfigInto(path, table);
 
   // Per-op env var overrides: FLAGOS_OP_<op_name>=cuda|metax|flaggems
   // e.g. FLAGOS_OP_mm=cuda  or  FLAGOS_OP_mm__out=cuda
