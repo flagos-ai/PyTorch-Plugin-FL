@@ -11,18 +11,18 @@
 #include <ATen/core/Tensor.h>
 #include <c10/core/DeviceType.h>
 #include <c10/core/TensorImpl.h>
+#include <c10/util/SmallVector.h>
+
+#include <type_traits>
 
 namespace at::native::flagos {
 
 // Change a tensor's device type in-place (metadata only, no data copy).
 // Modifies dispatch key set, DataPtr device, and device_opt_.
-inline void SetTensorDevice(const at::Tensor& t, c10::DeviceType type) {
-  // Undefined tensors (e.g. an unrequested grad in a *_backward output tuple,
-  // like the bias grad of convolution_backward when output_mask[2]==false) have
-  // no TensorImpl; touching device() would dereference null -> "tensor does not
-  // have a device". Nothing to rebox, so skip.
-  if (!t.defined()) return;
-  auto* impl = t.unsafeGetTensorImpl();
+// Operates directly on a TensorImpl* so callers holding a raw impl pointer
+// (e.g. the boxing guards, which record impls to avoid refcount churn) don't
+// need to reconstruct an owning Tensor to unbox.
+inline void SetTensorImplDevice(c10::TensorImpl* impl, c10::DeviceType type) {
   auto idx = impl->device().index();
   auto new_device = c10::Device(type, idx);
   impl->_change_backend_component_keys(new_device);
@@ -38,6 +38,15 @@ inline void SetTensorDevice(const at::Tensor& t, c10::DeviceType type) {
   static_cast<TensorImplAccessor*>(impl)->set_device_opt(new_device);
 }
 
+inline void SetTensorDevice(const at::Tensor& t, c10::DeviceType type) {
+  // Undefined tensors (e.g. an unrequested grad in a *_backward output tuple,
+  // like the bias grad of convolution_backward when output_mask[2]==false) have
+  // no TensorImpl; touching device() would dereference null -> "tensor does not
+  // have a device". Nothing to rebox, so skip.
+  if (!t.defined()) return;
+  SetTensorImplDevice(t.unsafeGetTensorImpl(), type);
+}
+
 inline void BoxToCuda(const at::Tensor& t) {
   SetTensorDevice(t, c10::DeviceType::CUDA);
 }
@@ -48,28 +57,41 @@ inline void UnboxToFlagos(const at::Tensor& t) {
 
 // RAII guard: boxes flagos (PrivateUse1) tensors to CUDA, unboxes on destruction.
 // CPU/CUDA inputs are left unchanged (e.g. mul/add with a CPU scalar).
+//
+// Boxed tensors are tracked by raw TensorImpl* rather than an owning Tensor:
+// the box target always outlives the guard (callers pass named tensors, never
+// temporaries), so no ownership is needed here and we avoid an atomic
+// refcount inc/dec per boxed tensor on both box and unbox.
 class DeviceBoxingGuard {
  public:
   template <typename... Tensors>
-  explicit DeviceBoxingGuard(const Tensors&... tensors)
-      : tensors_{tensors...} {
-    for (auto& t : tensors_) {
-      if (t.defined() && t.is_privateuseone()) {
-        BoxToCuda(t);
-        boxed_.push_back(t);
-      }
-    }
+  explicit DeviceBoxingGuard(Tensors&&... tensors) {
+    // Recording raw TensorImpl* is only safe if every boxed tensor outlives
+    // the guard. Binding an rvalue (temporary) Tensor here would dangle after
+    // the full expression, so reject temporaries at compile time -- callers
+    // must pass named lvalue tensors.
+    static_assert(
+        (std::is_lvalue_reference_v<Tensors> && ...),
+        "DeviceBoxingGuard must not box temporary (rvalue) tensors: "
+        "the guard records raw TensorImpl* and does not extend lifetime");
+    (maybe_box(tensors), ...);
   }
   ~DeviceBoxingGuard() {
-    for (auto& t : boxed_) {
-      if (t.defined()) UnboxToFlagos(t);
+    for (auto* impl : boxed_) {
+      SetTensorImplDevice(impl, c10::DeviceType::PrivateUse1);
     }
   }
   DeviceBoxingGuard(const DeviceBoxingGuard&) = delete;
   DeviceBoxingGuard& operator=(const DeviceBoxingGuard&) = delete;
  private:
-  std::vector<at::Tensor> tensors_;
-  std::vector<at::Tensor> boxed_;
+  void maybe_box(const at::Tensor& t) {
+    if (t.defined() && t.is_privateuseone()) {
+      auto* impl = t.unsafeGetTensorImpl();
+      SetTensorImplDevice(impl, c10::DeviceType::CUDA);
+      boxed_.push_back(impl);
+    }
+  }
+  c10::SmallVector<c10::TensorImpl*, 4> boxed_;
 };
 
 // Box/unbox all tensors in a TensorList (for _foreach_* ops).
@@ -140,7 +162,8 @@ inline void UnboxTensorVecToFlagos(std::vector<at::Tensor>& tensors) {
 
 // RAII guard for TensorList boxing (multiple lists).
 // Only unboxes tensors that were actually boxed (originally PrivateUse1),
-// leaving genuine CUDA tensors untouched.
+// leaving genuine CUDA tensors untouched. Boxed tensors are tracked by raw
+// TensorImpl* (the list elements outlive the guard) to avoid refcount churn.
 class TensorListBoxingGuard {
  public:
   TensorListBoxingGuard() = default;
@@ -148,20 +171,21 @@ class TensorListBoxingGuard {
   void box(at::TensorList tensors) {
     for (const auto& t : tensors) {
       if (t.defined() && t.is_privateuseone()) {
-        BoxToCuda(t);
-        boxed_.push_back(t);
+        auto* impl = t.unsafeGetTensorImpl();
+        SetTensorImplDevice(impl, c10::DeviceType::CUDA);
+        boxed_.push_back(impl);
       }
     }
   }
 
   // Track a tensor that was already boxed (for ITensorListRef iteration)
   void track(const at::Tensor& t) {
-    boxed_.push_back(t);
+    if (t.defined()) boxed_.push_back(t.unsafeGetTensorImpl());
   }
 
   ~TensorListBoxingGuard() {
-    for (auto& t : boxed_) {
-      if (t.defined()) UnboxToFlagos(t);
+    for (auto* impl : boxed_) {
+      SetTensorImplDevice(impl, c10::DeviceType::PrivateUse1);
     }
   }
 
@@ -169,7 +193,7 @@ class TensorListBoxingGuard {
   TensorListBoxingGuard& operator=(const TensorListBoxingGuard&) = delete;
 
  private:
-  std::vector<at::Tensor> boxed_;
+  c10::SmallVector<c10::TensorImpl*, 4> boxed_;
 };
 
 } // namespace at::native::flagos

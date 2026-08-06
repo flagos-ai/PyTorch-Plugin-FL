@@ -11,6 +11,22 @@
 
 #include <include/flagos.h>
 
+// Real c10::cuda:: stream/event plumbing. Gated the same way as
+// runtime/allocator/caching_device_allocator.cc's delegation to
+// c10::cuda::CUDACachingAllocator (NOT the looser cuda_runtime.h guard used
+// in hooks.h/contiguous_ops.cc/copy_ops.cc): the DCU wheel is hipified and
+// exports c10::hip::HIPCachingAllocator with zero c10::cuda symbols (see
+// backends/dcu_memory.h), so c10::cuda::getCurrentCUDAStream would fail to
+// resolve there even though DCU's CUDA-compat runtime satisfies plain
+// cudaStream_t calls.
+#if !defined(USE_ASCEND) && !defined(USE_TSINGMICRO) && !defined(USE_DCU) && \
+    !defined(USE_GCU)
+#define FLAGOS_GUARD_HAS_CUDA_STREAM 1
+#include <c10/cuda/CUDAStream.h>
+#else
+#define FLAGOS_GUARD_HAS_CUDA_STREAM 0
+#endif
+
 namespace c10::flagos {
 
 struct GuardImpl final : public c10::impl::DeviceGuardImplInterface {
@@ -55,26 +71,91 @@ struct GuardImpl final : public c10::impl::DeviceGuardImplInterface {
     ::SetDevice(d.index());
   }
 
+  // NB on all the FLAGOS_GUARD_HAS_CUDA_STREAM branches below: `d.index()`
+  // may be -1 (unresolved / "current device"), matching CUDAGuardImpl's own
+  // contract. c10::cuda resolves -1 to the real current device internally,
+  // but that resolution lives in the *returned* CUDAStream/DeviceIndex, not
+  // in `d`. Reusing the caller's original (possibly still -1) Device when
+  // building the returned c10::Stream would leak an unresolved index back
+  // into torch; a later setCurrentCUDAStream() on that leaked -1 corrupts
+  // CUDA's fixed-size per-device stream-pool bookkeeping (reproduced
+  // locally as a `free(): invalid pointer` crash from a plain
+  // `with torch.Stream(device="flagos"): ...`). Always reconstruct the
+  // returned Device from the resolved index.
+
   c10::Stream getStream(c10::Device d) const noexcept override {
+#if FLAGOS_GUARD_HAS_CUDA_STREAM
+    auto s = c10::cuda::getCurrentCUDAStream(d.index());
+    return c10::Stream(
+        c10::Stream::UNSAFE,
+        c10::Device(c10::DeviceType::PrivateUse1, s.device_index()),
+        s.id());
+#else
     // Return stream with ID 0 (not DEFAULT which is -1)
     // The autograd engine expects valid stream IDs
     return c10::Stream(c10::Stream::UNSAFE, d, 0);
+#endif
   }
 
   c10::Stream getDefaultStream(c10::Device d) const override {
+#if FLAGOS_GUARD_HAS_CUDA_STREAM
+    auto s = c10::cuda::getDefaultCUDAStream(d.index());
+    return c10::Stream(
+        c10::Stream::UNSAFE,
+        c10::Device(c10::DeviceType::PrivateUse1, s.device_index()),
+        s.id());
+#else
     return c10::Stream(c10::Stream::UNSAFE, d, 0);
+#endif
   }
 
   c10::Stream getStreamFromGlobalPool(c10::Device d, bool isHighPriority = false) const override {
+#if FLAGOS_GUARD_HAS_CUDA_STREAM
+    auto s = c10::cuda::getStreamFromPool(isHighPriority, d.index());
+    return c10::Stream(
+        c10::Stream::UNSAFE,
+        c10::Device(c10::DeviceType::PrivateUse1, s.device_index()),
+        s.id());
+#else
     return c10::Stream(c10::Stream::UNSAFE, d, 0);
+#endif
   }
 
   c10::Stream exchangeStream(c10::Stream s) const noexcept override {
+#if FLAGOS_GUARD_HAS_CUDA_STREAM
+    // CUDAStream::UNCHECKED does not itself validate device_type, but
+    // setCurrentCUDAStream() stores the wrapped c10::Stream verbatim in its
+    // per-device slot, and every later getCurrentCUDAStream() unpacks that
+    // slot assuming DeviceType::CUDA -- wrapping with s's PrivateUse1
+    // device (as the brief's snippet does) corrupts that slot. Re-tag as
+    // CUDA before handing to c10::cuda.
+    auto cs = c10::cuda::CUDAStream(
+        c10::cuda::CUDAStream::UNCHECKED,
+        c10::Stream(
+            c10::Stream::UNSAFE,
+            c10::Device(c10::DeviceType::CUDA, s.device_index()),
+            s.id()));
+    auto old = c10::cuda::getCurrentCUDAStream(cs.device_index());
+    c10::cuda::setCurrentCUDAStream(cs);
+    return c10::Stream(
+        c10::Stream::UNSAFE,
+        c10::Device(c10::DeviceType::PrivateUse1, old.device_index()),
+        old.id());
+#else
     return c10::Stream(c10::Stream::UNSAFE, s.device(), 0);
+#endif
   }
 
   c10::Stream getNewStream(c10::Device d, int priority = 0) const override {
+#if FLAGOS_GUARD_HAS_CUDA_STREAM
+    auto s = c10::cuda::getStreamFromPool(priority, d.index());
+    return c10::Stream(
+        c10::Stream::UNSAFE,
+        c10::Device(c10::DeviceType::PrivateUse1, s.device_index()),
+        s.id());
+#else
     return c10::Stream(c10::Stream::UNSAFE, d, 0);
+#endif
   }
 
   bool queryStream(const c10::Stream& stream) const override {
@@ -116,13 +197,40 @@ struct GuardImpl final : public c10::impl::DeviceGuardImplInterface {
     return static_cast<c10::DeviceIndex>(count);
   }
 
+  c10::DeviceCapability getDeviceCapability(c10::Device d) const override {
+    // Return a default device capability struct with all scalar types enabled
+    // This is called by autograd profiler to determine device properties
+    // The default constructor already enables all capabilities
+    return c10::DeviceCapability();
+  }
+
   void record(
       void** event,
       const c10::Stream& stream,
       const c10::DeviceIndex device_index,
       const c10::EventFlag flag) const override {
-    ::EventCreate((Event_t*)event);
+    if (!*event) {
+      ::EventCreate((Event_t*)event);
+    }
+#if FLAGOS_GUARD_HAS_CUDA_STREAM
+    // Re-tag as CUDA (see exchangeStream above) before wrapping -- CUDAStream
+    // only holds the c10::Stream, it does not re-validate device_type, but
+    // cs.stream()'s internal unpack does assume CUDA.
+    auto cs = c10::cuda::CUDAStream(
+        c10::cuda::CUDAStream::UNCHECKED,
+        c10::Stream(
+            c10::Stream::UNSAFE,
+            c10::Device(c10::DeviceType::CUDA, stream.device_index()),
+            stream.id()));
+    // cs.stream() returns cudaStream_t; Stream_t is flagos's opaque
+    // `struct Stream*` ABI handle. Both conventions alias a raw
+    // cudaStream_t under the hood (see the (cudaStream_t)stream casts in
+    // accelerator/cuda/stream.cc), so this reinterpret is the established
+    // flagos<->CUDA stream conversion, not a new pattern.
+    ::EventRecord(*(Event_t*)event, (Stream_t)cs.stream());
+#else
     ::EventRecord(*(Event_t*)event, nullptr);
+#endif
   }
 
   void block(void* event, const c10::Stream& stream) const override {

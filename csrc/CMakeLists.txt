@@ -125,6 +125,64 @@ endif()
 add_library(${LIBRARY_NAME} SHARED ${_torch_fl_sources})
 set_target_properties(${LIBRARY_NAME} PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+# CUPTI headers for the profiler child (Stage B). Runtime symbols are dlopen'd,
+# so we only need the include path, not the link library.
+#
+# CRITICAL: the header MUST match the CUDA runtime actually running in the
+# process (cu12.8 via the external libtorch_cuda.so + pip nvidia-*-cu12 wheels),
+# NOT the system CUDA-13.0 toolkit. The activity-record struct layouts and the
+# CUpti_ActivityKind enum values DIFFER between major versions (e.g.
+# CONCURRENT_KERNEL is 10 in cu12 but 9 elsewhere); using the wrong header
+# decodes kernel timestamps/names as garbage. So probe the pip cu12 CUPTI
+# include dir first, then fall back to system paths.
+execute_process(
+  COMMAND "${PYTHON_EXECUTABLE}" -c
+    "import importlib.util,os,sys; s=importlib.util.find_spec('nvidia'); \
+d=[os.path.join(b,'cuda_cupti','include') for b in (s.submodule_search_locations or []) \
+if os.path.exists(os.path.join(b,'cuda_cupti','include','cupti_activity.h'))]; \
+sys.stdout.write(d[0] if d else '')"
+  OUTPUT_VARIABLE CUPTI_CU12_INCLUDE_DIR
+  ERROR_QUIET)
+find_path(CUPTI_INCLUDE_DIR cupti_activity.h
+  PATHS ${CUPTI_CU12_INCLUDE_DIR}
+        /usr/local/cuda-13.0/targets/x86_64-linux/include
+        /usr/local/cuda/extras/CUPTI/include
+  NO_DEFAULT_PATH)
+find_path(CUPTI_INCLUDE_DIR cupti_activity.h
+  PATHS /usr/local/cuda-13.0/targets/x86_64-linux/include
+        /usr/local/cuda/extras/CUPTI/include)
+if(CUPTI_INCLUDE_DIR)
+  target_include_directories(${LIBRARY_NAME} PRIVATE ${CUPTI_INCLUDE_DIR})
+  target_compile_definitions(${LIBRARY_NAME} PRIVATE FLAGOS_HAVE_CUPTI=1)
+endif()
+
+# cuda_occupancy.h -- CUDA's occupancy calculator, used by the device tracer to
+# compute the kernel "est. achieved occupancy %" that torch-cuda's trace carries.
+#
+# Unlike the CUPTI headers above this is genuinely version-INsensitive: it is a
+# pure-header calculator with no linking, no CUDA context, and no dependence on
+# activity-record layouts -- it takes device attributes and a launch config as
+# plain integers. So any toolkit's copy will do, and no cu12-vs-cu13 hazard
+# applies. Note it ships in the CUDA *runtime* include dir, NOT alongside the
+# CUPTI headers, hence a separate search.
+#
+# Optional by design: without it we simply omit the three occupancy fields
+# rather than fail the build, so a machine with no CUDA toolkit headers still
+# gets everything else in the trace.
+find_path(CUDA_OCCUPANCY_INCLUDE_DIR cuda_occupancy.h
+  PATHS "$ENV{CUDA_HOME}/include"
+        "$ENV{CUDA_HOME}/targets/x86_64-linux/include"
+        /usr/local/cuda/include
+        /usr/local/cuda/targets/x86_64-linux/include
+        /usr/local/cuda-13.0/targets/x86_64-linux/include)
+if(CUDA_OCCUPANCY_INCLUDE_DIR)
+  target_include_directories(${LIBRARY_NAME} PRIVATE ${CUDA_OCCUPANCY_INCLUDE_DIR})
+  target_compile_definitions(${LIBRARY_NAME} PRIVATE FLAGOS_HAVE_CUDA_OCCUPANCY=1)
+  message(STATUS "cuda_occupancy.h found: ${CUDA_OCCUPANCY_INCLUDE_DIR}")
+else()
+  message(STATUS "cuda_occupancy.h NOT found; kernel occupancy fields will be omitted")
+endif()
+
 # Build stream_api as a standalone shared lib so liboperators.so can resolve it at runtime
 if(FLAGGEMS_KERNEL AND ACCELERATOR STREQUAL "ascend")
   add_library(stream_api SHARED "${CMAKE_CURRENT_SOURCE_DIR}/runtime/accelerator/ascend/stream_api.cc")
@@ -274,8 +332,17 @@ if(ACCELERATOR STREQUAL "metax")
   # the target's /opt/maca driver install. Disabling INSTALL_RPATH_USE_LINK_PATH
   # stops CMake from appending the imported torch target's build-machine link
   # dir. Mirrors scripts/bundle_maca_libtorch.sh's patchelf pass.
+  set(_metax_rpath
+      "$ORIGIN:$ORIGIN/../lib_maca:${METAX_PATH}/lib:${METAX_PATH}/lib64:/opt/maca/lib:/opt/maca/lib64")
+  # Setting INSTALL_RPATH explicitly discards the entries the top-level
+  # CMakeLists appended to CMAKE_INSTALL_RPATH, including FlagGems'
+  # liboperators.so dir. Re-add it so the C++ FlagGems path (FLAGGEMS_KERNEL,
+  # kFlagOs) resolves liboperators.so without LD_LIBRARY_PATH.
+  if(FLAGGEMS_KERNEL AND _flaggems_libdir)
+    set(_metax_rpath "${_metax_rpath}:${_flaggems_libdir}")
+  endif()
   set_target_properties(${LIBRARY_NAME} PROPERTIES
-    INSTALL_RPATH "$ORIGIN:$ORIGIN/../lib_maca:${METAX_PATH}/lib:${METAX_PATH}/lib64:/opt/maca/lib:/opt/maca/lib64"
+    INSTALL_RPATH "${_metax_rpath}"
     INSTALL_RPATH_USE_LINK_PATH OFF
     BUILD_WITH_INSTALL_RPATH ON
   )

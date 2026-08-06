@@ -1290,12 +1290,20 @@ at::Tensor SumDimIntlistKernelMusa(
   } else {
     for (int64_t d = 0; d < ndim; ++d) norm_dims.push_back(d);
   }
+  // aten's answer shape, and the *squeezed* shape mudnn must be handed. mudnn
+  // silently drops all but the first output element when the output still
+  // carries the reduced axes as extent-1 dims and the input is non-contiguous
+  // (measured on v3300: (4,5) stride (0,1) reduced over dim 0 into a [1,5]
+  // output writes only out[0]). Reducing into the squeezed shape is correct in
+  // every configuration probed, so keepdim is restored with a view afterwards.
   auto out_shape = self.sizes().vec();
   std::vector<int64_t> sorted_dims(norm_dims);
   std::sort(sorted_dims.rbegin(), sorted_dims.rend());
+  auto squeezed_shape = self.sizes().vec();
   for (int64_t d : sorted_dims) {
     if (keepdim) out_shape[d] = 1;
     else out_shape.erase(out_shape.begin() + d);
+    squeezed_shape.erase(squeezed_shape.begin() + d);
   }
 
   auto out_dtype = dtype.value_or(
@@ -1303,12 +1311,17 @@ at::Tensor SumDimIntlistKernelMusa(
           ? at::kLong
           : self.scalar_type());
   auto self_c = self.scalar_type() == out_dtype ? self : self.to(out_dtype);
-  // A fully broadcast input would fault inside mudnn's multi-dim Reduce; see
-  // MudnnReduceWouldFault. Materializing it is enough to avoid that.
-  if (musa_ops::MudnnReduceWouldFault(self_c, norm_dims.size())) {
+  // mudnn multi-dim Reduce (more than one axis at a time) silently ignores
+  // strides and reads the input as if contiguous (verified: (4,5) stride (0,1)
+  // reduced over all dims gives 210 = sum(1..20) instead of 60 = 4*sum(1..5)).
+  // Single-dim reduces honour strides correctly. Materializing once fixes both
+  // the stride bug and the SIGFPE on fully-broadcast multi-dim reduces.
+  if (norm_dims.size() > 1 && !self_c.is_contiguous()) {
+    self_c = self_c.contiguous();
+  } else if (musa_ops::MudnnReduceWouldFault(self_c, norm_dims.size())) {
     self_c = self_c.contiguous();
   }
-  auto out = at::empty(out_shape, self.options().dtype(out_dtype));
+  auto out = at::empty(squeezed_shape, self.options().dtype(out_dtype));
   std::vector<int> mudnn_dims = musa_ops::ToMudnnDims(norm_dims, ndim);
 
   musa_ops::MudnnTensorWrapper t_self(self_c);
@@ -1320,7 +1333,7 @@ at::Tensor SumDimIntlistKernelMusa(
       "sum", self,
       op.Run(_mudnn_h, t_out.get(), t_self.get(),
              musa_ops::MudnnWorkspaceFor(out)));
-  return out;
+  return keepdim ? out.view(out_shape) : out;
 }
 
 REGISTER_IMPL_TO_DISPATCHER(SumDimIntlistFn, sum_dim_intlist_dispatcher, Backend::kMusa, SumDimIntlistKernelMusa)
@@ -1341,12 +1354,20 @@ at::Tensor MeanDimKernelMusa(
   } else {
     for (int64_t d = 0; d < ndim; ++d) norm_dims.push_back(d);
   }
+  // aten's answer shape, and the *squeezed* shape mudnn must be handed. mudnn
+  // silently drops all but the first output element when the output still
+  // carries the reduced axes as extent-1 dims and the input is non-contiguous
+  // (measured on v3300: (4,5) stride (0,1) reduced over dim 0 into a [1,5]
+  // output writes only out[0]). Reducing into the squeezed shape is correct in
+  // every configuration probed, so keepdim is restored with a view afterwards.
   auto out_shape = self.sizes().vec();
   std::vector<int64_t> sorted_dims(norm_dims);
   std::sort(sorted_dims.rbegin(), sorted_dims.rend());
+  auto squeezed_shape = self.sizes().vec();
   for (int64_t d : sorted_dims) {
     if (keepdim) out_shape[d] = 1;
     else out_shape.erase(out_shape.begin() + d);
+    squeezed_shape.erase(squeezed_shape.begin() + d);
   }
 
   auto out_dtype = dtype.value_or(
@@ -1354,12 +1375,17 @@ at::Tensor MeanDimKernelMusa(
           ? at::kLong
           : self.scalar_type());
   auto self_c = self.scalar_type() == out_dtype ? self : self.to(out_dtype);
-  // A fully broadcast input would fault inside mudnn's multi-dim Reduce; see
-  // MudnnReduceWouldFault. Materializing it is enough to avoid that.
-  if (musa_ops::MudnnReduceWouldFault(self_c, norm_dims.size())) {
+  // mudnn multi-dim Reduce (more than one axis at a time) silently ignores
+  // strides and reads the input as if contiguous (verified: (4,5) stride (0,1)
+  // reduced over all dims gives 210 = sum(1..20) instead of 60 = 4*sum(1..5)).
+  // Single-dim reduces honour strides correctly. Materializing once fixes both
+  // the stride bug and the SIGFPE on fully-broadcast multi-dim reduces.
+  if (norm_dims.size() > 1 && !self_c.is_contiguous()) {
+    self_c = self_c.contiguous();
+  } else if (musa_ops::MudnnReduceWouldFault(self_c, norm_dims.size())) {
     self_c = self_c.contiguous();
   }
-  auto out = at::empty(out_shape, self.options().dtype(out_dtype));
+  auto out = at::empty(squeezed_shape, self.options().dtype(out_dtype));
   std::vector<int> mudnn_dims = musa_ops::ToMudnnDims(norm_dims, ndim);
 
   musa_ops::MudnnTensorWrapper t_self(self_c);
@@ -1371,7 +1397,7 @@ at::Tensor MeanDimKernelMusa(
       "mean", self,
       op.Run(_mudnn_h, t_out.get(), t_self.get(),
              musa_ops::MudnnWorkspaceFor(out)));
-  return out;
+  return keepdim ? out.view(out_shape) : out;
 }
 
 REGISTER_IMPL_TO_DISPATCHER(MeanDimFn, mean_dim_dispatcher, Backend::kMusa, MeanDimKernelMusa)
@@ -1391,9 +1417,13 @@ at::Tensor SumKernelMusa(
   for (int64_t d = 0; d < self.dim(); ++d) {
     mudnn_dims.push_back(static_cast<int>(d));
   }
-  // A fully broadcast input would fault inside mudnn's multi-dim Reduce; see
-  // MudnnReduceWouldFault. Materializing it is enough to avoid that.
-  if (musa_ops::MudnnReduceWouldFault(self_c, mudnn_dims.size())) {
+  // Reducing every dim at once is a multi-dim Reduce, which mudnn runs as if
+  // the input were contiguous -- it ignores strides outright, and faults on a
+  // fully-broadcast input. Materializing once covers both. Same measurement as
+  // in T_REDUCE_DIMS_DTYPE.
+  if (mudnn_dims.size() > 1 && !self_c.is_contiguous()) {
+    self_c = self_c.contiguous();
+  } else if (musa_ops::MudnnReduceWouldFault(self_c, mudnn_dims.size())) {
     self_c = self_c.contiguous();
   }
   auto out = at::empty({}, self.options().dtype(out_dtype));
@@ -1427,9 +1457,13 @@ at::Tensor MeanKernelMusa(
   for (int64_t d = 0; d < self.dim(); ++d) {
     mudnn_dims.push_back(static_cast<int>(d));
   }
-  // A fully broadcast input would fault inside mudnn's multi-dim Reduce; see
-  // MudnnReduceWouldFault. Materializing it is enough to avoid that.
-  if (musa_ops::MudnnReduceWouldFault(self_c, mudnn_dims.size())) {
+  // Reducing every dim at once is a multi-dim Reduce, which mudnn runs as if
+  // the input were contiguous -- it ignores strides outright, and faults on a
+  // fully-broadcast input. Materializing once covers both. Same measurement as
+  // in T_REDUCE_DIMS_DTYPE.
+  if (mudnn_dims.size() > 1 && !self_c.is_contiguous()) {
+    self_c = self_c.contiguous();
+  } else if (musa_ops::MudnnReduceWouldFault(self_c, mudnn_dims.size())) {
     self_c = self_c.contiguous();
   }
   auto out = at::empty({}, self.options().dtype(out_dtype));
@@ -1484,5 +1518,725 @@ at::Tensor PrivSoftmaxKernelMusa(const at::Tensor& self, int64_t dim, bool half_
 }
 
 REGISTER_IMPL_TO_DISPATCHER(PrivSoftmaxFn, priv_softmax_dispatcher, Backend::kMusa, PrivSoftmaxKernelMusa)
+
+at::Tensor TanKernelMusa(const at::Tensor& self) {
+  if (!musa_ops::MudnnSupportsArithmeticDtype(self.scalar_type())) {
+    return at::tan(self.cpu()).to(self.device());
+  }
+  auto out = at::empty(self.sizes(), self.options());
+  musa_ops::MudnnTensorWrapper t_self(self);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Unary op;
+  op.SetMode(musa_ops::mudnn::Unary::Mode::TAN);
+  EXEC_MUDNN_CMD("tan", self, op.Run(_mudnn_h, t_out.get(), t_self.get()));
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(TanFn, tan_dispatcher, Backend::kMusa, TanKernelMusa)
+
+at::Tensor RoundKernelMusa(const at::Tensor& self) {
+  if (!musa_ops::MudnnSupportsArithmeticDtype(self.scalar_type())) {
+    return at::round(self.cpu()).to(self.device());
+  }
+  auto out = at::empty(self.sizes(), self.options());
+  musa_ops::MudnnTensorWrapper t_self(self);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Unary op;
+  op.SetMode(musa_ops::mudnn::Unary::Mode::ROUND);
+  EXEC_MUDNN_CMD("round", self, op.Run(_mudnn_h, t_out.get(), t_self.get()));
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(RoundFn, round_dispatcher, Backend::kMusa, RoundKernelMusa)
+
+at::Tensor MishKernelMusa(const at::Tensor& self) {
+  if (!musa_ops::MudnnSupportsArithmeticDtype(self.scalar_type())) {
+    return at::mish(self.cpu()).to(self.device());
+  }
+  auto out = at::empty(self.sizes(), self.options());
+  musa_ops::MudnnTensorWrapper t_self(self);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Unary op;
+  op.SetMode(musa_ops::mudnn::Unary::Mode::MISH);
+  EXEC_MUDNN_CMD("mish", self, op.Run(_mudnn_h, t_out.get(), t_self.get()));
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(MishFn, mish_dispatcher, Backend::kMusa, MishKernelMusa)
+
+at::Tensor HardswishKernelMusa(const at::Tensor& self) {
+  if (!musa_ops::MudnnSupportsArithmeticDtype(self.scalar_type())) {
+    return at::hardswish(self.cpu()).to(self.device());
+  }
+  auto out = at::empty(self.sizes(), self.options());
+  musa_ops::MudnnTensorWrapper t_self(self);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Unary op;
+  op.SetMode(musa_ops::mudnn::Unary::Mode::HARDSWISH);
+  EXEC_MUDNN_CMD("hardswish", self, op.Run(_mudnn_h, t_out.get(), t_self.get()));
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(HardswishFn, hardswish_dispatcher, Backend::kMusa, HardswishKernelMusa)
+
+at::Tensor IsnanKernelMusa(const at::Tensor& self) {
+  if (!musa_ops::MudnnSupportsDtype(self.scalar_type())) {
+    return at::isnan(self.cpu()).to(self.device());
+  }
+  auto out = at::empty(self.sizes(), self.options().dtype(at::kBool));
+  musa_ops::MudnnTensorWrapper t_self(self);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Unary op;
+  op.SetMode(musa_ops::mudnn::Unary::Mode::IS_NAN);
+  EXEC_MUDNN_CMD("isnan", self, op.Run(_mudnn_h, t_out.get(), t_self.get()));
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(IsnanFn, isnan_dispatcher, Backend::kMusa, IsnanKernelMusa)
+
+at::Tensor IsinfKernelMusa(const at::Tensor& self) {
+  if (!musa_ops::MudnnSupportsDtype(self.scalar_type())) {
+    return at::isinf(self.cpu()).to(self.device());
+  }
+  auto out = at::empty(self.sizes(), self.options().dtype(at::kBool));
+  musa_ops::MudnnTensorWrapper t_self(self);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Unary op;
+  op.SetMode(musa_ops::mudnn::Unary::Mode::IS_INF);
+  EXEC_MUDNN_CMD("isinf", self, op.Run(_mudnn_h, t_out.get(), t_self.get()));
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(IsinfFn, isinf_dispatcher, Backend::kMusa, IsinfKernelMusa)
+
+at::Tensor HardsigmoidKernelMusa(const at::Tensor& self) {
+  if (!musa_ops::MudnnSupportsArithmeticDtype(self.scalar_type())) {
+    return at::hardsigmoid(self.cpu()).to(self.device());
+  }
+  auto out = at::empty(self.sizes(), self.options());
+  musa_ops::MudnnTensorWrapper t_self(self);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Unary op;
+  op.SetMode(musa_ops::mudnn::Unary::Mode::HARDSIGMOID);
+  op.SetAlpha(static_cast<double>(1.0 / 6.0));
+  op.SetBeta(static_cast<double>(0.5));
+  EXEC_MUDNN_CMD("hardsigmoid", self, op.Run(_mudnn_h, t_out.get(), t_self.get()));
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(HardsigmoidFn, hardsigmoid_dispatcher, Backend::kMusa, HardsigmoidKernelMusa)
+
+at::Tensor LeakyReluKernelMusa(const at::Tensor& self, const at::Scalar& negative_slope) {
+  if (!musa_ops::MudnnSupportsArithmeticDtype(self.scalar_type())) {
+    return at::leaky_relu(self.cpu(), negative_slope).to(self.device());
+  }
+  auto out = at::empty(self.sizes(), self.options());
+  musa_ops::MudnnTensorWrapper t_self(self);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Unary op;
+  op.SetMode(musa_ops::mudnn::Unary::Mode::LEAKY_RELU);
+  op.SetAlpha(negative_slope.to<double>());
+  EXEC_MUDNN_CMD("leaky_relu", self, op.Run(_mudnn_h, t_out.get(), t_self.get()));
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(LeakyReluFn, leaky_relu_dispatcher, Backend::kMusa, LeakyReluKernelMusa)
+
+at::Tensor EluKernelMusa(
+    const at::Tensor& self,
+    const at::Scalar& alpha,
+    const at::Scalar& scale,
+    const at::Scalar& input_scale) {
+  if (!musa_ops::MudnnSupportsArithmeticDtype(self.scalar_type()) ||
+      scale.to<double>() != 1.0 || input_scale.to<double>() != 1.0) {
+    return at::elu(self.cpu(), alpha, scale, input_scale)
+        .to(self.device());
+  }
+  auto out = at::empty(self.sizes(), self.options());
+  musa_ops::MudnnTensorWrapper t_self(self);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Unary op;
+  op.SetMode(musa_ops::mudnn::Unary::Mode::ELU);
+  op.SetAlpha(alpha.to<double>());
+  EXEC_MUDNN_CMD("elu", self, op.Run(_mudnn_h, t_out.get(), t_self.get()));
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(EluFn, elu_dispatcher, Backend::kMusa, EluKernelMusa)
+
+at::Tensor SoftplusKernelMusa(
+    const at::Tensor& self,
+    const at::Scalar& beta,
+    const at::Scalar& threshold) {
+  if (!musa_ops::MudnnSupportsArithmeticDtype(self.scalar_type())) {
+    return at::softplus(self.cpu(), beta, threshold).to(self.device());
+  }
+  auto out = at::empty(self.sizes(), self.options());
+  musa_ops::MudnnTensorWrapper t_self(self);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Unary op;
+  op.SetMode(musa_ops::mudnn::Unary::Mode::SOFTPLUS);
+  op.SetAlpha(beta.to<double>());
+  op.SetBeta(threshold.to<double>());
+  EXEC_MUDNN_CMD("softplus", self, op.Run(_mudnn_h, t_out.get(), t_self.get()));
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(SoftplusFn, softplus_dispatcher, Backend::kMusa, SoftplusKernelMusa)
+
+at::Tensor ClampKernelMusa(
+    const at::Tensor& self,
+    const ::std::optional<at::Scalar>& min,
+    const ::std::optional<at::Scalar>& max) {
+  if (!musa_ops::MudnnSupportsArithmeticDtype(self.scalar_type())) {
+    return at::clamp(self.cpu(), min, max).to(self.device());
+  }
+  auto out = at::empty(self.sizes(), self.options());
+  musa_ops::MudnnTensorWrapper t_self(self);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Unary op;
+  op.SetMode(musa_ops::mudnn::Unary::Mode::CLIP);
+  op.SetAlpha(
+      min.has_value() ? min.value().to<double>()
+                      : -std::numeric_limits<double>::infinity());
+  op.SetBeta(
+      max.has_value() ? max.value().to<double>()
+                      : std::numeric_limits<double>::infinity());
+  EXEC_MUDNN_CMD("clamp", self, op.Run(_mudnn_h, t_out.get(), t_self.get()));
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(ClampFn, clamp_dispatcher, Backend::kMusa, ClampKernelMusa)
+
+at::Tensor ClampMinKernelMusa(const at::Tensor& self, const at::Scalar& min) {
+  if (!musa_ops::MudnnSupportsArithmeticDtype(self.scalar_type())) {
+    return at::clamp_min(self.cpu(), min).to(self.device());
+  }
+  auto out = at::empty(self.sizes(), self.options());
+  musa_ops::MudnnTensorWrapper t_self(self);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Unary op;
+  op.SetMode(musa_ops::mudnn::Unary::Mode::CLIP);
+  op.SetAlpha(min.to<double>());
+  op.SetBeta(std::numeric_limits<double>::infinity());
+  EXEC_MUDNN_CMD("clamp_min", self, op.Run(_mudnn_h, t_out.get(), t_self.get()));
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(ClampMinFn, clamp_min_dispatcher, Backend::kMusa, ClampMinKernelMusa)
+
+at::Tensor ClampMaxKernelMusa(const at::Tensor& self, const at::Scalar& max) {
+  if (!musa_ops::MudnnSupportsArithmeticDtype(self.scalar_type())) {
+    return at::clamp_max(self.cpu(), max).to(self.device());
+  }
+  auto out = at::empty(self.sizes(), self.options());
+  musa_ops::MudnnTensorWrapper t_self(self);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Unary op;
+  op.SetMode(musa_ops::mudnn::Unary::Mode::CLIP);
+  op.SetAlpha(-std::numeric_limits<double>::infinity());
+  op.SetBeta(max.to<double>());
+  EXEC_MUDNN_CMD("clamp_max", self, op.Run(_mudnn_h, t_out.get(), t_self.get()));
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(ClampMaxFn, clamp_max_dispatcher, Backend::kMusa, ClampMaxKernelMusa)
+
+at::Tensor LogicalXorKernelMusa(const at::Tensor& self, const at::Tensor& other) {
+  if (!musa_ops::MudnnSupportsDtype(self.scalar_type()) ||
+      !musa_ops::MudnnSupportsDtype(other.scalar_type())) {
+    return at::logical_xor(self.cpu(), other.cpu()).to(self.device());
+  }
+  auto result_dtype = at::result_type(self, other);
+  auto self_c = self.scalar_type() == result_dtype ? self : self.to(result_dtype);
+  auto other_c = other.to(self.device(), result_dtype);
+  auto out_shape = at::infer_size(self_c.sizes(), other_c.sizes());
+  auto self_b = self_c.expand(out_shape);
+  auto other_b = other_c.expand(out_shape);
+  auto out = at::empty(out_shape, self.options().dtype(at::kBool));
+
+  musa_ops::MudnnTensorWrapper t_self(self_b);
+  musa_ops::MudnnTensorWrapper t_other(other_b);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Binary op;
+  op.SetMode(musa_ops::mudnn::Binary::Mode::LOGICAL_XOR);
+  EXEC_MUDNN_CMD(
+      "logical_xor", self,
+      op.Run(_mudnn_h, t_out.get(), t_self.get(), t_other.get()));
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(LogicalXorFn, logical_xor_dispatcher, Backend::kMusa, LogicalXorKernelMusa)
+
+at::Tensor FloorDivideKernelMusa(const at::Tensor& self, const at::Tensor& other) {
+  if (!musa_ops::MudnnSupportsArithmeticDtype(self.scalar_type()) ||
+      !musa_ops::MudnnSupportsArithmeticDtype(other.scalar_type())) {
+    return at::floor_divide(self.cpu(), other.cpu()).to(self.device());
+  }
+  auto result_dtype = at::result_type(self, other);
+  auto self_c = self.scalar_type() == result_dtype ? self : self.to(result_dtype);
+  auto other_c = other.to(self.device(), result_dtype);
+  auto out_shape = at::infer_size(self_c.sizes(), other_c.sizes());
+  auto self_b = self_c.expand(out_shape);
+  auto other_b = other_c.expand(out_shape);
+  auto out = at::empty(out_shape, self.options().dtype(result_dtype));
+
+  musa_ops::MudnnTensorWrapper t_self(self_b);
+  musa_ops::MudnnTensorWrapper t_other(other_b);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Binary op;
+  op.SetMode(musa_ops::mudnn::Binary::Mode::FLOORDIV);
+  EXEC_MUDNN_CMD(
+      "floor_divide", self,
+      op.Run(_mudnn_h, t_out.get(), t_self.get(), t_other.get()));
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(FloorDivideFn, floor_divide_dispatcher, Backend::kMusa, FloorDivideKernelMusa)
+
+at::Tensor SigmoidBackwardKernelMusa(const at::Tensor& grad_output, const at::Tensor& self) {
+  if (!musa_ops::MudnnSupportsArithmeticDtype(grad_output.scalar_type()) ||
+      !musa_ops::MudnnSupportsArithmeticDtype(self.scalar_type())) {
+    return at::sigmoid_backward(grad_output.cpu(), self.cpu()).to(grad_output.device());
+  }
+  auto result_dtype = at::result_type(grad_output, self);
+  auto grad_c = grad_output.scalar_type() == result_dtype
+      ? grad_output
+      : grad_output.to(result_dtype);
+  auto self_c = self.to(grad_output.device(), result_dtype);
+  auto out_shape = at::infer_size(grad_c.sizes(), self_c.sizes());
+  auto grad_b = grad_c.expand(out_shape);
+  auto self_b = self_c.expand(out_shape);
+  auto out = at::empty(out_shape, grad_output.options().dtype(result_dtype));
+
+  musa_ops::MudnnTensorWrapper t_grad(grad_b);
+  musa_ops::MudnnTensorWrapper t_self(self_b);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Binary op;
+  op.SetMode(musa_ops::mudnn::Binary::Mode::SIGMOID_BW);
+  EXEC_MUDNN_CMD(
+      "sigmoid_backward", grad_output,
+      op.Run(_mudnn_h, t_out.get(), t_grad.get(), t_self.get()));
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(SigmoidBackwardFn, sigmoid_backward_dispatcher, Backend::kMusa, SigmoidBackwardKernelMusa)
+
+at::Tensor TanhBackwardKernelMusa(const at::Tensor& grad_output, const at::Tensor& self) {
+  if (!musa_ops::MudnnSupportsArithmeticDtype(grad_output.scalar_type()) ||
+      !musa_ops::MudnnSupportsArithmeticDtype(self.scalar_type())) {
+    return at::tanh_backward(grad_output.cpu(), self.cpu()).to(grad_output.device());
+  }
+  auto result_dtype = at::result_type(grad_output, self);
+  auto grad_c = grad_output.scalar_type() == result_dtype
+      ? grad_output
+      : grad_output.to(result_dtype);
+  auto self_c = self.to(grad_output.device(), result_dtype);
+  auto out_shape = at::infer_size(grad_c.sizes(), self_c.sizes());
+  auto grad_b = grad_c.expand(out_shape);
+  auto self_b = self_c.expand(out_shape);
+  auto out = at::empty(out_shape, grad_output.options().dtype(result_dtype));
+
+  musa_ops::MudnnTensorWrapper t_grad(grad_b);
+  musa_ops::MudnnTensorWrapper t_self(self_b);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Binary op;
+  op.SetMode(musa_ops::mudnn::Binary::Mode::TANH_BW);
+  EXEC_MUDNN_CMD(
+      "tanh_backward", grad_output,
+      op.Run(_mudnn_h, t_out.get(), t_grad.get(), t_self.get()));
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(TanhBackwardFn, tanh_backward_dispatcher, Backend::kMusa, TanhBackwardKernelMusa)
+
+at::Tensor SiluBackwardKernelMusa(const at::Tensor& grad_output, const at::Tensor& self) {
+  if (!musa_ops::MudnnSupportsArithmeticDtype(grad_output.scalar_type()) ||
+      !musa_ops::MudnnSupportsArithmeticDtype(self.scalar_type())) {
+    return at::silu_backward(grad_output.cpu(), self.cpu()).to(grad_output.device());
+  }
+  auto result_dtype = at::result_type(grad_output, self);
+  auto grad_c = grad_output.scalar_type() == result_dtype
+      ? grad_output
+      : grad_output.to(result_dtype);
+  auto self_c = self.to(grad_output.device(), result_dtype);
+  auto out_shape = at::infer_size(grad_c.sizes(), self_c.sizes());
+  auto grad_b = grad_c.expand(out_shape);
+  auto self_b = self_c.expand(out_shape);
+  auto out = at::empty(out_shape, grad_output.options().dtype(result_dtype));
+
+  musa_ops::MudnnTensorWrapper t_grad(grad_b);
+  musa_ops::MudnnTensorWrapper t_self(self_b);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Binary op;
+  op.SetMode(musa_ops::mudnn::Binary::Mode::SILU_BW);
+  EXEC_MUDNN_CMD(
+      "silu_backward", grad_output,
+      op.Run(_mudnn_h, t_out.get(), t_grad.get(), t_self.get()));
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(SiluBackwardFn, silu_backward_dispatcher, Backend::kMusa, SiluBackwardKernelMusa)
+
+at::Tensor GeluBackwardKernelMusa(
+    const at::Tensor& grad_output,
+    const at::Tensor& self,
+    c10::string_view approximate) {
+  if (!musa_ops::MudnnSupportsArithmeticDtype(grad_output.scalar_type()) ||
+      !musa_ops::MudnnSupportsArithmeticDtype(self.scalar_type())) {
+    return at::gelu_backward(grad_output.cpu(), self.cpu(), approximate)
+        .to(grad_output.device());
+  }
+  auto result_dtype = at::result_type(grad_output, self);
+  auto grad_c = grad_output.scalar_type() == result_dtype
+      ? grad_output
+      : grad_output.to(result_dtype);
+  auto self_c = self.to(grad_output.device(), result_dtype);
+  auto out_shape = at::infer_size(grad_c.sizes(), self_c.sizes());
+  auto grad_b = grad_c.expand(out_shape);
+  auto self_b = self_c.expand(out_shape);
+  auto out = at::empty(out_shape, grad_output.options().dtype(result_dtype));
+
+  musa_ops::MudnnTensorWrapper t_grad(grad_b);
+  musa_ops::MudnnTensorWrapper t_self(self_b);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Binary op;
+  op.SetMode(
+      approximate == "tanh" ? musa_ops::mudnn::Binary::Mode::GELU_TANH_BW
+                            : musa_ops::mudnn::Binary::Mode::GELU_NONE_BW);
+  EXEC_MUDNN_CMD(
+      "gelu_backward", grad_output,
+      op.Run(_mudnn_h, t_out.get(), t_grad.get(), t_self.get()));
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(GeluBackwardFn, gelu_backward_dispatcher, Backend::kMusa, GeluBackwardKernelMusa)
+
+at::Tensor ThresholdBackwardKernelMusa(
+    const at::Tensor& grad_output,
+    const at::Tensor& self,
+    const at::Scalar& threshold) {
+  if (!musa_ops::MudnnSupportsArithmeticDtype(grad_output.scalar_type()) ||
+      !musa_ops::MudnnSupportsArithmeticDtype(self.scalar_type())) {
+    return at::threshold_backward(grad_output.cpu(), self.cpu(), threshold)
+        .to(grad_output.device());
+  }
+  auto result_dtype = at::result_type(grad_output, self);
+  auto grad_c = grad_output.scalar_type() == result_dtype
+      ? grad_output
+      : grad_output.to(result_dtype);
+  auto self_c = self.to(grad_output.device(), result_dtype);
+  auto out_shape = at::infer_size(grad_c.sizes(), self_c.sizes());
+  auto grad_b = grad_c.expand(out_shape);
+  auto self_b = self_c.expand(out_shape);
+  auto out = at::empty(out_shape, grad_output.options().dtype(result_dtype));
+
+  musa_ops::MudnnTensorWrapper t_grad(grad_b);
+  musa_ops::MudnnTensorWrapper t_self(self_b);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Binary op;
+  op.SetMode(musa_ops::mudnn::Binary::Mode::THRESHOLD_BW);
+  if (at::isIntegralType(result_dtype, true)) {
+    op.SetAlpha(threshold.to<int64_t>());
+  } else {
+    op.SetAlpha(threshold.to<double>());
+  }
+  EXEC_MUDNN_CMD(
+      "threshold_backward", grad_output,
+      op.Run(_mudnn_h, t_out.get(), t_grad.get(), t_self.get()));
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(ThresholdBackwardFn, threshold_backward_dispatcher, Backend::kMusa, ThresholdBackwardKernelMusa)
+
+at::Tensor LeakyReluBackwardKernelMusa(
+    const at::Tensor& grad_output,
+    const at::Tensor& self,
+    const at::Scalar& negative_slope,
+    bool self_is_result) {
+  if (!musa_ops::MudnnSupportsArithmeticDtype(grad_output.scalar_type()) ||
+      !musa_ops::MudnnSupportsArithmeticDtype(self.scalar_type())) {
+    return at::leaky_relu_backward(
+               grad_output.cpu(), self.cpu(), negative_slope, self_is_result)
+        .to(grad_output.device());
+  }
+  auto result_dtype = at::result_type(grad_output, self);
+  auto grad_c = grad_output.scalar_type() == result_dtype
+      ? grad_output
+      : grad_output.to(result_dtype);
+  auto self_c = self.to(grad_output.device(), result_dtype);
+  auto out_shape = at::infer_size(grad_c.sizes(), self_c.sizes());
+  auto grad_b = grad_c.expand(out_shape);
+  auto self_b = self_c.expand(out_shape);
+  auto out = at::empty(out_shape, grad_output.options().dtype(result_dtype));
+
+  musa_ops::MudnnTensorWrapper t_grad(grad_b);
+  musa_ops::MudnnTensorWrapper t_self(self_b);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Binary op;
+  op.SetMode(musa_ops::mudnn::Binary::Mode::LEAKY_RELU_BW);
+  if (at::isIntegralType(result_dtype, true)) {
+    op.SetAlpha(negative_slope.to<int64_t>());
+  } else {
+    op.SetAlpha(negative_slope.to<double>());
+  }
+  EXEC_MUDNN_CMD(
+      "leaky_relu_backward", grad_output,
+      op.Run(_mudnn_h, t_out.get(), t_grad.get(), t_self.get()));
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(LeakyReluBackwardFn, leaky_relu_backward_dispatcher, Backend::kMusa, LeakyReluBackwardKernelMusa)
+
+at::Tensor AddcmulKernelMusa(
+    const at::Tensor& self,
+    const at::Tensor& tensor1,
+    const at::Tensor& tensor2,
+    const at::Scalar& value) {
+  if (!musa_ops::MudnnSupportsArithmeticDtype(self.scalar_type()) ||
+      !musa_ops::MudnnSupportsArithmeticDtype(tensor1.scalar_type()) ||
+      !musa_ops::MudnnSupportsArithmeticDtype(tensor2.scalar_type())) {
+    return at::addcmul(self.cpu(), tensor1.cpu(), tensor2.cpu(), value)
+        .to(self.device());
+  }
+  auto result_dtype = at::result_type(self, tensor1);
+  result_dtype = at::promoteTypes(result_dtype, tensor2.scalar_type());
+  auto self_c = self.scalar_type() == result_dtype ? self : self.to(result_dtype);
+  auto t1_c = tensor1.to(self.device(), result_dtype);
+  auto t2_c = tensor2.to(self.device(), result_dtype);
+  auto out_shape = at::infer_size(self_c.sizes(), t1_c.sizes());
+  out_shape = at::infer_size(out_shape, t2_c.sizes());
+  auto self_b = self_c.expand(out_shape);
+  auto t1_b = t1_c.expand(out_shape);
+  auto t2_b = t2_c.expand(out_shape);
+  auto out = at::empty(out_shape, self.options().dtype(result_dtype));
+
+  musa_ops::MudnnTensorWrapper t_self(self_b);
+  musa_ops::MudnnTensorWrapper t_t1(t1_b);
+  musa_ops::MudnnTensorWrapper t_t2(t2_b);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Ternary op;
+  op.SetMode(musa_ops::mudnn::Ternary::Mode::ADDCMUL_ALPHA);
+  if (at::isIntegralType(result_dtype, true)) {
+    op.SetAlpha(value.to<int64_t>());
+  } else {
+    op.SetAlpha(value.to<double>());
+  }
+  EXEC_MUDNN_CMD(
+      "addcmul", self,
+      op.Run(_mudnn_h, t_out.get(), t_self.get(), t_t1.get(), t_t2.get()));
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(AddcmulFn, addcmul_dispatcher, Backend::kMusa, AddcmulKernelMusa)
+
+at::Tensor AddcdivKernelMusa(
+    const at::Tensor& self,
+    const at::Tensor& tensor1,
+    const at::Tensor& tensor2,
+    const at::Scalar& value) {
+  if (!musa_ops::MudnnSupportsArithmeticDtype(self.scalar_type()) ||
+      !musa_ops::MudnnSupportsArithmeticDtype(tensor1.scalar_type()) ||
+      !musa_ops::MudnnSupportsArithmeticDtype(tensor2.scalar_type())) {
+    return at::addcdiv(self.cpu(), tensor1.cpu(), tensor2.cpu(), value)
+        .to(self.device());
+  }
+  auto result_dtype = at::result_type(self, tensor1);
+  result_dtype = at::promoteTypes(result_dtype, tensor2.scalar_type());
+  auto self_c = self.scalar_type() == result_dtype ? self : self.to(result_dtype);
+  auto t1_c = tensor1.to(self.device(), result_dtype);
+  auto t2_c = tensor2.to(self.device(), result_dtype);
+  auto out_shape = at::infer_size(self_c.sizes(), t1_c.sizes());
+  out_shape = at::infer_size(out_shape, t2_c.sizes());
+  auto self_b = self_c.expand(out_shape);
+  auto t1_b = t1_c.expand(out_shape);
+  auto t2_b = t2_c.expand(out_shape);
+  auto out = at::empty(out_shape, self.options().dtype(result_dtype));
+
+  musa_ops::MudnnTensorWrapper t_self(self_b);
+  musa_ops::MudnnTensorWrapper t_t1(t1_b);
+  musa_ops::MudnnTensorWrapper t_t2(t2_b);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Ternary op;
+  op.SetMode(musa_ops::mudnn::Ternary::Mode::ADDCDIV_ALPHA);
+  if (at::isIntegralType(result_dtype, true)) {
+    op.SetAlpha(value.to<int64_t>());
+  } else {
+    op.SetAlpha(value.to<double>());
+  }
+  EXEC_MUDNN_CMD(
+      "addcdiv", self,
+      op.Run(_mudnn_h, t_out.get(), t_self.get(), t_t1.get(), t_t2.get()));
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(AddcdivFn, addcdiv_dispatcher, Backend::kMusa, AddcdivKernelMusa)
+
+at::Tensor WhereSelfKernelMusa(
+    const at::Tensor& condition,
+    const at::Tensor& self,
+    const at::Tensor& other) {
+  if (!musa_ops::MudnnSupportsDtype(self.scalar_type()) ||
+      !musa_ops::MudnnSupportsDtype(other.scalar_type()) ||
+      condition.scalar_type() != at::kBool) {
+    return at::where(condition.cpu(), self.cpu(), other.cpu())
+        .to(self.device());
+  }
+  auto result_dtype = at::result_type(self, other);
+  auto self_c = self.to(condition.device(), result_dtype);
+  auto other_c = other.to(condition.device(), result_dtype);
+  auto out_shape = at::infer_size(condition.sizes(), self_c.sizes());
+  out_shape = at::infer_size(out_shape, other_c.sizes());
+  auto cond_b = condition.expand(out_shape);
+  auto self_b = self_c.expand(out_shape);
+  auto other_b = other_c.expand(out_shape);
+  auto out = at::empty(out_shape, self.options().dtype(result_dtype));
+
+  musa_ops::MudnnTensorWrapper t_cond(cond_b);
+  musa_ops::MudnnTensorWrapper t_self(self_b);
+  musa_ops::MudnnTensorWrapper t_other(other_b);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Ternary op;
+  op.SetMode(musa_ops::mudnn::Ternary::Mode::SELECT);
+  EXEC_MUDNN_CMD(
+      "where", self,
+      op.Run(_mudnn_h, t_out.get(), t_cond.get(), t_self.get(),
+             t_other.get()));
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(WhereSelfFn, where_self_dispatcher, Backend::kMusa, WhereSelfKernelMusa)
+
+at::Tensor AddmmKernelMusa(
+    const at::Tensor& self,
+    const at::Tensor& mat1,
+    const at::Tensor& mat2,
+    const at::Scalar& beta,
+    const at::Scalar& alpha) {
+  if (!musa_ops::MudnnSupportsArithmeticDtype(self.scalar_type()) ||
+      !musa_ops::MudnnSupportsArithmeticDtype(mat1.scalar_type()) ||
+      !musa_ops::MudnnSupportsArithmeticDtype(mat2.scalar_type())) {
+    return at::addmm(self.cpu(), mat1.cpu(), mat2.cpu(), beta, alpha)
+        .to(self.device());
+  }
+  std::vector<int64_t> out_shape = mat1.sizes().vec();
+  out_shape.back() = mat2.size(-1);
+  auto out = at::empty(out_shape, mat1.options());
+  auto mat1_c = mat1.contiguous();
+  auto mat2_c = mat2.contiguous();
+
+  musa_ops::MudnnTensorWrapper t_mat1(mat1_c);
+  musa_ops::MudnnTensorWrapper t_mat2(mat2_c);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::MatMul op;
+
+  const bool self_is_out_shaped = self.sizes().equals(out_shape);
+  const bool self_is_vector =
+      self.dim() == 1 && self.size(0) == out_shape.back();
+
+  if (self_is_out_shaped) {
+    auto self_c = self.to(mat1.device(), mat1.scalar_type()).contiguous();
+    musa_ops::MudnnTensorWrapper t_self(self_c);
+    musa_ops::mudnn::Tensor empty_bias;
+    op.SetAlpha(alpha.to<double>());
+    op.SetBeta(beta.to<double>());
+    op.SetGamma(1.0);
+    EXEC_MUDNN_CMD(
+        "addmm", self,
+        op.RunWithBiasAdd(_mudnn_h, t_out.get(), t_mat1.get(), t_mat2.get(),
+                          t_self.get(), empty_bias,
+                          musa_ops::MudnnWorkspaceFor(out)));
+  } else if (self_is_vector) {
+    auto self_c = self.to(mat1.device(), mat1.scalar_type()).contiguous();
+    musa_ops::MudnnTensorWrapper t_self(self_c);
+    // c aliases d here, so beta must stay 0 and aten's beta rides on gamma.
+    op.SetAlpha(alpha.to<double>());
+    op.SetBeta(0.0);
+    op.SetGamma(beta.to<double>());
+    EXEC_MUDNN_CMD(
+        "addmm", self,
+        op.RunWithBiasAdd(_mudnn_h, t_out.get(), t_mat1.get(), t_mat2.get(),
+                          t_out.get(), t_self.get(),
+                          musa_ops::MudnnWorkspaceFor(out)));
+  } else {
+    op.SetAlpha(alpha.to<double>());
+    op.SetBeta(0.0);
+    op.SetGamma(1.0);
+    EXEC_MUDNN_CMD(
+        "addmm", self,
+        op.Run(_mudnn_h, t_out.get(), t_mat1.get(), t_mat2.get(),
+               musa_ops::MudnnWorkspaceFor(out)));
+    out.add_(self, beta);
+  }
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(AddmmFn, addmm_dispatcher, Backend::kMusa, AddmmKernelMusa)
+
+at::Tensor BaddbmmKernelMusa(
+    const at::Tensor& self,
+    const at::Tensor& mat1,
+    const at::Tensor& mat2,
+    const at::Scalar& beta,
+    const at::Scalar& alpha) {
+  if (!musa_ops::MudnnSupportsArithmeticDtype(self.scalar_type()) ||
+      !musa_ops::MudnnSupportsArithmeticDtype(mat1.scalar_type()) ||
+      !musa_ops::MudnnSupportsArithmeticDtype(mat2.scalar_type())) {
+    return at::baddbmm(self.cpu(), mat1.cpu(), mat2.cpu(), beta, alpha)
+        .to(self.device());
+  }
+  std::vector<int64_t> out_shape = mat1.sizes().vec();
+  out_shape.back() = mat2.size(-1);
+  auto out = at::empty(out_shape, mat1.options());
+  auto mat1_c = mat1.contiguous();
+  auto mat2_c = mat2.contiguous();
+
+  musa_ops::MudnnTensorWrapper t_mat1(mat1_c);
+  musa_ops::MudnnTensorWrapper t_mat2(mat2_c);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::BatchMatMul op;
+
+  const bool self_is_out_shaped = self.sizes().equals(out_shape);
+  const bool self_is_vector =
+      self.dim() == 1 && self.size(0) == out_shape.back();
+
+  if (self_is_out_shaped) {
+    auto self_c = self.to(mat1.device(), mat1.scalar_type()).contiguous();
+    musa_ops::MudnnTensorWrapper t_self(self_c);
+    musa_ops::mudnn::Tensor empty_bias;
+    op.SetAlpha(alpha.to<double>());
+    op.SetBeta(beta.to<double>());
+    op.SetGamma(1.0);
+    EXEC_MUDNN_CMD(
+        "baddbmm", self,
+        op.RunWithBiasAdd(_mudnn_h, t_out.get(), t_mat1.get(), t_mat2.get(),
+                          t_self.get(), empty_bias,
+                          musa_ops::MudnnWorkspaceFor(out)));
+  } else if (self_is_vector) {
+    auto self_c = self.to(mat1.device(), mat1.scalar_type()).contiguous();
+    musa_ops::MudnnTensorWrapper t_self(self_c);
+    // c aliases d here, so beta must stay 0 and aten's beta rides on gamma.
+    op.SetAlpha(alpha.to<double>());
+    op.SetBeta(0.0);
+    op.SetGamma(beta.to<double>());
+    EXEC_MUDNN_CMD(
+        "baddbmm", self,
+        op.RunWithBiasAdd(_mudnn_h, t_out.get(), t_mat1.get(), t_mat2.get(),
+                          t_out.get(), t_self.get(),
+                          musa_ops::MudnnWorkspaceFor(out)));
+  } else {
+    op.SetAlpha(alpha.to<double>());
+    op.SetBeta(0.0);
+    op.SetGamma(1.0);
+    EXEC_MUDNN_CMD(
+        "baddbmm", self,
+        op.Run(_mudnn_h, t_out.get(), t_mat1.get(), t_mat2.get(),
+               musa_ops::MudnnWorkspaceFor(out)));
+    out.add_(self, beta);
+  }
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(BaddbmmFn, baddbmm_dispatcher, Backend::kMusa, BaddbmmKernelMusa)
 
 } // namespace at::native::flagos

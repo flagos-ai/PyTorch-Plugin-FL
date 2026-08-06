@@ -10,6 +10,8 @@
 
 #include <ATen/native/Resize.h>
 #include <ATen/ops/_pin_memory.h>
+#include <ATen/ops/_to_copy.h>
+#include <ATen/ops/_to_copy_ops.h>
 #include <ATen/ops/copy_native.h>
 #include <include/flagos.h>
 #include "device_boxing.h"
@@ -22,7 +24,39 @@
 #include "backends/musa/mudnn_common.h"
 #endif
 
+// On the CUDA-family backends (including MetaX boxing) the flagos device shares
+// the vendor's CUDA streams, so the current stream is readable from c10::cuda.
+#if !defined(USE_ASCEND) && !defined(USE_TSINGMICRO) && !defined(USE_GCU) && \
+    !defined(USE_MUSA)
+#define FLAGOS_COPY_HAS_CUDA_STREAM 1
+#include <c10/cuda/CUDAStream.h>
+#endif
+
 namespace at::native::flagos {
+
+namespace {
+
+// `Memcpy` is the *synchronous* cudaMemcpy, which only orders against the
+// legacy default stream. PyTorch creates its side streams with
+// cudaStreamNonBlocking, so work enqueued on one is NOT awaited by a plain
+// cudaMemcpy: the copy can read a buffer before the kernel producing it has
+// run. That is a silent wrong-data bug, not a crash -- FSDP2 CPU offload hit it
+// because its gradient D2H happens inside the reduce-scatter stream, and the
+// gradient reached the CPU as zeros (or as a previous tensor's contents).
+//
+// Synchronizing the current stream before a blocking copy restores the
+// semantics callers expect from a synchronous memcpy. It is a no-op on the
+// default stream (already ordered), so the common path is unaffected.
+inline void SyncCurrentStreamBeforeBlockingCopy() {
+#if defined(FLAGOS_COPY_HAS_CUDA_STREAM)
+  auto stream = c10::cuda::getCurrentCUDAStream();
+  if (stream.stream() != nullptr) {
+    stream.synchronize();
+  }
+#endif
+}
+
+} // namespace
 
 ADD_IMPL_TO_DISPATCHER(
     LocalScalarDenseFn, local_scalar_dense_dispatcher, "_local_scalar_dense")
@@ -71,6 +105,7 @@ at::Tensor _copy_from(
       // Fast path: both contiguous, same shape and dtype → direct memcpy.
       size_t nbytes = self.numel() * self.element_size();
       if (nbytes > 0) {
+        SyncCurrentStreamBeforeBlockingCopy();
         Memcpy(dst.data_ptr(), self.data_ptr(), nbytes, MemcpyDeviceToDevice);
       }
     } else {
@@ -151,6 +186,12 @@ at::Tensor _copy_from(
 
   size_t nbytes = self_contig.numel() * self_contig.element_size();
 
+  // Every branch below issues a blocking `Memcpy`. The source may have been
+  // produced by kernels on a non-default stream (and `contiguous()` above may
+  // itself have just enqueued one there), which a synchronous cudaMemcpy does
+  // not wait for. Drain the current stream first.
+  SyncCurrentStreamBeforeBlockingCopy();
+
   if (self.is_cpu() && dst.is_privateuseone()) {
     if (dst.is_contiguous()) {
       Memcpy(dst.data_ptr(), self_contig.data_ptr(), nbytes, MemcpyHostToDevice);
@@ -219,6 +260,9 @@ at::Scalar _local_scalar_dense(const at::Tensor& self) {
       self.numel() == 1,
       "_local_scalar_dense expects a tensor with 1 element");
   at::Tensor cpu_tensor = at::empty({1}, self.options().device(at::kCPU));
+  // `.item()` on a value just computed on a side stream must see that kernel's
+  // result, and a blocking cudaMemcpy does not wait for a non-blocking stream.
+  SyncCurrentStreamBeforeBlockingCopy();
   Memcpy(
       cpu_tensor.data_ptr(),
       self.data_ptr(),
@@ -291,19 +335,50 @@ at::Tensor _to_copy(
 
   at::Tensor result;
 
+  // Branches that end in a blocking `Memcpy` drain the current stream first --
+  // after their `contiguous()` call, which may itself enqueue a kernel there.
+  // `tensor.to("cpu")` inside `with flagos.stream(s)` returned stale data
+  // before this. Branches that redispatch to a native CUDA kernel instead need
+  // no drain: those kernels are stream-ordered on their own.
+
   if (src_is_flagos && dst_is_cuda) {
     int device_index =
         device.index() >= 0 ? device.index()
                             : (self.device().index() >= 0 ? self.device().index() : 0);
+#if defined(USE_ASCEND) || defined(USE_TSINGMICRO) || defined(USE_GCU) || \
+    defined(USE_MUSA)
+    // No CUDA runtime on these platforms: keep the explicit contiguous + memcpy
+    // path (a "CUDA" destination here is only reachable via shared-memory tricks
+    // that don't exist without cudart).
     at::Tensor self_contig = self.contiguous();
     at::Tensor temp = at::empty(
         self_contig.sizes(),
         self_contig.options().device(c10::Device(c10::kCUDA, device_index)));
     size_t nbytes = self_contig.numel() * self_contig.element_size();
     if (nbytes > 0) {
+      SyncCurrentStreamBeforeBlockingCopy();
       Memcpy(temp.data_ptr(), self_contig.data_ptr(), nbytes, MemcpyDeviceToDevice);
     }
     result = (dtype != self.scalar_type()) ? temp.to(dtype) : temp;
+#else
+    // CUDA platform fast path: flagos (PrivateUse1) and CUDA share the same GPU
+    // memory, so box self to CUDA and redispatch straight to the native CUDA
+    // _to_copy with an explicit CUDA DispatchKeySet. That skips re-entering the
+    // dispatcher from the top (no risk of routing back to PrivateUse1) and lets
+    // the native kernel read self's strides + cast dtype in one on-device pass,
+    // allocating the result directly on CUDA -- no intermediate contiguous copy
+    // or manual Memcpy. self is unboxed back to PrivateUse1 on guard teardown.
+    DeviceBoxingGuard guard(self);
+    result = at::_ops::_to_copy::redispatch(
+        c10::DispatchKeySet(c10::DispatchKey::CUDA),
+        self,
+        dtype,
+        /*layout=*/std::nullopt,
+        c10::Device(c10::kCUDA, device_index),
+        /*pin_memory=*/std::nullopt,
+        non_blocking,
+        memory_format);
+#endif
   } else if (src_is_flagos && dst_is_flagos) {
     int device_index = device.index() >= 0 ? device.index() : 0;
     at::Tensor self_contig = self.contiguous();
@@ -363,6 +438,7 @@ at::Tensor _to_copy(
           self_contig.options().device(c10::Device(c10::kPrivateUse1, device_index)));
       size_t nbytes = self_contig.numel() * self_contig.element_size();
       if (nbytes > 0) {
+        SyncCurrentStreamBeforeBlockingCopy();
         Memcpy(
             result.data_ptr(),
             self_contig.data_ptr(),
@@ -376,6 +452,7 @@ at::Tensor _to_copy(
         at::empty(self_contig.sizes(), self_contig.options().device(at::kCPU));
     size_t nbytes = self_contig.numel() * self_contig.element_size();
     if (nbytes > 0) {
+      SyncCurrentStreamBeforeBlockingCopy();
       Memcpy(temp.data_ptr(), self_contig.data_ptr(), nbytes, MemcpyDeviceToHost);
     }
     result = (dtype != self.scalar_type()) ? temp.to(dtype) : temp;
@@ -390,6 +467,7 @@ at::Tensor _to_copy(
         src_contig.options().device(c10::Device(c10::kPrivateUse1, device_index)));
     size_t nbytes = src_contig.numel() * src_contig.element_size();
     if (nbytes > 0) {
+      SyncCurrentStreamBeforeBlockingCopy();
       if (self.is_cpu()) {
         Memcpy(result.data_ptr(), src_contig.data_ptr(), nbytes, MemcpyHostToDevice);
       } else if (self.is_cuda()) {

@@ -43,6 +43,8 @@ def _select_backend_config() -> None:
     choice is purely runtime:
 
       * FLAGOS_USE_FLAGGEMS_CPP=1              -> backends_flaggems_cpp.conf
+      * FLAGOS_USE_FLAGGEMS_CPP=1 + METAX_BOXING=1
+                                               -> backends_metax_flaggems_cpp.conf
       * FLAGOS_USE_FLAGGEMS=1                  -> backends_flaggems.conf
       * FLAGOS_USE_FLAGGEMS=1 + METAX_BOXING=1 -> backends_metax_flaggems.conf
       * FLAGOS_USE_FLAGGEMS=1 + ACCELERATOR=dcu -> backends_dcu_flaggems.conf
@@ -52,6 +54,14 @@ def _select_backend_config() -> None:
     backends_flaggems_cpp.conf): 18 ops route to the flag_gems C++ runtime
     (liboperators.so, no GIL), the remainder fall back to flagos_python.
     Only valid when torch_fl was built with FLAGGEMS_KERNEL=ON.
+
+    On MetaX the C++ path uses backends_metax_flaggems_cpp.conf: 17 of those 18
+    ops are verified on-device, but mm/mm.out go to the cuda boxing kernel
+    because flag_gems' C++ mm_kernel_general requests 98304 bytes of shared
+    memory and MetaX C550 provides 65536 (mcErrorInvalidValue at launch). Its
+    non-C++ ops inherit the backends_metax_flaggems.conf routing, so the
+    triton-metax fallbacks documented there still apply. This needs a FlagGems
+    built for MACA (cpp/ -DFLAGGEMS_BACKEND=MACA) linked in at build time.
 
     On an Ascend NPU box (detected via /dev/davinci*), the ACL C++ backend is the
     only usable one, so the choice is instead:
@@ -130,7 +140,9 @@ def _select_backend_config() -> None:
             os.environ["FLAGOS_BACKEND_CONFIG"] = conf_path
         return
 
-    if use_flaggems_cpp:
+    if use_flaggems_cpp and metax_boxing:
+        conf_name = "backends_metax_flaggems_cpp.conf"
+    elif use_flaggems_cpp:
         conf_name = "backends_flaggems_cpp.conf"
     elif use_flaggems and metax_boxing:
         conf_name = "backends_metax_flaggems.conf"

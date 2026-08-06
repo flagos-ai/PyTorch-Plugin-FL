@@ -172,6 +172,36 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
         self._store = store
         self._timeout = timeout
         self._view_fn = self._build_inner(store, rank, world_size, timeout)
+        self._register_inner_backend()
+
+    def _register_inner_backend(self) -> None:
+        """Expose the inner backend to ProcessGroup's device->backend map.
+
+        Overriding the collective virtuals is enough for plain c10d calls, but
+        not for anything that reaches for the *group identity*.
+        ``ProcessGroup::setGroupName`` forwards to the registered backends, so
+        with none registered the name is never stored and ``pg.group_name``
+        raises "ProcessGroup name not set". DeviceMesh reads exactly that
+        property, which put DTensor -- and therefore FSDP2 (``fully_shard``) and
+        anything else mesh-based -- out of reach.
+
+        Registering under privateuseone with BackendType.CUSTOM gives the name
+        somewhere to live. It does not divert the collectives: the dispatcher
+        keeps calling this class's overrides, so flagos tensors still go through
+        the vendor view conversion before touching the inner backend.
+
+        Best-effort: an inner backend that is not a c10d ``Backend`` (some
+        FlagCX builds return a bare ProcessGroup) simply leaves the pre-existing
+        behaviour in place rather than failing process-group construction.
+        """
+        inner = getattr(self, "_inner", None)
+        if inner is None:
+            return
+        try:
+            device = torch.device("privateuseone", max(torch.cuda.current_device(), 0))
+            self._register_backend(device, dist.ProcessGroup.BackendType.CUSTOM, inner)
+        except Exception:  # noqa: BLE001  - never block PG creation on this
+            pass
 
     def _build_inner(self, store, rank, world_size, timeout):
         """Create the inner backend and return the view-conversion function.

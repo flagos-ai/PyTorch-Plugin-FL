@@ -104,6 +104,40 @@ MANUAL_REGISTERED_OPS = {
 }
 
 
+# Some backend CUDA kernels require a plain-contiguous input even though ATen's
+# reference impl (and the native CUDA path) would silently normalize the layout
+# first. When a boxed op receives a channels-last / strided tensor, the backend
+# kernel asserts (e.g. native_group_norm: "Expected X.is_contiguous(memory_format)
+# to be true"). This map names, per op, which Tensor args must be forced to
+# contiguous layout *before* DeviceBoxingGuard runs -- boxing rewrites the tensor's
+# device metadata, so the copy has to happen while the tensor still lives on flagos.
+# is_contiguous() short-circuits to a no-op when the input is already contiguous,
+# so the only cost is on the exact non-contiguous inputs that would otherwise crash.
+_CONTIGUOUS_TENSOR_ARGS_BY_OP = {
+    "native_group_norm": ("input",),
+}
+
+
+def _contiguous_prelude(op, args):
+    """Return (prelude_lines, rename_map) for op args listed in
+    _CONTIGUOUS_TENSOR_ARGS_BY_OP. prelude_lines declares `<arg>_contiguous`
+    locals (emitted before the DeviceBoxingGuard); rename_map maps the original
+    arg name to the contiguous local so the guard and the at:: call use it."""
+    targets = _CONTIGUOUS_TENSOR_ARGS_BY_OP.get(op)
+    if not targets:
+        return "", {}
+    arg_names = {n for _, n in args}
+    lines = ""
+    rename = {}
+    for name in targets:
+        if name not in arg_names:  # guard against schema drift
+            continue
+        local = f"{name}_contiguous"
+        lines += f"  at::Tensor {local} = {name}.is_contiguous() ? {name} : {name}.contiguous();\n"
+        rename[name] = local
+    return lines, rename
+
+
 def _delegate_target_has_cuda(func, funcs, cuda_index):
     """A structured_delegate op routes its CUDA kernel through the named target
     (e.g. add.Tensor -> add.out). Return True if that target has a CUDA kernel."""
@@ -1099,7 +1133,9 @@ def args_decl(args: List[Tuple[str, str]]) -> str:
     return ", ".join(f"{t} {n}" for t, n in args)
 
 
-def call_args(args: List[Tuple[str, str]]) -> str:
+def call_args(args: List[Tuple[str, str]], rename: Dict[str, str] = None) -> str:
+    if rename:
+        return ", ".join(rename.get(n, n) for _, n in args)
     return ", ".join(n for _, n in args)
 
 
@@ -1200,8 +1236,9 @@ def gen_functional_pure(op, fn_type, ret_type, args, func=None):
     # (same pattern as gen_out_variant / gen_tuple_return).
     plain = tensor_arg_names(args)
     opt_names = optional_tensor_names(args)
+    contig_lines, rename = _contiguous_prelude(op, args)
     holder_lines = ""
-    guard_names = list(plain)
+    guard_names = [rename.get(n, n) for n in plain]
     for on in opt_names:
         holder_lines += (
             f"  at::Tensor {on}_t = {on}.has_value() ? *{on} : at::Tensor();\n"
@@ -1247,8 +1284,8 @@ def gen_functional_pure(op, fn_type, ret_type, args, func=None):
 }}"""
 
     return f"""{ret_type} {kn}({args_decl(args)}) {{
-{holder_lines}  DeviceBoxingGuard guard({guard});
-{inject}  auto result = {api}({call_args(args)});
+{contig_lines}{holder_lines}  DeviceBoxingGuard guard({guard});
+{inject}  auto result = {api}({call_args(args, rename)});
   UnboxToFlagos(result);
   return result;
 }}"""
@@ -1346,8 +1383,9 @@ def gen_out_variant(op, fn_type, ret_type, args, func=None):
     # Box plain tensor inputs + optional<Tensor> inputs (via holders).
     plain = tensor_arg_names(args)
     opt_names = optional_tensor_names(args)
+    contig_lines, rename = _contiguous_prelude(op, args)
     holder_lines = ""
-    guard_names = list(plain)
+    guard_names = [rename.get(n, n) for n in plain]
     for on in opt_names:
         holder_lines += (
             f"  at::Tensor {on}_t = {on}.has_value() ? *{on} : at::Tensor();\n"
@@ -1359,7 +1397,7 @@ def gen_out_variant(op, fn_type, ret_type, args, func=None):
 
     device_source = out_names[0] if out_names else guard_names[0]
     inject = _generator_inject_line(args, f"{device_source}.get_device()")
-    call = call_args(args)
+    call = call_args(args, rename)
 
     # Unified RNG for generator-LESS out-variants (rand.out, randint.out,
     # randint_like.out, randperm.out, ...). Same gap as the gen_factory /
@@ -1397,7 +1435,7 @@ def gen_out_variant(op, fn_type, ret_type, args, func=None):
         # (local is _ret, not result, because some ops have an out arg literally
         #  named `result`, e.g. _linalg_det.result.)
         return f"""{ret_type} {kn}({args_decl(args)}) {{
-{holder_lines}  DeviceBoxingGuard guard({guard});
+{contig_lines}{holder_lines}  DeviceBoxingGuard guard({guard});
 {inject}  auto _ret = {api}({call});
 {unbox_lines}
   return _ret;
@@ -1405,7 +1443,7 @@ def gen_out_variant(op, fn_type, ret_type, args, func=None):
     # single mutable Tensor& out.
     out_name = out_names[0]
     return f"""{ret_type} {kn}({args_decl(args)}) {{
-{holder_lines}  DeviceBoxingGuard guard({guard});
+{contig_lines}{holder_lines}  DeviceBoxingGuard guard({guard});
 {inject}  {api}({call});
 {unbox_lines}
   return {out_name};
@@ -1421,8 +1459,12 @@ def gen_tuple_return(op, fn_type, ret_type, args, func=None):
     api = f"at::{at_api_base(op)}"
     ntuple = ret_type.count(",") + 1  # ::std::tuple<a,b> -> 2
 
+    # Layout normalization (e.g. native_group_norm.input) must run BEFORE the
+    # guard so the contiguous copy happens while the tensor still lives on flagos.
+    contig_lines, rename = _contiguous_prelude(op, args)
+
     holder_lines = ""
-    guard_names = list(plain)
+    guard_names = [rename.get(n, n) for n in plain]
     for on in opt_names:
         holder_lines += (
             f"  at::Tensor {on}_t = {on}.has_value() ? *{on} : at::Tensor();\n"
@@ -1433,13 +1475,39 @@ def gen_tuple_return(op, fn_type, ret_type, args, func=None):
     unbox_lines = "\n".join(
         f"  UnboxToFlagos(std::get<{i}>(result));" for i in range(ntuple)
     )
-    inject = _generator_inject_line(args, f"{tensor_arg_names(args)[0]}.get_device()")
+    inject = _generator_inject_line(args, f"{guard_names[0]}.get_device()")
     return f"""{ret_type} {kn}({args_decl(args)}) {{
-{holder_lines}  DeviceBoxingGuard guard({guard});
-{inject}  auto result = {api}({call_args(args)});
+{contig_lines}{holder_lines}  DeviceBoxingGuard guard({guard});
+{inject}  auto result = {api}({call_args(args, rename)});
 {unbox_lines}
   return result;
 }}"""
+
+
+def _scalar_tensor_box_lines(args) -> str:
+    """`guard.box({...})` lines for the plain const Tensor& args of a foreach op.
+
+    TensorListBoxingGuard kernels used to box only the tensor *lists* (and, for
+    out-variants, the mutable outs). Any remaining `const at::Tensor &` argument
+    stayed on flagos, which is not merely a missed optimization: the at:: call
+    dispatches on *all* its tensor arguments, so one unboxed flagos tensor sends
+    it back to PrivateUse1 -- into this same kernel -- and it recurses until the
+    stack is gone. Mutable outs are skipped here; the caller already boxed them.
+    """
+    lines = ""
+    for t, n in args:
+        if "TensorList" in t or "ITensorListRef" in t:
+            continue
+        if "at::Tensor" not in t:
+            continue
+        if "optional" in t:
+            # e.g. the fused optimizers' grad_scale/found_inf.
+            lines += f"  if ({n}.has_value()) guard.box({{*{n}}});\n"
+            continue
+        if "const" not in t:
+            continue  # mutable out: boxed by the caller
+        lines += f"  guard.box({{{n}}});\n"
+    return lines
 
 
 def gen_foreach(op, fn_type, ret_type, args, func=None):
@@ -1482,6 +1550,12 @@ def gen_foreach(op, fn_type, ret_type, args, func=None):
     for t, n in tensorlist_args:
         mat_name = f"{n}_vec"
         box_lines += f"  guard.box({mat_name});\n"
+
+    # Plain (non-list) Tensor inputs must be boxed too. Boxing only the lists
+    # leaves e.g. _foreach_mul.Tensor's `other` on flagos, and at::_foreach_mul
+    # then re-dispatches to PrivateUse1 -- straight back into this kernel, i.e.
+    # unbounded self-recursion ending in SIGSEGV.
+    box_lines += _scalar_tensor_box_lines(args)
 
     if ret_type == "void":
         body = f"  {api}({call_args_str});"
@@ -1557,6 +1631,11 @@ def gen_foreach_out(op, fn_type, ret_type, args, func=None):
             if n in mutable_tensors:
                 box_lines += f"  guard.box({{{n}}});\n"
             call_arg_names.append(n)
+    # const Tensor& inputs need boxing as much as the lists and the outs do:
+    # split_with_sizes_copy.out left `self` on flagos, so at::split_with_sizes_
+    # copy_outf re-dispatched to PrivateUse1 and recursed into this kernel until
+    # the stack blew (SIGSEGV). This is FSDP2's all-gather copy-out path.
+    box_lines += _scalar_tensor_box_lines(args)
     call_args_str = ", ".join(call_arg_names)
 
     # Return shape follows ret_type: void (no return) or single `Tensor&`

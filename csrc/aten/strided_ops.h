@@ -54,4 +54,6 @@ at::Tensor t(const at::Tensor& self);
 
 ::std::vector<at::Tensor> unbind_int(const at::Tensor& self, int64_t dim);
 
+at::Tensor unfold(const at::Tensor& self, int64_t dimension, int64_t size, int64_t step);
+
 } // namespace at::native::flagos

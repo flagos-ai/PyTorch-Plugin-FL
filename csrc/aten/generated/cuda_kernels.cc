@@ -948,6 +948,7 @@ void PrivAmpForeachNonFiniteCheckAndUnscaleOutKernelCuda(at::TensorList self, at
   guard.box(self_vec);
   guard.box({found_inf});
   guard.box(out_vec);
+  guard.box({inv_scale});
   at::_amp_foreach_non_finite_check_and_unscale_outf(self_vec, found_inf, inv_scale, out_vec);
 }
 
@@ -955,6 +956,7 @@ void PrivAmpForeachNonFiniteCheckAndUnscaleInplaceKernelCuda(at::TensorList self
   auto self_vec = MaterializeToTensorVec(self);
   TensorListBoxingGuard guard;
   guard.box(self_vec);
+  guard.box({inv_scale});
   at::_amp_foreach_non_finite_check_and_unscale_(self_vec, found_inf, inv_scale);
 }
 
@@ -1378,6 +1380,16 @@ void PrivCudnnRnnBackwardOutKernelCuda(const at::Tensor & input, at::TensorList 
   guard.box({out1});
   guard.box({out2});
   guard.box(out3_vec);
+  guard.box({input});
+  guard.box({weight_buf});
+  guard.box({hx});
+  if (cx.has_value()) guard.box({*cx});
+  guard.box({output});
+  if (grad_output.has_value()) guard.box({*grad_output});
+  if (grad_hy.has_value()) guard.box({*grad_hy});
+  if (grad_cy.has_value()) guard.box({*grad_cy});
+  if (dropout_state.has_value()) guard.box({*dropout_state});
+  guard.box({reserve});
   at::_cudnn_rnn_backward_outf(input, weight_vec, weight_stride0, weight_buf, hx, cx, output, grad_output, grad_hy, grad_cy, mode, hidden_size, proj_size, num_layers, batch_first, dropout, train, bidirectional, batch_sizes, dropout_state, reserve, output_mask, out0, out1, out2, out3_vec);
 }
 
@@ -1795,6 +1807,7 @@ void ForeachAddScalarOutKernelCuda(at::TensorList self, const at::Scalar & scala
   auto self_vec = MaterializeToTensorVec(self);
   TensorListBoxingGuard guard;
   guard.box(self_vec);
+  guard.box({other});
   auto result = at::_foreach_add(self_vec, other, alpha);
   UnboxTensorVecToFlagos(result);
   return result;
@@ -1806,6 +1819,7 @@ void ForeachAddTensorOutKernelCuda(at::TensorList self, const at::Tensor & other
   TensorListBoxingGuard guard;
   guard.box(self_vec);
   guard.box(out_vec);
+  guard.box({other});
   at::_foreach_add_outf(self_vec, other, alpha, out_vec);
 }
 
@@ -1836,6 +1850,7 @@ void ForeachAddInplaceTensorKernelCuda(at::TensorList self, const at::Tensor & o
   auto self_vec = MaterializeToTensorVec(self);
   TensorListBoxingGuard guard;
   guard.box(self_vec);
+  guard.box({other});
   at::_foreach_add_(self_vec, other, alpha);
 }
 
@@ -1899,6 +1914,7 @@ void ForeachAddcdivScalarOutKernelCuda(at::TensorList self, at::TensorList tenso
   guard.box(self_vec);
   guard.box(tensor1_vec);
   guard.box(tensor2_vec);
+  guard.box({scalars});
   auto result = at::_foreach_addcdiv(self_vec, tensor1_vec, tensor2_vec, scalars);
   UnboxTensorVecToFlagos(result);
   return result;
@@ -1914,6 +1930,7 @@ void ForeachAddcdivTensorOutKernelCuda(at::TensorList self, at::TensorList tenso
   guard.box(tensor1_vec);
   guard.box(tensor2_vec);
   guard.box(out_vec);
+  guard.box({scalars});
   at::_foreach_addcdiv_outf(self_vec, tensor1_vec, tensor2_vec, scalars, out_vec);
 }
 
@@ -1947,6 +1964,7 @@ void ForeachAddcdivInplaceTensorKernelCuda(at::TensorList self, at::TensorList t
   guard.box(self_vec);
   guard.box(tensor1_vec);
   guard.box(tensor2_vec);
+  guard.box({scalars});
   at::_foreach_addcdiv_(self_vec, tensor1_vec, tensor2_vec, scalars);
 }
 
@@ -2010,6 +2028,7 @@ void ForeachAddcmulScalarOutKernelCuda(at::TensorList self, at::TensorList tenso
   guard.box(self_vec);
   guard.box(tensor1_vec);
   guard.box(tensor2_vec);
+  guard.box({scalars});
   auto result = at::_foreach_addcmul(self_vec, tensor1_vec, tensor2_vec, scalars);
   UnboxTensorVecToFlagos(result);
   return result;
@@ -2025,6 +2044,7 @@ void ForeachAddcmulTensorOutKernelCuda(at::TensorList self, at::TensorList tenso
   guard.box(tensor1_vec);
   guard.box(tensor2_vec);
   guard.box(out_vec);
+  guard.box({scalars});
   at::_foreach_addcmul_outf(self_vec, tensor1_vec, tensor2_vec, scalars, out_vec);
 }
 
@@ -2058,6 +2078,7 @@ void ForeachAddcmulInplaceTensorKernelCuda(at::TensorList self, at::TensorList t
   guard.box(self_vec);
   guard.box(tensor1_vec);
   guard.box(tensor2_vec);
+  guard.box({scalars});
   at::_foreach_addcmul_(self_vec, tensor1_vec, tensor2_vec, scalars);
 }
 
@@ -2441,6 +2462,7 @@ void ForeachDivScalarOutKernelCuda(at::TensorList self, const at::Scalar & scala
   auto self_vec = MaterializeToTensorVec(self);
   TensorListBoxingGuard guard;
   guard.box(self_vec);
+  guard.box({other});
   auto result = at::_foreach_div(self_vec, other);
   UnboxTensorVecToFlagos(result);
   return result;
@@ -2452,6 +2474,7 @@ void ForeachDivTensorOutKernelCuda(at::TensorList self, const at::Tensor & other
   TensorListBoxingGuard guard;
   guard.box(self_vec);
   guard.box(out_vec);
+  guard.box({other});
   at::_foreach_div_outf(self_vec, other, out_vec);
 }
 
@@ -2482,6 +2505,7 @@ void ForeachDivInplaceTensorKernelCuda(at::TensorList self, const at::Tensor & o
   auto self_vec = MaterializeToTensorVec(self);
   TensorListBoxingGuard guard;
   guard.box(self_vec);
+  guard.box({other});
   at::_foreach_div_(self_vec, other);
 }
 
@@ -3101,6 +3125,7 @@ void ForeachMulScalarOutKernelCuda(at::TensorList self, const at::Scalar & scala
   auto self_vec = MaterializeToTensorVec(self);
   TensorListBoxingGuard guard;
   guard.box(self_vec);
+  guard.box({other});
   auto result = at::_foreach_mul(self_vec, other);
   UnboxTensorVecToFlagos(result);
   return result;
@@ -3112,6 +3137,7 @@ void ForeachMulTensorOutKernelCuda(at::TensorList self, const at::Tensor & other
   TensorListBoxingGuard guard;
   guard.box(self_vec);
   guard.box(out_vec);
+  guard.box({other});
   at::_foreach_mul_outf(self_vec, other, out_vec);
 }
 
@@ -3142,6 +3168,7 @@ void ForeachMulInplaceTensorKernelCuda(at::TensorList self, const at::Tensor & o
   auto self_vec = MaterializeToTensorVec(self);
   TensorListBoxingGuard guard;
   guard.box(self_vec);
+  guard.box({other});
   at::_foreach_mul_(self_vec, other);
 }
 
@@ -3692,6 +3719,8 @@ void PrivFusedAdagradOutKernelCuda(at::TensorList self, at::TensorList grads, at
   guard.box(state_sums_vec);
   guard.box(state_steps_vec);
   guard.box(out_vec);
+  if (grad_scale.has_value()) guard.box({*grad_scale});
+  if (found_inf.has_value()) guard.box({*found_inf});
   at::_fused_adagrad_outf(self_vec, grads_vec, state_sums_vec, state_steps_vec, lr, lr_decay, weight_decay, eps, maximize, grad_scale, found_inf, out_vec);
 }
 
@@ -3707,6 +3736,9 @@ void PrivFusedAdagradTensorLrOutKernelCuda(at::TensorList self, at::TensorList g
   guard.box(state_sums_vec);
   guard.box(state_steps_vec);
   guard.box(out_vec);
+  guard.box({lr});
+  if (grad_scale.has_value()) guard.box({*grad_scale});
+  if (found_inf.has_value()) guard.box({*found_inf});
   at::_fused_adagrad_outf(self_vec, grads_vec, state_sums_vec, state_steps_vec, lr, lr_decay, weight_decay, eps, maximize, grad_scale, found_inf, out_vec);
 }
 
@@ -3720,6 +3752,8 @@ void PrivFusedAdagradInplaceKernelCuda(at::TensorList self, at::TensorList grads
   guard.box(grads_vec);
   guard.box(state_sums_vec);
   guard.box(state_steps_vec);
+  if (grad_scale.has_value()) guard.box({*grad_scale});
+  if (found_inf.has_value()) guard.box({*found_inf});
   at::_fused_adagrad_(self_vec, grads_vec, state_sums_vec, state_steps_vec, lr, lr_decay, weight_decay, eps, maximize, grad_scale, found_inf);
 }
 
@@ -3733,6 +3767,9 @@ void PrivFusedAdagradInplaceTensorLrKernelCuda(at::TensorList self, at::TensorLi
   guard.box(grads_vec);
   guard.box(state_sums_vec);
   guard.box(state_steps_vec);
+  guard.box({lr});
+  if (grad_scale.has_value()) guard.box({*grad_scale});
+  if (found_inf.has_value()) guard.box({*found_inf});
   at::_fused_adagrad_(self_vec, grads_vec, state_sums_vec, state_steps_vec, lr, lr_decay, weight_decay, eps, maximize, grad_scale, found_inf);
 }
 
@@ -3752,6 +3789,8 @@ void PrivFusedAdamOutKernelCuda(at::TensorList self, at::TensorList grads, at::T
   guard.box(max_exp_avg_sqs_vec);
   guard.box(state_steps_vec);
   guard.box(out_vec);
+  if (grad_scale.has_value()) guard.box({*grad_scale});
+  if (found_inf.has_value()) guard.box({*found_inf});
   at::_fused_adam_outf(self_vec, grads_vec, exp_avgs_vec, exp_avg_sqs_vec, max_exp_avg_sqs_vec, state_steps_vec, lr, beta1, beta2, weight_decay, eps, amsgrad, maximize, grad_scale, found_inf, out_vec);
 }
 
@@ -3771,6 +3810,9 @@ void PrivFusedAdamTensorLrOutKernelCuda(at::TensorList self, at::TensorList grad
   guard.box(max_exp_avg_sqs_vec);
   guard.box(state_steps_vec);
   guard.box(out_vec);
+  guard.box({lr});
+  if (grad_scale.has_value()) guard.box({*grad_scale});
+  if (found_inf.has_value()) guard.box({*found_inf});
   at::_fused_adam_outf(self_vec, grads_vec, exp_avgs_vec, exp_avg_sqs_vec, max_exp_avg_sqs_vec, state_steps_vec, lr, beta1, beta2, weight_decay, eps, amsgrad, maximize, grad_scale, found_inf, out_vec);
 }
 
@@ -3788,6 +3830,8 @@ void PrivFusedAdamInplaceKernelCuda(at::TensorList self, at::TensorList grads, a
   guard.box(exp_avg_sqs_vec);
   guard.box(max_exp_avg_sqs_vec);
   guard.box(state_steps_vec);
+  if (grad_scale.has_value()) guard.box({*grad_scale});
+  if (found_inf.has_value()) guard.box({*found_inf});
   at::_fused_adam_(self_vec, grads_vec, exp_avgs_vec, exp_avg_sqs_vec, max_exp_avg_sqs_vec, state_steps_vec, lr, beta1, beta2, weight_decay, eps, amsgrad, maximize, grad_scale, found_inf);
 }
 
@@ -3805,6 +3849,9 @@ void PrivFusedAdamInplaceTensorLrKernelCuda(at::TensorList self, at::TensorList 
   guard.box(exp_avg_sqs_vec);
   guard.box(max_exp_avg_sqs_vec);
   guard.box(state_steps_vec);
+  guard.box({lr});
+  if (grad_scale.has_value()) guard.box({*grad_scale});
+  if (found_inf.has_value()) guard.box({*found_inf});
   at::_fused_adam_(self_vec, grads_vec, exp_avgs_vec, exp_avg_sqs_vec, max_exp_avg_sqs_vec, state_steps_vec, lr, beta1, beta2, weight_decay, eps, amsgrad, maximize, grad_scale, found_inf);
 }
 
@@ -3824,6 +3871,8 @@ void PrivFusedAdamwOutKernelCuda(at::TensorList self, at::TensorList grads, at::
   guard.box(max_exp_avg_sqs_vec);
   guard.box(state_steps_vec);
   guard.box(out_vec);
+  if (grad_scale.has_value()) guard.box({*grad_scale});
+  if (found_inf.has_value()) guard.box({*found_inf});
   at::_fused_adamw_outf(self_vec, grads_vec, exp_avgs_vec, exp_avg_sqs_vec, max_exp_avg_sqs_vec, state_steps_vec, lr, beta1, beta2, weight_decay, eps, amsgrad, maximize, grad_scale, found_inf, out_vec);
 }
 
@@ -3843,6 +3892,9 @@ void PrivFusedAdamwTensorLrOutKernelCuda(at::TensorList self, at::TensorList gra
   guard.box(max_exp_avg_sqs_vec);
   guard.box(state_steps_vec);
   guard.box(out_vec);
+  guard.box({lr});
+  if (grad_scale.has_value()) guard.box({*grad_scale});
+  if (found_inf.has_value()) guard.box({*found_inf});
   at::_fused_adamw_outf(self_vec, grads_vec, exp_avgs_vec, exp_avg_sqs_vec, max_exp_avg_sqs_vec, state_steps_vec, lr, beta1, beta2, weight_decay, eps, amsgrad, maximize, grad_scale, found_inf, out_vec);
 }
 
@@ -3860,6 +3912,8 @@ void PrivFusedAdamwInplaceKernelCuda(at::TensorList self, at::TensorList grads, 
   guard.box(exp_avg_sqs_vec);
   guard.box(max_exp_avg_sqs_vec);
   guard.box(state_steps_vec);
+  if (grad_scale.has_value()) guard.box({*grad_scale});
+  if (found_inf.has_value()) guard.box({*found_inf});
   at::_fused_adamw_(self_vec, grads_vec, exp_avgs_vec, exp_avg_sqs_vec, max_exp_avg_sqs_vec, state_steps_vec, lr, beta1, beta2, weight_decay, eps, amsgrad, maximize, grad_scale, found_inf);
 }
 
@@ -3877,6 +3931,9 @@ void PrivFusedAdamwInplaceTensorLrKernelCuda(at::TensorList self, at::TensorList
   guard.box(exp_avg_sqs_vec);
   guard.box(max_exp_avg_sqs_vec);
   guard.box(state_steps_vec);
+  guard.box({lr});
+  if (grad_scale.has_value()) guard.box({*grad_scale});
+  if (found_inf.has_value()) guard.box({*found_inf});
   at::_fused_adamw_(self_vec, grads_vec, exp_avgs_vec, exp_avg_sqs_vec, max_exp_avg_sqs_vec, state_steps_vec, lr, beta1, beta2, weight_decay, eps, amsgrad, maximize, grad_scale, found_inf);
 }
 
@@ -3958,6 +4015,8 @@ void PrivFusedSgdOutKernelCuda(at::TensorList self, at::TensorList grads, at::Te
   guard.box(grads_vec);
   guard.box(momentum_buffer_list_vec);
   guard.box(out_vec);
+  if (grad_scale.has_value()) guard.box({*grad_scale});
+  if (found_inf.has_value()) guard.box({*found_inf});
   at::_fused_sgd_outf(self_vec, grads_vec, momentum_buffer_list_vec, weight_decay, momentum, lr, dampening, nesterov, maximize, is_first_step, grad_scale, found_inf, out_vec);
 }
 
@@ -3971,6 +4030,9 @@ void PrivFusedSgdTensorLrOutKernelCuda(at::TensorList self, at::TensorList grads
   guard.box(grads_vec);
   guard.box(momentum_buffer_list_vec);
   guard.box(out_vec);
+  guard.box({lr});
+  if (grad_scale.has_value()) guard.box({*grad_scale});
+  if (found_inf.has_value()) guard.box({*found_inf});
   at::_fused_sgd_outf(self_vec, grads_vec, momentum_buffer_list_vec, weight_decay, momentum, lr, dampening, nesterov, maximize, is_first_step, grad_scale, found_inf, out_vec);
 }
 
@@ -3982,6 +4044,8 @@ void PrivFusedSgdInplaceKernelCuda(at::TensorList self, at::TensorList grads, at
   guard.box(self_vec);
   guard.box(grads_vec);
   guard.box(momentum_buffer_list_vec);
+  if (grad_scale.has_value()) guard.box({*grad_scale});
+  if (found_inf.has_value()) guard.box({*found_inf});
   at::_fused_sgd_(self_vec, grads_vec, momentum_buffer_list_vec, weight_decay, momentum, lr, dampening, nesterov, maximize, is_first_step, grad_scale, found_inf);
 }
 
@@ -3993,6 +4057,9 @@ void PrivFusedSgdInplaceTensorLrKernelCuda(at::TensorList self, at::TensorList g
   guard.box(self_vec);
   guard.box(grads_vec);
   guard.box(momentum_buffer_list_vec);
+  guard.box({lr});
+  if (grad_scale.has_value()) guard.box({*grad_scale});
+  if (found_inf.has_value()) guard.box({*found_inf});
   at::_fused_sgd_(self_vec, grads_vec, momentum_buffer_list_vec, weight_decay, momentum, lr, dampening, nesterov, maximize, is_first_step, grad_scale, found_inf);
 }
 
@@ -4073,6 +4140,7 @@ at::Tensor PrivJaggedToPaddedDenseForwardKernelCuda(const at::Tensor & values, a
   auto offsets_vec = MaterializeToTensorVec(offsets);
   TensorListBoxingGuard guard;
   guard.box(offsets_vec);
+  guard.box({values});
   auto result = at::_jagged_to_padded_dense_forward(values, offsets_vec, max_lengths, padding_value);
   UnboxToFlagos(result);
   return result;
@@ -4614,6 +4682,7 @@ at::Tensor PrivPaddedDenseToJaggedForwardKernelCuda(const at::Tensor & dense, at
   auto offsets_vec = MaterializeToTensorVec(offsets);
   TensorListBoxingGuard guard;
   guard.box(offsets_vec);
+  guard.box({dense});
   auto result = at::_padded_dense_to_jagged_forward(dense, offsets_vec, total_L);
   UnboxToFlagos(result);
   return result;
@@ -4785,6 +4854,10 @@ at::Tensor PrivScaledGroupedMmV2KernelCuda(const at::Tensor & self, const at::Te
   TensorListBoxingGuard guard;
   guard.box(scale_a_vec);
   guard.box(scale_b_vec);
+  guard.box({self});
+  guard.box({mat2});
+  if (offs.has_value()) guard.box({*offs});
+  if (bias.has_value()) guard.box({*bias});
   auto result = at::_scaled_grouped_mm_v2(self, mat2, scale_a_vec, recipe_a, swizzle_a, scale_b_vec, recipe_b, swizzle_b, offs, bias, out_dtype, contraction_dim, use_fast_accum);
   UnboxToFlagos(result);
   return result;
@@ -4814,6 +4887,9 @@ at::Tensor PrivScaledMmV2KernelCuda(const at::Tensor & self, const at::Tensor & 
   TensorListBoxingGuard guard;
   guard.box(scale_a_vec);
   guard.box(scale_b_vec);
+  guard.box({self});
+  guard.box({mat2});
+  if (bias.has_value()) guard.box({*bias});
   auto result = at::_scaled_mm_v2(self, mat2, scale_a_vec, recipe_a, swizzle_a, scale_b_vec, recipe_b, swizzle_b, bias, out_dtype, contraction_dim, use_fast_accum);
   UnboxToFlagos(result);
   return result;
@@ -10984,6 +11060,13 @@ void LstmMpsBackwardOutKernelCuda(const ::std::optional<at::Tensor> & grad_y, co
   guard.box({out0});
   guard.box(out1_vec);
   guard.box(out2_vec);
+  if (grad_y.has_value()) guard.box({*grad_y});
+  if (grad_hy.has_value()) guard.box({*grad_hy});
+  if (grad_cy.has_value()) guard.box({*grad_cy});
+  guard.box({z_state});
+  guard.box({cell_state_fwd});
+  guard.box({input});
+  guard.box({layersOutputs});
   at::lstm_mps_backward_outf(grad_y, grad_hy, grad_cy, z_state, cell_state_fwd, input, layersOutputs, hx_vec, params_vec, has_biases, num_layers, dropout, train, bidirectional, batch_first, out0, out1_vec, out2_vec);
 }
 
@@ -11498,6 +11581,16 @@ void MiopenRnnBackwardOutKernelCuda(const at::Tensor & input, at::TensorList wei
   guard.box({out1});
   guard.box({out2});
   guard.box(out3_vec);
+  guard.box({input});
+  guard.box({weight_buf});
+  guard.box({hx});
+  if (cx.has_value()) guard.box({*cx});
+  guard.box({output});
+  if (grad_output.has_value()) guard.box({*grad_output});
+  if (grad_hy.has_value()) guard.box({*grad_hy});
+  if (grad_cy.has_value()) guard.box({*grad_cy});
+  if (dropout_state.has_value()) guard.box({*dropout_state});
+  guard.box({reserve});
   at::miopen_rnn_backward_outf(input, weight_vec, weight_stride0, weight_buf, hx, cx, output, grad_output, grad_hy, grad_cy, mode, hidden_size, num_layers, batch_first, dropout, train, bidirectional, batch_sizes, dropout_state, reserve, output_mask, out0, out1, out2, out3_vec);
 }
 
@@ -12034,10 +12127,11 @@ at::Tensor & NativeDropoutBackwardOutKernelCuda(const at::Tensor & grad_output, 
 }
 
 ::std::tuple<at::Tensor,at::Tensor,at::Tensor> NativeGroupNormKernelCuda(const at::Tensor & input, const ::std::optional<at::Tensor> & weight, const ::std::optional<at::Tensor> & bias, int64_t N, int64_t C, int64_t HxW, int64_t group, double eps) {
+  at::Tensor input_contiguous = input.is_contiguous() ? input : input.contiguous();
   at::Tensor weight_t = weight.has_value() ? *weight : at::Tensor();
   at::Tensor bias_t = bias.has_value() ? *bias : at::Tensor();
-  DeviceBoxingGuard guard(input, weight_t, bias_t);
-  auto result = at::native_group_norm(input, weight, bias, N, C, HxW, group, eps);
+  DeviceBoxingGuard guard(input_contiguous, weight_t, bias_t);
+  auto result = at::native_group_norm(input_contiguous, weight, bias, N, C, HxW, group, eps);
   UnboxToFlagos(std::get<0>(result));
   UnboxToFlagos(std::get<1>(result));
   UnboxToFlagos(std::get<2>(result));
@@ -15522,6 +15616,7 @@ void SplitCopyTensorOutKernelCuda(const at::Tensor & self, int64_t split_size, i
   auto out_vec = MaterializeToTensorVec(out);
   TensorListBoxingGuard guard;
   guard.box(out_vec);
+  guard.box({self});
   at::split_copy_outf(self, split_size, dim, out_vec);
 }
 
@@ -15536,6 +15631,7 @@ void SplitWithSizesCopyOutKernelCuda(const at::Tensor & self, at::IntArrayRef sp
   auto out_vec = MaterializeToTensorVec(out);
   TensorListBoxingGuard guard;
   guard.box(out_vec);
+  guard.box({self});
   at::split_with_sizes_copy_outf(self, split_sizes, dim, out_vec);
 }
 
@@ -16057,6 +16153,7 @@ void UnbindCopyIntOutKernelCuda(const at::Tensor & self, int64_t dim, at::Tensor
   auto out_vec = MaterializeToTensorVec(out);
   TensorListBoxingGuard guard;
   guard.box(out_vec);
+  guard.box({self});
   at::unbind_copy_outf(self, dim, out_vec);
 }
 
@@ -16169,6 +16266,7 @@ void UnsafeSplitTensorOutKernelCuda(const at::Tensor & self, int64_t split_size,
   auto out_vec = MaterializeToTensorVec(out);
   TensorListBoxingGuard guard;
   guard.box(out_vec);
+  guard.box({self});
   at::unsafe_split_outf(self, split_size, dim, out_vec);
 }
 
@@ -16183,6 +16281,7 @@ void UnsafeSplitWithSizesOutKernelCuda(const at::Tensor & self, at::IntArrayRef 
   auto out_vec = MaterializeToTensorVec(out);
   TensorListBoxingGuard guard;
   guard.box(out_vec);
+  guard.box({self});
   at::unsafe_split_with_sizes_outf(self, split_sizes, dim, out_vec);
 }
 

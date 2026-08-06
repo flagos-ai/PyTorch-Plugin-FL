@@ -340,11 +340,19 @@ def build_deps():
         )
         # FLAGGEMS_PYTHON defaults ON, same as CUDA: the boxing wheel also compiles
         # the FlagGems Python-path kernels (flagos_python backend) so FlagGems can
-        # be toggled at runtime via FLAGOS_USE_FLAGGEMS, exactly like CUDA. Only the
-        # C++ FlagGems path (FLAGGEMS_KERNEL, liboperators.so) stays off. python_op_
+        # be toggled at runtime via FLAGOS_USE_FLAGGEMS, exactly like CUDA. python_op_
         # caller links torch_python_library (already in the metax link set) and adds
         # nothing to the bundled wheel size. Set FLAGGEMS_PYTHON=0 for a slim
         # pure-boxing build; the generic pass-through below honors an explicit value.
+        #
+        # FLAGGEMS_KERNEL (the C++ kFlagOs path, liboperators.so) defaults OFF
+        # because it needs a FlagGems built for MACA, which is a separate build:
+        #     cd FlagGems/cpp && cmake -B build-maca -DFLAGGEMS_BUILD_C_EXTENSIONS=ON \
+        #         -DFLAGGEMS_BACKEND=MACA -DMACA_PATH=/opt/maca
+        # Opt in with FLAGGEMS_KERNEL=1 FLAGGEMS_DIR=<that build dir> (the generic
+        # pass-through below emits a later -D that overrides the OFF above). The
+        # C++ kernels reach the device via the same DeviceBoxingGuard as the
+        # boxing path, so they need boxing mode.
     elif ACCELERATOR == "tsingmicro":
         cmake_args.extend(
             [
