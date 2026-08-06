@@ -84,9 +84,83 @@ def get_torch_npu_path(triton_path):
     return os.path.join(site_packages, "torch_npu")
 
 
+STREAM_HELPER = '''
+
+_flagos_stream_fn = None
+
+
+def _flagos_raw_stream(device):
+    """Return torch_fl's acl stream for `device` as an int, for rtKernelLaunch.
+
+    Resolved by ctypes against the already-loaded libflagos.so rather than through
+    torch_fl._C: `GetCurrentStream` is exported from stream_api.cc with default
+    visibility expressly so FlagGems/triton can reach the aclrtStream, and no _C
+    binding surfaces it. torch_fl has necessarily dlopened that library before any
+    kernel can launch, so CDLL returns a handle to the same instance -- this cannot
+    create a second stream.
+
+    Cached: get_current_stream sits on the launch path of every kernel.
+
+    Falls back to 0 only if the symbol cannot be resolved. That fallback has no
+    ordering against torch_fl's aclnn ops, so it warns rather than silently
+    reintroducing the race it exists to fix.
+    """
+    global _flagos_stream_fn
+    if _flagos_stream_fn is None:
+        import ctypes
+
+        try:
+            lib = ctypes.CDLL("libflagos.so")
+            fn = lib.GetCurrentStream
+        except (OSError, AttributeError) as e:
+            import warnings
+
+            warnings.warn(
+                "triton-ascend could not resolve GetCurrentStream from "
+                f"libflagos.so ({e}); falling back to rt stream 0, which is NOT "
+                "ordered against torch_fl's aclnn ops and can silently corrupt "
+                "results."
+            )
+            _flagos_stream_fn = lambda _d: 0  # noqa: E731
+        else:
+            fn.restype = ctypes.c_void_p
+            fn.argtypes = [ctypes.c_int]
+            _flagos_stream_fn = fn
+    return _flagos_stream_fn(int(device)) or 0
+'''
+
+
+def _inject_stream_helper(fp):
+    """Insert _flagos_raw_stream into driver.py, before `class NPUUtils`.
+
+    Kept out of the `replacements` list because those are plain str.replace calls:
+    any anchor that survives into the replacement text would match again on a
+    re-run and inject a second copy. Guarding on the function name makes this
+    idempotent, which matters because a `pip install --force-reinstall` of
+    triton-ascend wipes the patch and the script gets re-run.
+    """
+    if not os.path.exists(fp):
+        return False
+    with open(fp, "r") as f:
+        content = f.read()
+    if "_flagos_raw_stream" in content:
+        return False
+    anchor = "\nclass NPUUtils(object):"
+    if anchor not in content:
+        print(f"  WARNING: anchor 'class NPUUtils' not found in {fp}")
+        return False
+    content = content.replace(anchor, STREAM_HELPER + anchor, 1)
+    with open(fp, "w") as f:
+        f.write(content)
+    print(f"  PATCHED (stream helper): {fp}")
+    return True
+
+
 def patch_driver(triton_path):
     """Patch backends/ascend/driver.py"""
     fp = os.path.join(triton_path, "backends", "ascend", "driver.py")
+
+    _inject_stream_helper(fp)
 
     replacements = [
         # --- Python API patches ---
@@ -111,9 +185,33 @@ def patch_driver(triton_path):
             "        # from torch_npu._C import"
             " _npu_getCurrentRawStream  # patched",
         ),
+        # Return torch_fl's OWN acl stream, not 0.
+        #
+        # Returning 0 (the NULL/default rt stream) is not merely a simplification:
+        # torch_fl runs every aclnn op on a stream it creates itself
+        # (GetDefaultAclStream -> aclrtCreateStream), so a gems kernel launched on
+        # stream 0 has NO ordering against the aclnn ops producing its inputs or
+        # consuming its outputs. The generated launcher ends with
+        # rtStreamSynchronize(stream), which then drains the wrong stream and
+        # returns while the real work is still outstanding.
+        #
+        # Symptom this caused: Qwen3 training loss came out `nan` on the gems path
+        # but was finite (matching aclnn to 3 decimals) the moment a
+        # TorchDispatchMode inserted a device synchronize after every op. It only
+        # appeared after a warmup forward+backward had freed blocks back to the
+        # caching allocator, i.e. once block reuse could hand a still-in-flight
+        # buffer to the next kernel. Ordinary short runs looked fine.
         (
             "        return _npu_getCurrentRawStream(device)",
+            "        return _flagos_raw_stream(device)  # patched for torch_fl",
+        ),
+        # Migration: an earlier version of this script wrote `return 0`, so an
+        # environment patched by it has no _npu_getCurrentRawStream line left to
+        # match. Rewrite that too, otherwise re-running the script leaves the
+        # stream race in place and reports success.
+        (
             "        return 0  # default stream for torch_fl",
+            "        return _flagos_raw_stream(device)  # patched for torch_fl",
         ),
         # get_device_interface
         (

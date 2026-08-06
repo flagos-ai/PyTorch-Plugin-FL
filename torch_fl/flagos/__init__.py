@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import contextlib
+import time
 
 import torch
 
@@ -284,6 +285,48 @@ def _real_current_stream(device=None):
     )
 
 
+class _HostTimedEvent:
+    """Host-clock event for backends with no CUDA event under the hood.
+
+    On Ascend ``torch.cuda.Event`` is a dummy base class, so instantiating it
+    raises "Tried to instantiate dummy base class Event". Triton's autotuner
+    calls ``Event(enable_timing=True)`` in ``testing.do_bench`` to time candidate
+    configs, so without this every gems kernel that autotunes over more than one
+    config dies -- that is what broke ``sum`` with multiple dims, ``all.dim``,
+    ``any.dim``, ``amax`` and ``prod.dim_int``.
+
+    ``record`` synchronizes the device and reads the host clock. That measures
+    wall time around a drained queue rather than true device time, which is
+    exactly what do_bench needs (it only compares candidates against each other),
+    and it makes ``wait``/``query`` trivially correct because nothing is
+    outstanding once ``record`` returns.
+    """
+
+    def __init__(
+        self, enable_timing=False, blocking=False, interprocess=False, external=False
+    ):
+        self.enable_timing = enable_timing
+        self._t = None
+
+    def record(self, stream=None):
+        synchronize()
+        self._t = time.perf_counter()
+
+    def wait(self, stream=None):
+        return None
+
+    def synchronize(self):
+        synchronize()
+
+    def query(self):
+        return self._t is not None
+
+    def elapsed_time(self, end_event):
+        if self._t is None or end_event._t is None:
+            raise RuntimeError("elapsed_time called on an unrecorded event")
+        return (end_event._t - self._t) * 1000.0  # ms, matching torch.cuda.Event
+
+
 class Event(torch.cuda.Event):
     """Flagos event that wraps a CUDA event (same physical GPU under boxing).
 
@@ -301,13 +344,24 @@ class Event(torch.cuda.Event):
     def __new__(
         cls, enable_timing=False, blocking=False, interprocess=False, external=False
     ):
-        return super().__new__(
-            cls,
-            enable_timing=enable_timing,
-            blocking=blocking,
-            interprocess=interprocess,
-            external=external,
-        )
+        try:
+            return super().__new__(
+                cls,
+                enable_timing=enable_timing,
+                blocking=blocking,
+                interprocess=interprocess,
+                external=external,
+            )
+        except RuntimeError:
+            # No CUDA event underneath (Ascend): torch.cuda.Event is a dummy base
+            # class there. Fall back to host timing rather than propagating, so
+            # triton's autotuner can still bench configs.
+            return _HostTimedEvent(
+                enable_timing=enable_timing,
+                blocking=blocking,
+                interprocess=interprocess,
+                external=external,
+            )
 
     def record(self, stream=None):
         if stream is None:
@@ -366,6 +420,48 @@ def get_amp_supported_dtype():
     return [torch.float16, torch.bfloat16]
 
 
+class _DeviceProperties:
+    """Minimal device properties object for FlagGems compatibility.
+
+    FlagGems queries ``multi_processor_count`` to size its grid launch. The
+    Ascend analogue is the AICore count, which triton-ascend already reads off
+    the device (``NPUUtils.get_aicore_num``, via ``rtGetDeviceInfo``), so take it
+    from there rather than hardcoding: it is 24 on this 910, and a wrong constant
+    silently mis-sizes every gems grid.
+
+    Falls back to 32 only if triton is unavailable or the query raises, which
+    keeps a FlagGems-less build importable.
+    """
+
+    def __init__(self, device_id):
+        self.name = f"Ascend NPU {device_id}"
+        self.multi_processor_count = _aicore_count()
+        self.total_memory = _C._memory_reserved(device_id)
+
+
+def _aicore_count(_cache=[]):
+    """AICore count for this chip, queried once from triton-ascend."""
+    if not _cache:
+        try:
+            from triton.backends.ascend.driver import NPUUtils
+
+            _cache.append(int(NPUUtils().get_aicore_num()))
+        except Exception:
+            _cache.append(32)
+    return _cache[0]
+
+
+def get_device_properties(device=None):
+    """Return device properties for the given device.
+
+    Args:
+        device (int or None): device index, or None for current device.
+    """
+    if device is None:
+        device = current_device()
+    return _DeviceProperties(device)
+
+
 __all__ = [
     "device",
     "device_count",
@@ -392,4 +488,5 @@ __all__ = [
     "memory_allocated",
     "memory_reserved",
     "reset_peak_memory_stats",
+    "get_device_properties",
 ]

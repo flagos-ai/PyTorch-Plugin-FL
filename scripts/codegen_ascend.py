@@ -1638,10 +1638,12 @@ at::Tensor {kernel}(const at::Tensor& self, ::std::optional<at::ScalarType> dtyp
     .device(device.value_or(self.device()))
     .pinned_memory(pin_memory.value_or(false));
   auto fmt = memory_format.value_or(at::MemoryFormat::Contiguous);
-  if (fmt == at::MemoryFormat::Preserve) {{
-    fmt = self.suggest_memory_format();
-  }}
-  auto result = at::empty(self.sizes(), options, fmt);
+  // Preserve replicates self's strides when it can; see T_EMPTY_LIKE for why
+  // suggest_memory_format() is not a valid stand-in.
+  auto result = (fmt == at::MemoryFormat::Preserve && self.is_non_overlapping_and_dense())
+    ? at::empty_strided(self.sizes(), self.strides(), options)
+    : at::empty(self.sizes(), options,
+                fmt == at::MemoryFormat::Preserve ? self.suggest_memory_format() : fmt);
   result.fill_(1);
   return result;
 }}
@@ -1659,10 +1661,12 @@ at::Tensor {kernel}(const at::Tensor& self, ::std::optional<at::ScalarType> dtyp
     .device(device.value_or(self.device()))
     .pinned_memory(pin_memory.value_or(false));
   auto fmt = memory_format.value_or(at::MemoryFormat::Contiguous);
-  if (fmt == at::MemoryFormat::Preserve) {{
-    fmt = self.suggest_memory_format();
-  }}
-  auto result = at::empty(self.sizes(), options, fmt);
+  // Preserve replicates self's strides when it can; see T_EMPTY_LIKE for why
+  // suggest_memory_format() is not a valid stand-in.
+  auto result = (fmt == at::MemoryFormat::Preserve && self.is_non_overlapping_and_dense())
+    ? at::empty_strided(self.sizes(), self.strides(), options)
+    : at::empty(self.sizes(), options,
+                fmt == at::MemoryFormat::Preserve ? self.suggest_memory_format() : fmt);
   result.zero_();
   return result;
 }}
@@ -1674,6 +1678,16 @@ REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
 #   with self's meta. Same shape as ones_like but no fill_ (contents undefined).
 #   FlagGems' pointwise_dynamic allocates its outputs via torch.empty_like, so this
 #   must exist on the ascend backend for any op routed to flagos_python.
+#
+#   Preserve must replicate self's strides, not fall back to suggest_memory_format().
+#   For a transposed 2D tensor suggest_memory_format() answers Contiguous, so the
+#   output came back row-major while gems' pointwise fast path -- taken whenever the
+#   operands are non-overlapping and dense (use_fast_path in
+#   utils/pointwise_dynamic.py) -- writes elements in the INPUT's physical order into
+#   a flat view of it. Every pointwise gems kernel then returned a transposed-wrong
+#   result for a transposed input (neg/abs/sin/exp/sqrt/sigmoid/tanh/rsqrt measured
+#   98% of elements wrong); a strided slice was unaffected because it is not dense
+#   and takes the slow path. Mirrors upstream at::native::empty_like.
 T_EMPTY_LIKE = """\
 at::Tensor {kernel}(const at::Tensor& self, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory, ::std::optional<at::MemoryFormat> memory_format) {{
   auto options = at::TensorOptions()
@@ -1683,6 +1697,9 @@ at::Tensor {kernel}(const at::Tensor& self, ::std::optional<at::ScalarType> dtyp
     .pinned_memory(pin_memory.value_or(false));
   auto fmt = memory_format.value_or(at::MemoryFormat::Preserve);
   if (fmt == at::MemoryFormat::Preserve) {{
+    if (self.is_non_overlapping_and_dense()) {{
+      return at::empty_strided(self.sizes(), self.strides(), options);
+    }}
     fmt = self.suggest_memory_format();
   }}
   return at::empty(self.sizes(), options, fmt);

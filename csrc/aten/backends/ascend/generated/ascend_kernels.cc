@@ -2546,10 +2546,12 @@ at::Tensor OnesLikeKernelAscend(const at::Tensor& self, ::std::optional<at::Scal
     .device(device.value_or(self.device()))
     .pinned_memory(pin_memory.value_or(false));
   auto fmt = memory_format.value_or(at::MemoryFormat::Contiguous);
-  if (fmt == at::MemoryFormat::Preserve) {
-    fmt = self.suggest_memory_format();
-  }
-  auto result = at::empty(self.sizes(), options, fmt);
+  // Preserve replicates self's strides when it can; see T_EMPTY_LIKE for why
+  // suggest_memory_format() is not a valid stand-in.
+  auto result = (fmt == at::MemoryFormat::Preserve && self.is_non_overlapping_and_dense())
+    ? at::empty_strided(self.sizes(), self.strides(), options)
+    : at::empty(self.sizes(), options,
+                fmt == at::MemoryFormat::Preserve ? self.suggest_memory_format() : fmt);
   result.fill_(1);
   return result;
 }
@@ -2563,10 +2565,12 @@ at::Tensor ZerosLikeKernelAscend(const at::Tensor& self, ::std::optional<at::Sca
     .device(device.value_or(self.device()))
     .pinned_memory(pin_memory.value_or(false));
   auto fmt = memory_format.value_or(at::MemoryFormat::Contiguous);
-  if (fmt == at::MemoryFormat::Preserve) {
-    fmt = self.suggest_memory_format();
-  }
-  auto result = at::empty(self.sizes(), options, fmt);
+  // Preserve replicates self's strides when it can; see T_EMPTY_LIKE for why
+  // suggest_memory_format() is not a valid stand-in.
+  auto result = (fmt == at::MemoryFormat::Preserve && self.is_non_overlapping_and_dense())
+    ? at::empty_strided(self.sizes(), self.strides(), options)
+    : at::empty(self.sizes(), options,
+                fmt == at::MemoryFormat::Preserve ? self.suggest_memory_format() : fmt);
   result.zero_();
   return result;
 }
@@ -2581,6 +2585,9 @@ at::Tensor EmptyLikeKernelAscend(const at::Tensor& self, ::std::optional<at::Sca
     .pinned_memory(pin_memory.value_or(false));
   auto fmt = memory_format.value_or(at::MemoryFormat::Preserve);
   if (fmt == at::MemoryFormat::Preserve) {
+    if (self.is_non_overlapping_and_dense()) {
+      return at::empty_strided(self.sizes(), self.strides(), options);
+    }
     fmt = self.suggest_memory_format();
   }
   return at::empty(self.sizes(), options, fmt);

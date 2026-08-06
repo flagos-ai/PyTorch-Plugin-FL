@@ -556,6 +556,14 @@ def _patch_flaggems_codegen_config():
         _npu_device_shim.Event = flagos.Event
         _npu_device_shim.current_stream = flagos.current_stream
         _npu_device_shim.default_generators = flagos.default_generators
+        # FlagGems' utils/triton_driver_helper.py captures
+        # torch_device_fn.get_device_properties at import time and falls back to
+        # triton's driver on AttributeError -- and triton-ascend's version returns
+        # a plain dict, so gems' `get_device_properties(idx).multi_processor_count`
+        # raises AttributeError deep inside a kernel launch. cumsum hit this on the
+        # (1, 151936) logits of Qwen3's sampler, failing every generate() on the
+        # gems path while smaller shapes took a branch that never queried it.
+        _npu_device_shim.get_device_properties = flagos.get_device_properties
         torch.npu = _npu_device_shim
 
     # FlagGems' ASCEND backend imports torch_npu in _get_vendor_from_quick_cmd.
