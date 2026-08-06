@@ -284,40 +284,92 @@ def _real_current_stream(device=None):
     )
 
 
-class Event(torch.cuda.Event):
-    """Flagos event that wraps a CUDA event (same physical GPU under boxing).
+def _cuda_event_is_usable():
+    """Is ``torch.cuda.Event`` backed by a real binding, or a dummy stand-in?
 
-    Since flagos shares the CUDA stream/GPU, a real ``torch.cuda.Event`` gives
-    true device-side semantics (maca event under the hood): ``record`` and
-    ``wait`` enforce cross-stream ordering, ``elapsed_time`` measures on-device
-    time, and ``query`` reflects actual completion -- unlike the previous
-    host-timestamp stand-in whose ``wait`` was a no-op.
-
-    ``record``/``wait`` are overridden to default to the *real* current stream
-    (see :func:`_real_current_stream`) rather than ``torch.cuda.current_stream``,
-    which boxing replaces with a non-Stream shim.
+    On a vendor torch build the base class is the C++ ``_CudaEventBase``. On the
+    CPU-only wheel this project pairs with an external ``libtorch_cuda.so``, the
+    binding was never compiled, so ``torch.cuda`` substitutes a placeholder
+    built by ``torch._utils._dummy_type`` -- a bare ``object`` subclass whose
+    ``__new__`` raises "Tried to instantiate dummy base class Event". Detect it
+    by that lineage rather than by trying to construct one, since a failed
+    construction is indistinguishable from a genuine device error.
     """
+    base = torch.cuda.Event.__mro__[-2]  # the class just above `object`
+    return base.__module__ != "torch._utils"
 
-    def __new__(
-        cls, enable_timing=False, blocking=False, interprocess=False, external=False
-    ):
-        return super().__new__(
-            cls,
-            enable_timing=enable_timing,
-            blocking=blocking,
-            interprocess=interprocess,
-            external=external,
-        )
 
-    def record(self, stream=None):
-        if stream is None:
-            stream = _real_current_stream()
-        return super().record(stream)
+if _cuda_event_is_usable():
 
-    def wait(self, stream=None):
-        if stream is None:
-            stream = _real_current_stream()
-        return super().wait(stream)
+    class Event(torch.cuda.Event):
+        """Flagos event backed by a real CUDA event (same physical GPU).
+
+        Since flagos shares the CUDA stream/GPU, a real ``torch.cuda.Event``
+        gives true device-side semantics (maca event under the hood): ``record``
+        and ``wait`` enforce cross-stream ordering, ``elapsed_time`` measures
+        on-device time, and ``query`` reflects actual completion -- unlike the
+        previous host-timestamp stand-in whose ``wait`` was a no-op.
+
+        ``record``/``wait`` default to the *real* current stream (see
+        :func:`_real_current_stream`) rather than ``torch.cuda.current_stream``,
+        which boxing replaces with a non-Stream shim.
+        """
+
+        def __new__(
+            cls, enable_timing=False, blocking=False, interprocess=False, external=False
+        ):
+            return super().__new__(
+                cls,
+                enable_timing=enable_timing,
+                blocking=blocking,
+                interprocess=interprocess,
+                external=external,
+            )
+
+        def record(self, stream=None):
+            if stream is None:
+                stream = _real_current_stream()
+            return super().record(stream)
+
+        def wait(self, stream=None):
+            if stream is None:
+                stream = _real_current_stream()
+            return super().wait(stream)
+
+else:
+
+    class Event(torch.Event):
+        """Flagos event on the device-agnostic ``torch.Event``.
+
+        Used when ``torch.cuda.Event`` is a dummy (the CPU-wheel build). The
+        generic event dispatches straight to our own
+        ``c10::flagos::DeviceGuardImpl`` -- ``record``/``block``/``queryEvent``/
+        ``elapsedTime`` in ``csrc/runtime/guard.h`` -- so timing is measured by
+        the vendor runtime, exactly as the cuda-backed branch above. Every
+        vendor in ``csrc/runtime/accelerator/`` implements that ABI, so this is
+        portable rather than NVIDIA-specific.
+
+        This is what makes inductor's autotuner work: it constructs
+        ``torch.cuda.Event(enable_timing=True)`` to time candidate Triton
+        configs, and ``_cuda_compat`` points that name here.
+
+        ``record``/``wait`` take no stream: flagos submits everything to the
+        default stream, and the generic event already defaults to the current
+        one, so there is no shim to route around.
+        """
+
+        def __new__(
+            cls, enable_timing=False, blocking=False, interprocess=False, external=False
+        ):
+            # `external` has no equivalent on torch.Event and is unused here
+            # (nothing in this project imports an event from another library).
+            return super().__new__(
+                cls,
+                device=f"flagos:{current_device()}",
+                enable_timing=enable_timing,
+                blocking=blocking,
+                interprocess=interprocess,
+            )
 
 
 def current_stream(device=None):

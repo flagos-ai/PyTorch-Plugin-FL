@@ -25,10 +25,17 @@ Usage:
 """
 
 import argparse
+import os
 import time
+
+# torch_fl must be imported before torch: it preloads the external
+# libtorch_cuda.so that this build's `torch.cuda` depends on. Import torch
+# first and the very first flagos tensor dies with "Cannot initialize CUDA
+# without ATen_cuda library". The test suite gets away without ordering its
+# own imports because conftest imports torch_fl during collection.
+import torch_fl
 import torch
 import torch.nn as nn
-import torch_fl
 
 
 class MLPModel(nn.Module):
@@ -48,7 +55,7 @@ class MLPModel(nn.Module):
         x = x + 1.0
 
         x = self.fc2(x)
-        x = torch.gelu(x)
+        x = nn.functional.gelu(x)
         x = x / 2.0
 
         x = self.fc3(x)
@@ -115,11 +122,17 @@ def benchmark_model(model, inputs, warmup=10, rounds=100):
         with torch.no_grad():
             _ = model(*inputs) if isinstance(inputs, tuple) else model(inputs)
 
+    # flagos tensors report either name depending on how the device was spelled,
+    # so check both -- matching only "privateuseone" would silently time a
+    # "flagos:0" model through torch.cuda.synchronize().
+    def sync():
+        if device.type in ("privateuseone", "flagos"):
+            torch_fl.flagos.synchronize()
+        else:
+            torch.cuda.synchronize()
+
     # Sync before timing
-    if device.type == "privateuseone":
-        torch_fl.flagos.synchronize()
-    else:
-        torch.cuda.synchronize()
+    sync()
 
     # Timed runs
     start = time.perf_counter()
@@ -128,10 +141,7 @@ def benchmark_model(model, inputs, warmup=10, rounds=100):
             _ = model(*inputs) if isinstance(inputs, tuple) else model(inputs)
 
     # Sync after timing
-    if device.type == "privateuseone":
-        torch_fl.flagos.synchronize()
-    else:
-        torch.cuda.synchronize()
+    sync()
 
     elapsed = time.perf_counter() - start
     return (elapsed / rounds) * 1000  # Convert to ms
@@ -182,9 +192,7 @@ def main():
     print(f"Batch size: {args.batch_size}")
     print(f"Hidden size: {args.hidden_size}")
     print(f"Rounds: {args.rounds}")
-    print(
-        f"FlagTree enabled: {bool(int(torch.os.environ.get('FLAGOS_USE_FLAGTREE', '0')))}"
-    )
+    print(f"FlagTree enabled: {os.environ.get('FLAGOS_USE_FLAGTREE', '0') == '1'}")
     print()
 
     # === Flagos Device ===

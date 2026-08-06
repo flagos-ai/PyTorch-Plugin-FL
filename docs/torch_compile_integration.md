@@ -143,11 +143,27 @@ stream-less autograd nodes and AOT autograd's backward trace trips
 
 ## Performance
 
-**Not yet measured.** Correctness is verified (`tests/integration/test_compile.py`);
-benchmarking the fusion gain, and comparing it against stock `inductor` on cuda,
-is still open work. Structurally the two should land close together -- same
-inductor fusion passes, same Triton codegen, and since the graph stays on flagos
-there is no per-call copy -- but that is an expectation, not a measurement.
+Measured on one A100 (torch 2.10 CPU wheel + external cu128 `libtorch_cuda.so`),
+fp32, comparing compiled against eager on flagos:
+
+| Workload | Eager | Compiled | Speedup |
+|---|---|---|---|
+| Qwen3-0.6B forward, 1x128 tokens | 35.6 ms | 15.9 ms | **2.24x** |
+| Elementwise chain, 4096x4096 | 0.97 ms | 0.11 ms | **9.18x** |
+| Elementwise chain, 1024x1024 | 0.086 ms | 0.051 ms | 1.69x |
+| Transformer block (`bench_compile.py --model=transformer`) | 1.41 ms | 1.00 ms | 1.41x |
+| MLP 2048x4096 (matmul-bound) | 8.43 ms | 7.96 ms | 1.06x |
+| MLP 64x512 (too small to amortize launch) | 0.18 ms | 0.19 ms | 0.92x |
+
+The pattern is what inductor's fusion predicts: the win comes from collapsing
+elementwise chains into one kernel, so it scales with how much of the graph is
+elementwise and how large the tensors are. Matmul-dominated graphs still call
+cuBLAS and barely move, and at small sizes the launch overhead of the compiled
+wrapper can exceed the saving.
+
+Not yet measured: a like-for-like comparison against stock `inductor` on cuda
+(`--compare-cuda` exists but has not been run), and any training/backward
+throughput number.
 
 ### Benchmarking
 
@@ -245,10 +261,18 @@ tests live alongside it:
 4. **CUDA graphs off**: `torch.cuda.CUDAGraph` is a dummy class in the CPU torch
    wheel, so `triton.cudagraphs` is forced off even under `mode="max-autotune"`
 5. **FlagTree maturity**: Backend support varies by hardware (NVIDIA most mature)
+6. **Convolutions do not compile**: inductor prefers `channels_last` for conv on
+   GPU, and while the flagos convolution kernel honours that layout, its
+   fake/meta kernel still predicts contiguous strides -- so inductor rejects the
+   graph on a stride mismatch (`aten.convolution.default`). Eager never hits
+   this, since it is the layout pass that produces a `channels_last` input.
+   Reproduce with `python tests/perf/bench_compile.py --model=conv`.
 
 ## Roadmap
 
 - [x] Phase 1: Inductor integration (flagos as a first-class GPU device)
+- [x] Measure fusion gains against eager on flagos (see Performance)
+- [ ] Fix the conv `channels_last` meta/real stride mismatch (Limitations #6)
 - [ ] Phase 2: FlagTree integration — shim exists, not yet exercised end-to-end
 - [ ] Benchmark fusion gains vs. stock inductor+triton on cuda
 - [ ] Phase 3: FlagGems-aware fusion (recognize pre-optimized patterns)
