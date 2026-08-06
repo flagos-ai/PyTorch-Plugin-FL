@@ -97,10 +97,17 @@ def _lazy_init():
     # Eagerly import FlagGems to avoid deep import chain during dispatch.
     # FlagGems has a deep lazy import chain (fused → FLA → utils → models → sqlalchemy)
     # that can exceed Python's recursion limit when triggered inside PyTorch dispatch.
+    #
+    # Not just ImportError: FlagGems' vendor autodetect raises RuntimeError("No
+    # device were detected on your machine") when it is installed but cannot
+    # identify the backend -- which is the normal state on a vendor box whose
+    # Triton plugin is absent, and must not take down device init. The FlagGems
+    # kernels are optional everywhere; whatever is not registered runs on the
+    # native or CPU path.
     try:
         import flag_gems  # noqa: F401
-    except ImportError:
-        pass  # FlagGems not installed, skip
+    except Exception:
+        pass  # FlagGems unavailable or undetectable here, skip
 
     # Monkey-patch Tensor.__getitem__ to work around PyTorch C++ dispatch issue
     # with advanced indexing on custom devices. The C++ __getitem__ fails for
@@ -266,6 +273,38 @@ class Stream(torch.cuda.Stream):
         return super().__new__(cls, device=device, priority=priority, **kwargs)
 
 
+class _DefaultStreamHandle:
+    """Minimal stream stand-in for backends with no CUDA runtime.
+
+    Vendor Triton launchers (and FlagGems through them) want an object exposing
+    a raw stream handle, under whichever name their vendor uses -- ``cuda_stream``
+    for CUDA-derived backends, ``gcu_stream`` for Enflame's triton_gcu. On
+    Enflame GCU, Ascend and MUSA the kernels go to the vendor's default stream,
+    which every one of them denotes with handle 0. The synchronization those
+    backends need already happens in their own op paths, so
+    ``synchronize``/``wait_stream`` have nothing to do here.
+    """
+
+    __slots__ = ("cuda_stream", "gcu_stream", "device_index")
+
+    def __init__(self, device_index: int = 0):
+        self.cuda_stream = 0
+        self.gcu_stream = 0
+        self.device_index = device_index
+
+    def __int__(self) -> int:
+        return 0
+
+    def synchronize(self):
+        pass
+
+    def wait_stream(self, other):
+        pass
+
+    def query(self) -> bool:
+        return True
+
+
 def _real_current_stream(device=None):
     """Resolve the actual current CUDA stream as a real ``torch.cuda.Stream``.
 
@@ -276,8 +315,17 @@ def _real_current_stream(device=None):
     C++ runtime (``_cuda_getCurrentStream``) and rebuild a real Stream from it,
     so events record/wait on the same physical (default) stream the boxing
     kernels submit to.
+
+    On a vendor backend with no CUDA runtime at all (Enflame GCU, Ascend, MUSA)
+    ``_cuda_getCurrentStream`` does not exist and ``torch.cuda`` cannot even be
+    lazily initialized ("Torch not compiled with CUDA enabled"). There is no CUDA
+    stream to describe, so return a stand-in carrying the vendor's default stream
+    handle: callers such as FlagGems' Triton launcher only read ``.cuda_stream``
+    off the result, and those backends submit to their default stream.
     """
     idx = current_device() if device is None else int(device)
+    if not hasattr(torch._C, "_cuda_getCurrentStream"):
+        return _DefaultStreamHandle(idx)
     stream_id, device_index, device_type = torch._C._cuda_getCurrentStream(idx)
     return torch.cuda.Stream(
         stream_id=stream_id, device_index=device_index, device_type=device_type

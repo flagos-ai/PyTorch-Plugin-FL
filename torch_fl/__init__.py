@@ -524,6 +524,21 @@ def _patch_flaggems_codegen_config():
         os.environ.setdefault("GEMS_VENDOR", "hygon")
         return
 
+    # --- Enflame GCU branch ---
+    # Keyed on the build accelerator for the same reason as DCU: no runtime probe
+    # distinguishes GCU here, and the tops stack has no libcuda.so, so without
+    # this branch GCU would reach the ascend fallback and get GEMS_VENDOR=ascend
+    # (which also picks the wrong comm profile). FlagGems' Triton kernels need
+    # Enflame's triton_gcu plugin plus its /opt/triton_gcu compiler toolchain; if
+    # either is missing, patch_triton_gcu_for_flagos() returns False and we leave
+    # GEMS_VENDOR unset so the topsaten kernels and cpu_fallback stay in charge.
+    if _build_accelerator() == "gcu" and os.environ.get("GEMS_VENDOR") != "ascend":
+        from torch_fl.accelerator.gcu._gcu_compat import patch_triton_gcu_for_flagos
+
+        if patch_triton_gcu_for_flagos():
+            os.environ.setdefault("GEMS_VENDOR", "enflame")
+        return
+
     # --- Generic NVIDIA CUDA branch (default) ---
     if (
         os.environ.get("FLAGOS_DISABLE_CUDA_SHIM", "0") != "1"
@@ -648,13 +663,47 @@ _EXCLUDED_OPS = {
     "randperm",
     "empty.memory_format",  # Already registered in C++
     "empty_strided",  # Already registered in C++
-    # Random ops that use device context
+    # FlagGems registers the *bare* aten name "empty" as well, implemented by a
+    # function also called "empty" -- so "empty.memory_format" above does not
+    # filter it (the registrar matches on the function name). Left registered, it
+    # is the one factory op FlagGems takes over, and it ignores the requested
+    # device: an `empty(..., device="flagos:1")` while flagos:0 is current
+    # allocates on 0, and the first write through that pointer faults the driver
+    # ("IoctlCmdWriteRead errno[14]. The device is out of service", then a SIP
+    # exception that aborts the process). The C++ empty is already correct here.
+    "empty",
+    # Random ops that use device context.
+    #
+    # These also cover FlagGems' philox path, which reads the generator state as
+    # exactly two int64s (the CUDA layout: seed + offset). torch_fl's flagos
+    # generators are CPU Mersenne-Twister generators whose state unpacks to 632
+    # int64s, so philox_backend_seed_offset raises "too many values to unpack".
+    # Every name FlagGems registers for an RNG op has to appear here or the op
+    # reaches that unpacking; the factory/RNG ops are correct on the topsaten and
+    # CPU paths anyway, so nothing is lost by keeping them off FlagGems.
     "uniform_",
+    "normal_",
     "normal.float_Tensor",
     "normal.Tensor_float",
     "normal.Tensor_tensor",
+    "normal.Tensor_Tensor",
+    "log_normal_",
+    "randint",
+    "randint_like",
     "exponential_",
     "multinomial",
+    # The rest of the philox users, found by running tests/integration/ops/
+    # test_rng_dispatch.py: each of these reaches philox_backend_seed_offset and
+    # fails the same way. cauchy_/dropout/poisson are the *vendor's* gcu300
+    # overrides, so they are not discoverable from flag_gems/ops/ alone.
+    "bernoulli",
+    "bernoulli.p",
+    "bernoulli_.float",
+    "bernoulli_.Tensor",
+    "cauchy_",
+    "dropout",
+    "native_dropout",
+    "poisson",
     # Copy ops - already registered in C++, skip to avoid duplicate registration
     "copy_",
     "_to_copy",
@@ -702,6 +751,109 @@ _EXCLUDED_OPS = {
 }
 
 
+# Ops excluded from FlagGems on Enflame GCU only, on top of _EXCLUDED_OPS.
+#
+# These have a FlagGems kernel that its Triton backend cannot compile for the
+# GCU, so they must stay unregistered to keep reaching the topsaten kernels or
+# cpu_fallback. Verified individually on hardware -- only the listed overload
+# fails, e.g. var.dim, std.correction and var_mean.correction all work.
+_GCU_EXCLUDED_OPS = {
+    # NOTE: FlagGems matches this list against the *implementing function* name
+    # (op_registrar.config_filter compares item[1].__name__), not the aten op
+    # name -- those merely coincide for most ops. aten::var.correction is
+    # implemented by var_correction, so that is the name to list.
+    #
+    # The full-reduction path (var_kernel_1, var.py:88) emits an int64 widening
+    # that the GCU backend marks illegal: "failed to legalize operation
+    # 'arith.extsi'" -- consistent with the tops stack having no int64 kernels.
+    "var",
+    "var_correction",
+    "var_dim",
+    "var_mean",
+    # Both are built on Triton's float `%`, which on the GCU returns x rather
+    # than 0 when y divides x exactly (the internal division lands just below
+    # the integer, so the floor is one too low). torch.remainder(2*y, y) then
+    # gives y instead of 0 -- for ~10% of random lanes, silently. Non-multiple
+    # operands are correct, which is why this needs an exact-multiple probe to
+    # see. Verified on gcu300 with the vendor rem_tt/fmod kernels.
+    "remainder",
+    "remainder_",
+    "fmod_scalar",
+    "fmod_tensor",
+    "fmod_scalar_",
+    "fmod_tensor_",
+    "fmod_",
+    # Same rounding defect seen through the quotient instead of the remainder:
+    # floor_divide(y, y) yields 0 rather than 1 on those same lanes.
+    "floor_divide",
+    "floor_divide_",
+    # No GCU kernel to link against: the vendor linker rejects the relocation
+    # for tops_nv_nextafterf_v4_fp32 ("R_DTU_ADDR16_LO_ICALL cannot be used
+    # against symbol"), so the op cannot be compiled at all.
+    "nextafter",
+    "nextafter_",
+    # The sort kernels emit the same illegal int64 widening as var_kernel_1
+    # ("failed to legalize operation 'arith.extsi'"). msort is sort's caller, so
+    # it fails identically, and sort.stable (function sort_stable) shares the
+    # kernel -- it fails as "Pipeline run failed: PassManager execution failed".
+    # topk/argmax use different kernels and are fine.
+    "sort",
+    "sort_stable",
+    "msort",
+    # stack.py:65 builds its offsets in int64 and hits that same legalization
+    # failure -- and the backend then core-dumps while reporting the error, so
+    # this one cannot be left to raise. cat/vstack/hstack are unaffected and
+    # verified correct.
+    "stack",
+    # The conv VJP (flag_gems/ops/conv2d.py, which conv1d unsqueezes into)
+    # passes a stride of 0 as a runtime argument, and the GCU asserts on that
+    # inside the kernel: "Not Support dynamic stride is 0, please add
+    # tl.constexpr to stride arg in kernel args list". That is a SIP assert, so
+    # it aborts the process instead of raising -- it cannot be caught and fallen
+    # back from, which is why the whole family stays off FlagGems even though
+    # every forward is numerically correct.
+    "conv1d",
+    "conv2d",
+    "conv3d",
+    "conv_transpose1d",
+    "conv_transpose2d",
+    "_conv_depthwise2d",
+    "cudnn_convolution",
+    # The vendor's own gcu300 layernorm.py:326 hits the int64 widening in its
+    # backward kernel, which breaks any .backward() through a LayerNorm. The
+    # forward (layer_norm) compiles and is verified correct, so only the backward
+    # is excluded -- the gradient falls back to the topsaten/CPU path.
+    "native_layer_norm_backward",
+    "layer_norm_backward",
+    # int64 again, from the other direction: these two are asked for int64
+    # *output* rather than int64 indices. `zeros(dtype=torch.int64)` goes through
+    # the vendor's gcu300 zeros.py zero_ and fails to compile; `scalar_tensor`
+    # with dtype=int64 compiles but returns garbage (42 came back as
+    # 4441830098096545884). Both are correct on the C++/topsaten path.
+    "zero_",
+    "scalar_tensor",
+    # flag_gems/ops/diff.py builds its offsets in int64 -- same legalization
+    # failure as stack. torch.diff decomposes to narrow+sub on the fallback path.
+    "diff",
+    # Same story as layernorm: the vendor's own gcu300 embedding.py:98 backward
+    # kernel does not legalize, while its forward (embedding) is correct and
+    # stays on FlagGems.
+    "embedding_dense_backward",
+    "embedding_backward",
+    # fill_ silently corrupts int64 tensors -- fill_(42) on an int64 tensor comes
+    # back as -4846589848703729622, at every rank, with no error. The int64
+    # diversion in device_guarded_config cannot rescue it: fill_ writes through
+    # its operand, so computing on a CPU copy would discard the result. Excluding
+    # it also fixes torch.scalar_tensor(dtype=torch.int64), which is an
+    # empty+fill_ underneath and returned garbage even though scalar_tensor
+    # itself was already excluded.
+    "fill_.Scalar",
+    "fill_.Tensor",
+    "fill.Scalar",
+    "fill.Tensor",
+}
+
+
 # Cache for CUDA runtime library
 _cudart_lib = None
 _cudaMemcpy = None
@@ -734,6 +886,38 @@ def _get_cudaMemcpy():
     return _cudaMemcpy
 
 
+def _flaggems_exclusion_names(flag_gems, aten_names):
+    """Translate aten op names into the function names FlagGems excludes on.
+
+    ``flag_gems.enable(unused=...)`` looks like it takes aten op names, but its
+    registrar filters on the *implementing function* name
+    (``op_registrar.config_filter`` compares ``item[1].__name__``). Those
+    coincide for plain ops -- "randn", "mm" -- and diverge for overloads and
+    private ops: ``normal.Tensor_float`` is implemented by
+    ``normal_tensor_float``, ``_softmax`` by ``softmax``, ``div.Scalar`` by
+    ``true_divide``. Passing an aten name that diverges silently excludes
+    nothing, and the op gets registered after all.
+
+    Both spellings are returned: the function name is what actually filters,
+    while keeping the original is harmless and covers ops whose two names agree.
+    Names absent from FlagGems' config pass through unchanged.
+    """
+    op_to_func = {}
+    for item in getattr(flag_gems, "_FULL_CONFIG", ()):
+        if len(item) < 2:
+            continue
+        func_name = getattr(item[1], "__name__", None)
+        if func_name:
+            op_to_func.setdefault(item[0], func_name)
+
+    names = set(aten_names)
+    for aten_name in aten_names:
+        func_name = op_to_func.get(aten_name)
+        if func_name:
+            names.add(func_name)
+    return sorted(names)
+
+
 def _register_flaggems_operators():
     """
     Register FlagGems operators with the PrivateUse1 (flagos) dispatch key.
@@ -752,6 +936,60 @@ def _register_flaggems_operators():
     if importlib.util.find_spec("flag_gems") is None:
         # flag_gems not installed, will use cpu_fallback
         return 0
+
+    # Enflame GCU has no C++ FlagGems path (FLAGGEMS_KERNEL is off -- there is no
+    # liboperators.so for the tops stack), so the Python registration is the only
+    # way its Triton kernels get used. Everything not registered here stays on
+    # the topsaten kernels or reaches cpu_fallback, as before.
+    if _build_accelerator() == "gcu":
+        from torch_fl.accelerator.gcu._gcu_compat import is_triton_gcu_available
+
+        if not is_triton_gcu_available():
+            return 0
+        try:
+            import flag_gems
+
+            from torch_fl.accelerator.gcu._gcu_compat import (
+                bind_vendor_ops_in_generic_modules,
+                device_guarded_config,
+                patch_flaggems_device_name,
+            )
+
+            patch_flaggems_device_name()
+            bind_vendor_ops_in_generic_modules(flag_gems)
+            excluded = _flaggems_exclusion_names(
+                flag_gems, _EXCLUDED_OPS | _GCU_EXCLUDED_OPS
+            )
+            _flaggems_lib = torch.library.Library("aten", "IMPL")
+            # enable() reads _FULL_CONFIG off the module, so the guarded table
+            # is swapped in for the call and restored right after -- anything
+            # else reading _FULL_CONFIG later sees the unwrapped functions.
+            original_config = flag_gems._FULL_CONFIG
+            flag_gems._FULL_CONFIG = device_guarded_config(flag_gems)
+            try:
+                flag_gems.enable(lib=_flaggems_lib, unused=excluded)
+            finally:
+                flag_gems._FULL_CONFIG = original_config
+            # What FlagGems actually took over, i.e. the same filter enable()
+            # applied: the aten names whose implementing function survived it.
+            skip = set(excluded)
+            _registered_ops = sorted(
+                entry[0]
+                for entry in flag_gems._FULL_CONFIG
+                if getattr(entry[1], "__name__", None) not in skip
+            )
+            return 1
+        except Exception as exc:
+            # A broken vendor Triton must not take down `import torch_fl`: the
+            # topsaten kernels and cpu_fallback are a complete, correct path.
+            import warnings
+
+            warnings.warn(
+                f"FlagGems registration for GCU failed ({type(exc).__name__}: "
+                f"{exc}); falling back to the topsaten kernels.",
+                stacklevel=2,
+            )
+            return 0
 
     _flaggems_lib = torch.library.Library("aten", "IMPL")
     _registered_ops = []
