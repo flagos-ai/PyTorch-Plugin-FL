@@ -217,21 +217,51 @@ class TestMusaCorrectness:
         [
             lambda x: x.expand(2, 4, 10, 10).sum([0, 2, 3]),
             lambda x: x.expand(2, 4).sum(),
-            lambda x: x.expand(3, 4).sum(0),  # single dim: no workaround needed
+            lambda x: x.expand(3, 4).sum(0),
+            lambda x: x.expand(4, 5).sum(0),
+            lambda x: x.expand(4, 5).sum([0], keepdim=True),
+            lambda x: x.expand(64, 128).sum(0),
             lambda x: x.expand(2, 4, 10, 10).mean([0, 2, 3]),
         ],
     )
     def test_fully_broadcast_reduce(self, fn):
-        """A reduce over a fully 0-strided input must not fault.
+        """A reduce over a fully 0-strided input must be correct, not just alive.
 
-        mudnn v3300 raises SIGFPE (an uncatchable crash, not a status) for a
-        multi-dim Reduce whose input is a broadcast of one element, so the
-        kernels materialize that case first. This shows up in real code via
-        conv bias gradients, where autograd feeds `ones.expand(...)` straight
-        into the reduction.
+        mudnn v3300 mishandles a Reduce whose input is a broadcast of one
+        element in two ways, so the kernels materialize that case first:
+        a multi-dim reduce raises SIGFPE (an uncatchable crash, not a status),
+        and a single-dim reduce intermittently writes only out[0], leaving the
+        rest of the output as whatever the caching allocator last left there.
+        Both reach real code through bias gradients, where autograd feeds
+        `ones.expand(...)` straight into the reduction.
         """
         a_cpu = torch.ones(1)
         torch.testing.assert_close(fn(a_cpu.to(DEVICE)).cpu(), fn(a_cpu))
+
+    @pytest.mark.musa
+    def test_bias_gradient_matches_cpu(self):
+        """`linear(...).sum().backward()` reduces an `ones.expand()` grad.
+
+        This is the path that exposed the single-dim partial write: the bias
+        gradient came back as `[N, <stale>, <stale>, ...]` -- element 0 correct
+        and the rest left over from an earlier op in the same allocator block.
+        A pure-tensor reduce cannot stand in for it, because the bug only shows
+        when the output buffer holds recycled non-zero data.
+        """
+        torch.manual_seed(42)
+        x_cpu = torch.randn(4, 3, requires_grad=True)
+        w_cpu = torch.randn(5, 3, requires_grad=True)
+        b_cpu = torch.randn(5, requires_grad=True)
+        x, w, b = (
+            t.detach().to(DEVICE).requires_grad_(True) for t in (x_cpu, w_cpu, b_cpu)
+        )
+
+        torch.nn.functional.linear(x_cpu, w_cpu, b_cpu).sum().backward()
+        torch.nn.functional.linear(x, w, b).sum().backward()
+
+        torch.testing.assert_close(b.grad.cpu(), b_cpu.grad, rtol=1e-4, atol=1e-4)
+        torch.testing.assert_close(x.grad.cpu(), x_cpu.grad, rtol=1e-4, atol=1e-4)
+        torch.testing.assert_close(w.grad.cpu(), w_cpu.grad, rtol=1e-4, atol=1e-4)
 
     @pytest.mark.musa
     @pytest.mark.parametrize("op,fn", sorted(_CPU_FALLBACK_OPS.items()))
