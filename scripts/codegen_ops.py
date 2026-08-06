@@ -1484,6 +1484,32 @@ def gen_tuple_return(op, fn_type, ret_type, args, func=None):
 }}"""
 
 
+def _scalar_tensor_box_lines(args) -> str:
+    """`guard.box({...})` lines for the plain const Tensor& args of a foreach op.
+
+    TensorListBoxingGuard kernels used to box only the tensor *lists* (and, for
+    out-variants, the mutable outs). Any remaining `const at::Tensor &` argument
+    stayed on flagos, which is not merely a missed optimization: the at:: call
+    dispatches on *all* its tensor arguments, so one unboxed flagos tensor sends
+    it back to PrivateUse1 -- into this same kernel -- and it recurses until the
+    stack is gone. Mutable outs are skipped here; the caller already boxed them.
+    """
+    lines = ""
+    for t, n in args:
+        if "TensorList" in t or "ITensorListRef" in t:
+            continue
+        if "at::Tensor" not in t:
+            continue
+        if "optional" in t:
+            # e.g. the fused optimizers' grad_scale/found_inf.
+            lines += f"  if ({n}.has_value()) guard.box({{*{n}}});\n"
+            continue
+        if "const" not in t:
+            continue  # mutable out: boxed by the caller
+        lines += f"  guard.box({{{n}}});\n"
+    return lines
+
+
 def gen_foreach(op, fn_type, ret_type, args, func=None):
     """cat + _foreach_*: materialize ITensorListRef, box, call API, unbox result."""
     kn = kernel_name(fn_type)
@@ -1524,6 +1550,12 @@ def gen_foreach(op, fn_type, ret_type, args, func=None):
     for t, n in tensorlist_args:
         mat_name = f"{n}_vec"
         box_lines += f"  guard.box({mat_name});\n"
+
+    # Plain (non-list) Tensor inputs must be boxed too. Boxing only the lists
+    # leaves e.g. _foreach_mul.Tensor's `other` on flagos, and at::_foreach_mul
+    # then re-dispatches to PrivateUse1 -- straight back into this kernel, i.e.
+    # unbounded self-recursion ending in SIGSEGV.
+    box_lines += _scalar_tensor_box_lines(args)
 
     if ret_type == "void":
         body = f"  {api}({call_args_str});"
@@ -1599,6 +1631,11 @@ def gen_foreach_out(op, fn_type, ret_type, args, func=None):
             if n in mutable_tensors:
                 box_lines += f"  guard.box({{{n}}});\n"
             call_arg_names.append(n)
+    # const Tensor& inputs need boxing as much as the lists and the outs do:
+    # split_with_sizes_copy.out left `self` on flagos, so at::split_with_sizes_
+    # copy_outf re-dispatched to PrivateUse1 and recursed into this kernel until
+    # the stack blew (SIGSEGV). This is FSDP2's all-gather copy-out path.
+    box_lines += _scalar_tensor_box_lines(args)
     call_args_str = ", ".join(call_arg_names)
 
     # Return shape follows ret_type: void (no return) or single `Tensor&`
