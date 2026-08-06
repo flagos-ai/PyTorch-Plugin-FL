@@ -110,13 +110,15 @@ std::unordered_map<std::string, Backend> LoadBackendConfig() {
       table[op] = Backend::kFlagOs;
     } else if (val == "flagos_python" || val == "flaggems_python") {
       table[op] = Backend::kFlagOsPython;
+    } else if (val == "tileops") {
+      table[op] = Backend::kTileOps;
     } else {
       fprintf(stderr, "[flagos] unknown backend '%s' for op '%s', using flagos\n", val.c_str(), op.c_str());
       table[op] = Backend::kFlagOs;
     }
   }
 
-  // Per-op env var overrides: FLAGOS_OP_<op_name>=cuda|metax|flaggems
+  // Per-op env var overrides: FLAGOS_OP_<op_name>=cuda|metax|flaggems|tileops
   // e.g. FLAGOS_OP_mm=cuda  or  FLAGOS_OP_mm__out=cuda
   // Dots in op names are replaced with double underscores to avoid ambiguity
   // with ops that already contain underscores (e.g. mm_out vs mm.out).
@@ -153,6 +155,9 @@ std::unordered_map<std::string, Backend> LoadBackendConfig() {
     } else if (v == "flagos_python" || v == "flaggems_python") {
       table[op] = Backend::kFlagOsPython;
       fprintf(stderr, "[flagos] env override: %s -> flaggems_python\n", op.c_str());
+    } else if (v == "tileops") {
+      table[op] = Backend::kTileOps;
+      fprintf(stderr, "[flagos] env override: %s -> tileops\n", op.c_str());
     }
   }
 
