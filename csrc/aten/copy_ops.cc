@@ -26,8 +26,16 @@
 
 // On the CUDA-family backends (including MetaX boxing) the flagos device shares
 // the vendor's CUDA streams, so the current stream is readable from c10::cuda.
+//
+// USE_DCU is excluded for the same reason runtime/guard.h:22 excludes it: the
+// DCU wheel is hipified, so <c10/cuda/CUDAStream.h> resolves through DTK's
+// CUDA-compat shim against USE_ROCM-hipified torch headers and expands to hip*
+// symbols the shim never declares (`'hipStreamCaptureStatus' was not declared`),
+// and c10::cuda::getCurrentCUDAStream would not link there anyway -- DTK exports
+// c10::hip with zero c10::cuda symbols. DCU still shares the vendor's streams,
+// so it needs *some* barrier; see SyncCurrentStreamBeforeBlockingCopy below.
 #if !defined(USE_ASCEND) && !defined(USE_TSINGMICRO) && !defined(USE_GCU) && \
-    !defined(USE_MUSA)
+    !defined(USE_MUSA) && !defined(USE_DCU)
 #define FLAGOS_COPY_HAS_CUDA_STREAM 1
 #include <c10/cuda/CUDAStream.h>
 #endif
@@ -53,6 +61,13 @@ inline void SyncCurrentStreamBeforeBlockingCopy() {
   if (stream.stream() != nullptr) {
     stream.synchronize();
   }
+#elif defined(USE_DCU)
+  // DCU shares the vendor's streams, so it needs this barrier just as much as
+  // the other CUDA-family backends -- but it cannot ask which stream is current
+  // (no c10::cuda symbols in a hipified wheel; see the guard above). Fall back to
+  // a device-wide sync: a superset of the per-stream wait, so still correct,
+  // just coarser. Only reached on the blocking-copy paths.
+  ::DeviceSynchronize();
 #endif
 }
 

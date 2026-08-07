@@ -21,6 +21,9 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/bundle_common.sh
+source "${REPO_DIR}/scripts/lib/bundle_common.sh"
+
 LIB_MACA="${REPO_DIR}/torch_fl/lib_maca"
 TORCH_FL_LIB="${REPO_DIR}/torch_fl/lib"
 MACA_PATH="${MACA_PATH:-${METAX_HOME:-${MACA_HOME:-/opt/maca}}}"
@@ -28,17 +31,7 @@ MACA_PATH="${MACA_PATH:-${METAX_HOME:-${MACA_HOME:-/opt/maca}}}"
 # 沐曦 torch/lib 来源：显式 env，或从 conda 里找 +metax torch。
 SRC="${FLAGOS_MACA_TORCH_LIB:-}"
 if [ -z "${SRC}" ]; then
-  SRC=$(python - <<'PY' 2>/dev/null || true
-import importlib.util, os
-spec = importlib.util.find_spec("torch")
-if spec and spec.submodule_search_locations:
-    lib = os.path.join(spec.submodule_search_locations[0], "lib")
-    ver = os.path.join(spec.submodule_search_locations[0], "version.py")
-    txt = open(ver).read() if os.path.isfile(ver) else ""
-    if ("metax" in txt or "maca" in txt) and os.path.exists(os.path.join(lib, "libtorch_cuda.so")):
-        print(lib)
-PY
-)
+  SRC="$(bundle_find_vendor_torch_lib libtorch_cuda.so metax maca || true)"
 fi
 
 if [ -z "${SRC}" ] || [ ! -d "${SRC}" ]; then
@@ -50,35 +43,27 @@ if [ ! -f "${SRC}/libtorch_cuda.so" ]; then
   exit 1
 fi
 
-command -v patchelf >/dev/null 2>&1 || { echo "error: 需要 patchelf（pip install patchelf）" >&2; exit 1; }
+bundle_require_patchelf
 
 # 与 _metax_libtorch_link._CORE_SO + _CUDA_SO 对齐的自洽集合。
 CORE_SO=(libc10.so libtorch_cpu.so libtorch.so libtorch_global_deps.so libtorch_python.so)
-CUDA_SO=(libc10_cuda.so libtorch_cuda.so libtorch_cuda_linalg.so)
+CUDA_SO=(libc10_cuda.so libtorch_cuda.so libtorch_cuda_linalg.so libshm.so)
+
+VENDOR_RPATH="${MACA_PATH}/lib:${MACA_PATH}/lib64"
+# 同 DCU：bundle 内的库要能从 lib_maca/ 和 torch/lib/ 软链两条路径被打开。
+BUNDLE_ORIGIN="\$ORIGIN:\$ORIGIN/../../torch_fl/lib_maca"
 
 echo "源沐曦 torch/lib : ${SRC}"
 echo "目标 lib_maca    : ${LIB_MACA}"
 echo "maca runtime 路径: ${MACA_PATH}/lib"
-mkdir -p "${LIB_MACA}"
 
-for so in "${CORE_SO[@]}" "${CUDA_SO[@]}"; do
-  src="${SRC}/${so}"
-  if [ ! -f "${src}" ]; then
-    echo "  跳过 ${so}（源不存在）"
-    continue
-  fi
-  # 解引用软链，拷实体文件。
-  cp -fL "${src}" "${LIB_MACA}/${so}"
-  patchelf --set-rpath "\$ORIGIN:${MACA_PATH}/lib:${MACA_PATH}/lib64" "${LIB_MACA}/${so}"
-  echo "  打包 ${so} ($(du -h "${LIB_MACA}/${so}" | cut -f1))"
-done
+bundle_copy_so "${SRC}" "${LIB_MACA}" "${BUNDLE_ORIGIN}:${VENDOR_RPATH}" 0 \
+    "${CORE_SO[@]}" "${CUDA_SO[@]}"
 
 # torch_fl.so 去掉构建机写死的沐曦 torch/lib 绝对路径，改为从包内 lib_maca 找 fork libtorch。
-for so in libtorch_fl.so libtorch_bindings.so; do
-  target="${TORCH_FL_LIB}/${so}"
-  [ -f "${target}" ] || continue
-  patchelf --set-rpath "\$ORIGIN:\$ORIGIN/../lib_maca:${MACA_PATH}/lib:${MACA_PATH}/lib64" "${target}"
-  echo "  重写 RPATH ${so}"
-done
+bundle_rewrite_plugin_rpath "${TORCH_FL_LIB}" \
+    "\$ORIGIN:\$ORIGIN/../lib_maca:${VENDOR_RPATH}"
 
-echo "完成。lib_maca 总大小: $(du -sh "${LIB_MACA}" | cut -f1)"
+bundle_summary "${LIB_MACA}"
+bundle_check_needed "${LIB_MACA}" \
+    "${MACA_PATH}/lib" "${MACA_PATH}/lib64" "/usr/lib64" "/usr/lib"

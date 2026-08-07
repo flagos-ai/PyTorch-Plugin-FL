@@ -16,6 +16,15 @@ cmake_minimum_required(VERSION 3.18 FATAL_ERROR)
 
 set(ACCELERATOR "cuda" CACHE STRING "Accelerator platform: cuda, metax, ascend, tsingmicro, dcu, gcu, or musa")
 
+# Directory inside the wheel holding a bundled forked libtorch, when the backend
+# ships one (see scripts/bundle_*_libtorch.sh). "lib" means "no separate bundle
+# dir": the CUDA backend drops its extra .so straight into torch_fl/lib/.
+# Set per backend below; consumed by cmake/FlagosRpath.cmake.
+set(FLAGOS_BUNDLE_LIBDIR "lib")
+# Vendor driver/runtime dirs to embed in RUNPATH. Never bundled into the wheel
+# (a machine with the card has the driver), mirroring MetaX's /opt/maca.
+set(FLAGOS_VENDOR_RPATH_DIRS "")
+
 # Kernel build options (can be overridden via -D flags from setup.py)
 option(CUDA_KERNEL "Build CUDA kernel implementations" ON)
 option(FLAGGEMS_KERNEL "Build FlagGems C++ kernel wrappers (requires liboperators.so)" ON)
@@ -54,6 +63,9 @@ elseif(ACCELERATOR STREQUAL "metax")
   elseif(NOT FLAGGEMS_KERNEL)
     set(FLAGGEMS_KERNEL OFF CACHE BOOL "Build FlagGems kernel implementations" FORCE)
   endif()
+  # Self-contained wheel: forked libtorch bundled by
+  # scripts/bundle_maca_libtorch.sh (the maca runtime stays on the target).
+  set(FLAGOS_BUNDLE_LIBDIR "lib_maca")
   project(TORCH_FLAGOS CXX C)
 elseif(ACCELERATOR STREQUAL "tsingmicro")
   project(TORCH_FLAGOS CXX C)
@@ -67,6 +79,10 @@ elseif(ACCELERATOR STREQUAL "dcu")
   # No nvcc and no CUDA language: nothing outside backends/metax/ is a .cu.
   set(CUDA_KERNEL OFF CACHE BOOL "Build CUDA kernel implementations" FORCE)
   set(FLAGGEMS_KERNEL OFF CACHE BOOL "Build FlagGems kernel implementations" FORCE)
+  # Self-contained wheel: DTK's forked libtorch (libtorch_cpu.so carries hip
+  # symbols and needs libgalaxyhip.so.5) is bundled here by
+  # scripts/bundle_dcu_libtorch.sh. The DTK driver itself stays on the target.
+  set(FLAGOS_BUNDLE_LIBDIR "lib_dcu")
   project(TORCH_FLAGOS CXX C)
 elseif(ACCELERATOR STREQUAL "gcu")
   project(TORCH_FLAGOS CXX C)
@@ -80,6 +96,15 @@ elseif(ACCELERATOR STREQUAL "musa")
   set(FLAGGEMS_KERNEL OFF CACHE BOOL "Build FlagGems kernel implementations" FORCE)
   project(TORCH_FLAGOS CXX C)
 else()
+  # PPU rides this branch: it has no accelerator value of its own because it is
+  # built against PPU_SDK/CUDA_SDK, so the CUDA boxing kernels apply unchanged
+  # (see the README's PPU section). It still needs its own bundle dir, since that
+  # libtorch is a local PPU build and not the upstream one. Detected by the SDK
+  # env vars, matching setup.py::_vendor_supplies_triton().
+  if(DEFINED ENV{PPU_SDK} OR DEFINED ENV{PPU_HOME})
+    set(FLAGOS_BUNDLE_LIBDIR "lib_ppu")
+    message(STATUS "PPU SDK detected: bundling libtorch into torch_fl/lib_ppu")
+  endif()
   # project(... CUDA) runs nvcc compiler-id before find_package(CUDAToolkit); conda
   # layouts need CUDAToolkit_ROOT (headers under targets/x86_64-linux/include).
   if(NOT CUDAToolkit_ROOT)
@@ -222,7 +247,23 @@ elseif(ACCELERATOR STREQUAL "dcu")
   set(CUDA_RUNTIME_LIB cuda_runtime_compat)
 
   # Embed the compat + DTK library paths so LD_LIBRARY_PATH is not needed.
-  list(APPEND CMAKE_INSTALL_RPATH "${DCU_CUDA_ROOT}/lib64" "${DTK_ROOT}/lib")
+  # Measured layout of the deps the forked libtorch actually pulls. They are all
+  # on the DTK container's LD_LIBRARY_PATH, which a clean env does NOT inherit --
+  # so the RUNPATH has to name them or a self-contained wheel gets "not found":
+  #   cuda/cuda-*/lib64      libcudart.so.12 (shim over libgalaxyhip)
+  #   lib                    libgalaxyhip.so.5 libhipnn librocfft.so.0
+  #                          librocrand.so.1 librocsparse.so.1 libunwind.so.8
+  #                          libMIOpen-recommend.so
+  #   hip/lib, lib64         hip runtime
+  #   aillvm/lib             libomp.so
+  #   .hyhal/rocm_smi/lib    librocm_smi64.so.2
+  # Keep in sync with VENDOR_RPATH in scripts/bundle_dcu_libtorch.sh.
+  set(_dcu_rpath_dirs
+      "${DCU_CUDA_ROOT}/lib64" "${DTK_ROOT}/lib" "${DTK_ROOT}/hip/lib"
+      "${DTK_ROOT}/lib64" "${DTK_ROOT}/aillvm/lib" "${DTK_ROOT}/llvm/lib"
+      "${DTK_ROOT}/.hyhal/rocm_smi/lib" "/opt/hyhal/lib")
+  list(APPEND CMAKE_INSTALL_RPATH ${_dcu_rpath_dirs})
+  set(FLAGOS_VENDOR_RPATH_DIRS ${_dcu_rpath_dirs})
 
   # Pre-create torch::cudart so PyTorch's cuda.cmake is skipped entirely
   # (guard: if(TARGET torch::cudart) return()).
@@ -357,6 +398,12 @@ elseif(ACCELERATOR STREQUAL "metax")
     set(METAX_PATH "/opt/maca")
   endif()
   message(STATUS "MetaX SDK path: ${METAX_PATH}")
+
+  # The maca runtime (mcblas/mcdnn/...) comes from the target's /opt/maca driver
+  # install; it is never bundled. /opt/maca is kept as an explicit fallback in
+  # case the build machine's METAX_PATH is a non-default location.
+  set(FLAGOS_VENDOR_RPATH_DIRS
+      "${METAX_PATH}/lib" "${METAX_PATH}/lib64" "/opt/maca/lib" "/opt/maca/lib64")
 
   add_library(cuda_runtime_compat INTERFACE IMPORTED)
   set_target_properties(cuda_runtime_compat PROPERTIES
@@ -513,11 +560,15 @@ else()
 endif()
 
 if(PYTORCH_INSTALL_DIR)
+  # Needed for the *build* link step (and for an in-place/editable install, where
+  # the built .so stay in the source tree). flagos_set_portable_rpath() strips it
+  # from the installed targets' RUNPATH so the wheel is relocatable.
   list(APPEND CMAKE_INSTALL_RPATH "${PYTORCH_INSTALL_DIR}/lib")
 endif()
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 include(${PROJECT_SOURCE_DIR}/cmake/TorchPythonTargets.cmake)
+include(${PROJECT_SOURCE_DIR}/cmake/FlagosRpath.cmake)
 
 add_subdirectory(${PROJECT_SOURCE_DIR}/csrc/runtime/accelerator)
 add_subdirectory(${PROJECT_SOURCE_DIR}/csrc)

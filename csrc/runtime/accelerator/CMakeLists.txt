@@ -123,6 +123,11 @@ else()
   target_link_libraries(${LIBRARY_NAME} PRIVATE CUDA::cudart)
 endif()
 
+# libflagos.so needs no torch symbols at all (only the vendor runtime), so the
+# inherited ${PYTORCH_INSTALL_DIR}/lib RUNPATH entry is pure build-machine
+# leakage. Vendor driver dirs are preserved.
+flagos_set_portable_rpath(${LIBRARY_NAME})
+
 install(TARGETS ${LIBRARY_NAME}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}

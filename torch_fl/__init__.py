@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+import re
 import sys
 
 
@@ -165,17 +166,73 @@ if os.environ.get("FLAGOS_METAX_CUDART_SHIM", "0") == "1":
 
     ensure_cudart_shim()
 
-# When reusing PyTorch's CUDA boxing kernels on MetaX with a stock +cpu torch
-# wheel, the active wheel's torch/lib must point at the MetaX C++ runtime .so.
-# This MUST run before `import torch` (afterwards libc10 is already mapped and
-# relinking is too late).  Gated on FLAGOS_METAX_BOXING=1; idempotent; no-op when
-# torch already IS the MetaX wheel.
-if os.environ.get("FLAGOS_METAX_BOXING", "0") == "1":
-    from torch_fl.accelerator.metax._metax_libtorch_link import (
-        ensure_maca_libtorch_links,
-    )
 
-    ensure_maca_libtorch_links()
+def _relink_vendor_libtorch() -> None:
+    """Point the active torch wheel's torch/lib at this wheel's bundled libtorch.
+
+    MetaX, DCU and PPU all run on a *forked* libtorch whose core .so
+    (libc10/libtorch_cpu/libtorch_python/...) differ from the upstream ones a
+    stock ``torch==X.Y.Z+cpu`` wheel ships.  A self-contained wheel bundles them
+    under torch_fl/lib_{maca,dcu,ppu}/ and symlinks them over the stock files;
+    see torch_fl.accelerator._vendor_libtorch for why a ctypes preload alone is
+    not enough there.
+
+    This MUST run before `import torch` -- afterwards libc10 is already mapped
+    and relinking is too late.  Every backend's entry point is idempotent and a
+    no-op when its bundle dir is absent (a plain in-place build, where torch
+    already IS the vendor wheel), so this is safe to call unconditionally.
+
+    MetaX: FLAGOS_METAX_BOXING=1 triggers relink unconditionally (for in-place
+    MetaX builds that want to test boxing).  When accel=="metax" and the bundle
+    dir exists, relink regardless of the env var (self-contained wheel).  DCU
+    and PPU have no native-kernel mode, so bundle-dir presence alone decides.
+    The CUDA backend is not here: the official +cpu wheel's core .so ARE the
+    upstream ones, so only the extra CUDA libs are missing and
+    _preload_cuda_assets() below handles those with ctypes.
+    """
+    accel = _build_accelerator()
+
+    if os.environ.get("FLAGOS_METAX_BOXING", "0") == "1":
+        from torch_fl.accelerator.metax._metax_libtorch_link import (
+            ensure_maca_libtorch_links,
+        )
+
+        ensure_maca_libtorch_links()
+        return
+
+    if accel == "metax":
+        from torch_fl.accelerator._vendor_libtorch import bundled_lib_dir
+
+        if bundled_lib_dir("lib_maca", "libtorch_cuda.so"):
+            from torch_fl.accelerator.metax._metax_libtorch_link import (
+                ensure_maca_libtorch_links,
+            )
+
+            ensure_maca_libtorch_links()
+            return
+
+    if accel == "dcu":
+        from torch_fl.accelerator.dcu._dcu_libtorch_link import (
+            ensure_dcu_libtorch_links,
+        )
+
+        ensure_dcu_libtorch_links()
+        return
+
+    # PPU builds as ACCELERATOR=cuda (it targets PPU_SDK/CUDA_SDK), so the only
+    # distinguishing signal at import time is its own bundle dir.
+    if accel in ("cuda", ""):
+        from torch_fl.accelerator._vendor_libtorch import bundled_lib_dir
+
+        if bundled_lib_dir("lib_ppu", "libtorch_cuda.so"):
+            from torch_fl.accelerator.ppu._ppu_libtorch_link import (
+                ensure_ppu_libtorch_links,
+            )
+
+            ensure_ppu_libtorch_links()
+
+
+_relink_vendor_libtorch()
 
 
 def _preload_cuda_assets() -> None:
@@ -322,7 +379,6 @@ _disable_vendor_backend_autoload()
 
 import torch  # noqa: E402
 
-
 if sys.platform == "win32":
     from ._utils import _load_dll_libraries
 
@@ -370,7 +426,6 @@ import torch_fl._C  # type: ignore[misc]  # noqa: E402, F401
 
 
 from . import flagos  # noqa: E402
-
 
 torch.utils.rename_privateuse1_backend("flagos")
 torch._register_device_module("flagos", flagos)
@@ -458,6 +513,43 @@ def _patch_flaggems_philox():
         pass
 
 
+def _restore_dcu_hip_version() -> None:
+    """Set torch.version.hip/rocm for a self-contained DCU wheel.
+
+    See the DCU branch of _patch_flaggems_codegen_config() for why this matters:
+    the bundled libtorch is DTK's HIP build, but torch/version.py comes from the
+    stock torch+cpu wheel in front and reports hip=None, which switches triton's
+    hcu backend off. scripts/bundle_dcu_libtorch.sh copies the vendor torch's own
+    version.py next to the bundled .so as vendor_version.py; read the strings
+    back from there. No-op when a real vendor torch is in front.
+    """
+    import torch
+
+    if getattr(torch.version, "hip", None):
+        return  # a real DTK torch is in front; leave its values alone.
+
+    hip_ver = os.environ.get("FLAGOS_DCU_HIP_VERSION", "").strip()
+    rocm_ver = ""
+    if not hip_ver:
+        ver_py = os.path.join(os.path.dirname(__file__), "lib_dcu", "vendor_version.py")
+        try:
+            with open(ver_py, encoding="utf-8") as f:
+                for line in f:
+                    m = re.match(r"\s*hip\s*(?::[^=]*)?=\s*'([^']+)'", line)
+                    if m:
+                        hip_ver = m.group(1)
+                        continue
+                    m = re.match(r"\s*rocm\s*(?::[^=]*)?=\s*'([^']+)'", line)
+                    if m:
+                        rocm_ver = m.group(1)
+        except OSError:
+            return  # not a bundled build (source checkout); nothing to restore.
+    if hip_ver:
+        torch.version.hip = hip_ver
+        if rocm_ver:
+            torch.version.rocm = rocm_ver
+
+
 def _patch_flaggems_codegen_config():
     """
     Configure FlagGems' vendor + torch.cuda shim for the flagos device.
@@ -522,6 +614,18 @@ def _patch_flaggems_codegen_config():
     # fallback. setdefault so an explicit GEMS_VENDOR still wins.
     if _build_accelerator() == "dcu" and os.environ.get("GEMS_VENDOR") != "ascend":
         os.environ.setdefault("GEMS_VENDOR", "hygon")
+        # torch.version is pure Python (torch/version.py), generated when the
+        # wheel is built -- swapping the bundled DTK .so files cannot change it.
+        # A self-contained DCU wheel therefore front-ends a stock torch+cpu whose
+        # torch.version.hip is None, while the DTK torch it replaces reports
+        # e.g. "6.3.26113". triton's hcu backend gates on exactly that value
+        # (backends/hcu/driver.py is_active(): torch.cuda.is_available() and
+        # torch.version.hip is not None), so with None the driver never activates
+        # and any flag_gems op dies in triton's driver factory with
+        # "0 active drivers ([]). There should only be one." Restore the attribute
+        # from the bundled libtorch's own version so triton sees a HIP torch,
+        # matching what the vendor wheel reported.
+        _restore_dcu_hip_version()
         return
 
     # --- Enflame GCU branch ---
@@ -640,8 +744,14 @@ def _patch_cuda_device_context():
 _patch_cuda_device_context()
 
 # Initialize CUDA runtime only when FlagGems Python path needs it (CUDA backend ops).
+# The check must be against the *build* backend, not torch.cuda.is_available():
+# a DCU/PPU self-contained wheel relinks a hipified/cuda libtorch into a stock
+# +cpu torch, which makes is_available() return True even though the CUDA runtime
+# libs are absent, and torch.cuda.init() would fail with "libcaffe2_nvrtc.so: not
+# found". Only actual CUDA-backend builds need this init.
 if (
     os.environ.get("FLAGOS_DISABLE_FLAGGEMS_PY", "0") != "1"
+    and _build_accelerator() in ("cuda", "")
     and torch.cuda.is_available()
 ):
     torch.cuda.init()
