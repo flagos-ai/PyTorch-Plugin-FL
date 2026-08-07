@@ -1282,6 +1282,41 @@ def _register_compile_backend():
 _register_compile_backend()
 
 
+def _register_bpu_compile_backend() -> None:
+    """Register torch.compile(backend="bpu") on a BPU build.
+
+    The RDK BPU executes whole compiled graphs (a .hbm produced by hbdk4), not
+    individual operators, so it has no per-op kernels: eager ops reach
+    cpu_fallback and all acceleration comes through this backend. That is the
+    opposite of every other platform here, where the compile path is incidental
+    and the kernels do the work.
+
+    Import failures are swallowed deliberately. The backend pulls in onnx and
+    (optionally) hbdk4, so on a board that has the runtime but not the
+    toolchain, raising here would make `import torch_fl` fail outright and take
+    the working eager path down with it.
+    """
+    if _build_accelerator() != "bpu":
+        return
+    try:
+        from torch_fl.accelerator import bpu
+
+        bpu.register()
+    except Exception as exc:  # noqa: BLE001
+        import warnings
+
+        warnings.warn(
+            f'torch.compile(backend="bpu") is unavailable: {exc}. '
+            "Eager ops still work (they run on the CPU); the BPU offload path "
+            "needs onnx installed.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+
+_register_bpu_compile_backend()
+
+
 __all__ = [
     "flagos",
     "distributed",

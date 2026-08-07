@@ -31,7 +31,7 @@ IS_DARWIN = platform.system() == "Darwin"
 IS_WINDOWS = platform.system() == "Windows"
 
 # Accelerator platform: "cuda" (default), "metax", "ascend", "tsingmicro",
-# "dcu", "gcu", or "musa"
+# "dcu", "gcu", "musa", or "bpu"
 ACCELERATOR = os.environ.get("ACCELERATOR", "cuda").lower()
 
 # Directory inside the wheel holding a bundled forked libtorch, for the backends
@@ -391,6 +391,22 @@ def build_deps():
             [
                 "-DCUDA_KERNEL=OFF",
                 "-DFLAGGEMS_KERNEL=OFF",
+                "-DMETAX_KERNEL=OFF",
+                "-DASCEND_KERNEL=OFF",
+            ]
+        )
+    elif ACCELERATOR == "bpu":
+        # D-Robotics RDK BPU. The BPU's unit of execution is a whole compiled
+        # graph (a .hbm produced by hbdk4), not an individual operator, so there
+        # are no per-op kernels to build: every kernel set stays off, eager ops
+        # reach cpu_fallback, and acceleration comes from the torch.compile
+        # backend in torch_fl/accelerator/bpu/. Only the runtime layer (UCP
+        # allocator, device/stream stubs) is native.
+        cmake_args.extend(
+            [
+                "-DCUDA_KERNEL=OFF",
+                "-DFLAGGEMS_KERNEL=OFF",
+                "-DFLAGGEMS_PYTHON=OFF",
                 "-DMETAX_KERNEL=OFF",
                 "-DASCEND_KERNEL=OFF",
             ]
@@ -791,8 +807,18 @@ def _vendor_supplies_triton() -> bool:
     return bool(os.environ.get("PPU_SDK") or os.environ.get("PPU_HOME"))
 
 
+# The checked-in csrc/aten/generated/* bindings are generated against a
+# specific ATen surface, so torch is pinned to the 2.10 series rather than left
+# open. Newer torch drifts from those bindings, and a mismatch shows up as a
+# wall of compile errors at build time rather than a clean resolver failure --
+# the pin is what turns that into an install-time message. Moving to a newer
+# torch is a deliberate act: re-run scripts/codegen_ops.py, do not hand-edit
+# the generated files.
+TORCH_PIN = "torch>=2.10,<2.11"
+
+
 def _install_requires():
-    reqs = ["torch"]
+    reqs = [TORCH_PIN]
     # FlagGems (and its Triton) is the default operator source, so it is a hard
     # runtime dep everywhere it can actually run. Platforms that ship their own
     # Triton are the exception: pulling PyPI's NVIDIA-targeted triton wheel would

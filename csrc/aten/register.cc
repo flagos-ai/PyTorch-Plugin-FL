@@ -230,6 +230,86 @@ int64_t WrapperFusedSdpChoice(
   return static_cast<int64_t>(at::SDPBackend::efficient_attention);
 }
 
+#if defined(USE_BPU)
+// Convolution on a device with no per-op kernels.
+//
+// aten::convolution dispatches PrivateUse1 to convolution_overrideable, and the
+// only other kernel registered for that op is a CompositeExplicitAutograd stub
+// that raises NotImplementedError. So the boxed cpu_fallback cannot help here:
+// it moves the arguments to CPU and redispatches the same op, which lands back
+// on the stub. These wrappers cross to CPU and then call at::convolution --
+// a different op, and the one that actually has a CPU kernel.
+at::Tensor BPUWrapperConvolutionOverrideable(
+    const at::Tensor& input,
+    const at::Tensor& weight,
+    const ::std::optional<at::Tensor>& bias,
+    c10::SymIntArrayRef stride,
+    c10::SymIntArrayRef padding,
+    c10::SymIntArrayRef dilation,
+    bool transposed,
+    c10::SymIntArrayRef output_padding,
+    c10::SymInt groups) {
+  auto out = at::convolution_symint(
+      input.cpu(),
+      weight.cpu(),
+      bias.has_value() && bias->defined()
+          ? ::std::optional<at::Tensor>(bias->cpu())
+          : ::std::nullopt,
+      stride,
+      padding,
+      dilation,
+      transposed,
+      output_padding,
+      groups);
+  return out.to(input.device());
+}
+
+::std::tuple<at::Tensor, at::Tensor, at::Tensor>
+BPUWrapperConvolutionBackwardOverrideable(
+    const at::Tensor& grad_output,
+    const at::Tensor& input,
+    const at::Tensor& weight,
+    c10::SymIntArrayRef stride,
+    c10::SymIntArrayRef padding,
+    c10::SymIntArrayRef dilation,
+    bool transposed,
+    c10::SymIntArrayRef output_padding,
+    c10::SymInt groups,
+    ::std::array<bool, 3> output_mask) {
+  // convolution_backward wants the forward bias *sizes*, not the bias, and only
+  // to shape grad_bias -- which is a plain sum over the non-channel dims, so the
+  // channel count is all it needs.
+  ::std::optional<c10::SymIntArrayRef> bias_sizes = ::std::nullopt;
+  c10::SymInt out_channels =
+      transposed ? weight.sym_size(1) * groups : weight.sym_size(0);
+  ::std::vector<c10::SymInt> bias_shape{out_channels};
+  if (output_mask[2]) {
+    bias_sizes = c10::SymIntArrayRef(bias_shape);
+  }
+
+  auto out = at::convolution_backward_symint(
+      grad_output.cpu(),
+      input.cpu(),
+      weight.cpu(),
+      bias_sizes,
+      stride,
+      padding,
+      dilation,
+      transposed,
+      output_padding,
+      groups,
+      output_mask);
+
+  auto to_dev = [&](const at::Tensor& t) {
+    return t.defined() ? t.to(input.device()) : t;
+  };
+  return ::std::make_tuple(
+      to_dev(::std::get<0>(out)),
+      to_dev(::std::get<1>(out)),
+      to_dev(::std::get<2>(out)));
+}
+#endif // USE_BPU
+
 // ============================================================
 // Generated wrappers for 71 CUDA operators
 // ============================================================
@@ -347,6 +427,25 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
     #if defined(FLAGOS_MUSA_KERNEL)
     #include "backends/musa/generated/musa_register.inc"
     #endif
+  #elif defined(USE_BPU)
+    // BPU registers no compute ops. The BPU's unit of execution is a whole
+    // compiled graph (a .hbm produced by hbdk4), so there is no per-operator
+    // kernel to claim -- and claiming an op on PrivateUse1 without a kernel
+    // behind it raises "backend not registered" instead of falling back.
+    // Leaving the list out routes every op to cpu_fallback below; acceleration
+    // comes from the torch.compile backend in torch_fl/backends/bpu/.
+    //
+    // The *_overrideable ops are the exception, and the generic fallback cannot
+    // serve them. aten::convolution routes PrivateUse1 to
+    // convolution_overrideable, whose only other kernel is a
+    // CompositeExplicitAutograd stub that raises NotImplementedError -- so
+    // cpu_fallback, which moves the arguments to CPU and redispatches the *same*
+    // op, lands right back on that stub. These wrappers instead call
+    // at::convolution on the CPU tensors, which is the op that actually has a
+    // CPU kernel.
+    m.impl("convolution_overrideable", BPUWrapperConvolutionOverrideable);
+    m.impl("convolution_backward_overrideable",
+        BPUWrapperConvolutionBackwardOverrideable);
   #else
   #define FLAGOS_GEN_IMPLS
   #include "generated/register.inc"

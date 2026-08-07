@@ -22,7 +22,7 @@
 // Threads toolkit ships no CUDA runtime at all, so the header itself is absent
 // -- same exclusion as hooks.h and copy_ops.cc already carry.
 #if !defined(USE_ASCEND) && !defined(USE_TSINGMICRO) && !defined(USE_DCU) && \
-    !defined(USE_GCU) && !defined(USE_MUSA)
+    !defined(USE_GCU) && !defined(USE_MUSA) && !defined(USE_BPU)
 #define FLAGOS_GUARD_HAS_CUDA_STREAM 1
 #include <c10/cuda/CUDAStream.h>
 #else

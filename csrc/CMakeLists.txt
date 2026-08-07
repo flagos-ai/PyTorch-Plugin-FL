@@ -290,6 +290,19 @@ elseif(ACCELERATOR STREQUAL "musa")
     # vendor's torch version).
     target_link_libraries(${LIBRARY_NAME} PRIVATE ${MUDNN_LIB})
   endif()
+elseif(ACCELERATOR STREQUAL "bpu")
+  # Selects backends/bpu_memory.h and, like tsingmicro, skips the generated
+  # PrivateUse1 op registrations: the BPU executes whole compiled graphs, so
+  # there is no per-op kernel to register and every aten call reaches
+  # cpu_fallback. Acceleration comes from the torch.compile backend instead.
+  target_compile_definitions(${LIBRARY_NAME} PRIVATE USE_BPU=1)
+  target_link_libraries(${LIBRARY_NAME} PRIVATE ${_torch_fl_link_libs})
+  find_path(HOBOT_UCP_INCLUDE_DIR hb_ucp_sys.h
+      PATHS ${HOBOT_INCLUDE_DIR} /usr/include/hobot)
+  if(HOBOT_UCP_INCLUDE_DIR)
+    target_include_directories(${LIBRARY_NAME} PRIVATE
+        ${HOBOT_UCP_INCLUDE_DIR} ${HOBOT_UCP_INCLUDE_DIR}/dnn)
+  endif()
 elseif(ACCELERATOR STREQUAL "gcu")
   target_compile_definitions(${LIBRARY_NAME} PRIVATE USE_GCU=1)
   target_link_libraries(${LIBRARY_NAME} PRIVATE ${_torch_fl_link_libs})
@@ -343,10 +356,13 @@ install(TARGETS ${LIBRARY_NAME}
     RUNTIME DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
 
-if(ACCELERATOR STREQUAL "gcu" OR ACCELERATOR STREQUAL "musa")
-  # torch_fl/__init__.py pins backends_cuda.conf by default, which on GCU/MUSA
-  # would route every op to the (absent) CUDA kernels. Record the platform next
-  # to the libs so the Python side can pick backends_<platform>.conf instead.
+if(ACCELERATOR STREQUAL "gcu" OR ACCELERATOR STREQUAL "musa"
+   OR ACCELERATOR STREQUAL "bpu")
+  # torch_fl/__init__.py pins backends_cuda.conf by default, which on
+  # GCU/MUSA/BPU would route every op to the (absent) CUDA kernels. Record the
+  # platform next to the libs so the Python side can pick
+  # backends_<platform>.conf instead. BPU additionally uses the marker to decide
+  # whether to register the "bpu" torch.compile backend.
   set(_flagos_platform_marker "${CMAKE_CURRENT_BINARY_DIR}/flagos_platform")
   file(WRITE "${_flagos_platform_marker}" "${ACCELERATOR}\n")
   install(FILES "${_flagos_platform_marker}"

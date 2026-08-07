@@ -14,7 +14,7 @@
 
 cmake_minimum_required(VERSION 3.18 FATAL_ERROR)
 
-set(ACCELERATOR "cuda" CACHE STRING "Accelerator platform: cuda, metax, ascend, tsingmicro, dcu, gcu, or musa")
+set(ACCELERATOR "cuda" CACHE STRING "Accelerator platform: cuda, metax, ascend, tsingmicro, dcu, gcu, musa, or bpu")
 
 # Directory inside the wheel holding a bundled forked libtorch, when the backend
 # ships one (see scripts/bundle_*_libtorch.sh). "lib" means "no separate bundle
@@ -95,6 +95,14 @@ elseif(ACCELERATOR STREQUAL "musa")
   set(CUDA_KERNEL OFF CACHE BOOL "Build CUDA kernel implementations" FORCE)
   set(FLAGGEMS_KERNEL OFF CACHE BOOL "Build FlagGems kernel implementations" FORCE)
   project(TORCH_FLAGOS CXX C)
+elseif(ACCELERATOR STREQUAL "bpu")
+  # D-Robotics RDK BPU. No CUDA runtime and no per-op kernels: the BPU executes
+  # whole compiled graphs, so eager ops fall back to CPU and acceleration comes
+  # from the torch.compile backend. Only the runtime layer (UCP allocator,
+  # device/stream stubs) is native, all plain host C++.
+  set(CUDA_KERNEL OFF CACHE BOOL "Build CUDA kernel implementations" FORCE)
+  set(FLAGGEMS_KERNEL OFF CACHE BOOL "Build FlagGems kernel implementations" FORCE)
+  project(TORCH_FLAGOS CXX C)
 else()
   # PPU rides this branch: it has no accelerator value of its own because it is
   # built against PPU_SDK/CUDA_SDK, so the CUDA boxing kernels apply unchanged
@@ -133,7 +141,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 if(NOT ACCELERATOR STREQUAL "metax" AND NOT ACCELERATOR STREQUAL "ascend"
    AND NOT ACCELERATOR STREQUAL "tsingmicro" AND NOT ACCELERATOR STREQUAL "dcu"
-   AND NOT ACCELERATOR STREQUAL "gcu" AND NOT ACCELERATOR STREQUAL "musa")
+   AND NOT ACCELERATOR STREQUAL "gcu" AND NOT ACCELERATOR STREQUAL "musa"
+   AND NOT ACCELERATOR STREQUAL "bpu")
   set(CMAKE_CUDA_STANDARD 17)
   set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 endif()
@@ -376,6 +385,26 @@ elseif(ACCELERATOR STREQUAL "musa")
     message(STATUS "mudnn op library: ${MUDNN_LIB}")
   endif()
 
+  add_library(torch::cudart INTERFACE IMPORTED)
+  if(NOT TARGET CUDA::nvToolsExt)
+    add_library(CUDA::nvToolsExt INTERFACE IMPORTED)
+  endif()
+elseif(ACCELERATOR STREQUAL "bpu")
+  # D-Robotics RDK BPU. There is no CUDA-compat layer here at all: device
+  # memory comes from the Horizon UCP allocator (libhbucp) and the core/task API
+  # from libbpu, both linked by csrc/runtime/accelerator/bpu directly. So there
+  # is no CUDA_RUNTIME_LIB to hand to the other targets.
+  set(HOBOT_LIB_DIR "/usr/hobot/lib" CACHE PATH "Horizon runtime library dir")
+  set(HOBOT_INCLUDE_DIR "/usr/include/hobot" CACHE PATH "Horizon runtime include dir")
+  message(STATUS "Horizon runtime: ${HOBOT_LIB_DIR} (headers ${HOBOT_INCLUDE_DIR})")
+
+  set(CUDA_RUNTIME_LIB "")
+
+  # Embed the Horizon library path so LD_LIBRARY_PATH is not needed at runtime.
+  list(APPEND CMAKE_INSTALL_RPATH "${HOBOT_LIB_DIR}")
+
+  # Pre-create torch::cudart so PyTorch's cuda.cmake returns early
+  # (guard: if(TARGET torch::cudart) return()).
   add_library(torch::cudart INTERFACE IMPORTED)
   if(NOT TARGET CUDA::nvToolsExt)
     add_library(CUDA::nvToolsExt INTERFACE IMPORTED)

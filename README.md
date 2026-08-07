@@ -609,11 +609,62 @@ then rejects.
 - Build with `-DMUSA_KERNEL=OFF` to skip mudnn entirely; the runtime still works
   and all compute falls back to CPU.
 
+### Build from Source (D-Robotics RDK BPU Platform)
+
+The BPU is the one platform here with **no operator kernels at all**. Its BPU
+executes whole compiled graphs (a `.hbm` produced by hbdk4), not individual ops,
+so there is nothing for a `PrivateUse1` kernel to call. `torch_fl` supplies a
+real device — UCP-backed memory plus the device/stream layer — and a
+`torch.compile` backend; eager ops run on the CPU.
+
+The supported target is **`torch==2.10.0+cpu`** (the cp314 aarch64 wheel on
+PyPI is what the board runs), and `setup.py`'s `TORCH_PIN` enforces
+`torch>=2.10,<2.11` here as on every other platform. That pin is not
+incidental: the checked-in `csrc/aten/generated/*` bindings are generated
+against one ATen surface, so a newer torch fails as a wall of compile errors
+rather than a clean resolver error.
+
+```bash
+# Upstream CPU torch wheel; the Horizon runtime ships in the board image.
+pip install torch==2.10.0+cpu --index-url https://download.pytorch.org/whl/cpu
+ACCELERATOR=bpu pip install --no-build-isolation -vvv -e .
+```
+
+```python
+import torch, torch_fl
+
+compiled = torch.compile(MyNet().eval(), backend="bpu")
+out = compiled(torch.randn(1, 3, 224, 224))
+```
+
+**BPU-specific notes:**
+
+- **No SDK root to configure.** `libhbucp.so` (UCP allocator) and `libbpu.so`
+  (core/task API) ship at `/usr/hobot/lib` with headers at `/usr/include/hobot`.
+- **hbdk4 compiles on the board, on the stock kernel.** The compiler ships
+  x86_64-only wheels, so it runs under box64 — which needs to be **built from
+  source**: the packaged 0.2.6 aborts on this board's 64 KB pages, while 0.4+
+  handles them at runtime. No VM, no cross-compile host, no kernel rebuild.
+  Run `scripts/setup_bpu_hbdk4.sh` once, then export
+  `FLAGOS_BPU_X86_PYTHON` and `FLAGOS_BPU_X86_EMULATOR`. Without a reachable
+  hbdk4 the backend logs a warning and runs every partition on the CPU, so the
+  install is still usable. Details in [docs/bpu.md](docs/bpu.md).
+- **Quantization is a precondition, not an optimization.** hbdk4 lowers float
+  conv to the CPU, so int8 Q/DQ insertion is what puts work on the BPU at all.
+  On by default; `FLAGOS_BPU_QUANTIZE=0` for bit-exact float artifacts.
+- **Convolution is registered explicitly.** `aten::convolution` routes
+  `PrivateUse1` to `convolution_overrideable`, whose only other kernel raises,
+  so the boxed fallback cannot reach a CPU implementation. Two wrappers in
+  `register.cc` call `at::convolution` on CPU tensors instead.
+- Measured on-board (torch 2.10): a 6-layer conv stack at 224x224 runs **3.75 ms
+  on the BPU vs 72.06 ms eager CPU — 19.2x**. Toy nets are a wash — submission
+  overhead dominates.
+
 ### Build Environment Variables
 
 | Variable | Description |
 |----------|-------------|
-| `ACCELERATOR` | Hardware platform: `cuda` (default), `metax`, `ascend`, `tsingmicro`, `dcu`, `gcu`, or `musa` |
+| `ACCELERATOR` | Hardware platform: `cuda` (default), `metax`, `ascend`, `tsingmicro`, `dcu`, `gcu`, `musa`, or `bpu` |
 | `CUDA_HOME` | CUDA toolkit path |
 | `DTK_ROOT` | Hygon DTK path (falls back to `ROCM_PATH`, then `/opt/dtk`; required for DCU build) |
 | `TOPS_HOME` | Enflame TopsRider SDK path (default `/opt/tops`; required for GCU build) |
@@ -629,6 +680,9 @@ then rejects.
 | `GCU_KERNEL` | Enable Enflame GCU topsaten kernel build (`ON`/`OFF`, auto-enabled when `ACCELERATOR=gcu`) |
 | `MUSA_HOME` | Moore Threads MUSA toolkit path (default `/usr/local/musa`; required for MUSA build) |
 | `MUSA_KERNEL` | Enable the MUSA mudnn kernel build (`ON`/`OFF`, auto-enabled when `ACCELERATOR=musa`); `OFF` falls back to CPU for all compute |
+| `FLAGOS_BPU_X86_PYTHON` | Path to an x86_64 python with `hbdk4-compiler`, run under box64 (BPU compile path; see [docs/bpu.md](docs/bpu.md)) |
+| `FLAGOS_BPU_X86_EMULATOR` | Path to a box64 binary (0.4+); the packaged 0.2.6 cannot run on this board's 64 KB pages |
+| `FLAGOS_BPU_X86_STUBS` | numba/torch import stubs for the emulated interpreter (defaults next to the x86 python) |
 
 ### Runtime Environment Variables
 
@@ -644,6 +698,10 @@ then rejects.
 | `FLAGOS_LOG_DISPATCH` | Set to `1` to print backend selection for each operator dispatch |
 | `FLAGOS_OP_<name>` | Per-operator backend override (replace `.` with `__` in op names) |
 | `TORCH_DEVICE_BACKEND_AUTOLOAD` | Set to `0` to stop a vendor plugin (e.g. `torch_musa`) from claiming `PrivateUse1` during `import torch`; `torch_fl` sets this itself on MUSA builds |
+| `FLAGOS_BPU_MARCH` | BPU micro-architecture (default `nash-p`) |
+| `FLAGOS_BPU_QUANTIZE` | BPU int8 Q/DQ insertion (default `1`; `0` compiles float, which keeps conv on the CPU) |
+| `FLAGOS_BPU_ACT_SCALE` | BPU fallback activation scale for uncalibrated tensors (default `0.05`) |
+| `FLAGOS_BPU_CACHE` | BPU `.hbm` artifact cache (default `~/.cache/torch_fl_bpu`) |
 
 ## Usage
 
