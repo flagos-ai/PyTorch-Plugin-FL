@@ -210,6 +210,26 @@ OPS = {
     # ---- P1: addmm family (three-branch, see T_ADDMM) ----
     "addmm": ("addmm", "MatMul"),
     "baddbmm": ("addmm", "BatchMatMul"),
+    # ---- P2: softmax family ----
+    # The forward template already carries the mode, so log_softmax is a table
+    # entry rather than a new shape. Both backwards verified against
+    # y*(g - sum(g*y)) on device.
+    "_log_softmax": ("softmax_fwd", "LOGSOFTMAX"),
+    "_softmax_backward_data": ("softmax_bwd", "SOFTMAX"),
+    "_log_softmax_backward_data": ("softmax_bwd", "LOGSOFTMAX"),
+    # ---- P2: the rest of the Reduce modes ----
+    "amax": ("reduce_dims_plain", "MAX"),
+    "amin": ("reduce_dims_plain", "MIN"),
+    # PROD, not MUL -- MUL returns all zeros on v3300. See T_REDUCE_PROD.
+    "prod.dim_int": ("reduce_prod", "PROD"),
+    "any.dim": ("reduce_bool", "OR"),
+    "all.dim": ("reduce_bool", "AND"),
+    "var.correction": ("reduce_correction", "VARIANCE"),
+    "std.correction": ("reduce_correction", "STD"),
+    "linalg_vector_norm": ("reduce_norm", "NORM"),
+    # ---- P2: layer norm ----
+    "native_layer_norm": ("layer_norm", "LayerNorm"),
+    "native_layer_norm_backward": ("layer_norm_bwd", "LayerNorm"),
 }
 
 # Ops in the GCU coverage set with no mudnn equivalent. Deliberately absent from
@@ -655,11 +675,14 @@ at::Tensor {kernel}(
   // mudnn multi-dim Reduce (more than one axis at a time) silently ignores
   // strides and reads the input as if contiguous (verified: (4,5) stride (0,1)
   // reduced over all dims gives 210 = sum(1..20) instead of 60 = 4*sum(1..5)).
-  // Single-dim reduces honour strides correctly. Materializing once fixes both
-  // the stride bug and the SIGFPE on fully-broadcast multi-dim reduces.
+  // Single-dim reduces honour strides correctly, except on a fully-broadcast
+  // input (a 0-stride view of one element), where a single-dim reduce
+  // intermittently writes only out[0]. MudnnReduceNeedsContiguous catches
+  // that; together the two branches cover the stride bug, the SIGFPE and the
+  // partial write.
   if (norm_dims.size() > 1 && !self_c.is_contiguous()) {{
     self_c = self_c.contiguous();
-  }} else if (musa_ops::MudnnReduceWouldFault(self_c, norm_dims.size())) {{
+  }} else if (musa_ops::MudnnReduceNeedsContiguous(self_c)) {{
     self_c = self_c.contiguous();
   }}
   auto out = at::empty(squeezed_shape, self.options().dtype(out_dtype));
@@ -698,11 +721,11 @@ at::Tensor {kernel}(
   }}
   // Reducing every dim at once is a multi-dim Reduce, which mudnn runs as if
   // the input were contiguous -- it ignores strides outright, and faults on a
-  // fully-broadcast input. Materializing once covers both. Same measurement as
-  // in T_REDUCE_DIMS_DTYPE.
+  // fully-broadcast input, which also breaks the single-dim path. Materializing
+  // once covers all of it. Same measurement as in T_REDUCE_DIMS_DTYPE.
   if (mudnn_dims.size() > 1 && !self_c.is_contiguous()) {{
     self_c = self_c.contiguous();
-  }} else if (musa_ops::MudnnReduceWouldFault(self_c, mudnn_dims.size())) {{
+  }} else if (musa_ops::MudnnReduceNeedsContiguous(self_c)) {{
     self_c = self_c.contiguous();
   }}
   auto out = at::empty({{}}, self.options().dtype(out_dtype));
@@ -767,8 +790,436 @@ at::Tensor {kernel}(const at::Tensor& self, int64_t dim, bool half_to_float) {{
 REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kMusa, {kernel})
 """
 
-# Activation backwards. mudnn spells these as Binary modes taking the gradient
-# and one saved tensor, so the whole family is one template plus a mode name.
+# P2. Softmax/LogSoftmax backward. Probed on v3300: RunBwd's operands are
+# (gradInput, output, gradOutput) and the numbers match aten's
+# y*(g - sum(g*y)) exactly. `input_dtype` only tells us what the forward input
+# was; when it differs from the gradient's dtype aten wants a converting
+# backward, which mudnn does not express, so that combination goes to the host.
+T_SOFTMAX_BWD = """\
+at::Tensor {kernel}(
+    const at::Tensor& grad_output,
+    const at::Tensor& output,
+    int64_t dim,
+    at::ScalarType input_dtype) {{
+  if (!musa_ops::{dtype_pred}(grad_output.scalar_type()) ||
+      !musa_ops::{dtype_pred}(output.scalar_type()) ||
+      input_dtype != grad_output.scalar_type()) {{
+    return at::{at_op}(grad_output.cpu(), output.cpu(), dim, input_dtype)
+        .to(grad_output.device());
+  }}
+  int64_t d = dim < 0 ? dim + output.dim() : dim;
+  auto grad_input = at::empty(output.sizes(), output.options());
+
+  musa_ops::MudnnTensorWrapper t_go(grad_output);
+  musa_ops::MudnnTensorWrapper t_out(output);
+  musa_ops::MudnnTensorWrapper t_gi(grad_input);
+  musa_ops::mudnn::Softmax op;
+  op.SetMode(musa_ops::mudnn::Softmax::Mode::{mode});
+  op.SetAlgorithm(musa_ops::mudnn::Softmax::Algorithm::ACCURATE);
+  op.SetDim(static_cast<int>(d));
+  EXEC_MUDNN_CMD(
+      "{at_op}", grad_output,
+      op.RunBwd(_mudnn_h, t_gi.get(), t_out.get(), t_go.get(),
+                musa_ops::MudnnWorkspaceFor(grad_input)));
+  return grad_input;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kMusa, {kernel})
+"""
+
+# P2. Reduce over a single dim with no dtype argument (amax/amin), and the
+# bool-producing any/all. Kept apart from T_REDUCE_DIMS_DTYPE because the aten
+# signatures differ; the Reduce call itself is the same shape. Single-dim
+# reduces honour strides on v3300, so no materialization is needed -- but
+# `any`/`all` over several dims would, hence the shared contiguous guard.
+T_REDUCE_DIMS_PLAIN = """\
+at::Tensor {kernel}(
+    const at::Tensor& self, at::IntArrayRef dim, bool keepdim) {{
+  if (!musa_ops::{dtype_pred}(self.scalar_type())) {{
+    return at::{at_op}(self.cpu(), dim, keepdim).to(self.device());
+  }}
+  int64_t ndim = self.dim();
+  std::vector<int64_t> norm_dims;
+  if (!dim.empty()) {{
+    for (int64_t d : dim) norm_dims.push_back(d < 0 ? d + ndim : d);
+  }} else {{
+    for (int64_t d = 0; d < ndim; ++d) norm_dims.push_back(d);
+  }}
+  auto out_shape = self.sizes().vec();
+  std::vector<int64_t> sorted_dims(norm_dims);
+  std::sort(sorted_dims.rbegin(), sorted_dims.rend());
+  auto squeezed_shape = self.sizes().vec();
+  for (int64_t d : sorted_dims) {{
+    if (keepdim) out_shape[d] = 1;
+    else out_shape.erase(out_shape.begin() + d);
+    squeezed_shape.erase(squeezed_shape.begin() + d);
+  }}
+  auto self_c = self;
+  if (norm_dims.size() > 1 && !self_c.is_contiguous()) {{
+    self_c = self_c.contiguous();
+  }} else if (musa_ops::MudnnReduceNeedsContiguous(self_c)) {{
+    self_c = self_c.contiguous();
+  }}
+  auto out = at::empty(squeezed_shape, self.options());
+  std::vector<int> mudnn_dims = musa_ops::ToMudnnDims(norm_dims, ndim);
+
+  musa_ops::MudnnTensorWrapper t_self(self_c);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Reduce op;
+  op.SetMode(musa_ops::mudnn::Reduce::Mode::{mode});
+  op.SetDim(static_cast<int>(mudnn_dims.size()), mudnn_dims.data());
+  EXEC_MUDNN_CMD(
+      "{at_op}", self,
+      op.Run(_mudnn_h, t_out.get(), t_self.get(),
+             musa_ops::MudnnWorkspaceFor(out)));
+  return keepdim ? out.view(out_shape) : out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kMusa, {kernel})
+"""
+
+# P2. any.dim/all.dim: one int64 dim, bool output regardless of input dtype.
+# mudnn's AND/OR accept a BOOL input and write BOOL, so the input is cast to
+# bool first (aten defines any/all as "nonzero", which `!= 0` expresses).
+T_REDUCE_BOOL = """\
+at::Tensor {kernel}(const at::Tensor& self, int64_t dim, bool keepdim) {{
+  if (!musa_ops::{dtype_pred}(self.scalar_type())) {{
+    return at::{at_op}(self.cpu(), dim, keepdim).to(self.device());
+  }}
+  int64_t ndim = self.dim();
+  int64_t d = dim < 0 ? dim + ndim : dim;
+  auto out_shape = self.sizes().vec();
+  auto squeezed_shape = self.sizes().vec();
+  if (keepdim) out_shape[d] = 1;
+  else out_shape.erase(out_shape.begin() + d);
+  squeezed_shape.erase(squeezed_shape.begin() + d);
+
+  auto self_b = self.scalar_type() == at::kBool ? self : self.ne(0);
+  auto out = at::empty(squeezed_shape, self.options().dtype(at::kBool));
+  int mudnn_dim = static_cast<int>(d);
+
+  musa_ops::MudnnTensorWrapper t_self(self_b);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Reduce op;
+  op.SetMode(musa_ops::mudnn::Reduce::Mode::{mode});
+  op.SetDim(1, &mudnn_dim);
+  EXEC_MUDNN_CMD(
+      "{at_op}", self,
+      op.Run(_mudnn_h, t_out.get(), t_self.get(),
+             musa_ops::MudnnWorkspaceFor(out)));
+  return keepdim ? out.view(out_shape) : out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kMusa, {kernel})
+"""
+
+# P2. prod.dim_int -- single int64 dim plus an out dtype.
+#
+# NOTE the mode is PROD, not MUL: `Reduce::Mode::MUL` returns SUCCESS and writes
+# all zeros on v3300 (measured on [[1,2,3,4],[5,6,7,8]] reduced over dim 1: MUL
+# gave 0 0, PROD gave the correct 24 1680). The plausibly-named mode is the
+# broken one.
+T_REDUCE_PROD = """\
+at::Tensor {kernel}(
+    const at::Tensor& self,
+    int64_t dim,
+    bool keepdim,
+    ::std::optional<at::ScalarType> dtype) {{
+  if (!musa_ops::{dtype_pred}(self.scalar_type()) ||
+      (dtype.has_value() && !musa_ops::{dtype_pred}(dtype.value()))) {{
+    return at::{at_op}(self.cpu(), dim, keepdim, dtype).to(self.device());
+  }}
+  int64_t ndim = self.dim();
+  int64_t d = dim < 0 ? dim + ndim : dim;
+  auto out_shape = self.sizes().vec();
+  auto squeezed_shape = self.sizes().vec();
+  if (keepdim) out_shape[d] = 1;
+  else out_shape.erase(out_shape.begin() + d);
+  squeezed_shape.erase(squeezed_shape.begin() + d);
+
+  auto out_dtype = dtype.value_or(
+      at::isIntegralType(self.scalar_type(), true) ? at::kLong
+                                                   : self.scalar_type());
+  auto self_c = self.scalar_type() == out_dtype ? self : self.to(out_dtype);
+  auto out = at::empty(squeezed_shape, self.options().dtype(out_dtype));
+  int mudnn_dim = static_cast<int>(d);
+
+  musa_ops::MudnnTensorWrapper t_self(self_c);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Reduce op;
+  op.SetMode(musa_ops::mudnn::Reduce::Mode::{mode});
+  op.SetDim(1, &mudnn_dim);
+  EXEC_MUDNN_CMD(
+      "{at_op}", self,
+      op.Run(_mudnn_h, t_out.get(), t_self.get(),
+             musa_ops::MudnnWorkspaceFor(out)));
+  return keepdim ? out.view(out_shape) : out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kMusa, {kernel})
+"""
+
+# P2. var/std with aten's `correction`. mudnn's VARIANCE/STD default to
+# correction=1 (measured: var of 1..4 came back 1.66667 = 5/3, the unbiased
+# value, not the biased 1.25), and SetCorrection takes an int, so aten's
+# optional Scalar maps straight across with 1 as the default.
+T_REDUCE_CORRECTION = """\
+at::Tensor {kernel}(
+    const at::Tensor& self,
+    at::OptionalIntArrayRef dim,
+    const ::std::optional<at::Scalar>& correction,
+    bool keepdim) {{
+  if (!musa_ops::{dtype_pred}(self.scalar_type()) ||
+      !at::isFloatingType(self.scalar_type())) {{
+    return at::{at_op}(self.cpu(), dim, correction, keepdim).to(self.device());
+  }}
+  int64_t ndim = self.dim();
+  std::vector<int64_t> norm_dims;
+  if (dim.has_value() && !dim.value().empty()) {{
+    for (int64_t d : dim.value()) norm_dims.push_back(d < 0 ? d + ndim : d);
+  }} else {{
+    for (int64_t d = 0; d < ndim; ++d) norm_dims.push_back(d);
+  }}
+  auto out_shape = self.sizes().vec();
+  std::vector<int64_t> sorted_dims(norm_dims);
+  std::sort(sorted_dims.rbegin(), sorted_dims.rend());
+  auto squeezed_shape = self.sizes().vec();
+  for (int64_t d : sorted_dims) {{
+    if (keepdim) out_shape[d] = 1;
+    else out_shape.erase(out_shape.begin() + d);
+    squeezed_shape.erase(squeezed_shape.begin() + d);
+  }}
+  auto self_c = self;
+  if (norm_dims.size() > 1 && !self_c.is_contiguous()) {{
+    self_c = self_c.contiguous();
+  }} else if (musa_ops::MudnnReduceNeedsContiguous(self_c)) {{
+    self_c = self_c.contiguous();
+  }}
+  auto out = at::empty(squeezed_shape, self.options());
+  std::vector<int> mudnn_dims = musa_ops::ToMudnnDims(norm_dims, ndim);
+
+  musa_ops::MudnnTensorWrapper t_self(self_c);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Reduce op;
+  op.SetMode(musa_ops::mudnn::Reduce::Mode::{mode});
+  op.SetDim(static_cast<int>(mudnn_dims.size()), mudnn_dims.data());
+  op.SetCorrection(
+      correction.has_value() ? static_cast<int>(correction.value().to<double>())
+                             : 1);
+  EXEC_MUDNN_CMD(
+      "{at_op}", self,
+      op.Run(_mudnn_h, t_out.get(), t_self.get(),
+             musa_ops::MudnnWorkspaceFor(out)));
+  return keepdim ? out.view(out_shape) : out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kMusa, {kernel})
+"""
+
+# P2. linalg_vector_norm. Reduce::NORM with SetNormOrd; verified ord=2 over
+# 1..4 gives 5.47723. ord 0 and +-inf are separate reductions in aten (count of
+# nonzeros, max/min |x|) that NORM does not express, so they stay on the host.
+T_REDUCE_NORM = """\
+at::Tensor {kernel}(
+    const at::Tensor& self,
+    const at::Scalar& ord,
+    at::OptionalIntArrayRef dim,
+    bool keepdim,
+    ::std::optional<at::ScalarType> dtype) {{
+  double ord_d = ord.to<double>();
+  if (!musa_ops::{dtype_pred}(self.scalar_type()) ||
+      !at::isFloatingType(self.scalar_type()) ||
+      (dtype.has_value() && dtype.value() != self.scalar_type()) ||
+      ord_d == 0.0 || !std::isfinite(ord_d)) {{
+    return at::{at_op}(self.cpu(), ord, dim, keepdim, dtype).to(self.device());
+  }}
+  int64_t ndim = self.dim();
+  std::vector<int64_t> norm_dims;
+  if (dim.has_value() && !dim.value().empty()) {{
+    for (int64_t d : dim.value()) norm_dims.push_back(d < 0 ? d + ndim : d);
+  }} else {{
+    for (int64_t d = 0; d < ndim; ++d) norm_dims.push_back(d);
+  }}
+  auto out_shape = self.sizes().vec();
+  std::vector<int64_t> sorted_dims(norm_dims);
+  std::sort(sorted_dims.rbegin(), sorted_dims.rend());
+  auto squeezed_shape = self.sizes().vec();
+  for (int64_t d : sorted_dims) {{
+    if (keepdim) out_shape[d] = 1;
+    else out_shape.erase(out_shape.begin() + d);
+    squeezed_shape.erase(squeezed_shape.begin() + d);
+  }}
+  auto self_c = self;
+  if (norm_dims.size() > 1 && !self_c.is_contiguous()) {{
+    self_c = self_c.contiguous();
+  }} else if (musa_ops::MudnnReduceNeedsContiguous(self_c)) {{
+    self_c = self_c.contiguous();
+  }}
+  auto out = at::empty(squeezed_shape, self.options());
+  std::vector<int> mudnn_dims = musa_ops::ToMudnnDims(norm_dims, ndim);
+
+  musa_ops::MudnnTensorWrapper t_self(self_c);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Reduce op;
+  op.SetMode(musa_ops::mudnn::Reduce::Mode::{mode});
+  op.SetDim(static_cast<int>(mudnn_dims.size()), mudnn_dims.data());
+  op.SetNormOrd(static_cast<float>(ord_d));
+  EXEC_MUDNN_CMD(
+      "{at_op}", self,
+      op.Run(_mudnn_h, t_out.get(), t_self.get(),
+             musa_ops::MudnnWorkspaceFor(out)));
+  return keepdim ? out.view(out_shape) : out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kMusa, {kernel})
+"""
+
+# P2. native_layer_norm. mudnn's LayerNorm::Run emits (out, mean, inv_var) in
+# one shot, and the third output is exactly aten's rstd: measured
+# 1/sqrt(var+eps) = 0.89442 for var=1.25, eps=1e-5, so no conversion is needed.
+# SetAxis takes the trailing axes that normalized_shape names, matching aten.
+#
+# gamma/beta are optional in aten but not in mudnn, so a missing one becomes
+# ones/zeros. aten also requires mean/rstd be float32 even for a half input,
+# which mudnn will not do, so half runs on the host.
+T_LAYER_NORM = """\
+::std::tuple<at::Tensor, at::Tensor, at::Tensor> {kernel}(
+    const at::Tensor& input,
+    at::IntArrayRef normalized_shape,
+    const ::std::optional<at::Tensor>& weight,
+    const ::std::optional<at::Tensor>& bias,
+    double eps) {{
+  if (!musa_ops::{dtype_pred}(input.scalar_type()) ||
+      input.scalar_type() != at::kFloat || normalized_shape.empty()) {{
+    auto r = at::{at_op}(
+        input.cpu(), normalized_shape,
+        weight.has_value() ? ::std::optional<at::Tensor>(weight.value().cpu())
+                           : ::std::nullopt,
+        bias.has_value() ? ::std::optional<at::Tensor>(bias.value().cpu())
+                         : ::std::nullopt,
+        eps);
+    return ::std::make_tuple(::std::get<0>(r).to(input.device()),
+                             ::std::get<1>(r).to(input.device()),
+                             ::std::get<2>(r).to(input.device()));
+  }}
+  auto input_c = input.contiguous();
+  const int64_t ndim = input_c.dim();
+  const int64_t naxes = static_cast<int64_t>(normalized_shape.size());
+  // aten's stat shape keeps the leading dims and 1s in the normalized ones.
+  std::vector<int64_t> stat_shape;
+  for (int64_t d = 0; d < ndim - naxes; ++d) {{
+    stat_shape.push_back(input_c.size(d));
+  }}
+  auto out = at::empty(input_c.sizes(), input_c.options());
+  auto mean = at::empty(stat_shape, input_c.options());
+  auto rstd = at::empty(stat_shape, input_c.options());
+
+  auto w = weight.has_value() && weight.value().defined()
+      ? weight.value().contiguous()
+      : at::ones(normalized_shape, input_c.options());
+  auto b = bias.has_value() && bias.value().defined()
+      ? bias.value().contiguous()
+      : at::zeros(normalized_shape, input_c.options());
+
+  std::vector<int> axes;
+  for (int64_t d = ndim - naxes; d < ndim; ++d) axes.push_back(static_cast<int>(d));
+
+  musa_ops::MudnnTensorWrapper t_in(input_c);
+  musa_ops::MudnnTensorWrapper t_w(w);
+  musa_ops::MudnnTensorWrapper t_b(b);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::MudnnTensorWrapper t_mean(mean);
+  musa_ops::MudnnTensorWrapper t_rstd(rstd);
+  musa_ops::mudnn::LayerNorm op;
+  op.SetEpsilon(eps);
+  op.SetAxis(axes.size(), axes.data());
+  EXEC_MUDNN_CMD(
+      "{at_op}", input,
+      op.Run(_mudnn_h, t_out.get(), t_mean.get(), t_rstd.get(), t_in.get(),
+             t_w.get(), t_b.get(), musa_ops::MudnnWorkspaceFor(out)));
+  // aten reports the stats with the normalized axes kept as extent-1 dims.
+  std::vector<int64_t> aten_stat_shape(stat_shape);
+  for (int64_t i = 0; i < naxes; ++i) aten_stat_shape.push_back(1);
+  return ::std::make_tuple(out, mean.view(aten_stat_shape),
+                           rstd.view(aten_stat_shape));
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kMusa, {kernel})
+"""
+
+# P2. native_layer_norm_backward. RunBwd emits (dX, dGamma, dBeta) from
+# (dY, in, mean, invVar, gamma) -- verified against CPU: with dY=1 and gamma=2,
+# dGamma came back as 2*xhat summed over rows and dBeta as the row count, both
+# matching, and dX was 0 as the algebra requires.
+#
+# aten's output_mask can switch any of the three off; mudnn always writes all
+# three, so the masked-out ones are computed and dropped (an undefined Tensor is
+# what aten expects back). That costs nothing extra beyond the allocation.
+T_LAYER_NORM_BWD = """\
+::std::tuple<at::Tensor, at::Tensor, at::Tensor> {kernel}(
+    const at::Tensor& grad_out,
+    const at::Tensor& input,
+    at::IntArrayRef normalized_shape,
+    const at::Tensor& mean,
+    const at::Tensor& rstd,
+    const ::std::optional<at::Tensor>& weight,
+    const ::std::optional<at::Tensor>& bias,
+    ::std::array<bool, 3> output_mask) {{
+  if (!musa_ops::{dtype_pred}(input.scalar_type()) ||
+      input.scalar_type() != at::kFloat || normalized_shape.empty()) {{
+    auto r = at::{at_op}(
+        grad_out.cpu(), input.cpu(), normalized_shape, mean.cpu(), rstd.cpu(),
+        weight.has_value() ? ::std::optional<at::Tensor>(weight.value().cpu())
+                           : ::std::nullopt,
+        bias.has_value() ? ::std::optional<at::Tensor>(bias.value().cpu())
+                         : ::std::nullopt,
+        output_mask);
+    auto to_dev = [&](const at::Tensor& t) {{
+      return t.defined() ? t.to(input.device()) : t;
+    }};
+    return ::std::make_tuple(to_dev(::std::get<0>(r)), to_dev(::std::get<1>(r)),
+                             to_dev(::std::get<2>(r)));
+  }}
+  auto grad_c = grad_out.contiguous();
+  auto input_c = input.contiguous();
+  auto mean_c = mean.contiguous();
+  auto rstd_c = rstd.contiguous();
+  const int64_t ndim = input_c.dim();
+  const int64_t naxes = static_cast<int64_t>(normalized_shape.size());
+
+  auto w = weight.has_value() && weight.value().defined()
+      ? weight.value().contiguous()
+      : at::ones(normalized_shape, input_c.options());
+  auto d_input = at::empty(input_c.sizes(), input_c.options());
+  auto d_weight = at::empty(normalized_shape, input_c.options());
+  auto d_bias = at::empty(normalized_shape, input_c.options());
+
+  std::vector<int> axes;
+  for (int64_t d = ndim - naxes; d < ndim; ++d) axes.push_back(static_cast<int>(d));
+
+  musa_ops::MudnnTensorWrapper t_dy(grad_c);
+  musa_ops::MudnnTensorWrapper t_in(input_c);
+  musa_ops::MudnnTensorWrapper t_mean(mean_c);
+  musa_ops::MudnnTensorWrapper t_rstd(rstd_c);
+  musa_ops::MudnnTensorWrapper t_w(w);
+  musa_ops::MudnnTensorWrapper t_dx(d_input);
+  musa_ops::MudnnTensorWrapper t_dw(d_weight);
+  musa_ops::MudnnTensorWrapper t_db(d_bias);
+  musa_ops::mudnn::LayerNorm op;
+  op.SetAxis(axes.size(), axes.data());
+  EXEC_MUDNN_CMD(
+      "{at_op}", input,
+      op.RunBwd(_mudnn_h, t_dx.get(), t_dw.get(), t_db.get(), t_dy.get(),
+                t_in.get(), t_mean.get(), t_rstd.get(), t_w.get(),
+                musa_ops::MudnnWorkspaceFor(d_input)));
+  return ::std::make_tuple(output_mask[0] ? d_input : at::Tensor(),
+                           output_mask[1] ? d_weight : at::Tensor(),
+                           output_mask[2] ? d_bias : at::Tensor());
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kMusa, {kernel})
+"""
+
 #
 # Which saved tensor is the second operand differs per mode and is NOT visible
 # in the header -- both orders return SUCCESS, only the numbers differ. Measured
@@ -1293,6 +1744,14 @@ CATEGORIES = {
     "ternary_value": T_TERNARY_VALUE,
     "where": T_WHERE,
     "addmm": T_ADDMM,
+    "softmax_bwd": T_SOFTMAX_BWD,
+    "reduce_dims_plain": T_REDUCE_DIMS_PLAIN,
+    "reduce_bool": T_REDUCE_BOOL,
+    "reduce_prod": T_REDUCE_PROD,
+    "reduce_correction": T_REDUCE_CORRECTION,
+    "reduce_norm": T_REDUCE_NORM,
+    "layer_norm": T_LAYER_NORM,
+    "layer_norm_bwd": T_LAYER_NORM_BWD,
 }
 
 # Categories whose mudnn mode is arithmetic, and therefore rejects bool operands
@@ -1324,6 +1783,15 @@ ARITHMETIC_CATEGORIES = {
     "leaky_relu_bw",
     "ternary_value",
     "addmm",
+    # P2. LayerNorm and the numeric reductions are float-only in practice; the
+    # arithmetic predicate keeps bool off them, matching the other reduces.
+    "softmax_bwd",
+    "reduce_dims_plain",
+    "reduce_prod",
+    "reduce_correction",
+    "reduce_norm",
+    "layer_norm",
+    "layer_norm_bwd",
 }
 
 # The mudnn class each category configures, for symbol validation.
@@ -1357,6 +1825,14 @@ CATEGORY_CLASS = {
     "ternary_value": "Ternary",
     "where": "Ternary",
     "addmm": None,  # mode names the class itself (MatMul / BatchMatMul)
+    "softmax_bwd": "Softmax",
+    "reduce_dims_plain": "Reduce",
+    "reduce_bool": "Reduce",
+    "reduce_prod": "Reduce",
+    "reduce_correction": "Reduce",
+    "reduce_norm": "Reduce",
+    "layer_norm": "LayerNorm",
+    "layer_norm_bwd": "LayerNorm",
 }
 
 FILE_HEADER = """\
