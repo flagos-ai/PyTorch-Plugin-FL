@@ -101,6 +101,26 @@ def _resolve_config_patches(
     if not hasattr(torch._C, "_StaticCudaLauncher"):
         patches["use_static_cuda_launcher"] = False
 
+    # Kernel compilation is farmed out to worker processes. Inductor's default,
+    # "subprocess", launches them as a bare `sys.executable -m
+    # torch._inductor.compile_worker` (subproc_pool.py), which imports only
+    # torch and triton -- never torch_fl. flagos lives behind PrivateUse1, so a
+    # worker without it has no accelerator registered: triton's
+    # `CudaDriver.is_active()` consults `torch.cuda.is_available()`, gets False,
+    # and the worker dies with "Could not find an active GPU backend". Any graph
+    # with enough kernels to go parallel fails.
+    #
+    # "fork" inherits this process, torch_fl included, so the workers come up
+    # already able to see the device. That keeps compilation parallel -- forcing
+    # `compile_threads = 1` would also work, but measurably slower (Qwen3-0.6B:
+    # 31.9s forked vs 40.8s serial).
+    #
+    # Only applies to the flagos build described above. A vendor torch install
+    # registers CUDA in every fresh interpreter, so its workers are fine as
+    # spawned and we leave inductor's default alone.
+    if not hasattr(torch._C, "_cuda_getDevice"):
+        patches.setdefault("worker_start_method", "fork")
+
     return patches
 
 

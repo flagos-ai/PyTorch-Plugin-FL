@@ -76,9 +76,48 @@ backend compensates:
   that raises on construction; `mode="max-autotune"` would otherwise enable it.
 - `CudaInterface.get_raw_stream` is re-attached -- the binding exists, but the
   import-time `torch.cuda._is_compiled()` probe left it at `None`.
+- `worker_start_method = "fork"` -- see below.
 
 See `torch_fl/accelerator/cuda/_cuda_compat.py` for the memory-stats and
 Event/Stream shims that inductor's autotuner needs.
+
+### Autotuning and compile workers
+
+Two failures only appear once a graph is big enough to need more than one Triton
+kernel, which is why the original single-`Linear` tests missed both.
+`tests/integration/test_compile_autotune.py` guards them.
+
+**Autotuning needs a constructible event.** `InductorBenchmarker.get_event_pairs`
+times candidate configs with `torch.cuda.Event(enable_timing=True)`. In the CPU
+wheel that class derives from a `torch._utils._dummy_type` placeholder and raises
+on construction. `torch_fl.flagos.Event` therefore switches base class: on a
+vendor torch build it still subclasses `torch.cuda.Event`, but when that is a
+dummy it subclasses the device-agnostic `torch.Event`, which dispatches to our
+own `c10::flagos::DeviceGuardImpl` (`csrc/runtime/guard.h`) for
+record/block/query/elapsedTime. Timing stays a real device measurement, and
+since every vendor under `csrc/runtime/accelerator/` implements that ABI, the
+fallback is portable rather than NVIDIA-specific.
+
+Note the patch has to land on `torch.cuda.Event`; patching
+`triton.testing.do_bench` does not help, because inductor reaches the benchmarker
+through `triton_heuristics.benchmark_all_configs -> bench ->
+benchmarker.benchmark_gpu`, not through `do_bench`.
+
+**Compile workers need `torch_fl`.** Inductor's default `worker_start_method`,
+`"subprocess"`, starts workers as a bare `sys.executable -m
+torch._inductor.compile_worker` that imports only torch and triton. flagos lives
+behind PrivateUse1, so such a worker has no accelerator: triton's
+`CudaDriver.is_active()` asks `torch.cuda.is_available()`, gets `False`, and the
+worker dies with "Could not find an active GPU backend". `"fork"` inherits this
+process, `torch_fl` included, so workers start out able to see the device --
+keeping compilation parallel, unlike `compile_threads = 1` (Qwen3-0.6B: 31.9s
+forked vs 40.8s serial). Both overrides are scoped to the flagos build by probing
+for a missing `torch._C` CUDA binding, so a vendor torch install keeps inductor's
+defaults.
+
+Because the worker pool is created lazily and shared, a single test can be served
+before the pool exists. Run the two compile test files together (as
+`.github/configs/cuda.yml` does) or these failures can hide.
 
 ## Environment Variables
 
@@ -89,9 +128,14 @@ Event/Stream shims that inductor's autotuner needs.
 
 1. Single device - multi-GPU compilation not yet exercised
 2. FlagTree integration is a stub (Phase 2)
+3. Convolutions do not compile: the flagos conv kernel honours `channels_last`
+   but its fake/meta kernel predicts contiguous strides, so inductor's conv
+   layout pass produces a graph it then rejects on a stride mismatch. See
+   `docs/torch_compile_integration.md` (Limitations).
 
 ## Future Work
 
+- [ ] Fix the conv `channels_last` meta/real stride mismatch
 - [ ] FlagTree integration to replace OpenAI Triton
 - [ ] Benchmark fusion gains against stock inductor+triton on cuda
 - [ ] Multi-GPU compilation support
