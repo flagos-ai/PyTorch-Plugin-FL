@@ -2771,12 +2771,6 @@ DECLARE_DISPATCHER(EmbeddingRenormOutFn, embedding_renorm_out_dispatcher)
 using EmbeddingRenormInplaceFn = at::Tensor & (*)(at::Tensor &, const at::Tensor &, double, double);
 DECLARE_DISPATCHER(EmbeddingRenormInplaceFn, embedding_renorm_inplace_dispatcher)
 
-using EmptyNamesFn = at::Tensor (*)(at::IntArrayRef, ::std::optional<at::DimnameList>, ::std::optional<at::ScalarType>, ::std::optional<at::Layout>, ::std::optional<at::Device>, ::std::optional<bool>, ::std::optional<at::MemoryFormat>);
-DECLARE_DISPATCHER(EmptyNamesFn, empty_names_dispatcher)
-
-using EmptyNamesOutFn = at::Tensor & (*)(at::IntArrayRef, ::std::optional<at::DimnameList>, ::std::optional<at::MemoryFormat>, at::Tensor &);
-DECLARE_DISPATCHER(EmptyNamesOutFn, empty_names_out_dispatcher)
-
 using EmptyLikeFn = at::Tensor (*)(const at::Tensor &, ::std::optional<at::ScalarType>, ::std::optional<at::Layout>, ::std::optional<at::Device>, ::std::optional<bool>, ::std::optional<at::MemoryFormat>);
 DECLARE_DISPATCHER(EmptyLikeFn, empty_like_dispatcher)
 
@@ -3040,12 +3034,6 @@ DECLARE_DISPATCHER(FromFileOutFn, from_file_out_dispatcher)
 
 using FullFn = at::Tensor (*)(at::IntArrayRef, const at::Scalar &, ::std::optional<at::ScalarType>, ::std::optional<at::Layout>, ::std::optional<at::Device>, ::std::optional<bool>);
 DECLARE_DISPATCHER(FullFn, full_dispatcher)
-
-using FullNamesFn = at::Tensor (*)(at::IntArrayRef, const at::Scalar &, ::std::optional<at::DimnameList>, ::std::optional<at::ScalarType>, ::std::optional<at::Layout>, ::std::optional<at::Device>, ::std::optional<bool>);
-DECLARE_DISPATCHER(FullNamesFn, full_names_dispatcher)
-
-using FullNamesOutFn = at::Tensor & (*)(at::IntArrayRef, const at::Scalar &, ::std::optional<at::DimnameList>, at::Tensor &);
-DECLARE_DISPATCHER(FullNamesOutFn, full_names_out_dispatcher)
 
 using FullOutFn = at::Tensor & (*)(at::IntArrayRef, const at::Scalar &, at::Tensor &);
 DECLARE_DISPATCHER(FullOutFn, full_out_dispatcher)
@@ -4415,12 +4403,6 @@ DECLARE_DISPATCHER(NormalFunctionalFn, normal_functional_dispatcher)
 using OnesFn = at::Tensor (*)(at::IntArrayRef, ::std::optional<at::ScalarType>, ::std::optional<at::Layout>, ::std::optional<at::Device>, ::std::optional<bool>);
 DECLARE_DISPATCHER(OnesFn, ones_dispatcher)
 
-using OnesNamesFn = at::Tensor (*)(at::IntArrayRef, ::std::optional<at::DimnameList>, ::std::optional<at::ScalarType>, ::std::optional<at::Layout>, ::std::optional<at::Device>, ::std::optional<bool>);
-DECLARE_DISPATCHER(OnesNamesFn, ones_names_dispatcher)
-
-using OnesNamesOutFn = at::Tensor & (*)(at::IntArrayRef, ::std::optional<at::DimnameList>, at::Tensor &);
-DECLARE_DISPATCHER(OnesNamesOutFn, ones_names_out_dispatcher)
-
 using OnesOutFn = at::Tensor & (*)(at::IntArrayRef, at::Tensor &);
 DECLARE_DISPATCHER(OnesOutFn, ones_out_dispatcher)
 
@@ -4571,18 +4553,6 @@ DECLARE_DISPATCHER(RandFn, rand_dispatcher)
 using RandGeneratorFn = at::Tensor (*)(at::IntArrayRef, ::std::optional<at::Generator>, ::std::optional<at::ScalarType>, ::std::optional<at::Layout>, ::std::optional<at::Device>, ::std::optional<bool>);
 DECLARE_DISPATCHER(RandGeneratorFn, rand_generator_dispatcher)
 
-using RandGeneratorWithNamesFn = at::Tensor (*)(at::IntArrayRef, ::std::optional<at::Generator>, ::std::optional<at::DimnameList>, ::std::optional<at::ScalarType>, ::std::optional<at::Layout>, ::std::optional<at::Device>, ::std::optional<bool>);
-DECLARE_DISPATCHER(RandGeneratorWithNamesFn, rand_generator_with_names_dispatcher)
-
-using RandGeneratorWithNamesOutFn = at::Tensor & (*)(at::IntArrayRef, ::std::optional<at::Generator>, ::std::optional<at::DimnameList>, at::Tensor &);
-DECLARE_DISPATCHER(RandGeneratorWithNamesOutFn, rand_generator_with_names_out_dispatcher)
-
-using RandNamesFn = at::Tensor (*)(at::IntArrayRef, ::std::optional<at::DimnameList>, ::std::optional<at::ScalarType>, ::std::optional<at::Layout>, ::std::optional<at::Device>, ::std::optional<bool>);
-DECLARE_DISPATCHER(RandNamesFn, rand_names_dispatcher)
-
-using RandNamesOutFn = at::Tensor & (*)(at::IntArrayRef, ::std::optional<at::DimnameList>, at::Tensor &);
-DECLARE_DISPATCHER(RandNamesOutFn, rand_names_out_dispatcher)
-
 using RandOutFn = at::Tensor & (*)(at::IntArrayRef, at::Tensor &);
 DECLARE_DISPATCHER(RandOutFn, rand_out_dispatcher)
 
@@ -4663,18 +4633,6 @@ DECLARE_DISPATCHER(RandnFn, randn_dispatcher)
 
 using RandnGeneratorFn = at::Tensor (*)(at::IntArrayRef, ::std::optional<at::Generator>, ::std::optional<at::ScalarType>, ::std::optional<at::Layout>, ::std::optional<at::Device>, ::std::optional<bool>);
 DECLARE_DISPATCHER(RandnGeneratorFn, randn_generator_dispatcher)
-
-using RandnGeneratorWithNamesFn = at::Tensor (*)(at::IntArrayRef, ::std::optional<at::Generator>, ::std::optional<at::DimnameList>, ::std::optional<at::ScalarType>, ::std::optional<at::Layout>, ::std::optional<at::Device>, ::std::optional<bool>);
-DECLARE_DISPATCHER(RandnGeneratorWithNamesFn, randn_generator_with_names_dispatcher)
-
-using RandnGeneratorWithNamesOutFn = at::Tensor & (*)(at::IntArrayRef, ::std::optional<at::Generator>, ::std::optional<at::DimnameList>, at::Tensor &);
-DECLARE_DISPATCHER(RandnGeneratorWithNamesOutFn, randn_generator_with_names_out_dispatcher)
-
-using RandnNamesFn = at::Tensor (*)(at::IntArrayRef, ::std::optional<at::DimnameList>, ::std::optional<at::ScalarType>, ::std::optional<at::Layout>, ::std::optional<at::Device>, ::std::optional<bool>);
-DECLARE_DISPATCHER(RandnNamesFn, randn_names_dispatcher)
-
-using RandnNamesOutFn = at::Tensor & (*)(at::IntArrayRef, ::std::optional<at::DimnameList>, at::Tensor &);
-DECLARE_DISPATCHER(RandnNamesOutFn, randn_names_out_dispatcher)
 
 using RandnLikeFn = at::Tensor (*)(const at::Tensor &, ::std::optional<at::ScalarType>, ::std::optional<at::Layout>, ::std::optional<at::Device>, ::std::optional<bool>, ::std::optional<at::MemoryFormat>);
 DECLARE_DISPATCHER(RandnLikeFn, randn_like_dispatcher)
@@ -6094,12 +6052,6 @@ DECLARE_DISPATCHER(ZeroInplaceFn, zero_inplace_dispatcher)
 
 using ZerosFn = at::Tensor (*)(at::IntArrayRef, ::std::optional<at::ScalarType>, ::std::optional<at::Layout>, ::std::optional<at::Device>, ::std::optional<bool>);
 DECLARE_DISPATCHER(ZerosFn, zeros_dispatcher)
-
-using ZerosNamesFn = at::Tensor (*)(at::IntArrayRef, ::std::optional<at::DimnameList>, ::std::optional<at::ScalarType>, ::std::optional<at::Layout>, ::std::optional<at::Device>, ::std::optional<bool>);
-DECLARE_DISPATCHER(ZerosNamesFn, zeros_names_dispatcher)
-
-using ZerosNamesOutFn = at::Tensor & (*)(at::IntArrayRef, ::std::optional<at::DimnameList>, at::Tensor &);
-DECLARE_DISPATCHER(ZerosNamesOutFn, zeros_names_out_dispatcher)
 
 using ZerosOutFn = at::Tensor & (*)(at::IntArrayRef, at::Tensor &);
 DECLARE_DISPATCHER(ZerosOutFn, zeros_out_dispatcher)

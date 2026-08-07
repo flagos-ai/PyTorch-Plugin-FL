@@ -9,7 +9,7 @@
 #include "backends/dcu_memory.h"
 #endif
 #if !defined(USE_ASCEND) && !defined(USE_TSINGMICRO) && !defined(USE_DCU) && \
-    !defined(USE_GCU) && !defined(USE_MUSA)
+    !defined(USE_GCU) && !defined(USE_MUSA) && !defined(USE_BPU)
 #include "backends/cuda_memory.h"
 #endif
 #if defined(USE_TSINGMICRO)
@@ -20,6 +20,9 @@
 #endif
 #if defined(USE_MUSA)
 #include "backends/musa_memory.h"
+#endif
+#if defined(USE_BPU)
+#include "backends/bpu_memory.h"
 #endif
 
 #include <c10/util/Exception.h>
@@ -51,10 +54,18 @@ CachingDeviceAllocator::CachingDeviceAllocator(
 }
 
 CachingDeviceAllocator::~CachingDeviceAllocator() {
-#if !defined(USE_TSINGMICRO)
+#if !defined(USE_TSINGMICRO) && !defined(USE_BPU)
   // Release all cached memory on destruction.
   // On TsingMicro, skip this — the TX runtime may already be shut down
   // at process exit, causing segfaults in txFree.
+  // Same on BPU: this allocator is a function-local static, so its destructor
+  // runs from __run_exit_handlers, by which point libhbucp's own FINI_ARRAY
+  // teardown may already have released the heap the UCP blocks live in, and
+  // hbUCPFree aborts with "double free or corruption (fasttop)". Calling
+  // torch_fl._C._empty_cache() before exit frees the same blocks cleanly, which
+  // confirms the free path itself is fine and only the exit ordering is not.
+  // Leaking at process exit is harmless: the kernel reclaims the ION/UCP
+  // carveout when the fd closes.
   for (auto& state_ptr : device_states_) {
     if (state_ptr) {
       release_cached_blocks(*state_ptr);
@@ -542,6 +553,12 @@ CachingDeviceAllocator* GetCachingAllocator() {
     // MUSACachingAllocator claims the same PrivateUse1 allocator slot flagos
     // registers, so it is deliberately not delegated to (see musa_memory.h).
     auto backend = std::make_unique<MusaDeviceMemory>();
+    alloc = std::make_unique<CachingDeviceAllocator>(std::move(backend));
+#elif defined(USE_BPU)
+    // BPU: memory comes from the UCP allocator via the accelerator/bpu
+    // contract functions, which also own the virtual->physical map the
+    // zero-copy inference path needs.
+    auto backend = std::make_unique<BPUDeviceMemory>();
     alloc = std::make_unique<CachingDeviceAllocator>(std::move(backend));
 #else
     // CUDA (and Metax, which uses CUDA-compatible API)

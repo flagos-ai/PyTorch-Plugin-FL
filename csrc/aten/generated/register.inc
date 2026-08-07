@@ -2767,12 +2767,6 @@ at::Tensor & WrapperEmbeddingRenormOut(const at::Tensor & self, const at::Tensor
 at::Tensor & WrapperEmbeddingRenormInplace(at::Tensor & self, const at::Tensor & indices, double max_norm, double norm_type) {
   return at::native::flagos::embedding_renorm_inplace_dispatcher(self, indices, max_norm, norm_type);
 }
-at::Tensor WrapperEmptyNames(at::IntArrayRef size, ::std::optional<at::DimnameList> names, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory, ::std::optional<at::MemoryFormat> memory_format) {
-  return at::native::flagos::empty_names_dispatcher(size, names, dtype, layout, device, pin_memory, memory_format);
-}
-at::Tensor & WrapperEmptyNamesOut(at::IntArrayRef size, ::std::optional<at::DimnameList> names, ::std::optional<at::MemoryFormat> memory_format, at::Tensor & out) {
-  return at::native::flagos::empty_names_out_dispatcher(size, names, memory_format, out);
-}
 at::Tensor WrapperEmptyLike(const at::Tensor & self, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory, ::std::optional<at::MemoryFormat> memory_format) {
   return at::native::flagos::empty_like_dispatcher(self, dtype, layout, device, pin_memory, memory_format);
 }
@@ -3036,12 +3030,6 @@ at::Tensor & WrapperFromFileOut(c10::string_view filename, ::std::optional<bool>
 }
 at::Tensor WrapperFull(at::IntArrayRef size, const at::Scalar & fill_value, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
   return at::native::flagos::full_dispatcher(size, fill_value, dtype, layout, device, pin_memory);
-}
-at::Tensor WrapperFullNames(at::IntArrayRef size, const at::Scalar & fill_value, ::std::optional<at::DimnameList> names, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
-  return at::native::flagos::full_names_dispatcher(size, fill_value, names, dtype, layout, device, pin_memory);
-}
-at::Tensor & WrapperFullNamesOut(at::IntArrayRef size, const at::Scalar & fill_value, ::std::optional<at::DimnameList> names, at::Tensor & out) {
-  return at::native::flagos::full_names_out_dispatcher(size, fill_value, names, out);
 }
 at::Tensor & WrapperFullOut(at::IntArrayRef size, const at::Scalar & fill_value, at::Tensor & out) {
   return at::native::flagos::full_out_dispatcher(size, fill_value, out);
@@ -4411,12 +4399,6 @@ at::Tensor WrapperNormalFunctional(const at::Tensor & self, double mean, double 
 at::Tensor WrapperOnes(at::IntArrayRef size, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
   return at::native::flagos::ones_dispatcher(size, dtype, layout, device, pin_memory);
 }
-at::Tensor WrapperOnesNames(at::IntArrayRef size, ::std::optional<at::DimnameList> names, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
-  return at::native::flagos::ones_names_dispatcher(size, names, dtype, layout, device, pin_memory);
-}
-at::Tensor & WrapperOnesNamesOut(at::IntArrayRef size, ::std::optional<at::DimnameList> names, at::Tensor & out) {
-  return at::native::flagos::ones_names_out_dispatcher(size, names, out);
-}
 at::Tensor & WrapperOnesOut(at::IntArrayRef size, at::Tensor & out) {
   return at::native::flagos::ones_out_dispatcher(size, out);
 }
@@ -4567,18 +4549,6 @@ at::Tensor WrapperRand(at::IntArrayRef size, ::std::optional<at::ScalarType> dty
 at::Tensor WrapperRandGenerator(at::IntArrayRef size, ::std::optional<at::Generator> generator, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
   return at::native::flagos::rand_generator_dispatcher(size, generator, dtype, layout, device, pin_memory);
 }
-at::Tensor WrapperRandGeneratorWithNames(at::IntArrayRef size, ::std::optional<at::Generator> generator, ::std::optional<at::DimnameList> names, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
-  return at::native::flagos::rand_generator_with_names_dispatcher(size, generator, names, dtype, layout, device, pin_memory);
-}
-at::Tensor & WrapperRandGeneratorWithNamesOut(at::IntArrayRef size, ::std::optional<at::Generator> generator, ::std::optional<at::DimnameList> names, at::Tensor & out) {
-  return at::native::flagos::rand_generator_with_names_out_dispatcher(size, generator, names, out);
-}
-at::Tensor WrapperRandNames(at::IntArrayRef size, ::std::optional<at::DimnameList> names, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
-  return at::native::flagos::rand_names_dispatcher(size, names, dtype, layout, device, pin_memory);
-}
-at::Tensor & WrapperRandNamesOut(at::IntArrayRef size, ::std::optional<at::DimnameList> names, at::Tensor & out) {
-  return at::native::flagos::rand_names_out_dispatcher(size, names, out);
-}
 at::Tensor & WrapperRandOut(at::IntArrayRef size, at::Tensor & out) {
   return at::native::flagos::rand_out_dispatcher(size, out);
 }
@@ -4659,18 +4629,6 @@ at::Tensor WrapperRandn(at::IntArrayRef size, ::std::optional<at::ScalarType> dt
 }
 at::Tensor WrapperRandnGenerator(at::IntArrayRef size, ::std::optional<at::Generator> generator, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
   return at::native::flagos::randn_generator_dispatcher(size, generator, dtype, layout, device, pin_memory);
-}
-at::Tensor WrapperRandnGeneratorWithNames(at::IntArrayRef size, ::std::optional<at::Generator> generator, ::std::optional<at::DimnameList> names, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
-  return at::native::flagos::randn_generator_with_names_dispatcher(size, generator, names, dtype, layout, device, pin_memory);
-}
-at::Tensor & WrapperRandnGeneratorWithNamesOut(at::IntArrayRef size, ::std::optional<at::Generator> generator, ::std::optional<at::DimnameList> names, at::Tensor & out) {
-  return at::native::flagos::randn_generator_with_names_out_dispatcher(size, generator, names, out);
-}
-at::Tensor WrapperRandnNames(at::IntArrayRef size, ::std::optional<at::DimnameList> names, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
-  return at::native::flagos::randn_names_dispatcher(size, names, dtype, layout, device, pin_memory);
-}
-at::Tensor & WrapperRandnNamesOut(at::IntArrayRef size, ::std::optional<at::DimnameList> names, at::Tensor & out) {
-  return at::native::flagos::randn_names_out_dispatcher(size, names, out);
 }
 at::Tensor WrapperRandnLike(const at::Tensor & self, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory, ::std::optional<at::MemoryFormat> memory_format) {
   return at::native::flagos::randn_like_dispatcher(self, dtype, layout, device, pin_memory, memory_format);
@@ -6091,12 +6049,6 @@ at::Tensor & WrapperZeroInplace(at::Tensor & self) {
 at::Tensor WrapperZeros(at::IntArrayRef size, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
   return at::native::flagos::zeros_dispatcher(size, dtype, layout, device, pin_memory);
 }
-at::Tensor WrapperZerosNames(at::IntArrayRef size, ::std::optional<at::DimnameList> names, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
-  return at::native::flagos::zeros_names_dispatcher(size, names, dtype, layout, device, pin_memory);
-}
-at::Tensor & WrapperZerosNamesOut(at::IntArrayRef size, ::std::optional<at::DimnameList> names, at::Tensor & out) {
-  return at::native::flagos::zeros_names_out_dispatcher(size, names, out);
-}
 at::Tensor & WrapperZerosOut(at::IntArrayRef size, at::Tensor & out) {
   return at::native::flagos::zeros_out_dispatcher(size, out);
 }
@@ -7031,8 +6983,6 @@ at::Tensor & WrapperZerosLikeOut(const at::Tensor & self, ::std::optional<at::Me
   m.impl("embedding_renorm", WrapperEmbeddingRenorm);
   m.impl("embedding_renorm.out", WrapperEmbeddingRenormOut);
   m.impl("embedding_renorm_", WrapperEmbeddingRenormInplace);
-  m.impl("empty.names", WrapperEmptyNames);
-  m.impl("empty.names_out", WrapperEmptyNamesOut);
   m.impl("empty_like", WrapperEmptyLike);
   m.impl("empty_like.out", WrapperEmptyLikeOut);
   m.impl("empty_permuted", WrapperEmptyPermuted);
@@ -7121,8 +7071,6 @@ at::Tensor & WrapperZerosLikeOut(const at::Tensor & self, ::std::optional<at::Me
   m.impl("frexp.Tensor_out", WrapperFrexpTensorOut);
   m.impl("from_file.out", WrapperFromFileOut);
   m.impl("full", WrapperFull);
-  m.impl("full.names", WrapperFullNames);
-  m.impl("full.names_out", WrapperFullNamesOut);
   m.impl("full.out", WrapperFullOut);
   m.impl("full_like", WrapperFullLike);
   m.impl("full_like.out", WrapperFullLikeOut);
@@ -7579,8 +7527,6 @@ at::Tensor & WrapperZerosLikeOut(const at::Tensor & self, ::std::optional<at::Me
   m.impl("normal_", WrapperNormalInplace);
   m.impl("normal_functional", WrapperNormalFunctional);
   m.impl("ones", WrapperOnes);
-  m.impl("ones.names", WrapperOnesNames);
-  m.impl("ones.names_out", WrapperOnesNamesOut);
   m.impl("ones.out", WrapperOnesOut);
   m.impl("ones_like", WrapperOnesLike);
   m.impl("ones_like.out", WrapperOnesLikeOut);
@@ -7631,10 +7577,6 @@ at::Tensor & WrapperZerosLikeOut(const at::Tensor & self, ::std::optional<at::Me
   m.impl("rad2deg_", WrapperRad2degInplace);
   m.impl("rand", WrapperRand);
   m.impl("rand.generator", WrapperRandGenerator);
-  m.impl("rand.generator_with_names", WrapperRandGeneratorWithNames);
-  m.impl("rand.generator_with_names_out", WrapperRandGeneratorWithNamesOut);
-  m.impl("rand.names", WrapperRandNames);
-  m.impl("rand.names_out", WrapperRandNamesOut);
   m.impl("rand.out", WrapperRandOut);
   m.impl("rand_like", WrapperRandLike);
   m.impl("rand_like.generator", WrapperRandLikeGenerator);
@@ -7662,10 +7604,6 @@ at::Tensor & WrapperZerosLikeOut(const at::Tensor & self, ::std::optional<at::Me
   m.impl("randint_like.out", WrapperRandintLikeOut);
   m.impl("randn", WrapperRandn);
   m.impl("randn.generator", WrapperRandnGenerator);
-  m.impl("randn.generator_with_names", WrapperRandnGeneratorWithNames);
-  m.impl("randn.generator_with_names_out", WrapperRandnGeneratorWithNamesOut);
-  m.impl("randn.names", WrapperRandnNames);
-  m.impl("randn.names_out", WrapperRandnNamesOut);
   m.impl("randn_like", WrapperRandnLike);
   m.impl("randn_like.generator", WrapperRandnLikeGenerator);
   m.impl("randn_like.generator_out", WrapperRandnLikeGeneratorOut);
@@ -8139,8 +8077,6 @@ at::Tensor & WrapperZerosLikeOut(const at::Tensor & self, ::std::optional<at::Me
   m.impl("zero.out", WrapperZeroOut);
   m.impl("zero_", WrapperZeroInplace);
   m.impl("zeros", WrapperZeros);
-  m.impl("zeros.names", WrapperZerosNames);
-  m.impl("zeros.names_out", WrapperZerosNamesOut);
   m.impl("zeros.out", WrapperZerosOut);
   m.impl("zeros_like", WrapperZerosLike);
   m.impl("zeros_like.out", WrapperZerosLikeOut);

@@ -8405,27 +8405,6 @@ at::Tensor & EmbeddingRenormInplaceKernelCuda(at::Tensor & self, const at::Tenso
   return self;
 }
 
-at::Tensor EmptyNamesKernelCuda(at::IntArrayRef size, ::std::optional<at::DimnameList> names, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory, ::std::optional<at::MemoryFormat> memory_format) {
-  auto options = at::TensorOptions()
-    .dtype(dtype.value_or(at::kFloat))
-    .layout(layout.value_or(at::kStrided))
-    .device(device.value_or(at::Device(at::kPrivateUse1, 0)))
-    .pinned_memory(pin_memory.value_or(false));
-  at::Device _req_dev = device.has_value() ? *device : at::Device(at::kPrivateUse1, 0);
-  at::Device _cuda_dev = _req_dev.type() == at::kPrivateUse1
-      ? at::Device(at::kCUDA, _req_dev.index()) : _req_dev;
-  auto result = at::empty(size, names, dtype, layout, ::std::optional<at::Device>(_cuda_dev), pin_memory, memory_format);
-  if (result.device().type() == at::kCUDA) UnboxToFlagos(result);
-  return result;
-}
-
-at::Tensor & EmptyNamesOutKernelCuda(at::IntArrayRef size, ::std::optional<at::DimnameList> names, ::std::optional<at::MemoryFormat> memory_format, at::Tensor & out) {
-  DeviceBoxingGuard guard(out);
-  at::empty_outf(size, names, memory_format, out);
-  UnboxToFlagos(out);
-  return out;
-}
-
 at::Tensor EmptyLikeKernelCuda(const at::Tensor & self, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory, ::std::optional<at::MemoryFormat> memory_format) {
   DeviceBoxingGuard guard(self);
   auto result = at::empty_like(self, dtype, layout, device, pin_memory, memory_format);
@@ -9075,24 +9054,6 @@ at::Tensor FullKernelCuda(at::IntArrayRef size, const at::Scalar & fill_value, :
   auto result = at::empty(size, options);
   result.fill_(fill_value);
   return result;
-}
-
-at::Tensor FullNamesKernelCuda(at::IntArrayRef size, const at::Scalar & fill_value, ::std::optional<at::DimnameList> names, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
-  auto options = at::TensorOptions()
-    .dtype(dtype.value_or(at::kFloat))
-    .layout(layout.value_or(at::kStrided))
-    .device(device.value_or(at::Device(at::kPrivateUse1, 0)))
-    .pinned_memory(pin_memory.value_or(false));
-  auto result = at::empty(size, options);
-  result.fill_(fill_value);
-  return result;
-}
-
-at::Tensor & FullNamesOutKernelCuda(at::IntArrayRef size, const at::Scalar & fill_value, ::std::optional<at::DimnameList> names, at::Tensor & out) {
-  DeviceBoxingGuard guard(out);
-  at::full_outf(size, fill_value, names, out);
-  UnboxToFlagos(out);
-  return out;
 }
 
 at::Tensor & FullOutKernelCuda(at::IntArrayRef size, const at::Scalar & fill_value, at::Tensor & out) {
@@ -12575,24 +12536,6 @@ at::Tensor OnesKernelCuda(at::IntArrayRef size, ::std::optional<at::ScalarType> 
   return result;
 }
 
-at::Tensor OnesNamesKernelCuda(at::IntArrayRef size, ::std::optional<at::DimnameList> names, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
-  auto options = at::TensorOptions()
-    .dtype(dtype.value_or(at::kFloat))
-    .layout(layout.value_or(at::kStrided))
-    .device(device.value_or(at::Device(at::kPrivateUse1, 0)))
-    .pinned_memory(pin_memory.value_or(false));
-  auto result = at::empty(size, options);
-  result.fill_(1);
-  return result;
-}
-
-at::Tensor & OnesNamesOutKernelCuda(at::IntArrayRef size, ::std::optional<at::DimnameList> names, at::Tensor & out) {
-  DeviceBoxingGuard guard(out);
-  at::ones_outf(size, names, out);
-  UnboxToFlagos(out);
-  return out;
-}
-
 at::Tensor & OnesOutKernelCuda(at::IntArrayRef size, at::Tensor & out) {
   DeviceBoxingGuard guard(out);
   at::ones_outf(size, out);
@@ -12958,52 +12901,6 @@ at::Tensor RandGeneratorKernelCuda(at::IntArrayRef size, ::std::optional<at::Gen
   return result;
 }
 
-at::Tensor RandGeneratorWithNamesKernelCuda(at::IntArrayRef size, ::std::optional<at::Generator> generator, ::std::optional<at::DimnameList> names, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
-  auto options = at::TensorOptions()
-    .dtype(dtype.value_or(at::kFloat))
-    .layout(layout.value_or(at::kStrided))
-    .device(device.value_or(at::Device(at::kPrivateUse1, 0)))
-    .pinned_memory(pin_memory.value_or(false));
-  at::Device _req_dev = device.has_value() ? *device : at::Device(at::kPrivateUse1, 0);
-  at::Device _cuda_dev = _req_dev.type() == at::kPrivateUse1
-      ? at::Device(at::kCUDA, _req_dev.index()) : _req_dev;
-  if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(_cuda_dev.index());
-  auto result = at::rand(size, generator, names, dtype, layout, ::std::optional<at::Device>(_cuda_dev), pin_memory);
-  if (result.device().type() == at::kCUDA) UnboxToFlagos(result);
-  return result;
-}
-
-at::Tensor & RandGeneratorWithNamesOutKernelCuda(at::IntArrayRef size, ::std::optional<at::Generator> generator, ::std::optional<at::DimnameList> names, at::Tensor & out) {
-  DeviceBoxingGuard guard(out);
-  if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
-  at::rand_outf(size, generator, names, out);
-  UnboxToFlagos(out);
-  return out;
-}
-
-at::Tensor RandNamesKernelCuda(at::IntArrayRef size, ::std::optional<at::DimnameList> names, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
-  auto options = at::TensorOptions()
-    .dtype(dtype.value_or(at::kFloat))
-    .layout(layout.value_or(at::kStrided))
-    .device(device.value_or(at::Device(at::kPrivateUse1, 0)))
-    .pinned_memory(pin_memory.value_or(false));
-  at::Device _req_dev = device.has_value() ? *device : at::Device(at::kPrivateUse1, 0);
-  at::Device _cuda_dev = _req_dev.type() == at::kPrivateUse1
-      ? at::Device(at::kCUDA, _req_dev.index()) : _req_dev;
-  ::std::optional<at::Generator> _flagos_gen = at::native::flagos::GetFlagosDefaultCudaGenerator(_cuda_dev.index());
-  auto result = at::rand(size, _flagos_gen, names, dtype, layout, ::std::optional<at::Device>(_cuda_dev), pin_memory);
-  if (result.device().type() == at::kCUDA) UnboxToFlagos(result);
-  return result;
-}
-
-at::Tensor & RandNamesOutKernelCuda(at::IntArrayRef size, ::std::optional<at::DimnameList> names, at::Tensor & out) {
-  DeviceBoxingGuard guard(out);
-  ::std::optional<at::Generator> _flagos_gen = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
-  at::rand_outf(size, _flagos_gen, names, out);
-  UnboxToFlagos(out);
-  return out;
-}
-
 at::Tensor & RandOutKernelCuda(at::IntArrayRef size, at::Tensor & out) {
   DeviceBoxingGuard guard(out);
   ::std::optional<at::Generator> _flagos_gen = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
@@ -13260,52 +13157,6 @@ at::Tensor RandnGeneratorKernelCuda(at::IntArrayRef size, ::std::optional<at::Ge
   auto result = at::randn(size, generator, dtype, layout, ::std::optional<at::Device>(_cuda_dev), pin_memory);
   if (result.device().type() == at::kCUDA) UnboxToFlagos(result);
   return result;
-}
-
-at::Tensor RandnGeneratorWithNamesKernelCuda(at::IntArrayRef size, ::std::optional<at::Generator> generator, ::std::optional<at::DimnameList> names, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
-  auto options = at::TensorOptions()
-    .dtype(dtype.value_or(at::kFloat))
-    .layout(layout.value_or(at::kStrided))
-    .device(device.value_or(at::Device(at::kPrivateUse1, 0)))
-    .pinned_memory(pin_memory.value_or(false));
-  at::Device _req_dev = device.has_value() ? *device : at::Device(at::kPrivateUse1, 0);
-  at::Device _cuda_dev = _req_dev.type() == at::kPrivateUse1
-      ? at::Device(at::kCUDA, _req_dev.index()) : _req_dev;
-  if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(_cuda_dev.index());
-  auto result = at::randn(size, generator, names, dtype, layout, ::std::optional<at::Device>(_cuda_dev), pin_memory);
-  if (result.device().type() == at::kCUDA) UnboxToFlagos(result);
-  return result;
-}
-
-at::Tensor & RandnGeneratorWithNamesOutKernelCuda(at::IntArrayRef size, ::std::optional<at::Generator> generator, ::std::optional<at::DimnameList> names, at::Tensor & out) {
-  DeviceBoxingGuard guard(out);
-  if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
-  at::randn_outf(size, generator, names, out);
-  UnboxToFlagos(out);
-  return out;
-}
-
-at::Tensor RandnNamesKernelCuda(at::IntArrayRef size, ::std::optional<at::DimnameList> names, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
-  auto options = at::TensorOptions()
-    .dtype(dtype.value_or(at::kFloat))
-    .layout(layout.value_or(at::kStrided))
-    .device(device.value_or(at::Device(at::kPrivateUse1, 0)))
-    .pinned_memory(pin_memory.value_or(false));
-  at::Device _req_dev = device.has_value() ? *device : at::Device(at::kPrivateUse1, 0);
-  at::Device _cuda_dev = _req_dev.type() == at::kPrivateUse1
-      ? at::Device(at::kCUDA, _req_dev.index()) : _req_dev;
-  ::std::optional<at::Generator> _flagos_gen = at::native::flagos::GetFlagosDefaultCudaGenerator(_cuda_dev.index());
-  auto result = at::randn(size, _flagos_gen, names, dtype, layout, ::std::optional<at::Device>(_cuda_dev), pin_memory);
-  if (result.device().type() == at::kCUDA) UnboxToFlagos(result);
-  return result;
-}
-
-at::Tensor & RandnNamesOutKernelCuda(at::IntArrayRef size, ::std::optional<at::DimnameList> names, at::Tensor & out) {
-  DeviceBoxingGuard guard(out);
-  ::std::optional<at::Generator> _flagos_gen = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
-  at::randn_outf(size, _flagos_gen, names, out);
-  UnboxToFlagos(out);
-  return out;
 }
 
 at::Tensor RandnLikeKernelCuda(const at::Tensor & self, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory, ::std::optional<at::MemoryFormat> memory_format) {
@@ -16707,24 +16558,6 @@ at::Tensor ZerosKernelCuda(at::IntArrayRef size, ::std::optional<at::ScalarType>
   return result;
 }
 
-at::Tensor ZerosNamesKernelCuda(at::IntArrayRef size, ::std::optional<at::DimnameList> names, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {
-  auto options = at::TensorOptions()
-    .dtype(dtype.value_or(at::kFloat))
-    .layout(layout.value_or(at::kStrided))
-    .device(device.value_or(at::Device(at::kPrivateUse1, 0)))
-    .pinned_memory(pin_memory.value_or(false));
-  auto result = at::empty(size, options);
-  result.zero_();
-  return result;
-}
-
-at::Tensor & ZerosNamesOutKernelCuda(at::IntArrayRef size, ::std::optional<at::DimnameList> names, at::Tensor & out) {
-  DeviceBoxingGuard guard(out);
-  at::zeros_outf(size, names, out);
-  UnboxToFlagos(out);
-  return out;
-}
-
 at::Tensor & ZerosOutKernelCuda(at::IntArrayRef size, at::Tensor & out) {
   DeviceBoxingGuard guard(out);
   at::zeros_outf(size, out);
@@ -17669,8 +17502,6 @@ REGISTER_IMPL_TO_DISPATCHER(EmbeddingDenseBackwardOutFn, embedding_dense_backwar
 REGISTER_IMPL_TO_DISPATCHER(EmbeddingRenormFn, embedding_renorm_dispatcher, Backend::kCuda, EmbeddingRenormKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(EmbeddingRenormOutFn, embedding_renorm_out_dispatcher, Backend::kCuda, EmbeddingRenormOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(EmbeddingRenormInplaceFn, embedding_renorm_inplace_dispatcher, Backend::kCuda, EmbeddingRenormInplaceKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(EmptyNamesFn, empty_names_dispatcher, Backend::kCuda, EmptyNamesKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(EmptyNamesOutFn, empty_names_out_dispatcher, Backend::kCuda, EmptyNamesOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(EmptyLikeFn, empty_like_dispatcher, Backend::kCuda, EmptyLikeKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(EmptyLikeOutFn, empty_like_out_dispatcher, Backend::kCuda, EmptyLikeOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(EmptyPermutedFn, empty_permuted_dispatcher, Backend::kCuda, EmptyPermutedKernelCuda)
@@ -17759,8 +17590,6 @@ REGISTER_IMPL_TO_DISPATCHER(FrexpTensorFn, frexp_tensor_dispatcher, Backend::kCu
 REGISTER_IMPL_TO_DISPATCHER(FrexpTensorOutFn, frexp_tensor_out_dispatcher, Backend::kCuda, FrexpTensorOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(FromFileOutFn, from_file_out_dispatcher, Backend::kCuda, FromFileOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(FullFn, full_dispatcher, Backend::kCuda, FullKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(FullNamesFn, full_names_dispatcher, Backend::kCuda, FullNamesKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(FullNamesOutFn, full_names_out_dispatcher, Backend::kCuda, FullNamesOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(FullOutFn, full_out_dispatcher, Backend::kCuda, FullOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(FullLikeFn, full_like_dispatcher, Backend::kCuda, FullLikeKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(FullLikeOutFn, full_like_out_dispatcher, Backend::kCuda, FullLikeOutKernelCuda)
@@ -18217,8 +18046,6 @@ REGISTER_IMPL_TO_DISPATCHER(NormalOutFn, normal_out_dispatcher, Backend::kCuda, 
 REGISTER_IMPL_TO_DISPATCHER(NormalInplaceFn, normal_inplace_dispatcher, Backend::kCuda, NormalInplaceKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(NormalFunctionalFn, normal_functional_dispatcher, Backend::kCuda, NormalFunctionalKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(OnesFn, ones_dispatcher, Backend::kCuda, OnesKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(OnesNamesFn, ones_names_dispatcher, Backend::kCuda, OnesNamesKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(OnesNamesOutFn, ones_names_out_dispatcher, Backend::kCuda, OnesNamesOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(OnesOutFn, ones_out_dispatcher, Backend::kCuda, OnesOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(OnesLikeFn, ones_like_dispatcher, Backend::kCuda, OnesLikeKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(OnesLikeOutFn, ones_like_out_dispatcher, Backend::kCuda, OnesLikeOutKernelCuda)
@@ -18269,10 +18096,6 @@ REGISTER_IMPL_TO_DISPATCHER(Rad2degOutFn, rad2deg_out_dispatcher, Backend::kCuda
 REGISTER_IMPL_TO_DISPATCHER(Rad2degInplaceFn, rad2deg_inplace_dispatcher, Backend::kCuda, Rad2degInplaceKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(RandFn, rand_dispatcher, Backend::kCuda, RandKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(RandGeneratorFn, rand_generator_dispatcher, Backend::kCuda, RandGeneratorKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(RandGeneratorWithNamesFn, rand_generator_with_names_dispatcher, Backend::kCuda, RandGeneratorWithNamesKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(RandGeneratorWithNamesOutFn, rand_generator_with_names_out_dispatcher, Backend::kCuda, RandGeneratorWithNamesOutKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(RandNamesFn, rand_names_dispatcher, Backend::kCuda, RandNamesKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(RandNamesOutFn, rand_names_out_dispatcher, Backend::kCuda, RandNamesOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(RandOutFn, rand_out_dispatcher, Backend::kCuda, RandOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(RandLikeFn, rand_like_dispatcher, Backend::kCuda, RandLikeKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(RandLikeGeneratorFn, rand_like_generator_dispatcher, Backend::kCuda, RandLikeGeneratorKernelCuda)
@@ -18300,10 +18123,6 @@ REGISTER_IMPL_TO_DISPATCHER(RandintLikeLowGeneratorDtypeOutFn, randint_like_low_
 REGISTER_IMPL_TO_DISPATCHER(RandintLikeOutFn, randint_like_out_dispatcher, Backend::kCuda, RandintLikeOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(RandnFn, randn_dispatcher, Backend::kCuda, RandnKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(RandnGeneratorFn, randn_generator_dispatcher, Backend::kCuda, RandnGeneratorKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(RandnGeneratorWithNamesFn, randn_generator_with_names_dispatcher, Backend::kCuda, RandnGeneratorWithNamesKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(RandnGeneratorWithNamesOutFn, randn_generator_with_names_out_dispatcher, Backend::kCuda, RandnGeneratorWithNamesOutKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(RandnNamesFn, randn_names_dispatcher, Backend::kCuda, RandnNamesKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(RandnNamesOutFn, randn_names_out_dispatcher, Backend::kCuda, RandnNamesOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(RandnLikeFn, randn_like_dispatcher, Backend::kCuda, RandnLikeKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(RandnLikeGeneratorFn, randn_like_generator_dispatcher, Backend::kCuda, RandnLikeGeneratorKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(RandnLikeGeneratorOutFn, randn_like_generator_out_dispatcher, Backend::kCuda, RandnLikeGeneratorOutKernelCuda)
@@ -18777,8 +18596,6 @@ REGISTER_IMPL_TO_DISPATCHER(ZeroFn, zero_dispatcher, Backend::kCuda, ZeroKernelC
 REGISTER_IMPL_TO_DISPATCHER(ZeroOutFn, zero_out_dispatcher, Backend::kCuda, ZeroOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(ZeroInplaceFn, zero_inplace_dispatcher, Backend::kCuda, ZeroInplaceKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(ZerosFn, zeros_dispatcher, Backend::kCuda, ZerosKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(ZerosNamesFn, zeros_names_dispatcher, Backend::kCuda, ZerosNamesKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(ZerosNamesOutFn, zeros_names_out_dispatcher, Backend::kCuda, ZerosNamesOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(ZerosOutFn, zeros_out_dispatcher, Backend::kCuda, ZerosOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(ZerosLikeFn, zeros_like_dispatcher, Backend::kCuda, ZerosLikeKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(ZerosLikeOutFn, zeros_like_out_dispatcher, Backend::kCuda, ZerosLikeOutKernelCuda)
