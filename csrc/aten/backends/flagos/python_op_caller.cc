@@ -610,6 +610,15 @@ at::Generator GetFlagosDefaultCudaGenerator(int64_t device_index) {
   }
   py::gil_scoped_acquire gil;
   py::module_ torch_cuda = py::module_::import("torch.cuda");
+  // torch.cuda.default_generators is populated by CUDA lazy-init, not at import.
+  // A self-contained wheel front-ends a stock torch+cpu whose CUDA state nothing
+  // else touches, so the tuple is still empty here and indexing it would raise
+  // IndexError -- which surfaces as a failure of every device-side RNG op
+  // (randn/rand/normal_) while plain factories (empty/zeros/ones) work fine.
+  // Force lazy-init first; it is idempotent and cheap once initialized.
+  if (py::len(torch_cuda.attr("default_generators")) == 0) {
+    torch_cuda.attr("init")();
+  }
   py::object gens = torch_cuda.attr("default_generators");
   py::object py_gen = gens[py::cast(device_index)];
   // torch.Generator -> at::Generator via THPGenerator unpack.

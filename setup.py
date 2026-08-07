@@ -34,6 +34,17 @@ IS_WINDOWS = platform.system() == "Windows"
 # "dcu", "gcu", or "musa"
 ACCELERATOR = os.environ.get("ACCELERATOR", "cuda").lower()
 
+# Directory inside the wheel holding a bundled forked libtorch, for the backends
+# that ship one (see scripts/bundle_*_libtorch.sh). "lib" means "no separate
+# bundle dir": the CUDA backend drops its extra .so straight into torch_fl/lib/.
+# Must match FLAGOS_BUNDLE_LIBDIR in CMakeLists.txt -- _C.so's RUNPATH has to
+# reach the bundle or its auditwheel-mangled deps (libglog-*.so.0) go missing.
+_BUNDLE_LIBDIR = {"metax": "lib_maca", "dcu": "lib_dcu"}.get(ACCELERATOR, "lib")
+if _BUNDLE_LIBDIR == "lib" and (
+    os.environ.get("PPU_SDK") or os.environ.get("PPU_HOME")
+):
+    _BUNDLE_LIBDIR = "lib_ppu"
+
 BASE_DIR = os.path.dirname(os.path.realpath(__file__))
 
 # Only run cmake build for actual build commands, not metadata collection
@@ -363,17 +374,23 @@ def build_deps():
             ]
         )
     elif ACCELERATOR == "dcu":
-        # Pure boxing build. The DCU torch wheel is a hipified build whose HIP
-        # kernels are registered under the CUDA dispatch key, so the generated
+        # Boxing build. The DCU torch wheel is a hipified build whose HIP kernels
+        # are registered under the CUDA dispatch key, so the generated
         # PrivateUse1 -> CUDA boxing kernels reach them with no hand-written
-        # kernels of our own. FLAGGEMS_KERNEL needs liboperators.so (not built
-        # for DTK); FLAGGEMS_PYTHON needs a DTK triton, which is a separate
-        # install -- both stay off unless explicitly requested below.
+        # kernels of our own. FLAGGEMS_KERNEL needs liboperators.so, which is not
+        # built for DTK, and stays off.
+        #
+        # FLAGGEMS_PYTHON defaults ON, same as metax/cuda: DTK ships a working
+        # triton (hcu backend) that flag_gems runs on, so the wheel compiles the
+        # FlagGems Python-path kernels too and the choice becomes a runtime one
+        # (FLAGOS_USE_FLAGGEMS -> backends_dcu_flaggems.conf). python_op_caller
+        # links torch_python_library, already in the link set, so this adds
+        # nothing to the wheel size. Set FLAGGEMS_PYTHON=0 for a slim pure-boxing
+        # build; the generic pass-through below honors that.
         cmake_args.extend(
             [
                 "-DCUDA_KERNEL=OFF",
                 "-DFLAGGEMS_KERNEL=OFF",
-                "-DFLAGGEMS_PYTHON=OFF",
                 "-DMETAX_KERNEL=OFF",
                 "-DASCEND_KERNEL=OFF",
             ]
@@ -604,19 +621,33 @@ class BuildClean(clean):
                     os.remove(os.path.join(dirpath, filename))
 
 
+def _extension_rpath_args():
+    """RUNPATH for torch_fl._C: torch_fl/lib plus the bundle dir when separate.
+
+    _C.so links libtorch_bindings.so out of torch_fl/lib, which in turn pulls the
+    bundled vendor libtorch and its auditwheel-mangled deps out of the bundle dir.
+    Without the second entry a self-contained wheel fails at import with e.g.
+    "libglog.so.0: cannot open shared object file".
+    """
+    args = make_relative_rpath_args("lib")
+    if _BUNDLE_LIBDIR != "lib":
+        args += make_relative_rpath_args(_BUNDLE_LIBDIR)
+    return args
+
+
 def _extension_compile_args():
     if IS_WINDOWS:
         # /NODEFAULTLIB makes sure we only link to DLL runtime
         # and matches the flags set for protobuf and ONNX
-        extra_link_args: list[str] = ["/NODEFAULTLIB:LIBCMT.LIB"] + [
-            *make_relative_rpath_args("lib")
-        ]
+        extra_link_args: list[str] = [
+            "/NODEFAULTLIB:LIBCMT.LIB"
+        ] + _extension_rpath_args()
         # /MD links against DLL runtime
         # and matches the flags set for protobuf and ONNX
         # /EHsc is about standard C++ exception handling
         extra_compile_args = ["/MD", "/FS", "/EHsc"]
     else:
-        extra_link_args = [*make_relative_rpath_args("lib")]
+        extra_link_args = _extension_rpath_args()
         extra_compile_args = [
             "-Wall",
             "-Wextra",
@@ -649,10 +680,20 @@ def _get_setup_kwargs():
             "lib/*.dylib*",
             "lib/*.dll",
             "lib/*.lib",
-            # MetaX self-contained wheel: forked libtorch C++ .so bundled here so
-            # the process loads the MetaX C++ runtime without a separate metax
-            # torch wheel (see scripts/bundle_maca_libtorch.sh).
+            # Self-contained wheels: the vendor's forked libtorch C++ .so bundled
+            # here so the process loads that C++ runtime without a separate
+            # vendor torch wheel (see scripts/bundle_*_libtorch.sh, and
+            # torch_fl/accelerator/_vendor_libtorch.py for the relink at import).
+            # The trailing * matters for lib_dcu: DTK's auditwheel-mangled
+            # torch.libs deps end in a version suffix (libglog-6ed04f2c.so.0.0.0).
             "lib_maca/*.so*",
+            "lib_dcu/*.so*",
+            # DTK torch's own version.py, carried so _restore_dcu_hip_version()
+            # can hand triton's hcu backend the hip/rocm strings the stock +cpu
+            # torch in front does not have. Needed explicitly: the globs above
+            # only match *.so*.
+            "lib_dcu/vendor_version.py",
+            "lib_ppu/*.so*",
             # All backend configs, not just the default: runtime op-routing
             # configs selected via FLAGOS_USE_FLAGGEMS (backends_flaggems.conf)
             # and boxing modes via FLAGOS_BACKEND_CONFIG (backends_cuda.conf /
@@ -663,11 +704,20 @@ def _get_setup_kwargs():
     }
 
     version = "0.1.0"
-    if ACCELERATOR == "metax":
-        # Local version segment tags the wheel as a MetaX build (self-contained
-        # forked libtorch). Overridable via FLAGOS_WHEEL_LOCAL for a concrete
-        # MACA/driver version, e.g. FLAGOS_WHEEL_LOCAL=metax3.8.1.
-        local = os.environ.get("FLAGOS_WHEEL_LOCAL", "metax")
+    # A local version segment tags which vendor a self-contained wheel bundles a
+    # forked libtorch for. That bundle is SDK-version-bound whether we say so or
+    # not -- DTK's libtorch_hip.so has librocblas.so.4 written into its
+    # DT_NEEDED -- so making the binding visible in the filename is strictly
+    # better than leaving two incompatible wheels both called 0.1.0. Override
+    # with FLAGOS_WHEEL_LOCAL to pin the exact SDK, e.g.
+    # FLAGOS_WHEEL_LOCAL=metax3.8.1 / FLAGOS_WHEEL_LOCAL=dtk2604.
+    _default_local = {"metax": "metax", "dcu": "dtk"}.get(ACCELERATOR)
+    if _default_local is None and (
+        os.environ.get("PPU_SDK") or os.environ.get("PPU_HOME")
+    ):
+        _default_local = "ppu"
+    local = os.environ.get("FLAGOS_WHEEL_LOCAL", _default_local)
+    if local:
         version = f"{version}+{local}"
 
     return dict(

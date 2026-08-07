@@ -36,6 +36,12 @@ endif()
 
 target_link_directories(${LIBRARY_NAME} PRIVATE ${PYTORCH_INSTALL_DIR}/lib)
 
+# Same reasoning as csrc/CMakeLists.txt: keep the build machine's torch/lib out
+# of the installed RUNPATH and resolve a bundled forked libtorch via $ORIGIN.
+# libtorch_bindings.so is loaded as torch_fl._C, i.e. always after
+# torch_fl/__init__.py has imported torch.
+flagos_set_portable_rpath(${LIBRARY_NAME})
+
 install(TARGETS ${LIBRARY_NAME}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}

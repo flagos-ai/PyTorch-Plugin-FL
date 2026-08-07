@@ -325,28 +325,17 @@ if(ACCELERATOR STREQUAL "metax")
     message(WARNING "mcblas not found, MetaX mm will fallback to naive kernel")
   endif()
 
-  # Self-contained wheel: the installed libtorch_fl.so must NOT bake the build
-  # machine's absolute torch/lib path into its RUNPATH (that path does not exist
-  # on target machines). Resolve the forked libtorch bundled under
-  # torch_fl/lib_maca/ via $ORIGIN, and the maca runtime (mcblas/mcdnn/...) from
-  # the target's /opt/maca driver install. Disabling INSTALL_RPATH_USE_LINK_PATH
-  # stops CMake from appending the imported torch target's build-machine link
-  # dir. Mirrors scripts/bundle_maca_libtorch.sh's patchelf pass.
-  set(_metax_rpath
-      "$ORIGIN:$ORIGIN/../lib_maca:${METAX_PATH}/lib:${METAX_PATH}/lib64:/opt/maca/lib:/opt/maca/lib64")
-  # Setting INSTALL_RPATH explicitly discards the entries the top-level
-  # CMakeLists appended to CMAKE_INSTALL_RPATH, including FlagGems'
-  # liboperators.so dir. Re-add it so the C++ FlagGems path (FLAGGEMS_KERNEL,
-  # kFlagOs) resolves liboperators.so without LD_LIBRARY_PATH.
-  if(FLAGGEMS_KERNEL AND _flaggems_libdir)
-    set(_metax_rpath "${_metax_rpath}:${_flaggems_libdir}")
-  endif()
-  set_target_properties(${LIBRARY_NAME} PROPERTIES
-    INSTALL_RPATH "${_metax_rpath}"
-    INSTALL_RPATH_USE_LINK_PATH OFF
-    BUILD_WITH_INSTALL_RPATH ON
-  )
 endif()
+
+# Self-contained wheel: the installed libtorch_fl.so must NOT bake the build
+# machine's absolute torch/lib path into its RUNPATH -- that path does not exist
+# on a target machine, and on one where it does exist it silently overrides the
+# interpreter actually running. Resolve a bundled forked libtorch via $ORIGIN
+# instead. Everything else the backend put on CMAKE_INSTALL_RPATH is kept,
+# including FlagGems' liboperators.so dir, so the C++ FlagGems path
+# (FLAGGEMS_KERNEL, kFlagOs) still resolves without LD_LIBRARY_PATH. Mirrors the
+# patchelf pass in scripts/bundle_*_libtorch.sh.
+flagos_set_portable_rpath(${LIBRARY_NAME})
 
 install(TARGETS ${LIBRARY_NAME}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
