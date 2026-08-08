@@ -174,7 +174,7 @@ def _link_one(dst_dir, backup_dir, name, target, required, vendor):
     os.symlink(target, dst)
 
 
-def _preload_global(lib_dir, load_order, core_so, vendor):
+def _preload_global(lib_dir, load_order, core_so, vendor, fallback_dir=None):
     """dlopen the vendor set RTLD_GLOBAL, in dependency order.
 
     A CPU-only torch wheel never loads the forked runtime itself.  Symlinking the
@@ -186,6 +186,17 @@ def _preload_global(lib_dir, load_order, core_so, vendor):
 
     ``lib_dir`` must be the *source* dir (the bundle), never the ``torch/lib``
     symlink dir -- see the ``$ORIGIN`` note in the module docstring.
+
+    ``fallback_dir`` (the stock wheel's ``torch/lib``) covers a non-core .so the
+    vendor image simply does not ship.  Measured: the MetaX CI's
+    ``/opt/vendor-libtorch/lib`` has no ``libshm.so``, so the bundle has none
+    either, yet ``libtorch_python.so`` carries a hard ``DT_NEEDED: libshm.so``.
+    dlopening the stock copy RTLD_GLOBAL *before* ``libtorch_python.so``
+    satisfies that DT_NEEDED by soname against the already-loaded object; without
+    it the loader only searches the bundle's RUNPATH and dies with "libshm.so:
+    cannot open shared object file".  Its own deps (libc10, libtorch_cpu) resolve
+    through ``torch/lib``, where they are symlinks into the bundle, so they share
+    an inode with what is already mapped and no second copy appears.
     """
     handles = []
     for name in load_order:
@@ -193,7 +204,9 @@ def _preload_global(lib_dir, load_order, core_so, vendor):
         if not os.path.exists(path):
             if name in core_so:
                 raise FileNotFoundError(f"{vendor} libtorch runtime missing: {path}")
-            continue
+            path = os.path.join(fallback_dir, name) if fallback_dir else ""
+            if not path or not os.path.exists(path):
+                continue
         try:
             handles.append(ctypes.CDLL(path, mode=ctypes.RTLD_GLOBAL))
         except OSError as exc:
@@ -257,8 +270,12 @@ def ensure_vendor_libtorch_links(
     if load_order:
         # dlopen from `src` (the bundle), not from `active`: loading through the
         # torch/lib symlinks would expand $ORIGIN to torch/lib and lose the
-        # bundle-internal deps. Keep the handles alive for the process lifetime.
-        _runtime_handles.extend(_preload_global(src, load_order, core_so, label))
+        # bundle-internal deps. `active` is only the fallback for a non-core .so
+        # the vendor image does not ship. Keep the handles alive for the process
+        # lifetime.
+        _runtime_handles.extend(
+            _preload_global(src, load_order, core_so, label, fallback_dir=active)
+        )
 
     _done.add(bundle_dirname)
     return True

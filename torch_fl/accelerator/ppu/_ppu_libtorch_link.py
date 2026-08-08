@@ -62,7 +62,8 @@ _CUDA_SO = (
 )
 
 # Dependency order for the RTLD_GLOBAL preload: core (CPU) first, then the CUDA
-# side, then libtorch_python. Same reasoning as MetaX.
+# side, then libshm and libtorch_python. Same reasoning as MetaX, including why
+# libshm.so has to be listed explicitly ahead of libtorch_python.so.
 _LOAD_ORDER = (
     "libc10.so",
     "libtorch_cpu.so",
@@ -71,6 +72,7 @@ _LOAD_ORDER = (
     "libc10_cuda.so",
     "libtorch_cuda_linalg.so",
     "libtorch_cuda.so",
+    "libshm.so",
     "libtorch_python.so",
 )
 

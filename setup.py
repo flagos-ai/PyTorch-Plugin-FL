@@ -534,7 +534,8 @@ def _bundle_cuda_assets() -> None:
     externally-supplied libtorch_cuda.so (CPU-only pip torch does not ship it).
     Historically this was LD_PRELOAD-ed by scripts/with_cuda_libtorch.sh; for a
     single self-contained wheel we bundle the assets and preload them from
-    torch_fl/__init__.py before `import torch` (see docs §约束1). CUDA only.
+    torch_fl/__init__.py before `import torch` (see that doc, constraint 1).
+    CUDA only.
 
     Set FLAGOS_SKIP_CUDA_ASSETS=1 to skip (e.g. a slim build for a machine that
     supplies libtorch_cuda.so out-of-band).

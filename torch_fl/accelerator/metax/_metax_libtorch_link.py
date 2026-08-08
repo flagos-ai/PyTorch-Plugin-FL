@@ -64,6 +64,12 @@ _CUDA_SO = (
 # side, then libtorch_python.  GetFlagosDefaultCudaGenerator lives in the forked
 # ATen CPU runtime, not in libtorch_cuda.so, so loading only the CUDA lib would
 # leave that symbol unresolvable from libtorch_fl.so.
+#
+# libshm.so must precede libtorch_python.so: it is a direct DT_NEEDED of it, and
+# dlopen resolves that by soname through the *loader's* search path, not through
+# this list.  In a fresh install nothing has put libshm.so anywhere the loader
+# looks yet, so omitting it here fails with "libshm.so: cannot open shared object
+# file" even though the file is sitting in the bundle dir.
 _LOAD_ORDER = (
     "libc10.so",
     "libtorch_cpu.so",
@@ -72,6 +78,7 @@ _LOAD_ORDER = (
     "libc10_cuda.so",
     "libtorch_cuda_linalg.so",
     "libtorch_cuda.so",
+    "libshm.so",
     "libtorch_python.so",
 )
 

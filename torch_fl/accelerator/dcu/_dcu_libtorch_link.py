@@ -66,9 +66,10 @@ _HIP_SO = (
 )
 
 # Dependency order for the RTLD_GLOBAL preload: core (CPU) first, then the HIP
-# side, then libtorch_python. Same reasoning as MetaX -- symbols the plugin needs
-# live in the forked CPU runtime, and loading only the HIP lib can leave its CPU
-# dependency RTLD_LOCAL.
+# side, then libshm and libtorch_python. Same reasoning as MetaX -- symbols the
+# plugin needs live in the forked CPU runtime, and loading only the HIP lib can
+# leave its CPU dependency RTLD_LOCAL -- including why libshm.so has to be listed
+# explicitly ahead of libtorch_python.so.
 _LOAD_ORDER = (
     "libc10.so",
     "libtorch_cpu.so",
@@ -76,6 +77,7 @@ _LOAD_ORDER = (
     "libtorch_global_deps.so",
     "libc10_hip.so",
     "libtorch_hip.so",
+    "libshm.so",
     "libtorch_python.so",
 )
 

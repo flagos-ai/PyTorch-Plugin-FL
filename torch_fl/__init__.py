@@ -238,11 +238,11 @@ _relink_vendor_libtorch()
 def _preload_cuda_assets() -> None:
     """Load the bundled CUDA .so into this process BEFORE `import torch`.
 
-    Hard constraint (docs/cpu_torch_external_libtorch_cuda.md §约束1): PyTorch
-    caches its CUDAHooks on first `import torch`. If libtorch_cuda.so is loaded
-    afterwards, device init fails with "Cannot initialize CUDA without ATen_cuda
-    library" even though the kernels register. So we ctypes-dlopen it here, at
-    the very top of torch_fl, before torch is imported.
+    Hard constraint (docs/cpu_torch_external_libtorch_cuda.md, constraint 1):
+    PyTorch caches its CUDAHooks on first `import torch`. If libtorch_cuda.so is
+    loaded afterwards, device init fails with "Cannot initialize CUDA without
+    ATen_cuda library" even though the kernels register. So we ctypes-dlopen it
+    here, at the very top of torch_fl, before torch is imported.
 
     libtorch_cuda.so has unresolved deps on the NVIDIA runtime libs (libcudart,
     libcublas, libcudnn, libnvshmem_host, ...) shipped by the pip nvidia-*-cu12
