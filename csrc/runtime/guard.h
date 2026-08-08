@@ -20,7 +20,7 @@
 // resolve there even though DCU's CUDA-compat runtime satisfies plain
 // cudaStream_t calls.
 #if !defined(USE_ASCEND) && !defined(USE_TSINGMICRO) && !defined(USE_DCU) && \
-    !defined(USE_GCU)
+    !defined(USE_GCU) && !defined(USE_BPU)
 #define FLAGOS_GUARD_HAS_CUDA_STREAM 1
 #include <c10/cuda/CUDAStream.h>
 #else

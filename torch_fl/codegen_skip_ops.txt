@@ -208,3 +208,26 @@ native_fuse_rn_dropout
 native_fuse_rn_dropout_backward
 native_fuse_rn_dropout_backward.out
 native_fuse_rn_dropout.out
+
+# --- named-tensor factory variants: removed from ATen in PyTorch 2.13 ---
+# These take `optional<at::DimnameList>`, and 2.13 deleted named tensors
+# outright -- neither the type nor the overloads exist any more, so the
+# generated typedefs alone fail to parse. They were never reachable on
+# PrivateUse1 in practice (a named tensor cannot be placed on a custom device),
+# so skipping them costs nothing and routes them to cpu_fallback.
+empty.names
+empty.names_out
+full.names
+full.names_out
+ones.names
+ones.names_out
+rand.names
+rand.names_out
+rand.generator_with_names
+rand.generator_with_names_out
+randn.names
+randn.names_out
+randn.generator_with_names
+randn.generator_with_names_out
+zeros.names
+zeros.names_out

@@ -37,6 +37,8 @@ std::string DefaultConfigPath() {
       platform = "ascend";
 #elif defined(USE_MUSA)
       platform = "musa";
+#elif defined(USE_BPU)
+      platform = "bpu";
 #endif
       if (platform) {
         // dir is <prefix>/torch_fl/lib, configs are at <prefix>/torch_fl/configs/

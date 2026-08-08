@@ -20,6 +20,8 @@ elseif(ACCELERATOR STREQUAL "metax")
   project(FLAGOS_RUNTIME CXX C)
 elseif(ACCELERATOR STREQUAL "tsingmicro")
   project(FLAGOS_RUNTIME CXX C)
+elseif(ACCELERATOR STREQUAL "bpu")
+  project(FLAGOS_RUNTIME CXX C)
 elseif(ACCELERATOR STREQUAL "dcu")
   project(FLAGOS_RUNTIME CXX C)
 elseif(ACCELERATOR STREQUAL "gcu")
@@ -112,6 +114,31 @@ elseif(ACCELERATOR STREQUAL "musa")
       ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR} ${MUSA_HOME}/include)
   target_link_directories(${LIBRARY_NAME} PRIVATE ${MUSA_HOME}/lib)
   target_link_libraries(${LIBRARY_NAME} PRIVATE musart)
+elseif(ACCELERATOR STREQUAL "bpu")
+  # D-Robotics RDK BPU. The UCP allocator (libhbucp) provides device memory and
+  # libbpu the core/task API; both ship in the board image under /usr/hobot/lib
+  # with headers at /usr/include/hobot, so there is no SDK root to configure.
+  file(GLOB SOURCE_FILES "${CMAKE_CURRENT_SOURCE_DIR}/bpu/*.cc")
+
+  add_library(${LIBRARY_NAME} SHARED ${SOURCE_FILES})
+
+  find_library(HBUCP_LIB hbucp PATHS ${HOBOT_LIB_DIR} /usr/hobot/lib)
+  find_library(LIBBPU_LIB bpu PATHS ${HOBOT_LIB_DIR} /usr/hobot/lib)
+  find_path(HOBOT_UCP_INCLUDE_DIR hb_ucp_sys.h
+      PATHS ${HOBOT_INCLUDE_DIR} /usr/include/hobot)
+
+  if(NOT HBUCP_LIB OR NOT LIBBPU_LIB OR NOT HOBOT_UCP_INCLUDE_DIR)
+    message(FATAL_ERROR
+        "ACCELERATOR=bpu selected, but the Horizon runtime was not found. "
+        "Expected libhbucp/libbpu under /usr/hobot/lib and hb_ucp_sys.h under "
+        "/usr/include/hobot (set HOBOT_LIB_DIR / HOBOT_INCLUDE_DIR to override). "
+        "These ship in the RDK BPU board image.")
+  endif()
+
+  target_include_directories(${LIBRARY_NAME} PUBLIC
+      ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR}
+      ${HOBOT_UCP_INCLUDE_DIR} ${HOBOT_UCP_INCLUDE_DIR}/dnn)
+  target_link_libraries(${LIBRARY_NAME} PRIVATE ${HBUCP_LIB} ${LIBBPU_LIB})
 else()
   file(GLOB SOURCE_FILES "${CMAKE_CURRENT_SOURCE_DIR}/cuda/*.cc")
 
