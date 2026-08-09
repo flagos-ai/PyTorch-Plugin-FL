@@ -757,6 +757,128 @@ if (
     torch.cuda.init()
 
 
+def _alias_cuda_to_flagos():
+    """Make ``device="cuda"`` mean the flagos device when there is no real CUDA.
+
+    Most of the PyTorch ecosystem hardcodes ``"cuda"``: ``model.cuda()``,
+    ``device_map="cuda"``, ``torch.device("cuda")`` in example scripts, and
+    ``torch.cuda.is_available()`` as the "do I have an accelerator" test. On a
+    vendor backend built without CUDA (Ascend), every one of those raises
+    ``AssertionError: Torch not compiled with CUDA enabled`` -- so code that runs
+    unmodified elsewhere has to be edited to say ``"flagos"``.
+
+    This rewrites ``cuda`` device *arguments* to the flagos device, so that
+    hardcoded-``cuda`` code lands on the accelerator that is actually present.
+
+    Deliberately a no-op when ``torch.cuda.is_available()``: on the CUDA and
+    boxing backends ``cuda`` already means a real device, and hijacking it there
+    would break the boxing path, which submits genuine CUDA work.
+
+    Opt out with ``FLAGOS_ALIAS_CUDA=0`` -- worth doing if you need
+    ``device="cuda"`` to keep failing loudly rather than silently redirecting.
+    """
+    if torch.cuda.is_available():
+        return
+    if os.environ.get("FLAGOS_ALIAS_CUDA", "1").lower() in ("0", "off", "false"):
+        return
+
+    from torch.overrides import TorchFunctionMode
+
+    _flagos_type = torch._C._get_privateuse1_backend_name()  # "flagos"
+    _orig_device = torch.device
+
+    def _remap(dev):
+        """cuda[:i] -> flagos[:i]; everything else through untouched."""
+        if isinstance(dev, str):
+            if dev == "cuda":
+                return _flagos_type
+            if dev.startswith("cuda:"):
+                return f"{_flagos_type}:{dev[5:]}"
+            return dev
+        if isinstance(dev, _orig_device) and dev.type == "cuda":
+            return _orig_device(_flagos_type, dev.index if dev.index is not None else 0)
+        return dev
+
+    # A TorchFunctionMode, not a wrapper around torch.device.
+    #
+    # Wrapping torch.device is not enough and was tried first: factory functions
+    # parse their `device=` argument in C++ (THPDevice / the argument parser), so
+    # `torch.randn(4, device="cuda")` never reaches a Python torch.device call and
+    # still dies in torch.cuda._lazy_init. A torch-function mode sits above the
+    # C++ parser and sees the keyword before it is resolved, which catches every
+    # factory uniformly -- randn, zeros, empty, tensor, arange, and `.to()`.
+    #
+    # Pushed permanently onto the mode stack at import. That is unusual but
+    # intended: the alias has to hold for the whole process, not a `with` block.
+    # `__torch_function__` runs on every op, so the body is kept to a dict lookup
+    # and a `str.startswith` on the miss path.
+    class _CudaAliasMode(TorchFunctionMode):
+        def __torch_function__(self, func, types, args=(), kwargs=None):
+            kwargs = kwargs or {}
+            dev = kwargs.get("device")
+            if dev is not None:
+                remapped = _remap(dev)
+                if remapped is not dev:
+                    kwargs = {**kwargs, "device": remapped}
+            # Positional device, as in `Tensor.to("cuda")`.
+            elif args and func is torch.Tensor.to:
+                remapped = _remap(args[1]) if len(args) > 1 else None
+                if remapped is not None and len(args) > 1 and remapped is not args[1]:
+                    args = (args[0], remapped) + args[2:]
+            return func(*args, **kwargs)
+
+    torch._C._push_on_torch_function_stack(_CudaAliasMode())
+
+    # torch.device("cuda") itself, for code that builds the device object first
+    # and only later passes it to a factory (transformers' device_map does this).
+    # torch.device is a C type and cannot be subclassed, so wrap the constructor;
+    # isinstance(x, torch.device) must keep working, hence __instancecheck__.
+    class _DeviceMeta(type):
+        def __instancecheck__(cls, obj):
+            return isinstance(obj, _orig_device)
+
+    class device(metaclass=_DeviceMeta):  # noqa: N801  (mirrors torch.device)
+        def __new__(cls, *args, **kwargs):
+            if args:
+                args = (_remap(args[0]),) + args[1:]
+            elif "device" in kwargs:
+                kwargs = {**kwargs, "device": _remap(kwargs["device"])}
+            return _orig_device(*args, **kwargs)
+
+    torch.device = device
+
+    # Tensor.cuda() / Module.cuda() -> the flagos device.
+    def _tensor_cuda(self, device=None, non_blocking=False, **kwargs):
+        idx = 0
+        if device is not None:
+            d = _orig_device(_remap(device))
+            idx = d.index if d.index is not None else 0
+        return self.to(f"{_flagos_type}:{idx}", non_blocking=non_blocking)
+
+    torch.Tensor.cuda = _tensor_cuda
+
+    # `torch.cuda.is_available()` is the ecosystem's "have I got an accelerator"
+    # probe, and gating on it is what sends code down the CPU path. Report the
+    # flagos device count so that probe finds the accelerator that is there.
+    #
+    # Left alone: is_bf16_supported, get_device_capability, and the rest of
+    # torch.cuda -- the vendor shim already owns those, and overriding them here
+    # would fight it.
+    torch.cuda.is_available = lambda: flagos.device_count() > 0
+    torch.cuda.device_count = flagos.device_count
+    torch.cuda.current_device = flagos.current_device
+    torch.cuda.set_device = flagos.set_device
+    torch.cuda.synchronize = flagos.synchronize
+    # Once is_available() says yes, dynamo's CudaInterface.get_device_properties
+    # is called for every device while building compilation metrics, and the
+    # stock one goes through torch.cuda._lazy_init -> "Torch not compiled with
+    # CUDA enabled". Point it at the flagos properties instead.
+    torch.cuda.get_device_properties = flagos.get_device_properties
+
+
+_alias_cuda_to_flagos()
+
+
 # Ops that use torch_device_fn.device(device) with explicit device parameter
 # These don't work with flagos device and should use cpu_fallback instead
 _EXCLUDED_OPS = {

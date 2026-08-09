@@ -480,6 +480,26 @@ at::Tensor AtanKernelAscend(const at::Tensor& self) {
 
 REGISTER_IMPL_TO_DISPATCHER(AtanFn, atan_dispatcher, Backend::kAscend, AtanKernelAscend)
 
+at::Tensor TanKernelAscend(const at::Tensor& self) {
+  namespace ascend = at::native::flagos::ascend;
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options());
+
+  static void* opApiFuncAddr = nullptr;
+  static void* getWsFuncAddr = nullptr;
+  ascend::SigHasher hsh; hsh.tensor(self);
+  ascend::ExecAscendCached(
+      "aclnnTan", "aclnnTanGetWorkspaceSize", opApiFuncAddr, getWsFuncAddr, hsh.h,
+      {&self}, {&out},
+      [](ascend::GwsFunc gws, std::vector<ascend::AclTensorWrapper>& in,
+         std::vector<ascend::AclTensorWrapper>& out_t, uint64_t* pws, aclOpExecutor** pex) {
+        return gws(in[0].acl_tensor, out_t[0].acl_tensor, pws, pex);
+      });
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(TanFn, tan_dispatcher, Backend::kAscend, TanKernelAscend)
+
 at::Tensor AsinhKernelAscend(const at::Tensor& self) {
   namespace ascend = at::native::flagos::ascend;
   auto out = ascend::OpPreparation::apply_tensor_without_format(

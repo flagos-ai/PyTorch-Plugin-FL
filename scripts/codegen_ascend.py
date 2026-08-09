@@ -118,6 +118,7 @@ OPS = {
     "sinh": ("unary", None),
     "asin": ("unary", None),
     "atan": ("unary", None),
+    "tan": ("unary", None),  # needed by cauchy_'s inverse-transform sampling
     "asinh": ("unary", None),
     "acosh": ("unary", None),
     "atanh": ("unary", None),

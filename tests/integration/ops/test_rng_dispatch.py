@@ -79,6 +79,30 @@ def _draw(op, seed):
     return op().float().cpu()
 
 
+def _explicit_generator(seed):
+    """A caller-supplied generator that this backend's RNG kernels accept.
+
+    The device matters and is not the same everywhere. Under CUDA boxing the
+    kernels take a real CUDA generator, and that is the case the injection logic
+    was written for. On a vendor backend with no CUDA library (Ascend) there is
+    no CUDA generator to construct -- `torch.Generator(device="cuda")` raises
+    "Cannot get CUDA generator without ATen_cuda library", and a `flagos` one is
+    rejected outright ("Expected a 'cpu' device type for generator"), because the
+    aclnn kernels seed themselves from the default *CPU* generator.
+
+    So try CUDA first and fall back to CPU. What the two tests below assert --
+    that an explicit generator is honoured and stays isolated from
+    `torch.manual_seed` -- is a property of the injection logic, not of the
+    generator's device, and holds either way.
+    """
+    try:
+        gen = torch.Generator(device="cuda")
+    except RuntimeError:
+        gen = torch.Generator()  # cpu
+    gen.manual_seed(seed)
+    return gen
+
+
 # --- op catalogue -----------------------------------------------------------
 #
 # Grouped by the mechanism each group stresses, because the injection bug this
@@ -213,8 +237,19 @@ class TestRngSeedSource:
         # (2 x int64 = seed, offset). A 5056-byte mt19937 state here means the
         # shim wired up the PrivateUse1 generator by mistake, which FlagGems
         # unpacks as "too many values to unpack".
+        #
+        # This is a requirement of the *CUDA-shaped* seed paths only: FlagGems
+        # Triton kernels read seed+offset out of this generator, and the boxed
+        # native kernels inject it. A backend whose kernels seed themselves from
+        # the default CPU generator (Ascend/aclnn) has no CUDA generator to
+        # populate, and `torch.cuda.default_generators` is legitimately empty
+        # there -- so require the philox shape only where a CUDA generator exists.
         gens = torch.cuda.default_generators
-        assert len(gens) > 0, "torch.cuda.default_generators is empty"
+        if len(gens) == 0:
+            pytest.skip(
+                "no CUDA generator on this backend; RNG kernels seed from the "
+                "default CPU generator instead (see torch_fl.flagos.default_generators)"
+            )
         assert gens[0].get_state().numel() == 16, (
             "default generator state is not philox-shaped (2 x int64)"
         )
@@ -260,8 +295,7 @@ class TestRngSeedSource:
     def test_explicit_generator_is_honoured(self):
         # Injection must only fill an *absent* generator. A caller-supplied one
         # keeps its own stream, reproducible on its own terms.
-        gen = torch.Generator(device="cuda")
-        gen.manual_seed(99)
+        gen = _explicit_generator(99)
         a = _empty().normal_(generator=gen).cpu()
         gen.manual_seed(99)
         b = _empty().normal_(generator=gen).cpu()
@@ -270,8 +304,7 @@ class TestRngSeedSource:
     @pytest.mark.anyplatform
     @pytest.mark.main_ops
     def test_explicit_generator_isolated_from_manual_seed(self):
-        gen = torch.Generator(device="cuda")
-        gen.manual_seed(5)
+        gen = _explicit_generator(5)
         a = _empty().normal_(generator=gen).cpu()
         torch.manual_seed(SEED)  # must not perturb `gen`
         gen.manual_seed(5)

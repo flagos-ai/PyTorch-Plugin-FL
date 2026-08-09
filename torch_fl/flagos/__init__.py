@@ -479,12 +479,20 @@ class _DeviceProperties:
 
     Falls back to 32 only if triton is unavailable or the query raises, which
     keeps a FlagGems-less build importable.
+
+    ``major``/``minor`` have no Ascend meaning -- there is no CUDA compute
+    capability here -- but torch's ``cuda_extra_check`` (torch/utils/_triton.py)
+    reads ``.major`` unconditionally and raises AttributeError without it. Report
+    8.0, the same sentinel the MetaX shim uses, so the probe answers
+    "triton-capable" instead of crashing dynamo.
     """
 
     def __init__(self, device_id):
         self.name = f"Ascend NPU {device_id}"
         self.multi_processor_count = _aicore_count()
         self.total_memory = _C._memory_reserved(device_id)
+        self.major = 8
+        self.minor = 0
 
 
 def _aicore_count(_cache=[]):
