@@ -529,6 +529,7 @@ def discover_flaggems_ops(codegen_ops, funcs):
           out_variant: gems npos == #aten NON-out args (gems doesn't take `out`).
       - every arg passed to the gems function has a generic-caller-covered type.
     """
+
     def _normalize_gems_qualname(fn):
         """Normalize vendor-specific module names to canonical flag_gems.ops.*
 
