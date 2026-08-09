@@ -306,6 +306,124 @@ OPS = {
     "addcdiv_": ("inplace_addcdiv", "InplaceAddcdiv"),
     "sqrt_": ("inplace_sqrt", "InplaceSqrt"),
     "lerp_.Scalar": ("inplace_lerp_scalar", "InplaceLerps"),
+    # ---- the rest of the in-place arithmetic surface.
+    #
+    # aten spells these ops twice and only the out-of-place half was routed, so
+    # `x.neg_()` died with "backend not registered" while `x.neg()` worked. The
+    # asymmetry is per-overload and only shows up at runtime, which also forced
+    # composed kernels (rng.cc's inverse-transform samplers) to spell themselves
+    # as `at::neg(x)` + `zero_().add_()` -- an extra kernel and an extra
+    # allocation each. Every entry below is gated on the aclnn symbol actually
+    # being in libopapi.so, so a CANN version without one drops that op rather
+    # than emitting a kernel that fails to link.
+    #
+    # NOTE: every in-place op needs an explicit "Inplace*" override. The default
+    # aclnn name drops the trailing underscore ("neg_" -> aclnnNeg), which is
+    # the OUT-of-place entry point and would silently write to the wrong
+    # argument slot. ----
+    "acos_": ("inplace_unary", "InplaceAcos"),
+    "acosh_": ("inplace_unary", "InplaceAcosh"),
+    "asin_": ("inplace_unary", "InplaceAsin"),
+    "asinh_": ("inplace_unary", "InplaceAsinh"),
+    "atan_": ("inplace_unary", "InplaceAtan"),
+    "atanh_": ("inplace_unary", "InplaceAtanh"),
+    "ceil_": ("inplace_unary", "InplaceCeil"),
+    "cos_": ("inplace_unary", "InplaceCos"),
+    "cosh_": ("inplace_unary", "InplaceCosh"),
+    "erf_": ("inplace_unary", "InplaceErf"),
+    "erfc_": ("inplace_unary", "InplaceErfc"),
+    "erfinv_": ("inplace_unary", "InplaceErfinv"),
+    "exp_": ("inplace_unary", "InplaceExp"),
+    "exp2_": ("inplace_unary", "InplaceExp2"),
+    "expm1_": ("inplace_unary", "InplaceExpm1"),
+    "floor_": ("inplace_unary", "InplaceFloor"),
+    "frac_": ("inplace_unary", "InplaceFrac"),
+    "hardsigmoid_": ("inplace_unary", "InplaceHardsigmoid"),
+    "hardswish_": ("inplace_unary", "InplaceHardswish"),
+    "log_": ("inplace_unary", "InplaceLog"),
+    "log10_": ("inplace_unary", "InplaceLog10"),
+    "log1p_": ("inplace_unary", "InplaceLog1p"),
+    "log2_": ("inplace_unary", "InplaceLog2"),
+    "logical_not_": ("inplace_unary", "InplaceLogicalNot"),
+    "mish_": ("inplace_unary", "InplaceMish"),
+    "neg_": ("inplace_unary", "InplaceNeg"),
+    "reciprocal_": ("inplace_unary", "InplaceReciprocal"),
+    "relu_": ("inplace_unary", "InplaceRelu"),
+    "round_": ("inplace_unary", "InplaceRound"),
+    "rsqrt_": ("inplace_unary", "InplaceRsqrt"),
+    "sigmoid_": ("inplace_unary", "InplaceSigmoid"),
+    "sin_": ("inplace_unary", "InplaceSin"),
+    "sinh_": ("inplace_unary", "InplaceSinh"),
+    "tan_": ("inplace_unary", "InplaceTan"),
+    "tanh_": ("inplace_unary", "InplaceTanh"),
+    "trunc_": ("inplace_unary", "InplaceTrunc"),
+    "round_.decimals": ("inplace_int64", "InplaceRoundDecimals"),
+    # (self&, Scalar). The "s"-suffixed aclnn names (Divs/Subs/FloorDivides) are
+    # the scalar variants; the unsuffixed ones take a Tensor and would misread
+    # an aclScalar* as an aclTensor*.
+    "div_.Scalar": ("inplace_unary_scalar", "InplaceDivs"),
+    "floor_divide_.Scalar": ("inplace_unary_scalar", "InplaceFloorDivides"),
+    "fmod_.Scalar": ("inplace_unary_scalar", "InplaceFmodScalar"),
+    "eq_.Scalar": ("inplace_unary_scalar", "InplaceEqScalar"),
+    "ne_.Scalar": ("inplace_unary_scalar", "InplaceNeScalar"),
+    "lt_.Scalar": ("inplace_unary_scalar", "InplaceLtScalar"),
+    "gt_.Scalar": ("inplace_unary_scalar", "InplaceGtScalar"),
+    "le_.Scalar": ("inplace_unary_scalar", "InplaceLeScalar"),
+    "ge_.Scalar": ("inplace_unary_scalar", "InplaceGeScalar"),
+    "bitwise_and_.Scalar": ("inplace_unary_scalar", "InplaceBitwiseAndScalar"),
+    "bitwise_or_.Scalar": ("inplace_unary_scalar", "InplaceBitwiseOrScalar"),
+    "bitwise_xor_.Scalar": ("inplace_unary_scalar", "InplaceBitwiseXorScalar"),
+    "celu_": ("inplace_unary_scalar", "InplaceCelu"),
+    "leaky_relu_": ("inplace_unary_scalar", "InplaceLeakyRelu"),
+    # (self&, Tensor other).
+    "eq_.Tensor": ("inplace_binary_tensor", "InplaceEqTensor"),
+    "ne_.Tensor": ("inplace_binary_tensor", "InplaceNeTensor"),
+    "lt_.Tensor": ("inplace_binary_tensor", "InplaceLtTensor"),
+    "gt_.Tensor": ("inplace_binary_tensor", "InplaceGtTensor"),
+    "le_.Tensor": ("inplace_binary_tensor", "InplaceLeTensor"),
+    "ge_.Tensor": ("inplace_binary_tensor", "InplaceGeTensor"),
+    "fmod_.Tensor": ("inplace_binary_tensor", "InplaceFmodTensor"),
+    "floor_divide_.Tensor": ("inplace_binary_tensor", "InplaceFloorDivide"),
+    "logical_and_": ("inplace_binary_tensor", "InplaceLogicalAnd"),
+    "logical_or_": ("inplace_binary_tensor", "InplaceLogicalOr"),
+    "atan2_": ("inplace_binary_tensor", "InplaceAtan2"),
+    # sub_ carries the trailing alpha that mul_/div_ do not.
+    "sub_.Tensor": ("inplace_sub_tensor", "InplaceSub"),
+    "sub_.Scalar": ("inplace_sub_scalar", "InplaceSubs"),
+    # (self&, Scalar, Scalar) / (self&, int64) / activation with 3 scalars.
+    "threshold_": ("inplace_two_scalar", "InplaceThreshold"),
+    "hardtanh_": ("inplace_two_scalar", "InplaceHardtanh"),
+    "tril_": ("inplace_int64", "InplaceTril"),
+    "triu_": ("inplace_int64", "InplaceTriu"),
+    "elu_": ("inplace_elu", "InplaceElu"),
+    "masked_fill_.Scalar": (
+        "inplace_masked_fill_scalar",
+        "InplaceMaskedFillScalar",
+    ),
+    "masked_fill_.Tensor": (
+        "inplace_masked_fill_tensor",
+        "InplaceMaskedFillTensor",
+    ),
+    # ---- clamp: the in-place spellings plus the two missing out-of-place
+    # Tensor-bound siblings. CANN's in-place coverage is asymmetric here
+    # (ClampMax yes / ClampMin no, both Tensor forms yes / neither Scalar form
+    # of the two-sided op), so the templates differ per spelling -- see the
+    # T_INPLACE_CLAMP* block for which ones compose from an out-of-place call.
+    "clamp_": ("inplace_clamp", "Clamp"),
+    "clamp_.Tensor": ("inplace_clamp_tensor", "ClampTensor"),
+    "clamp_min_": ("inplace_clamp_bound", "ClampMin"),
+    "clamp_max_": ("inplace_unary_scalar", "InplaceClampMax"),
+    "clamp_min_.Tensor": ("inplace_clamp_bound_tensor", "InplaceClampMinTensor"),
+    "clamp_max_.Tensor": ("inplace_clamp_bound_tensor", "InplaceClampMaxTensor"),
+    "clamp_min.Tensor": ("clamp_bound_tensor", "ClampMinTensor"),
+    "clamp_max.Tensor": ("clamp_bound_tensor", "ClampMaxTensor"),
+    # ---- long-tail gaps found alongside the clamp family ----
+    # linspace: used by test_clamp_dispatch to build broadcast bounds, and a
+    # common way to build a schedule/grid in user code.
+    "linspace": ("linspace", "Linspace"),
+    # mse_loss was routed but its backward was not, so any training loop using
+    # nn.MSELoss died on .backward().
+    "mse_loss_backward": ("mse_loss_backward", "MseLossBackward"),
     # ---- foreach (TensorList) family: needed by torch.optim.AdamW's default
     # foreach=True path (aten's _multi_tensor_adam). All void-returning
     # in-place ops except _foreach_sqrt (returns new Tensor[]). ----
@@ -2829,6 +2947,350 @@ at::Tensor& {kernel}(at::Tensor& self) {{
 REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
 """
 
+# --------------------------------------------------------------------------
+# Generic in-place families.
+#
+# aten spells almost every arithmetic op twice -- out-of-place (`neg`) and
+# in-place (`neg_`) -- and routing only the first half is a trap: the failure
+# surfaces at runtime on the first call ("neg_: backend not registered"), never
+# at build time, and it silently pushes composed kernels into allocating a
+# temporary + writing it back. CANN ships 138 `aclnnInplace*` entry points, so
+# the second half is mostly a table entry rather than new code.
+#
+# All of them share the same contract: mutate `selfRef` and return `self&`. The
+# `const_cast` is what every existing in-place template does -- some aclnn
+# headers declare selfRef `const aclTensor*` and some `aclTensor*`, and
+# EXEC_ASCEND_CMD goes through a variadic pointer either way.
+# --------------------------------------------------------------------------
+
+# inplace_unary: (self&) -> self&. aclnnInplace<Name>(selfRef).
+#   Same shape as T_INPLACE_SQRT; named generically since ~35 ops use it.
+T_INPLACE_UNARY = """\
+at::Tensor& {kernel}(at::Tensor& self) {{
+  namespace ascend = at::native::flagos::ascend;
+  ascend::AclTensorWrapper acl_self(self);
+  EXEC_ASCEND_CMD({aclnn}, const_cast<aclTensor*>(acl_self.get()));
+  return self;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# inplace_unary_scalar: (self&, Scalar) -> self&. aclnnInplace<Name>(selfRef, s).
+#   Covers eq_/ne_/lt_/gt_/le_/ge_.Scalar, clamp_max_, celu_, leaky_relu_,
+#   fmod_.Scalar, div_.Scalar, bitwise_*_.Scalar.
+T_INPLACE_UNARY_SCALAR = """\
+at::Tensor& {kernel}(at::Tensor& self, const at::Scalar& other) {{
+  namespace ascend = at::native::flagos::ascend;
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclScalarWrapper acl_other(other, self.scalar_type());
+  EXEC_ASCEND_CMD({aclnn}, const_cast<aclTensor*>(acl_self.get()), acl_other.get());
+  return self;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# inplace_binary_tensor: (self&, other) -> self&. aclnnInplace<Name>(selfRef, other).
+#   `other` is coerced to self's device/dtype for the same reason the
+#   out-of-place binary prologue does it: the .Tensor overloads are what a
+#   python scalar lowers to, so `other` may be a 0-dim CPU tensor, and building
+#   an aclTensor over host storage yields garbage.
+#
+#   Comparison ops (eq_/ne_/lt_/...) are in this family too. Their aten result
+#   dtype is bool, but the IN-PLACE spelling writes back into `self`, so aten
+#   itself requires self to already be bool -- no dtype juggling needed here.
+T_INPLACE_BINARY_TENSOR = """\
+at::Tensor& {kernel}(at::Tensor& self, const at::Tensor& other) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto other_c = other.is_privateuseone()
+      ? (other.scalar_type() == self.scalar_type() ? other : other.to(self.scalar_type()))
+      : other.to(self.options());
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_other(other_c);
+  EXEC_ASCEND_CMD({aclnn}, const_cast<aclTensor*>(acl_self.get()), acl_other.get());
+  return self;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# inplace_two_scalar: (self&, Scalar a, Scalar b) -> self&.
+#   aclnnInplace<Name>(selfRef, a, b). threshold_ and hardtanh_.
+T_INPLACE_TWO_SCALAR = """\
+at::Tensor& {kernel}(at::Tensor& self, const at::Scalar& a, const at::Scalar& b) {{
+  namespace ascend = at::native::flagos::ascend;
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclScalarWrapper acl_a(a, self.scalar_type());
+  ascend::AclScalarWrapper acl_b(b, self.scalar_type());
+  EXEC_ASCEND_CMD({aclnn}, const_cast<aclTensor*>(acl_self.get()), acl_a.get(),
+      acl_b.get());
+  return self;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# inplace_sub_tensor: (self&, other, alpha) -> self&, self -= alpha*other.
+#   aclnnInplaceSub(selfRef, other, alpha). Same shape as T_INPLACE_ADD_TENSOR;
+#   separate name so the OPS table reads by intent.
+T_INPLACE_SUB_TENSOR = T_INPLACE_ADD_TENSOR
+
+# inplace_sub_scalar: (self&, Scalar other, Scalar alpha) -> self&.
+#   aclnnInplaceSubs(selfRef, other, alpha). Same shape as T_INPLACE_ADD_SCALAR.
+T_INPLACE_SUB_SCALAR = T_INPLACE_ADD_SCALAR
+
+# inplace_int64: (self&, int64) -> self&. aclnnInplace<Name>(selfRef, n).
+#   tril_/triu_ (diagonal) and round_.decimals. int64 passes through
+#   EXEC_ASCEND_CMD's varargs fine -- only float/double are unsafe there.
+T_INPLACE_INT64 = """\
+at::Tensor& {kernel}(at::Tensor& self, int64_t n) {{
+  namespace ascend = at::native::flagos::ascend;
+  ascend::AclTensorWrapper acl_self(self);
+  EXEC_ASCEND_CMD({aclnn}, const_cast<aclTensor*>(acl_self.get()), n);
+  return self;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# inplace_elu: (self&, alpha, scale, input_scale) -> self&.
+#   aclnnInplaceElu(selfRef, alpha, scale, inputScale).
+T_INPLACE_ELU = """\
+at::Tensor& {kernel}(at::Tensor& self, const at::Scalar& alpha, const at::Scalar& scale, const at::Scalar& input_scale) {{
+  namespace ascend = at::native::flagos::ascend;
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclScalarWrapper acl_alpha(alpha, self.scalar_type());
+  ascend::AclScalarWrapper acl_scale(scale, self.scalar_type());
+  ascend::AclScalarWrapper acl_input_scale(input_scale, self.scalar_type());
+  EXEC_ASCEND_CMD({aclnn}, const_cast<aclTensor*>(acl_self.get()), acl_alpha.get(),
+      acl_scale.get(), acl_input_scale.get());
+  return self;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# inplace_masked_fill_scalar: (self&, mask, value) -> self&.
+#   aclnnInplaceMaskedFillScalar(selfRef, mask, value). mask is broadcast to
+#   self's shape and materialized: aclnn wants a matching ND-contiguous mask.
+T_INPLACE_MASKED_FILL_SCALAR = """\
+at::Tensor& {kernel}(at::Tensor& self, const at::Tensor& mask, const at::Scalar& value) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto mask_b = mask.sizes().equals(self.sizes())
+      ? mask.contiguous()
+      : mask.expand(self.sizes()).contiguous();
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_mask(mask_b);
+  ascend::AclScalarWrapper acl_value(value, self.scalar_type());
+  EXEC_ASCEND_CMD({aclnn}, const_cast<aclTensor*>(acl_self.get()), acl_mask.get(),
+      acl_value.get());
+  return self;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# inplace_masked_fill_tensor: (self&, mask, value) -> self&. value is a 0-dim
+#   tensor that may live on CPU; coerce it like the out-of-place variant does.
+T_INPLACE_MASKED_FILL_TENSOR = """\
+at::Tensor& {kernel}(at::Tensor& self, const at::Tensor& mask, const at::Tensor& value) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto mask_b = mask.sizes().equals(self.sizes())
+      ? mask.contiguous()
+      : mask.expand(self.sizes()).contiguous();
+  auto value_c = value.is_privateuseone()
+      ? (value.scalar_type() == self.scalar_type() ? value : value.to(self.scalar_type()))
+      : value.to(self.options());
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_mask(mask_b);
+  ascend::AclTensorWrapper acl_value(value_c);
+  EXEC_ASCEND_CMD({aclnn}, const_cast<aclTensor*>(acl_self.get()), acl_mask.get(),
+      acl_value.get());
+  return self;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# --------------------------------------------------------------------------
+# clamp in-place family.
+#
+# CANN's coverage here is asymmetric and the gaps are NOT guessable from the
+# header names, so each spelling is handled explicitly:
+#     aclnnInplaceClampMax        present   (Scalar)
+#     aclnnInplaceClampMin        ABSENT    -> compose from aclnnClampMin + copy
+#     aclnnInplaceClampMinTensor  present
+#     aclnnInplaceClampMaxTensor  present
+#     aclnnInplaceClamp           ABSENT    -> compose from aclnnClamp + copy
+#     aclnnInplaceClampTensor     ABSENT    -> compose from aclnnClampTensor
+# The composed forms allocate one temporary and copy_ back. That is still
+# strictly better than the status quo (op unrouted -> hard runtime error), and
+# copy_ is device-side (aclnnInplaceCopy) so there is no host round-trip.
+# --------------------------------------------------------------------------
+
+# inplace_clamp: (self&, Scalar? min, Scalar? max) -> self&, via out-of-place
+#   aclnnClamp into a temporary. Null aclScalar means "bound not supplied".
+T_INPLACE_CLAMP = """\
+at::Tensor& {kernel}(at::Tensor& self, const ::std::optional<at::Scalar>& min, const ::std::optional<at::Scalar>& max) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto tmp = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options());
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclScalarWrapper acl_min = min.has_value()
+      ? ascend::AclScalarWrapper(min.value(), self.scalar_type())
+      : ascend::AclScalarWrapper();
+  ascend::AclScalarWrapper acl_max = max.has_value()
+      ? ascend::AclScalarWrapper(max.value(), self.scalar_type())
+      : ascend::AclScalarWrapper();
+  ascend::AclTensorWrapper acl_tmp(tmp);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_min.get(), acl_max.get(), acl_tmp.get());
+  self.copy_(tmp);
+  return self;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# inplace_clamp_tensor: (self&, Tensor? min, Tensor? max) -> self&, via
+#   out-of-place aclnnClampTensor. An undefined at::Tensor maps to a null
+#   aclTensor*, which aclnn reads as an absent bound.
+#
+#   The bounds broadcast against self in the out-of-place op, but the in-place
+#   spelling cannot change self's shape, so the temporary is self-shaped and any
+#   bound wider than self would be an aten-level error before reaching here.
+T_INPLACE_CLAMP_TENSOR = """\
+at::Tensor& {kernel}(at::Tensor& self, const ::std::optional<at::Tensor>& min, const ::std::optional<at::Tensor>& max) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto tmp = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options());
+  auto coerce = [&](const ::std::optional<at::Tensor>& t) {{
+    if (!t.has_value()) return at::Tensor();
+    const auto& v = t.value();
+    return v.is_privateuseone()
+        ? (v.scalar_type() == self.scalar_type() ? v : v.to(self.scalar_type()))
+        : v.to(self.options());
+  }};
+  auto min_c = coerce(min);
+  auto max_c = coerce(max);
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_min(min_c);
+  ascend::AclTensorWrapper acl_max(max_c);
+  ascend::AclTensorWrapper acl_tmp(tmp);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_min.get(), acl_max.get(), acl_tmp.get());
+  self.copy_(tmp);
+  return self;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# inplace_clamp_bound: (self&, Scalar bound) -> self&, via the out-of-place
+#   aclnnClampMin/aclnnClampMax into a temporary. Only needed for clamp_min_
+#   (aclnnInplaceClampMin is absent); clamp_max_ has a real in-place entry and
+#   uses T_INPLACE_UNARY_SCALAR instead.
+T_INPLACE_CLAMP_BOUND = """\
+at::Tensor& {kernel}(at::Tensor& self, const at::Scalar& bound) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto tmp = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options());
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclScalarWrapper acl_bound(bound, self.scalar_type());
+  ascend::AclTensorWrapper acl_tmp(tmp);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_bound.get(), acl_tmp.get());
+  self.copy_(tmp);
+  return self;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# clamp_bound_tensor: (self, Tensor bound) -> Tensor, OUT-of-place.
+#   aclnnClampMinTensor/aclnnClampMaxTensor(self, bound, out). The single-bound
+#   Tensor siblings of clamp.Tensor; bound broadcasts against self.
+T_CLAMP_BOUND_TENSOR = """\
+at::Tensor {kernel}(const at::Tensor& self, const at::Tensor& bound) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto bound_c = bound.is_privateuseone()
+      ? (bound.scalar_type() == self.scalar_type() ? bound : bound.to(self.scalar_type()))
+      : bound.to(self.options());
+  auto out_shape = at::infer_size(self.sizes(), bound_c.sizes());
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      out_shape, self.options());
+
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_bound(bound_c);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_bound.get(), acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# inplace_clamp_bound_tensor: (self&, Tensor bound) -> self&.
+#   aclnnInplaceClampMinTensor/MaxTensor(selfRef, bound). Real in-place entries,
+#   no temporary needed. Distinct from T_INPLACE_BINARY_TENSOR only in intent,
+#   but kept separate so the clamp family reads as one block.
+T_INPLACE_CLAMP_BOUND_TENSOR = T_INPLACE_BINARY_TENSOR
+
+# linspace: (start, end, steps, dtype?, layout?, device?, pin?) -> 1-D Tensor.
+#   aclnnLinspace(start, end, steps, out). A factory, so the output options come
+#   from the kwargs; torch's default for linspace is float (NOT the input
+#   Scalars' type -- linspace(0, 1, 5) is a float tensor).
+T_LINSPACE = """\
+at::Tensor {kernel}(const at::Scalar& start, const at::Scalar& end, int64_t steps, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto options = at::TensorOptions()
+      .dtype(dtype.value_or(at::get_default_dtype_as_scalartype()))
+      .layout(layout.value_or(at::kStrided))
+      .device(device.value_or(at::Device(at::kPrivateUse1, 0)))
+      .pinned_memory(pin_memory.value_or(false));
+  auto out = ascend::OpPreparation::apply_tensor_without_format({{steps}}, options);
+  if (steps == 0) return out;
+
+  ascend::AclScalarWrapper acl_start(start, options.dtype().toScalarType());
+  ascend::AclScalarWrapper acl_end(end, options.dtype().toScalarType());
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_start.get(), acl_end.get(), steps, acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# mse_loss_backward: (grad_output, self, target, reduction) -> grad_input.
+#   aclnnMseLossBackward(gradOutput, self, target, reduction, out). Output has
+#   self's shape/dtype for every reduction mode.
+T_MSE_LOSS_BACKWARD = """\
+at::Tensor {kernel}(const at::Tensor& grad_output, const at::Tensor& self, const at::Tensor& target, int64_t reduction) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto target_c = target.scalar_type() == self.scalar_type()
+      ? target : target.to(self.scalar_type());
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options());
+
+  ascend::AclTensorWrapper acl_grad(grad_output);
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_target(target_c);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_grad.get(), acl_self.get(), acl_target.get(),
+      reduction, acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
 # embedding: (weight, indices, padding_idx, scale_grad_by_freq, sparse) -> Tensor.
 #   aclnnEmbedding(weight, indices, out) uses only weight+indices; the trailing
 #   three args are ignored by aclnn. Output = indices.sizes() + [weight.size(1)].
@@ -3481,6 +3943,23 @@ CATEGORIES = {
     "inplace_addcdiv": T_INPLACE_ADDCDIV,
     "inplace_sqrt": T_INPLACE_SQRT,
     "inplace_lerp_scalar": T_INPLACE_LERP_SCALAR,
+    "inplace_unary": T_INPLACE_UNARY,
+    "inplace_unary_scalar": T_INPLACE_UNARY_SCALAR,
+    "inplace_binary_tensor": T_INPLACE_BINARY_TENSOR,
+    "inplace_two_scalar": T_INPLACE_TWO_SCALAR,
+    "inplace_sub_tensor": T_INPLACE_SUB_TENSOR,
+    "inplace_sub_scalar": T_INPLACE_SUB_SCALAR,
+    "inplace_int64": T_INPLACE_INT64,
+    "inplace_elu": T_INPLACE_ELU,
+    "inplace_masked_fill_scalar": T_INPLACE_MASKED_FILL_SCALAR,
+    "inplace_masked_fill_tensor": T_INPLACE_MASKED_FILL_TENSOR,
+    "inplace_clamp": T_INPLACE_CLAMP,
+    "inplace_clamp_tensor": T_INPLACE_CLAMP_TENSOR,
+    "inplace_clamp_bound": T_INPLACE_CLAMP_BOUND,
+    "inplace_clamp_bound_tensor": T_INPLACE_CLAMP_BOUND_TENSOR,
+    "clamp_bound_tensor": T_CLAMP_BOUND_TENSOR,
+    "linspace": T_LINSPACE,
+    "mse_loss_backward": T_MSE_LOSS_BACKWARD,
     "foreach_inplace_scalar": T_FOREACH_INPLACE_SCALAR,
     "foreach_inplace_lerp_scalar": T_FOREACH_INPLACE_LERP_SCALAR,
     "foreach_inplace_addcmul_scalar": T_FOREACH_INPLACE_ADDCMUL_SCALAR,
