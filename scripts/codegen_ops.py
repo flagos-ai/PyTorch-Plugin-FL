@@ -529,6 +529,22 @@ def discover_flaggems_ops(codegen_ops, funcs):
           out_variant: gems npos == #aten NON-out args (gems doesn't take `out`).
       - every arg passed to the gems function has a generic-caller-covered type.
     """
+    def _normalize_gems_qualname(fn):
+        """Normalize vendor-specific module names to canonical flag_gems.ops.*
+
+        FlagGems exposes ops via vendor aliases (_hygon.ops.*, _nvidia.ops.*, etc)
+        that resolve to the same underlying flag_gems.ops.* implementation. Using
+        fn.__module__ directly captures whichever alias was active at codegen time,
+        breaking imports on other vendors. This strips the vendor prefix so the
+        generated C++ always uses the canonical flag_gems.ops.* path.
+        """
+        module = fn.__module__
+        # Vendor aliases: _hygon, _nvidia, _metax, etc.
+        if module.startswith("_") and ".ops." in module:
+            # Strip vendor prefix: "_hygon.ops.mm" -> "flag_gems.ops.mm"
+            return f"flag_gems.ops.{module.split('.ops.', 1)[1]}.{fn.__name__}"
+        return f"{module}.{fn.__name__}"
+
     try:
         # torch_fl activates the torch.cuda shim (CPU-torch reports no CUDA
         # otherwise), which flag_gems needs at import (get_device_name()). Must
@@ -601,7 +617,7 @@ def discover_flaggems_ops(codegen_ops, funcs):
                 continue
             if not all(_flaggems_type_ok(t) for t, _ in positional):
                 continue
-            qualname = f"{fn.__module__}.{fn.__name__}"
+            qualname = _normalize_gems_qualname(fn)
             result[op] = (qualname, "like_factory", positional)
             continue
         # Random in-place: whitelisted inplace op with a trailing Generator? arg.
@@ -624,7 +640,7 @@ def discover_flaggems_ops(codegen_ops, funcs):
                 continue
             if not all(_flaggems_type_ok(t) for t, _ in positional):
                 continue
-            qualname = f"{fn.__module__}.{fn.__name__}"
+            qualname = _normalize_gems_qualname(fn)
             result[op] = (qualname, "random_inplace", positional)
             continue
         # RNG functional with a trailing Generator? the caller can't express:
@@ -641,7 +657,7 @@ def discover_flaggems_ops(codegen_ops, funcs):
                 or not all(_flaggems_type_ok(t) for t, _ in positional)
             ):
                 continue
-            qualname = f"{fn.__module__}.{fn.__name__}"
+            qualname = _normalize_gems_qualname(fn)
             result[op] = (qualname, "rng_dropgen", positional)
             continue
         if cat == "factory":
@@ -672,7 +688,7 @@ def discover_flaggems_ops(codegen_ops, funcs):
                 continue
             if not all(_flaggems_type_ok(t) for t, _ in positional):
                 continue
-            qualname = f"{fn.__module__}.{fn.__name__}"
+            qualname = _normalize_gems_qualname(fn)
             result[op] = (qualname, "factory", positional)
             continue
         if cat == "out_variant":
@@ -740,7 +756,7 @@ def discover_flaggems_ops(codegen_ops, funcs):
             continue
         if kwargs and not all(t in _FLAGGEMS_KWARG_OK for t, _ in kwargs):
             continue
-        qualname = f"{fn.__module__}.{fn.__name__}"
+        qualname = _normalize_gems_qualname(fn)
         result[op] = (qualname, resolved_cat, kwargs)
     return result
 
