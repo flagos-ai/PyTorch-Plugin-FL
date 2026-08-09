@@ -589,10 +589,12 @@ def _patch_flaggems_codegen_config():
     import sys
 
     # --- MetaX branch (boxing + FlagGems) ---
-    # Triggered by FLAGOS_METAX_COMPAT=1 or FLAGOS_METAX_BOXING=1. Must come
-    # before the ascend fallback so MetaX never wrongly gets GEMS_VENDOR=ascend.
+    # Auto-detects MetaX hardware (like DCU does) or triggered by explicit
+    # FLAGOS_METAX_COMPAT=1 or FLAGOS_METAX_BOXING=1. Must come before the ascend
+    # fallback so MetaX never wrongly gets GEMS_VENDOR=ascend.
     _metax_requested = (
-        os.environ.get("FLAGOS_METAX_COMPAT", "0") == "1"
+        _build_accelerator() == "metax"
+        or os.environ.get("FLAGOS_METAX_COMPAT", "0") == "1"
         or os.environ.get("FLAGOS_METAX_BOXING", "0") == "1"
     )
     if _metax_requested and os.environ.get("GEMS_VENDOR") not in ("nvidia", "ascend"):
