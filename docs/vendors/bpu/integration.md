@@ -31,8 +31,8 @@ error, so the pin is what turns a confusing build break into an install-time
 message. Moving to a newer torch is a deliberate act: re-run
 `scripts/codegen_ops.py`, do not hand-edit the generated files.
 
-The verified board environment uses `torch 2.10.0+cpu` with a Python 3.14
-aarch64 interpreter (the cp314 aarch64 wheel exists on PyPI).
+The board runs `torch 2.10.0+cpu` on `/home/sunrise/miniconda3/bin/python3.14`
+(the cp314 aarch64 wheel exists on PyPI).
 
 ## Why not per-op kernels
 
@@ -461,13 +461,28 @@ rejected on a 1-layer Qwen3, 21 are whitelisted ops carrying a symbolic dim
 int64/bool, against 8 that are genuinely unsupported (`embedding`, `arange`,
 `scalar_tensor`, `lift_fresh_copy`). hbdk4 bakes memspace offsets and SRAM
 tiling into the artifact, so a symbolic dim cannot be compiled at all and
-`partition.py` rejects it deliberately. Tracing at a fixed sequence length is
-what removes them.
+`partition.py` rejects it deliberately. Passing `dynamic=False` to
+`torch.compile` removes symbolic shapes entirely: on a 1-layer Qwen3, coverage
+jumps **54.7% → 67.2%** with symbolic-rejected dropping from 29 → 0. Tracing at
+a fixed sequence length is what removes them.
 
-One partition also falls back on an `expand` feeding a 5-D broadcast, which
-fails hbdk4 shape inference (`'hbir.tile' op ... axis 0 is inferred to be 1, but
-got 0`) — the constant-folding gap noted in the limitations. The model still
-runs.
+**`model.generate()` bypasses `torch.compile` entirely.** This is not a BPU bug;
+it is how `OptimizedModule` works. `torch.compile(model)` wraps `__call__` (so
+`model(ids)` goes through Dynamo), but `.generate` is forwarded to the original
+module, bound to `self` there — `compiled.generate.__self__ is original_model`.
+Calling `generate()` on a compiled model runs eager.
+
+The fix for generation is `model.forward = torch.compile(model.forward, ...)`,
+which makes `generate()` call the compiled forward. But this fragments badly:
+`generate()` spawns **51 graphs** for a 2-layer Qwen3 with 16 new tokens, mostly
+0–5 nodes each, producing 18 BPU partitions where one would do. It works (100%
+token match against eager), but the launch overhead from 18 submissions is why
+the LLM path uses a vendor artifact (82 tok/s) instead of compile.
+
+A future persistent-cache runtime (task #18) could absorb that: one load, 18
+`hbDNNInferV2` calls sharing device memory, rather than 18 cold submissions. For
+now, **compile a single forward and cache it** if token-by-token generation is
+not the goal.
 
 Compile time dominates: **~350 s for a 2-layer model**, because every partition
 goes through hbdk4 under box64. Cached after the first run.
