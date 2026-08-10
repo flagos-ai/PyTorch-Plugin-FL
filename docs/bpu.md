@@ -54,15 +54,16 @@ wrappers that cross to CPU and call `at::convolution` instead. Without them
 
 ```
 Dynamo -> AOTAutograd -> aten FX graph
+       -> decompose           (decompose.py: rewrite ops before partitioning)
        -> partition           (torch_fl/accelerator/bpu/partition.py)
        -> freeze weights      (params/buffers become ONNX initializers)
-       -> ONNX export         (compiler.py, decompose.py)
+       -> ONNX export         (compiler.py, decompose.py again)
        -> int8 Q/DQ insertion (qdq.py, calibrate.py)
        -> hbdk4               -> .hbm, cached by graph structure
        -> hbm_runtime         (runtime.py)
 ```
 
-Two parts of this are load-bearing rather than optimizations:
+Three parts of this are load-bearing rather than optimizations:
 
 **Quantization is a precondition.** hbdk4's `convert(advice=True)` says it
 outright: `"lower to cpu. P.S. The type of hbir.conv's fin is f32, which should
@@ -77,6 +78,33 @@ boundary with 13 tensors instead of 1 — copied on every call, and emitted as
 ONNX graph *inputs* rather than initializers, which also blocks the int8 fold.
 Before freezing, BPU offload measured 3x *slower* than eager (25.7 ms vs
 2.8 ms); after, 0.849 ms.
+
+**The rewrites in `decompose.py` decide how much of a network is one graph.**
+They run before partitioning, not just before export, because the ops they
+target do two kinds of damage. A tuple-returning op (`max_pool2d_with_indices`,
+`_native_batch_norm_legit_no_training`) cannot join a partition *and* poisons
+the next one's boundary — a `getitem` whose producer's `meta['val']` is a tuple
+made `_example_inputs_for` reject the partition outright. Untouched, ResNet-18
+split into a 4-node stem and an 84-node body, the body was rejected, and the
+whole network ran on the CPU at **31.4 ms — slower than eager**. With the
+rewrite it is one 68-node partition at **3.24 ms**.
+
+The others are export blockers. AOTAutograd emits `aten._softmax`, which has no
+ONNX symbolic at all (`softmax.int` does), plus `_unsafe_view` and `t`. A
+transformer block hit all three: nine partitions, none exportable. Rewritten, it
+is one 55-node partition that exports clean.
+
+| aten op | rewritten to | why |
+| --- | --- | --- |
+| `_native_batch_norm_legit_no_training` | `batch_norm` | tuple output; no ONNX symbolic |
+| `max_pool2d_with_indices` | `max_pool2d` | tuple output; BPU emits no indices |
+| `_softmax` | `softmax.int` | no ONNX symbolic |
+| `_unsafe_view` | `view` | not in the supported set |
+| `t` (2-D only) | `transpose(0, 1)` | not in the supported set |
+
+Each rewrite is skipped when its extra output is genuinely consumed — a graph
+that uses max-pool indices for `max_unpool` keeps the original node and the old
+behaviour.
 
 Partitions that cannot be compiled stay in the graph and run eagerly, so a
 missing or failing hbdk4 costs performance and never correctness. Pass
@@ -252,6 +280,139 @@ torch-side view is what you want.
 
 ## Measured performance
 
+### ResNet-18 against D-Robotics' own artifact
+
+The vendor ships `/opt/hobot/model/s600/basic/resnet18_224x224_nv12.hbm` and
+drives it from `/app/pydev_demo/classification_sample/resnet18/resnet18.py`.
+That is the honest upper bound for this board, so it is what
+`benchmarks/bpu_resnet18_bench.py` measures against — eager CPU only proves the
+offload happened.
+
+| path | median | p10 | p90 | input |
+| --- | ---: | ---: | ---: | --- |
+| official `resnet18_224x224_nv12.hbm` | **1.075 ms** | 1.060 | 1.136 | 74 KB NV12 uint8 |
+| eager CPU float32 | 26.095 ms | 23.952 | 62.456 | 588 KB f32 NCHW |
+| ours, `torch.compile(backend="bpu")` | **1.356 ms** | 1.315 | 1.454 | 588 KB f32 NCHW |
+
+**19.2x vs eager, 1.26x off the vendor artifact.** Accuracy against eager float:
+cosine 0.990, top-1 agreement 5/5 over random inputs, relative error 0.14 — the
+expected cost of int8 activations at the default scale.
+
+The remaining 0.28 ms is not overhead we can remove by tuning: the official
+artifact takes NV12 (two uint8 planes, 74 KB) and ours takes float32 NCHW
+(588 KB), an 8x difference in input bandwidth, and the vendor quantized with
+HMCT 2.6.5 against real calibration data where ours uses a fixed default scale.
+Our own conversion layers are already negligible — measured `_to_device`
+0.025 ms and `_from_device` 0.004 ms against a 2.1 ms artifact, with 0.29 ms of
+Dynamo/graph dispatch on top.
+
+Two fixes got ResNet-18 from *slower than eager* to this:
+
+1. **31.4 ms -> 3.24 ms** — the `max_pool2d_with_indices` rewrite (see the
+   compile pipeline section). Without it the network was two partitions, the
+   84-node body was rejected outright, and everything ran on the CPU.
+2. **2.63 ms -> 1.36 ms** — quantizing the pool's *input*. `convert(advice=True)`
+   named it precisely: `"lower to cpu. P.S. The type of hbir.max_pool's fin is
+   f32, which should be si8, si16, f16 on bpu."` The stem max-pool was the one
+   op left on the CPU inside the artifact. After the fix hbdk4 reports **zero
+   CPU fallbacks**: 21 `b30.conv2d`, 1 `b30.pool2d`, all on the BPU.
+
+`convert(advice=True)` is the tool for this. It reports a backend per op and a
+`fallback_reason` for anything it lowers to the CPU, and it runs in a couple of
+minutes rather than the ~25 a full emulated compile takes.
+
+### Qwen3-0.6B against the vendor `llm` demo
+
+`benchmarks/bpu_qwen3_bench.py` drives D-Robotics' own two-graph Qwen3-0.6B
+`.hbm` through `infer.py`. Same artifact, same four cores, same weights, so the
+comparison isolates the runtime rather than the model:
+
+| path | decode | prefill |
+| --- | ---: | ---: |
+| vendor `oellm_runtime` `llm` demo | 84.8 – 87.7 tok/s | 5626 – 7014 tok/s |
+| ours, `infer.Package` | **82.1 tok/s** (12.18 ms/tok) | **6881 tok/s** |
+
+Prefill is quoted per *chunk*: the graph always computes all 512 columns, so a
+17-token prompt reads as 219 tok/s for the same 78 ms of work. The vendor
+counts the chunk, and so does the benchmark.
+
+Getting there took one path change and three undocumented details.
+
+`hbm_runtime.run()` copies every input on every call. For a CNN that is a
+588 KB input and it does not matter; for a decode step the KV cache *is* an
+input, 336 MiB of it at 4096 context, and copying it per token costs more than
+the inference — **68.4 ms/token** against the vendor's 11.4. `infer.py`
+allocates each tensor once in UCP memory and passes pointers, which is what the
+vendor's own `libxlm.so` does (its undefined symbols are `hbDNNInferV2`/`V3`
+plus `hbUCPMallocCached`).
+
+Then, in the order they mattered:
+
+1. **`hbUCPReleaseTask` must not follow `hbUCPWaitTaskDone` immediately.**
+   Releasing inline blocks for **28 ms** — more than twice the inference. The
+   per-call breakdown made this unmissable: build task 0.05 ms, submit 3.36 ms,
+   wait 10.73 ms, release 28.03 ms. Deferred by one step it costs 1.65 ms and
+   the step drops 43.2 ms -> 11.3 ms. Task handles cannot be resubmitted, so
+   `_ReleaseRing` builds one per step and releases it one step late. The ring
+   must stay shallow: handles are a finite pool, and once it is dry
+   `hbDNNInferV2` returns a *null handle* instead of failing, so the step
+   appears to run at triple speed while computing nothing. `infer()` raises on
+   a null handle for exactly this reason.
+2. **`HB_DNN_USER_DEFINED_L2M_SIZES` must be set before the first inference.**
+   Unset, an LLM artifact fails with `L2 memory not enough ... user-assigned l2
+   memspace size: [0, 0, 0, 0]` and `hbUCPWaitTaskDone` returns -200003. The
+   vendor's `run_llm.sh` exports `6:6:6:6`; on this board `8:8:8:8` also fails.
+   `ensure_l2_config()` sets it, which is why `Package` must be constructed
+   after it runs.
+3. **The KV cache is a sliding window, not a buffer you append into.** This one
+   is a correctness trap rather than a performance one, and it is the reason
+   `KVWindow` exists — see below.
+
+#### The KV cache layout
+
+The vendor runtime never copies the cache: it moves the pointer. Traced through
+`LD_PRELOAD` over `hbDNNInferV2`, `sysMem.virAddr` for `layer_i_cache_key`
+advances by exactly one slot per decode step while the allocation stays put,
+and `layer_i_new_key` is bound one full window ahead at
+`cache_base + window * slot_bytes`. Each token's K/V is written once, by the
+device, into the slot the next step reads as part of its window.
+
+The consequence for the mask is the part that cannot be guessed. Inside the
+graph the attended keys are `concat(window[span:], new_keys)` for a step of
+`span` tokens, so mask column `c` refers to window slot `c + span`, and the
+last `span` columns are the current step's own tokens. With `pos` tokens of
+history and row `r`:
+
+```
+open columns = [window - span - pos, window - span + r + 1)
+```
+
+which reproduces the trace exactly: prefill row `r` at `pos` 0 opens
+`[3584, 3584+r+1)`, and decode at `pos` 24 opens `[4071, 4096)` — width 25, not
+24, because the token's own key is the last column. The mask is **additive**
+(0 attends, -65504 blocks); a uniform mask is a softmax no-op, which is how you
+can confirm the polarity in a single run.
+
+Two things that look like details and are not: the window advances by the
+**real token count**, not the padded chunk width (a 512-wide prefill of 17
+tokens slides by 17 — sliding by 512 puts padding in the context and generates
+loops), and the allocation needs `window + max_tokens + chunk` slots, because a
+prefill pass writes `chunk` slots past the window. Undersizing it surfaces as
+`hb_bpu_map failed` / `hbUCPSubmitTask rc=-400006`, not a bounds message.
+
+Worth stating plainly, because it cost the most time: **every wrong layout runs
+at full speed and returns confident, fluent, wrong text.** No error, no NaN,
+sane logit magnitudes. Black-box probing of the mask is ambiguous — opening a
+zero-key slot also perturbs the logits, so "did this column matter?" has no
+clean answer. Tracing the vendor took about twenty minutes and settled it.
+`tests/unit/bpu/test_kv_window.py` pins the geometry to values transcribed from
+that trace, so a regression fails loudly instead of producing plausible prose.
+
+This path drives a prebuilt vendor artifact, not a `torch.compile` graph. The
+compile side is not there yet — see the limitations below.
+
+### Smaller graphs
+
 A 6-layer conv stack at 224x224, quantized with frozen weights, compiled
 **on the board** (torch 2.10, box64 v0.4.5): **3.75 ms on the BPU vs 72.06 ms
 eager CPU — 19.2x.** An earlier measurement on a slightly different stack gave
@@ -266,6 +427,13 @@ Toy networks are a wash (0.849 ms vs 0.805 ms) — the fixed submission cost
 dominates, and there is not enough MAC work to amortize it. The offload is worth
 it when the graph is genuinely convolution-heavy.
 
+### Compile time
+
+hbdk4 runs under box64, so compiling is slow: **~25 minutes** for ResNet-18's
+68-node partition on this board. The `.hbm` is cached in
+`~/.cache/torch_fl_bpu` keyed by graph structure, weight values, input
+signature, march and Q/DQ pass version, so this is a first-run cost only.
+
 ## Known limitations
 
 - Single device only; the four BPU cores are not scheduled independently.
@@ -278,4 +446,28 @@ it when the graph is genuinely convolution-heavy.
   dtype-matched input is truly copy-free. Outputs always copy: `hbm_runtime.run`
   allocates its own arrays. Driving `hbDNNInferV2` directly with tensors built
   from `FlagosBPUPhysicalAddress()` would close the remaining gap.
-- Calibration is opt-in and manual.
+- Calibration is opt-in and manual. On ResNet-18 the default scale costs
+  cosine 0.990 against eager float, which preserved top-1 on every input tried
+  — but the vendor's own artifact was calibrated with HMCT against real data,
+  and part of the remaining gap to it is likely quantization quality rather
+  than scheduling.
+- Input format. The vendor's artifacts take NV12 uint8 (74 KB for 224x224);
+  a graph traced from PyTorch carries float32 NCHW (588 KB). The BPU can
+  consume NV12 directly, so a preprocessing path that fed it would remove
+  8x of input bandwidth, but nothing in an FX graph expresses that.
+- `qdq.py` quantizes convolution, matmul and pooling. Anything else — softmax,
+  layer norm, elementwise — stays float, which is correct but leaves those ops
+  on the BPU's VPU rather than its MAC array. `convert(advice=True)` is how to
+  check what a given graph actually lowers to.
+- **LLM inference runs a prebuilt vendor artifact, not a compiled graph.**
+  `infer.py` is the runtime half only. Driving a `torch.compile`d transformer
+  the same way needs, in rough order: `aten.slice.Tensor` in `partition.py`'s
+  supported set (without it a transformer block fragments; with it decode and
+  prefill are each a single partition at 100% node coverage), an ONNX
+  constant-folding pass after export (torch's `aten.expand` emits a
+  `Shape->Equal->Where->Expand` chain hbdk4 cannot shape-infer through), and
+  mixed-precision Q/DQ — the vendor artifact uses si16 for the K cache, si8 for
+  V, and f16 for the mask and logits, where `qdq.py` is si8-only. With folding
+  alone, `convert(advice=True)` already puts 54 of 66 ops on the BPU; the 12
+  fallbacks all report `"fallback to float, op is not completely quantized"`,
+  which is the Q/DQ gap rather than a hardware limit.

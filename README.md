@@ -656,9 +656,19 @@ out = compiled(torch.randn(1, 3, 224, 224))
   `PrivateUse1` to `convolution_overrideable`, whose only other kernel raises,
   so the boxed fallback cannot reach a CPU implementation. Two wrappers in
   `register.cc` call `at::convolution` on CPU tensors instead.
-- Measured on-board (torch 2.10): a 6-layer conv stack at 224x224 runs **3.75 ms
-  on the BPU vs 72.06 ms eager CPU — 19.2x**. Toy nets are a wash — submission
-  overhead dominates.
+- Measured on-board (torch 2.10): **ResNet-18 at 224x224 runs 1.356 ms on the
+  BPU vs 26.10 ms eager CPU — 19.2x**, which is 1.26x off D-Robotics' own
+  `resnet18_224x224_nv12.hbm` (1.075 ms) despite taking an 8x larger float32
+  input. Accuracy: cosine 0.990 vs eager, top-1 agreement 5/5. Run
+  `benchmarks/bpu_resnet18_bench.py`. Toy nets are a wash — submission overhead
+  dominates.
+- **LLM inference has its own runtime path.** `hbm_runtime` copies every input
+  per call, which for a decode step means copying the KV cache — 336 MiB per
+  token, 68.4 ms against the vendor's 11.4. `infer.py` binds `hbDNNInferV2`
+  directly with device-resident buffers and a sliding-window cache, reaching
+  **82.1 tok/s decode on Qwen3-0.6B against the vendor `llm` demo's 84.8–87.7**
+  on the same artifact. Run `benchmarks/bpu_qwen3_bench.py`. This drives a
+  prebuilt vendor `.hbm`, not a `torch.compile` graph.
 
 ### Build Environment Variables
 

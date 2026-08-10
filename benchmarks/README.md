@@ -1,5 +1,47 @@
 # Benchmarks
 
+## BPU Qwen3-0.6B vs the vendor `llm` demo
+
+`bpu_qwen3_bench.py` runs D-Robotics' own two-graph Qwen3-0.6B `.hbm` through
+`torch_fl.accelerator.bpu.infer`, so the comparison isolates the runtime: same
+artifact, same four cores, same weights, only a different caller.
+
+```bash
+python benchmarks/bpu_qwen3_bench.py \
+    --hbm ~/llm_sdk/.../Qwen3-0.6B_language_chunk_512_cache_4096_w8_nash-p_corenum_4_4.hbm \
+    --tokenizer ~/llm_sdk/.../configs/Qwen3_config
+```
+
+**82.1 tok/s decode against the vendor demo's 84.8–87.7**, and 6881 tok/s
+prefill against 5626–7014. The vendor number comes from its own demo, which
+prints it: `cd oellm_runtime/examples/llm_demo && ./llm -c qwen3_0.6b_config.json`.
+
+Prefill is quoted per 512-token chunk, which is what the graph computes
+regardless of prompt length — a 17-token prompt reads as 219 tok/s for the same
+78 ms of work. Details and the KV cache layout in
+[docs/bpu.md](../docs/bpu.md#qwen3-06b-against-the-vendor-llm-demo).
+
+## BPU ResNet-18 vs the vendor artifact
+
+`bpu_resnet18_bench.py` compares three paths for ResNet-18 at 224x224 on an RDK
+board: D-Robotics' own `resnet18_224x224_nv12.hbm`, eager CPU, and our
+`torch.compile(backend="bpu")`.
+
+```bash
+export FLAGOS_BPU_X86_PYTHON=~/hbdk4-x86/python/bin/python3.11
+export FLAGOS_BPU_X86_EMULATOR=~/hbdk4-x86/bin/box64
+python benchmarks/bpu_resnet18_bench.py
+```
+
+The first run compiles under box64 (~25 min); afterwards the `.hbm` is cached in
+`~/.cache/torch_fl_bpu` and startup is seconds.
+
+The vendor artifact is the honest upper bound for this board — eager CPU only
+proves the offload happened. The two are not the same workload, and the script
+says so: the official one takes NV12 (74 KB) where ours takes float32 NCHW
+(588 KB), and it was quantized by HMCT with real calibration data. Numbers and
+analysis in [docs/bpu.md](../docs/bpu.md#measured-performance).
+
 ## FlagGems dispatch-overhead microbenchmark
 
 Compares the **host-side dispatch cost** of three paths for the same op on the

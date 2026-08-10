@@ -123,8 +123,16 @@ def test_compile_backend_is_registered():
 
 
 def test_compiled_model_matches_eager():
-    """Correct with or without hbdk4: partitions that cannot be compiled stay
-    on the CPU, so this passes either way -- only the tolerance differs."""
+    """Correct with or without hbdk4, but not to the same precision.
+
+    Without hbdk4 the partition stays on the CPU and the result is bit-exact.
+    With hbdk4 the artifact is int8-quantized -- that is a precondition for the
+    BPU to run conv at all, not a tuning choice -- so the comparison has to be
+    directional rather than elementwise. An elementwise float tolerance would
+    make this test pass only on machines that cannot actually compile.
+    """
+    from torch_fl.accelerator.bpu.compiler import find_hbdk
+
     model = torch.nn.Sequential(
         torch.nn.Conv2d(3, 16, 3, padding=1),
         torch.nn.BatchNorm2d(16),
@@ -134,4 +142,55 @@ def test_compiled_model_matches_eager():
     with torch.no_grad():
         expected = model(x)
         got = torch.compile(model, backend="bpu")(x)
-    torch.testing.assert_close(got, expected, atol=2e-2, rtol=2e-2)
+
+    assert got.shape == expected.shape
+    if find_hbdk() is None:
+        torch.testing.assert_close(got, expected, atol=2e-2, rtol=2e-2)
+        return
+    cos = torch.nn.functional.cosine_similarity(
+        got.flatten().float(), expected.flatten().float(), dim=0
+    ).item()
+    assert cos > 0.99, f"int8 artifact diverged from eager: cos={cos}"
+
+
+def test_compiled_models_do_not_share_an_artifact():
+    """Two models of one architecture must not return each other's results.
+
+    Weights are compiled into the .hbm, but Dynamo guards parameters on shape
+    and dtype only, so both instances hit the same compiled graph. Without the
+    backend's own weight check the second model silently returned the first
+    model's output.
+    """
+    from torch_fl.accelerator.bpu.compiler import find_hbdk
+
+    if find_hbdk() is None:
+        pytest.skip("needs a real artifact to share")
+
+    def build(seed):
+        torch.manual_seed(seed)
+        m = torch.nn.Sequential(
+            torch.nn.Conv2d(3, 16, 3, padding=1),
+            torch.nn.BatchNorm2d(16),
+            torch.nn.ReLU(),
+        ).eval()
+        with torch.no_grad():
+            m[1].running_mean.normal_()
+            m[1].running_var.uniform_(0.5, 1.5)
+        return m
+
+    a, b = build(1), build(2)
+    x = torch.randn(1, 3, 32, 32)
+    with torch.no_grad():
+        eager_a, eager_b = a(x), b(x)
+        got_a = torch.compile(a, backend="bpu")(x)
+        got_b = torch.compile(b, backend="bpu")(x)
+
+    def cos(p, q):
+        return torch.nn.functional.cosine_similarity(
+            p.flatten().float(), q.flatten().float(), dim=0
+        ).item()
+
+    # The models must genuinely differ, or the test proves nothing.
+    assert cos(eager_a, eager_b) < 0.9
+    assert cos(got_a, eager_a) > 0.99
+    assert cos(got_b, eager_b) > 0.99, "second model returned the first's output"

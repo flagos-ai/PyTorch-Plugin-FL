@@ -35,6 +35,23 @@ log = logging.getLogger("torch_fl.bpu")
 # anything else only adds rescale nodes without moving work onto the BPU.
 _QUANTIZABLE = {"Conv", "Gemm", "MatMul"}
 
+# Ops that carry no weights and do no arithmetic on values, but that hbdk4 still
+# refuses to put on the BPU while their input is f32 ("lower to cpu. P.S. The
+# type of hbir.max_pool's fin is f32, which should be si8, si16, f16 on bpu").
+#
+# They need the *input* quantized and nothing else. Without this the ResNet stem
+# max-pool was the one op in the whole network running on the CPU inside the
+# artifact, because the Q/DQ pair around the preceding conv dequantizes its
+# output back to float before the pool sees it.
+_QUANTIZE_INPUT_ONLY = {"MaxPool", "AveragePool", "GlobalAveragePool"}
+
+# Bumped whenever this pass changes which ops it rewrites or how. The .hbm cache
+# key mixes it in, because two runs of the same graph through different versions
+# of this pass produce different artifacts -- without it, adding MaxPool above
+# silently reused the artifact compiled before it, and the measurement showed no
+# change at all.
+QDQ_VERSION = 2
+
 
 def _sym_scale(arr: np.ndarray) -> float:
     m = float(np.abs(arr).max()) if arr.size else 0.0
@@ -104,6 +121,17 @@ def quantize_onnx(
     # Rewrite quantizable nodes in place, preserving graph order.
     quantized = 0
     for node in g.node:
+        if node.op_type in _QUANTIZE_INPUT_ONLY and node.input:
+            # No weights to fold; the input type is the whole problem.
+            act = node.input[0]
+            args = list(node.input)
+            args[0] = qdq_activation(act, act_scales.get(act, default_act_scale))
+            del node.input[:]
+            node.input.extend(args)
+            new_nodes.append(node)
+            quantized += 1
+            continue
+
         if node.op_type not in _QUANTIZABLE or len(node.input) < 2:
             new_nodes.append(node)
             continue

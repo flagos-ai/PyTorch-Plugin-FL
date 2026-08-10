@@ -78,9 +78,15 @@ _SUPPORTED: set[Callable | str] = {
     torch.ops.aten.contiguous.default,
     torch.ops.aten.squeeze.dim,
     torch.ops.aten.unsqueeze.default,
+    # `expand` is what AOTAutograd inserts ahead of a batched matmul to
+    # broadcast the operands; ONNX Expand covers it exactly. `_unsafe_view`
+    # and `t` are rewritten to `view`/`transpose` by decompose.py rather than
+    # listed here, because the exporter has no symbolic for either.
+    torch.ops.aten.expand.default,
     # misc
     torch.ops.aten.softmax.int,
-    torch.ops.aten._softmax.default,
+    # `_softmax` stays out: it has no ONNX symbolic. decompose.py rewrites it
+    # to softmax.int before this runs.
     torch.ops.aten.clone.default,
 }
 

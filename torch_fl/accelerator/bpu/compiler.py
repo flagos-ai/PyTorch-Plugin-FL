@@ -217,7 +217,19 @@ def find_hbdk() -> str | None:
 
 
 def graph_key(gm: GraphModule, example_inputs: list[torch.Tensor], march: str) -> str:
-    """Stable hash over graph structure, input signature and target arch."""
+    """Stable hash over graph structure, weights, input signature and arch.
+
+    The weights have to be in the key. `backend._frozen_weights` bakes them into
+    the artifact as ONNX initializers, so two models with the same architecture
+    and different weights produce genuinely different .hbm files -- hashing only
+    the structure would make the second model silently reuse the first one's
+    artifact and return its answers.
+
+    Large tensors are sampled rather than hashed whole: a strided sample plus
+    shape, dtype and the exact byte count separates any two weight sets that
+    training would realistically produce, and keeps key computation off the
+    critical path for multi-megabyte parameters.
+    """
     h = hashlib.sha256()
     h.update(march.encode())
     for node in gm.graph.nodes:
@@ -225,9 +237,59 @@ def graph_key(gm: GraphModule, example_inputs: list[torch.Tensor], march: str) -
         val = node.meta.get("val")
         if isinstance(val, torch.Tensor):
             h.update(f"{tuple(val.shape)}:{val.dtype}".encode())
+    for name, t in sorted(_weight_tensors(gm)):
+        h.update(f"{name}:{tuple(t.shape)}:{t.dtype}:".encode())
+        h.update(_tensor_digest(t))
     for t in example_inputs:
         h.update(f"{tuple(t.shape)}:{t.dtype}".encode())
     return h.hexdigest()[:16]
+
+
+# Weight tensors larger than this are hashed from a strided sample instead of
+# every byte, bounding key cost for large models.
+_DIGEST_FULL_BYTES = 1 << 20
+_DIGEST_SAMPLES = 4096
+
+
+def _weight_tensors(gm: GraphModule) -> list[tuple[str, torch.Tensor]]:
+    """Every parameter, buffer and constant attribute reachable from `gm`."""
+    out: list[tuple[str, torch.Tensor]] = []
+    for name, t in gm.named_parameters():
+        out.append((name, t))
+    for name, t in gm.named_buffers():
+        out.append((name, t))
+    # get_attr targets that are plain tensor attributes rather than registered
+    # parameters/buffers -- freezing lifts constants this way.
+    for node in gm.graph.find_nodes(op="get_attr"):
+        target = str(node.target)
+        obj = gm
+        try:
+            for part in target.split("."):
+                obj = getattr(obj, part)
+        except AttributeError:
+            continue
+        if isinstance(obj, torch.Tensor):
+            out.append((target, obj))
+    return out
+
+
+def _tensor_digest(t: torch.Tensor) -> bytes:
+    """Content hash of a tensor, sampled if it is large."""
+    from torch._subclasses.fake_tensor import FakeTensor, unset_fake_temporarily
+
+    if isinstance(t, FakeTensor) or t.numel() == 0:
+        # A fake tensor has no data to hash; shape and dtype are already keyed.
+        return b"\x00"
+    # This runs inside the FakeTensorMode a Dynamo backend is invoked under, so
+    # even detach() on a real tensor asserts unless the mode is suspended.
+    with unset_fake_temporarily():
+        t = t.detach().reshape(-1)
+        if t.dtype.is_floating_point or t.dtype.is_complex:
+            t = t.float()
+        if t.numel() * t.element_size() > _DIGEST_FULL_BYTES:
+            step = max(1, t.numel() // _DIGEST_SAMPLES)
+            t = t[::step]
+        return hashlib.sha256(t.contiguous().cpu().numpy().tobytes()).digest()
 
 
 def export_onnx(
@@ -470,10 +532,13 @@ def compile_partition(
 
     key = graph_key(gm, example_inputs, march)
     # Float and int8 artifacts differ, and so do two int8 builds with different
-    # activation scales, so none of them may share a cache entry.
+    # activation scales or different versions of the Q/DQ pass, so none of them
+    # may share a cache entry.
     if QUANTIZE:
+        from .qdq import QDQ_VERSION
+
         qh = hashlib.sha256(repr(sorted((act_scales or {}).items())).encode())
-        qh.update(f"{ACT_SCALE}".encode())
+        qh.update(f"{ACT_SCALE}:v{QDQ_VERSION}".encode())
         key = f"{key}q{qh.hexdigest()[:8]}"
     hbm_path = cache / f"{key}.hbm"
     names_path = cache / f"{key}.names"
