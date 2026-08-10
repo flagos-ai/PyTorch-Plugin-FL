@@ -475,6 +475,99 @@ def device_guarded_config(flag_gems):
     )
 
 
+def patch_linear_contiguity(flag_gems) -> int:
+    """Make the ``linear`` ops accept non-contiguous activations.
+
+    Both halves of ``nn.Linear`` flatten their batch dimensions with a bare
+    ``view``: the vendor's forward does ``input.view(M, K)``
+    (``_enflame/gcu300/ops/linear.py:158``) and the generic backward does
+    ``.view(batch_size, n).contiguous()`` -- in that order, so the ``view`` runs
+    on the original layout either way. ``view`` requires a layout it can
+    reinterpret without copying, and a transposed or otherwise strided
+    activation has none, so it raises "view size is not compatible with input
+    tensor's size and stride".
+
+    Any ``nn.Linear`` on a >2-D input hits this, i.e. every transformer training
+    step, while the same layer on 2-D input works -- which is why a plain
+    ``torch.mm`` or 2-D ``Linear`` check does not catch it.
+
+    Making the operands contiguous first is behaviour-preserving: both functions
+    only use the flattened tensors as ``mm`` operands, and the backward already
+    asked for ``.contiguous()`` right after its view. ``.contiguous()`` is a
+    no-op when the layout already permits the view, so the previously-working
+    2-D path is unaffected. Verified against CPU autograd at ranks 2, 3 and 4.
+
+    These are defects in FlagGems rather than anything GCU-specific, but they
+    are patched here because GCU is where they are reachable: the C++ FlagGems
+    path never routes through these Python functions.
+
+    Returns the number of functions wrapped.
+    """
+    import sys
+
+    import torch
+
+    def _wrap(module_name, func_name, arg_count):
+        """Wrap module.func so its first ``arg_count`` tensor args are contiguous."""
+        module = sys.modules.get(module_name)
+        if module is None:
+            return False
+        original = getattr(module, func_name, None)
+        if original is None or getattr(original, "_flagos_contiguous", False):
+            return False
+
+        @functools.wraps(original)
+        def wrapper(*args, **kwargs):
+            args = list(args)
+            for i in range(min(arg_count, len(args))):
+                value = args[i]
+                if isinstance(value, torch.Tensor) and not value.is_contiguous():
+                    args[i] = value.contiguous()
+            return original(*args, **kwargs)
+
+        wrapper._flagos_contiguous = True
+        setattr(module, func_name, wrapper)
+
+        # _FULL_CONFIG holds the function by value, so rebind it there too.
+        config = getattr(flag_gems, "_FULL_CONFIG", None)
+        if config:
+            flag_gems._FULL_CONFIG = tuple(
+                (entry[0], wrapper) + tuple(entry[2:])
+                if len(entry) > 1 and entry[1] is original
+                else entry
+                for entry in config
+            )
+        return True
+
+    # linear(input, weight, bias) -- only `input` carries a batch layout.
+    # linear_backward(grad_output, input, weight, output_mask) -- both of the
+    # first two are flattened.
+    #
+    # Which module implements each is read off _FULL_CONFIG rather than
+    # hardcoded: the vendor override is imported under a bare arch-prefixed
+    # name ("gcu300.ops.linear"), so the arch would otherwise have to be
+    # guessed, and whether an op is overridden at all differs per release.
+    targets = {"linear": 1, "linear_backward": 2}
+    # Collected before wrapping: _wrap rebuilds _FULL_CONFIG, so iterating it
+    # while wrapping would read entries that are already stale.
+    plan = []
+    for entry in getattr(flag_gems, "_FULL_CONFIG", ()):
+        if len(entry) < 2:
+            continue
+        arg_count = targets.get(entry[0])
+        if arg_count is None:
+            continue
+        module_name = getattr(entry[1], "__module__", None)
+        func_name = getattr(entry[1], "__name__", None)
+        if module_name and func_name:
+            plan.append((module_name, func_name, arg_count))
+
+    wrapped = 0
+    for module_name, func_name, arg_count in plan:
+        wrapped += _wrap(module_name, func_name, arg_count)
+    return wrapped
+
+
 def bind_vendor_ops_in_generic_modules(flag_gems) -> int:
     """Make generic FlagGems ops call the vendor kernel for their sub-ops.
 

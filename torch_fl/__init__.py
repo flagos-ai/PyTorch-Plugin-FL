@@ -1195,9 +1195,14 @@ def _register_flaggems_operators():
                 bind_vendor_ops_in_generic_modules,
                 device_guarded_config,
                 patch_flaggems_device_name,
+                patch_linear_contiguity,
             )
 
             patch_flaggems_device_name()
+            # Order-independent: this wraps the `linear`/`linear_backward`
+            # module functions, while the rebinding below swaps the `mm` those
+            # originals resolve as a module global at call time.
+            patch_linear_contiguity(flag_gems)
             bind_vendor_ops_in_generic_modules(flag_gems)
             excluded = _flaggems_exclusion_names(
                 flag_gems, _EXCLUDED_OPS | _GCU_EXCLUDED_OPS
