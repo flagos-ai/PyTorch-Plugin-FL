@@ -2791,4 +2791,690 @@ REGISTER_IMPL_TO_DISPATCHER(NativeLayerNormFn, native_layer_norm_dispatcher, Bac
 
 REGISTER_IMPL_TO_DISPATCHER(NativeLayerNormBackwardFn, native_layer_norm_backward_dispatcher, Backend::kMusa, NativeLayerNormBackwardKernelMusa)
 
+at::Tensor CatKernelMusa(const at::ITensorListRef& tensors, int64_t dim) {
+  std::vector<at::Tensor> ins;
+  for (const at::Tensor& t : tensors) ins.push_back(t);
+
+  // aten's cat ignores empty tensors, and lets them disagree about ndim: the
+  // `torch.cat([torch.tensor([]), x], dim=-2)` that transformers' KV-cache
+  // does on the first step is legal even though the empty operand is 1-D and
+  // `x` is 4-D. Dropping them before anything looks at sizes keeps the shape
+  // arithmetic below on the real operands. (stack has already unsqueezed, and
+  // it does not accept empties, so this is a no-op there.)
+  std::vector<at::Tensor> kept;
+  for (const auto& t : ins) {
+    if (t.numel() != 0 || t.dim() != 1) kept.push_back(t);
+  }
+  if (kept.empty()) {
+    return at::cat(tensors, dim);
+  }
+  bool ok = true;
+  for (const auto& t : kept) {
+    if (!musa_ops::MudnnSupportsDtype(t.scalar_type()) ||
+        t.scalar_type() != kept[0].scalar_type()) {
+      ok = false;
+      break;
+    }
+  }
+  if (!ok) {
+    std::vector<at::Tensor> cpu_ins;
+    for (const auto& t : kept) cpu_ins.push_back(t.cpu());
+    return at::cat(cpu_ins, dim).to(kept[0].device());
+  }
+  int64_t ndim = kept[0].dim();
+  int64_t d = dim < 0 ? dim + ndim : dim;
+  auto out_shape = kept[0].sizes().vec();
+  int64_t total = 0;
+  for (const auto& t : kept) total += t.size(d);
+  out_shape[d] = total;
+  auto out = at::empty(out_shape, kept[0].options());
+
+  std::vector<at::Tensor> ins_c;
+  std::vector<std::unique_ptr<musa_ops::MudnnTensorWrapper>> wraps;
+  std::vector<musa_ops::mudnn::Tensor> raw;
+  for (const auto& t : kept) {
+    ins_c.push_back(t.contiguous());
+    wraps.push_back(
+        std::make_unique<musa_ops::MudnnTensorWrapper>(ins_c.back()));
+    raw.push_back(wraps.back()->get());
+  }
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Concat op;
+  op.SetAxis(static_cast<int>(d));
+  EXEC_MUDNN_CMD(
+      "cat", kept[0],
+      op.Run(_mudnn_h, t_out.get(), static_cast<int>(raw.size()), raw.data()));
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(CatFn, cat_dispatcher, Backend::kMusa, CatKernelMusa)
+
+at::Tensor StackKernelMusa(at::TensorList tensors, int64_t dim) {
+  std::vector<at::Tensor> ins;
+  for (const at::Tensor& t : tensors) ins.push_back(t);
+  for (auto& t : ins) t = t.unsqueeze(dim);
+  // aten's cat ignores empty tensors, and lets them disagree about ndim: the
+  // `torch.cat([torch.tensor([]), x], dim=-2)` that transformers' KV-cache
+  // does on the first step is legal even though the empty operand is 1-D and
+  // `x` is 4-D. Dropping them before anything looks at sizes keeps the shape
+  // arithmetic below on the real operands. (stack has already unsqueezed, and
+  // it does not accept empties, so this is a no-op there.)
+  std::vector<at::Tensor> kept;
+  for (const auto& t : ins) {
+    if (t.numel() != 0 || t.dim() != 1) kept.push_back(t);
+  }
+  if (kept.empty()) {
+    return at::stack(tensors, dim);
+  }
+  bool ok = true;
+  for (const auto& t : kept) {
+    if (!musa_ops::MudnnSupportsDtype(t.scalar_type()) ||
+        t.scalar_type() != kept[0].scalar_type()) {
+      ok = false;
+      break;
+    }
+  }
+  if (!ok) {
+    std::vector<at::Tensor> cpu_ins;
+    for (const auto& t : kept) cpu_ins.push_back(t.cpu());
+    return at::cat(cpu_ins, dim).to(kept[0].device());
+  }
+  int64_t ndim = kept[0].dim();
+  int64_t d = dim < 0 ? dim + ndim : dim;
+  auto out_shape = kept[0].sizes().vec();
+  int64_t total = 0;
+  for (const auto& t : kept) total += t.size(d);
+  out_shape[d] = total;
+  auto out = at::empty(out_shape, kept[0].options());
+
+  std::vector<at::Tensor> ins_c;
+  std::vector<std::unique_ptr<musa_ops::MudnnTensorWrapper>> wraps;
+  std::vector<musa_ops::mudnn::Tensor> raw;
+  for (const auto& t : kept) {
+    ins_c.push_back(t.contiguous());
+    wraps.push_back(
+        std::make_unique<musa_ops::MudnnTensorWrapper>(ins_c.back()));
+    raw.push_back(wraps.back()->get());
+  }
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Concat op;
+  op.SetAxis(static_cast<int>(d));
+  EXEC_MUDNN_CMD(
+      "stack", kept[0],
+      op.Run(_mudnn_h, t_out.get(), static_cast<int>(raw.size()), raw.data()));
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(StackFn, stack_dispatcher, Backend::kMusa, StackKernelMusa)
+
+at::Tensor GatherKernelMusa(
+    const at::Tensor& self,
+    int64_t dim,
+    const at::Tensor& index,
+    bool sparse_grad) {
+  if (!musa_ops::MudnnSupportsDtype(self.scalar_type()) ||
+      index.scalar_type() != at::kLong || sparse_grad ||
+      index.device() != self.device()) {
+    return at::gather(self.cpu(), dim, index.cpu(), sparse_grad)
+        .to(self.device());
+  }
+  int64_t d = dim < 0 ? dim + self.dim() : dim;
+  auto self_c = self.contiguous();
+  auto index_c = index.contiguous();
+  auto out = at::empty(index.sizes(), self.options());
+
+  musa_ops::MudnnTensorWrapper t_self(self_c);
+  musa_ops::MudnnTensorWrapper t_index(index_c);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::GatherX op;
+  op.SetMode(musa_ops::mudnn::GatherX::Mode::GATHER_ELEMENTS);
+  op.SetAxis(static_cast<int>(d));
+  EXEC_MUDNN_CMD(
+      "gather", self,
+      op.Run(_mudnn_h, t_out.get(), t_index.get(), t_self.get()));
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(GatherFn, gather_dispatcher, Backend::kMusa, GatherKernelMusa)
+
+at::Tensor IndexSelectKernelMusa(
+    const at::Tensor& self, int64_t dim, const at::Tensor& index) {
+  if (!musa_ops::MudnnSupportsDtype(self.scalar_type()) ||
+      index.scalar_type() != at::kLong || index.dim() > 1 ||
+      index.device() != self.device()) {
+    return at::index_select(self.cpu(), dim, index.cpu()).to(self.device());
+  }
+  int64_t d = dim < 0 ? dim + self.dim() : dim;
+  auto self_c = self.contiguous();
+  auto index_c = index.contiguous();
+  auto out_shape = self.sizes().vec();
+  out_shape[d] = index.numel();
+  auto out = at::empty(out_shape, self.options());
+
+  musa_ops::MudnnTensorWrapper t_self(self_c);
+  musa_ops::MudnnTensorWrapper t_index(index_c);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::GatherX op;
+  op.SetMode(musa_ops::mudnn::GatherX::Mode::GATHER);
+  op.SetAxis(static_cast<int>(d));
+  EXEC_MUDNN_CMD(
+      "index_select", self,
+      op.Run(_mudnn_h, t_out.get(), t_index.get(), t_self.get()));
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(IndexSelectFn, index_select_dispatcher, Backend::kMusa, IndexSelectKernelMusa)
+
+at::Tensor EmbeddingKernelMusa(
+    const at::Tensor& weight,
+    const at::Tensor& indices,
+    int64_t padding_idx,
+    bool scale_grad_by_freq,
+    bool sparse) {
+  if (!musa_ops::MudnnSupportsDtype(weight.scalar_type()) ||
+      (indices.scalar_type() != at::kLong &&
+       indices.scalar_type() != at::kInt) ||
+      sparse || indices.device() != weight.device()) {
+    return at::embedding(
+               weight.cpu(), indices.cpu(), padding_idx, scale_grad_by_freq,
+               sparse)
+        .to(weight.device());
+  }
+  auto weight_c = weight.contiguous();
+  auto index_c = indices.reshape({-1}).contiguous();
+  std::vector<int64_t> out_shape = indices.sizes().vec();
+  for (int64_t i = 1; i < weight.dim(); ++i) {
+    out_shape.push_back(weight.size(i));
+  }
+  std::vector<int64_t> flat_shape = weight.sizes().vec();
+  flat_shape[0] = index_c.numel();
+  auto out = at::empty(flat_shape, weight.options());
+
+  musa_ops::MudnnTensorWrapper t_weight(weight_c);
+  musa_ops::MudnnTensorWrapper t_index(index_c);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::GatherX op;
+  op.SetMode(musa_ops::mudnn::GatherX::Mode::GATHER);
+  op.SetAxis(0);
+  EXEC_MUDNN_CMD(
+      "embedding", weight,
+      op.Run(_mudnn_h, t_out.get(), t_index.get(), t_weight.get()));
+  return out.view(out_shape);
+}
+
+REGISTER_IMPL_TO_DISPATCHER(EmbeddingFn, embedding_dispatcher, Backend::kMusa, EmbeddingKernelMusa)
+
+at::Tensor ScatterSrcKernelMusa(
+    const at::Tensor& self,
+    int64_t dim,
+    const at::Tensor& index,
+    const at::Tensor& src) {
+  if (!musa_ops::MudnnSupportsDtype(self.scalar_type()) ||
+      !musa_ops::MudnnSupportsDtype(src.scalar_type()) ||
+      self.scalar_type() != src.scalar_type() ||
+      index.scalar_type() != at::kLong ||
+      index.device() != self.device() ||
+      src.device() != self.device()) {
+    return at::scatter(self.cpu(), dim, index.cpu(), src.cpu())
+        .to(self.device());
+  }
+  int64_t d = dim < 0 ? dim + self.dim() : dim;
+  auto out = self.contiguous().clone();
+  auto index_c = index.contiguous();
+  auto src_c = src.contiguous();
+
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::MudnnTensorWrapper t_index(index_c);
+  musa_ops::MudnnTensorWrapper t_src(src_c);
+  musa_ops::mudnn::Scatter op;
+  op.SetMode(musa_ops::mudnn::Scatter::Mode::UPDATE_ONLY);
+  EXEC_MUDNN_CMD(
+      "scatter", self,
+      op.Run(_mudnn_h, t_out.get(), t_index.get(), t_src.get(),
+             static_cast<int>(d), musa_ops::MudnnWorkspaceFor(out)));
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(ScatterSrcFn, scatter_src_dispatcher, Backend::kMusa, ScatterSrcKernelMusa)
+
+at::Tensor ScatterValueKernelMusa(
+    const at::Tensor& self,
+    int64_t dim,
+    const at::Tensor& index,
+    const at::Scalar& value) {
+  if (!musa_ops::MudnnSupportsDtype(self.scalar_type()) ||
+      index.scalar_type() != at::kLong ||
+      index.device() != self.device()) {
+    return at::scatter(self.cpu(), dim, index.cpu(), value)
+        .to(self.device());
+  }
+  int64_t d = dim < 0 ? dim + self.dim() : dim;
+  auto out = self.contiguous().clone();
+  auto index_c = index.contiguous();
+  auto src_c = at::full(index.sizes(), value, self.options());
+
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::MudnnTensorWrapper t_index(index_c);
+  musa_ops::MudnnTensorWrapper t_src(src_c);
+  musa_ops::mudnn::Scatter op;
+  op.SetMode(musa_ops::mudnn::Scatter::Mode::UPDATE_ONLY);
+  EXEC_MUDNN_CMD(
+      "scatter", self,
+      op.Run(_mudnn_h, t_out.get(), t_index.get(), t_src.get(),
+             static_cast<int>(d), musa_ops::MudnnWorkspaceFor(out)));
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(ScatterValueFn, scatter_value_dispatcher, Backend::kMusa, ScatterValueKernelMusa)
+
+at::Tensor ScatterAddKernelMusa(
+    const at::Tensor& self,
+    int64_t dim,
+    const at::Tensor& index,
+    const at::Tensor& src) {
+  if (!musa_ops::MudnnSupportsDtype(self.scalar_type()) ||
+      !musa_ops::MudnnSupportsDtype(src.scalar_type()) ||
+      self.scalar_type() != src.scalar_type() ||
+      index.scalar_type() != at::kLong ||
+      index.device() != self.device() ||
+      src.device() != self.device()) {
+    return at::scatter_add(self.cpu(), dim, index.cpu(), src.cpu())
+        .to(self.device());
+  }
+  int64_t d = dim < 0 ? dim + self.dim() : dim;
+  auto out = self.contiguous().clone();
+  auto index_c = index.contiguous();
+  auto src_c = src.contiguous();
+
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::MudnnTensorWrapper t_index(index_c);
+  musa_ops::MudnnTensorWrapper t_src(src_c);
+  musa_ops::mudnn::Scatter op;
+  op.SetMode(musa_ops::mudnn::Scatter::Mode::ADD);
+  EXEC_MUDNN_CMD(
+      "scatter_add", self,
+      op.Run(_mudnn_h, t_out.get(), t_index.get(), t_src.get(),
+             static_cast<int>(d), musa_ops::MudnnWorkspaceFor(out)));
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(ScatterAddFn, scatter_add_dispatcher, Backend::kMusa, ScatterAddKernelMusa)
+
+at::Tensor& FillInplaceScalarKernelMusa(at::Tensor& self, const at::Scalar& value) {
+  if (!musa_ops::MudnnSupportsDtype(self.scalar_type()) || !self.is_contiguous()) {
+    auto cpu = self.cpu();
+    cpu.fill_(value);
+    self.copy_(cpu);
+    return self;
+  }
+  musa_ops::MudnnTensorWrapper t_self(self);
+  musa_ops::mudnn::Fill op;
+  if (at::isIntegralType(self.scalar_type(), true)) {
+    op.SetValue(static_cast<int64_t>(value.to<int64_t>()));
+  } else {
+    op.SetValue(static_cast<double>(value.to<double>()));
+  }
+  EXEC_MUDNN_CMD("fill_", self, op.Run(_mudnn_h, t_self.get()));
+  return self;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(FillInplaceScalarFn, fill_inplace_scalar_dispatcher, Backend::kMusa, FillInplaceScalarKernelMusa)
+
+at::Tensor& ZeroInplaceKernelMusa(at::Tensor& self) {
+  if (!musa_ops::MudnnSupportsDtype(self.scalar_type()) || !self.is_contiguous()) {
+    auto cpu = self.cpu();
+    cpu.zero_();
+    self.copy_(cpu);
+    return self;
+  }
+  musa_ops::MudnnTensorWrapper t_self(self);
+  musa_ops::mudnn::Fill op;
+  if (at::isIntegralType(self.scalar_type(), true)) {
+    op.SetValue(static_cast<int64_t>(0));
+  } else {
+    op.SetValue(static_cast<double>(0.0));
+  }
+  EXEC_MUDNN_CMD("zero_", self, op.Run(_mudnn_h, t_self.get()));
+  return self;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(ZeroInplaceFn, zero_inplace_dispatcher, Backend::kMusa, ZeroInplaceKernelMusa)
+
+at::Tensor MaskedFillScalarKernelMusa(
+    const at::Tensor& self,
+    const at::Tensor& mask,
+    const at::Scalar& value) {
+  if (!musa_ops::MudnnSupportsDtype(self.scalar_type()) ||
+      mask.scalar_type() != at::kBool ||
+      mask.device() != self.device()) {
+    return at::masked_fill(self.cpu(), mask.cpu(), value).to(self.device());
+  }
+  auto out_shape = at::infer_size(self.sizes(), mask.sizes());
+  auto out = self.expand(out_shape).contiguous();
+  auto mask_c = mask.expand(out_shape).contiguous();
+
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::MudnnTensorWrapper t_mask(mask_c);
+  musa_ops::mudnn::Fill op;
+  if (at::isIntegralType(self.scalar_type(), true)) {
+    op.SetValue(value.to<int64_t>());
+  } else {
+    op.SetValue(value.to<double>());
+  }
+  EXEC_MUDNN_CMD(
+      "masked_fill", self, op.Run(_mudnn_h, t_out.get(), t_mask.get()));
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(MaskedFillScalarFn, masked_fill_scalar_dispatcher, Backend::kMusa, MaskedFillScalarKernelMusa)
+
+::std::tuple<at::Tensor, at::Tensor> TopkKernelMusa(
+    const at::Tensor& self,
+    int64_t k,
+    int64_t dim,
+    bool largest,
+    bool sorted) {
+  auto st = self.scalar_type();
+  bool topk_dtype = st == at::kFloat || st == at::kHalf ||
+                    st == at::kBFloat16 || st == at::kDouble || st == at::kInt;
+  if (!musa_ops::MudnnSupportsDtype(st) || !topk_dtype) {
+    auto r = at::topk(self.cpu(), k, dim, largest, sorted);
+    return std::make_tuple(
+        std::get<0>(r).to(self.device()), std::get<1>(r).to(self.device()));
+  }
+  int64_t d = dim < 0 ? dim + self.dim() : dim;
+  auto self_c = self.contiguous();
+  auto out_shape = self.sizes().vec();
+  out_shape[d] = k;
+  auto values = at::empty(out_shape, self.options());
+  auto indices = at::empty(out_shape, self.options().dtype(at::kLong));
+
+  musa_ops::MudnnTensorWrapper t_self(self_c);
+  musa_ops::MudnnTensorWrapper t_values(values);
+  musa_ops::MudnnTensorWrapper t_indices(indices);
+  musa_ops::mudnn::TopK op;
+  op.SetK(static_cast<int>(k));
+  op.SetDim(static_cast<int>(d));
+  op.SetLargest(largest);
+  op.SetSorted(sorted);
+  EXEC_MUDNN_CMD(
+      "topk", self,
+      op.Run(_mudnn_h, t_values.get(), t_indices.get(), t_self.get(),
+             musa_ops::MudnnWorkspaceFor(values)));
+  return std::make_tuple(values, indices);
+}
+
+REGISTER_IMPL_TO_DISPATCHER(TopkFn, topk_dispatcher, Backend::kMusa, TopkKernelMusa)
+
+::std::tuple<at::Tensor, at::Tensor> SortKernelMusa(
+    const at::Tensor& self,
+    int64_t dim,
+    bool descending) {
+  if (!musa_ops::MudnnSupportsDtype(self.scalar_type())) {
+    auto r = at::sort(self.cpu(), dim, descending);
+    return std::make_tuple(
+        std::get<0>(r).to(self.device()), std::get<1>(r).to(self.device()));
+  }
+  int64_t d = dim < 0 ? dim + self.dim() : dim;
+  auto self_c = self.contiguous();
+  auto values = at::empty(self.sizes(), self.options());
+  auto indices = at::empty(self.sizes(), self.options().dtype(at::kLong));
+
+  musa_ops::MudnnTensorWrapper t_self(self_c);
+  musa_ops::MudnnTensorWrapper t_values(values);
+  musa_ops::MudnnTensorWrapper t_indices(indices);
+  musa_ops::mudnn::Sort op;
+  op.SetDim(static_cast<int>(d));
+  op.SetDescending(descending);
+  op.SetStable(false);
+  EXEC_MUDNN_CMD(
+      "sort", self,
+      op.Run(_mudnn_h, t_values.get(), t_indices.get(), t_self.get(),
+             musa_ops::MudnnWorkspaceFor(values)));
+  return std::make_tuple(values, indices);
+}
+
+REGISTER_IMPL_TO_DISPATCHER(SortFn, sort_dispatcher, Backend::kMusa, SortKernelMusa)
+
+::std::tuple<at::Tensor, at::Tensor> SortStableKernelMusa(
+    const at::Tensor& self,
+    ::std::optional<bool> stable,
+    int64_t dim,
+    bool descending) {
+  if (!musa_ops::MudnnSupportsDtype(self.scalar_type())) {
+    auto r = at::sort(self.cpu(), stable, dim, descending);
+    return std::make_tuple(
+        std::get<0>(r).to(self.device()), std::get<1>(r).to(self.device()));
+  }
+  int64_t d = dim < 0 ? dim + self.dim() : dim;
+  auto self_c = self.contiguous();
+  auto values = at::empty(self.sizes(), self.options());
+  auto indices = at::empty(self.sizes(), self.options().dtype(at::kLong));
+
+  musa_ops::MudnnTensorWrapper t_self(self_c);
+  musa_ops::MudnnTensorWrapper t_values(values);
+  musa_ops::MudnnTensorWrapper t_indices(indices);
+  musa_ops::mudnn::Sort op;
+  op.SetDim(static_cast<int>(d));
+  op.SetDescending(descending);
+  op.SetStable(stable.has_value() && stable.value());
+  EXEC_MUDNN_CMD(
+      "sort", self,
+      op.Run(_mudnn_h, t_values.get(), t_indices.get(), t_self.get(),
+             musa_ops::MudnnWorkspaceFor(values)));
+  return std::make_tuple(values, indices);
+}
+
+REGISTER_IMPL_TO_DISPATCHER(SortStableFn, sort_stable_dispatcher, Backend::kMusa, SortStableKernelMusa)
+
+at::Tensor CumsumKernelMusa(
+    const at::Tensor& self,
+    int64_t dim,
+    ::std::optional<at::ScalarType> dtype) {
+  if (!musa_ops::MudnnSupportsArithmeticDtype(self.scalar_type()) ||
+      (dtype.has_value() && !musa_ops::MudnnSupportsArithmeticDtype(dtype.value()))) {
+    return at::cumsum(self.cpu(), dim, dtype).to(self.device());
+  }
+  auto acc = dtype.has_value() ? dtype.value() : self.scalar_type();
+  auto self_c = self.to(acc).contiguous();
+  int64_t d = dim < 0 ? dim + self.dim() : dim;
+  auto out = at::empty(self.sizes(), self.options().dtype(acc));
+
+  musa_ops::MudnnTensorWrapper t_self(self_c);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Cum op;
+  op.SetMode(musa_ops::mudnn::Cum::Mode::ADD);
+  op.SetDim(static_cast<int>(d));
+  EXEC_MUDNN_CMD(
+      "cumsum", self,
+      op.Run(_mudnn_h, t_out.get(), t_self.get(),
+             musa_ops::MudnnWorkspaceFor(out)));
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(CumsumFn, cumsum_dispatcher, Backend::kMusa, CumsumKernelMusa)
+
+at::Tensor CumprodKernelMusa(
+    const at::Tensor& self,
+    int64_t dim,
+    ::std::optional<at::ScalarType> dtype) {
+  if (!musa_ops::MudnnSupportsArithmeticDtype(self.scalar_type()) ||
+      (dtype.has_value() && !musa_ops::MudnnSupportsArithmeticDtype(dtype.value()))) {
+    return at::cumprod(self.cpu(), dim, dtype).to(self.device());
+  }
+  auto acc = dtype.has_value() ? dtype.value() : self.scalar_type();
+  auto self_c = self.to(acc).contiguous();
+  int64_t d = dim < 0 ? dim + self.dim() : dim;
+  auto out = at::empty(self.sizes(), self.options().dtype(acc));
+
+  musa_ops::MudnnTensorWrapper t_self(self_c);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Cum op;
+  op.SetMode(musa_ops::mudnn::Cum::Mode::MUL);
+  op.SetDim(static_cast<int>(d));
+  EXEC_MUDNN_CMD(
+      "cumprod", self,
+      op.Run(_mudnn_h, t_out.get(), t_self.get(),
+             musa_ops::MudnnWorkspaceFor(out)));
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(CumprodFn, cumprod_dispatcher, Backend::kMusa, CumprodKernelMusa)
+
+::std::tuple<at::Tensor, at::Tensor> MaxDimKernelMusa(
+    const at::Tensor& self, int64_t dim, bool keepdim) {
+  if (!musa_ops::MudnnSupportsArithmeticDtype(self.scalar_type())) {
+    auto r = at::max(self.cpu(), dim, keepdim);
+    return std::make_tuple(
+        std::get<0>(r).to(self.device()), std::get<1>(r).to(self.device()));
+  }
+  int64_t ndim = self.dim();
+  int64_t d = dim < 0 ? dim + ndim : dim;
+  auto out_shape = self.sizes().vec();
+  auto squeezed_shape = self.sizes().vec();
+  if (keepdim) out_shape[d] = 1;
+  else out_shape.erase(out_shape.begin() + d);
+  squeezed_shape.erase(squeezed_shape.begin() + d);
+
+  auto self_c = self;
+  if (musa_ops::MudnnReduceNeedsContiguous(self_c)) {
+    self_c = self_c.contiguous();
+  }
+  auto values = at::empty(squeezed_shape, self.options());
+  auto indices = at::empty(squeezed_shape, self.options().dtype(at::kLong));
+  int mudnn_dim = static_cast<int>(d);
+
+  musa_ops::MudnnTensorWrapper t_self(self_c);
+  musa_ops::MudnnTensorWrapper t_values(values);
+  musa_ops::MudnnTensorWrapper t_indices(indices);
+  musa_ops::mudnn::Reduce op;
+  op.SetMode(musa_ops::mudnn::Reduce::Mode::MAX);
+  op.SetDim(1, &mudnn_dim);
+  EXEC_MUDNN_CMD(
+      "max", self,
+      op.RunWithIndices(_mudnn_h, t_values.get(), t_indices.get(),
+                        t_self.get(), musa_ops::MudnnWorkspaceFor(values)));
+  if (keepdim) {
+    return std::make_tuple(values.view(out_shape), indices.view(out_shape));
+  }
+  return std::make_tuple(values, indices);
+}
+
+REGISTER_IMPL_TO_DISPATCHER(MaxDimFn, max_dim_dispatcher, Backend::kMusa, MaxDimKernelMusa)
+
+::std::tuple<at::Tensor, at::Tensor> MinDimKernelMusa(
+    const at::Tensor& self, int64_t dim, bool keepdim) {
+  if (!musa_ops::MudnnSupportsArithmeticDtype(self.scalar_type())) {
+    auto r = at::min(self.cpu(), dim, keepdim);
+    return std::make_tuple(
+        std::get<0>(r).to(self.device()), std::get<1>(r).to(self.device()));
+  }
+  int64_t ndim = self.dim();
+  int64_t d = dim < 0 ? dim + ndim : dim;
+  auto out_shape = self.sizes().vec();
+  auto squeezed_shape = self.sizes().vec();
+  if (keepdim) out_shape[d] = 1;
+  else out_shape.erase(out_shape.begin() + d);
+  squeezed_shape.erase(squeezed_shape.begin() + d);
+
+  auto self_c = self;
+  if (musa_ops::MudnnReduceNeedsContiguous(self_c)) {
+    self_c = self_c.contiguous();
+  }
+  auto values = at::empty(squeezed_shape, self.options());
+  auto indices = at::empty(squeezed_shape, self.options().dtype(at::kLong));
+  int mudnn_dim = static_cast<int>(d);
+
+  musa_ops::MudnnTensorWrapper t_self(self_c);
+  musa_ops::MudnnTensorWrapper t_values(values);
+  musa_ops::MudnnTensorWrapper t_indices(indices);
+  musa_ops::mudnn::Reduce op;
+  op.SetMode(musa_ops::mudnn::Reduce::Mode::MIN);
+  op.SetDim(1, &mudnn_dim);
+  EXEC_MUDNN_CMD(
+      "min", self,
+      op.RunWithIndices(_mudnn_h, t_values.get(), t_indices.get(),
+                        t_self.get(), musa_ops::MudnnWorkspaceFor(values)));
+  if (keepdim) {
+    return std::make_tuple(values.view(out_shape), indices.view(out_shape));
+  }
+  return std::make_tuple(values, indices);
+}
+
+REGISTER_IMPL_TO_DISPATCHER(MinDimFn, min_dim_dispatcher, Backend::kMusa, MinDimKernelMusa)
+
+at::Tensor ArgmaxKernelMusa(
+    const at::Tensor& self, ::std::optional<int64_t> dim, bool keepdim) {
+  if (!musa_ops::MudnnSupportsArithmeticDtype(self.scalar_type())) {
+    return at::argmax(self.cpu(), dim, keepdim).to(self.device());
+  }
+  auto self_r = dim.has_value() ? self : self.reshape({-1});
+  int64_t ndim = self_r.dim();
+  int64_t d = dim.has_value() ? (dim.value() < 0 ? dim.value() + ndim
+                                                 : dim.value())
+                              : 0;
+  auto out_shape = self_r.sizes().vec();
+  auto squeezed_shape = self_r.sizes().vec();
+  if (keepdim) out_shape[d] = 1;
+  else out_shape.erase(out_shape.begin() + d);
+  squeezed_shape.erase(squeezed_shape.begin() + d);
+
+  auto self_c = self_r;
+  if (musa_ops::MudnnReduceNeedsContiguous(self_c)) {
+    self_c = self_c.contiguous();
+  }
+  auto indices = at::empty(squeezed_shape, self.options().dtype(at::kLong));
+  int mudnn_dim = static_cast<int>(d);
+
+  musa_ops::MudnnTensorWrapper t_self(self_c);
+  musa_ops::MudnnTensorWrapper t_indices(indices);
+  musa_ops::mudnn::Reduce op;
+  op.SetMode(musa_ops::mudnn::Reduce::Mode::MAX);
+  op.SetDim(1, &mudnn_dim);
+  EXEC_MUDNN_CMD(
+      "argmax", self,
+      op.RunIndices(_mudnn_h, t_indices.get(), t_self.get(),
+                    musa_ops::MudnnWorkspaceFor(indices)));
+  return keepdim ? indices.view(out_shape) : indices;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(ArgmaxFn, argmax_dispatcher, Backend::kMusa, ArgmaxKernelMusa)
+
+at::Tensor ArgminKernelMusa(
+    const at::Tensor& self, ::std::optional<int64_t> dim, bool keepdim) {
+  if (!musa_ops::MudnnSupportsArithmeticDtype(self.scalar_type())) {
+    return at::argmin(self.cpu(), dim, keepdim).to(self.device());
+  }
+  auto self_r = dim.has_value() ? self : self.reshape({-1});
+  int64_t ndim = self_r.dim();
+  int64_t d = dim.has_value() ? (dim.value() < 0 ? dim.value() + ndim
+                                                 : dim.value())
+                              : 0;
+  auto out_shape = self_r.sizes().vec();
+  auto squeezed_shape = self_r.sizes().vec();
+  if (keepdim) out_shape[d] = 1;
+  else out_shape.erase(out_shape.begin() + d);
+  squeezed_shape.erase(squeezed_shape.begin() + d);
+
+  auto self_c = self_r;
+  if (musa_ops::MudnnReduceNeedsContiguous(self_c)) {
+    self_c = self_c.contiguous();
+  }
+  auto indices = at::empty(squeezed_shape, self.options().dtype(at::kLong));
+  int mudnn_dim = static_cast<int>(d);
+
+  musa_ops::MudnnTensorWrapper t_self(self_c);
+  musa_ops::MudnnTensorWrapper t_indices(indices);
+  musa_ops::mudnn::Reduce op;
+  op.SetMode(musa_ops::mudnn::Reduce::Mode::MIN);
+  op.SetDim(1, &mudnn_dim);
+  EXEC_MUDNN_CMD(
+      "argmin", self,
+      op.RunIndices(_mudnn_h, t_indices.get(), t_self.get(),
+                    musa_ops::MudnnWorkspaceFor(indices)));
+  return keepdim ? indices.view(out_shape) : indices;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(ArgminFn, argmin_dispatcher, Backend::kMusa, ArgminKernelMusa)
+
 } // namespace at::native::flagos

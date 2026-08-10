@@ -230,6 +230,59 @@ OPS = {
     # ---- P2: layer norm ----
     "native_layer_norm": ("layer_norm", "LayerNorm"),
     "native_layer_norm_backward": ("layer_norm_bwd", "LayerNorm"),
+    # ---- P3: concat family ----
+    # The tuple is (class, aten list type, needs-unsqueeze). `stack` is
+    # cat-of-unsqueezed, which mudnn expresses as the same Concat call. The
+    # list types differ in more than the name: cat takes ITensorListRef by
+    # const reference, stack takes TensorList by value, and the registered
+    # dispatcher's function-pointer type must match exactly.
+    "cat": ("concat", ("Concat", "const at::ITensorListRef&", False)),
+    "stack": ("concat", ("Concat", "at::TensorList", True)),
+    # ---- P3: gather family ----
+    # GATHER_ELEMENTS is aten's `gather` (index shaped like the output, selecting
+    # along one dim); GATHER is aten's `index_select`/`embedding` (a 1-D index
+    # picking whole slices).
+    "gather": ("gather", "GATHER_ELEMENTS"),
+    "index_select": ("index_select", "GATHER"),
+    "embedding": ("embedding", "GATHER"),
+    # ---- P3: scatter family ----
+    "scatter.src": ("scatter", "UPDATE_ONLY"),
+    "scatter.value": ("scatter_value", "UPDATE_ONLY"),
+    "scatter_add": ("scatter", "ADD"),
+    # ---- P3: fill family ----
+    "fill_.Scalar": (
+        "fill_scalar",
+        (
+            "Fill",
+            ", const at::Scalar& value",
+            "value",
+            "value.to<int64_t>()",
+            "value.to<double>()",
+        ),
+    ),
+    "zero_": ("fill_scalar", ("Fill", "", "", "0", "0.0")),
+    "masked_fill.Scalar": ("masked_fill", "Fill"),
+    # ---- P3: sort / topk ----
+    "topk": ("topk", "TopK"),
+    "sort": ("sort", ("Sort", "", "", "false")),
+    "sort.stable": (
+        "sort",
+        (
+            "Sort",
+            "\n    ::std::optional<bool> stable,",
+            " stable,",
+            "stable.has_value() && stable.value()",
+        ),
+    ),
+    # ---- P3: cumulative ----
+    # Cum has only ADD and MUL, so cummax/cummin/logcumsumexp stay on fallback.
+    "cumsum": ("cum", "ADD"),
+    "cumprod": ("cum", "MUL"),
+    # ---- P3: reductions that also return indices ----
+    "max.dim": ("reduce_with_indices", "MAX"),
+    "min.dim": ("reduce_with_indices", "MIN"),
+    "argmax": ("reduce_indices", "MAX"),
+    "argmin": ("reduce_indices", "MIN"),
 }
 
 # Ops in the GCU coverage set with no mudnn equivalent. Deliberately absent from
@@ -1714,6 +1767,551 @@ at::Tensor {kernel}(
 REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kMusa, {kernel})
 """
 
+# ==========================================================================
+# P3: shape / index / sort / scan, plus the Reduce variants that also return
+# indices.
+#
+# Every mudnn class used below was probed against CPU-computable answers before
+# being wired up (/tmp/probe_p3): Concat on both axes, Fill with and without a
+# mask, GatherX in GATHER and GATHER_ELEMENTS modes, Scatter in UPDATE_ONLY and
+# ADD, TopK, Sort, Cum in ADD and MUL, and Reduce's RunWithIndices/RunIndices.
+# All matched exactly, in float32 and int64, with no operand-order surprises.
+#
+# One measured limit shapes what is NOT here: mudnn hangs the device on a
+# negative-strided input (Permute over a reversed dim returned `4 5 6 0 0 0` in
+# isolation and wedged the queue when run in sequence), so flip/roll get no
+# kernel. permute/transpose/t are absent for a different reason -- they are
+# CompositeExplicitAutograd metadata ops that already alias correctly and run in
+# ~2us via csrc/aten/strided_ops.cc, so they never reach the fallback at all.
+# ==========================================================================
+
+# cat/stack. mudnn's Concat takes a C array of Tensors and one axis. The
+# operands must be materialized: MudnnTensorWrapper describes strides faithfully
+# but Concat reads each input as a dense block, and aten allows a cat of
+# arbitrary views. `stack` is cat-of-unsqueezed, so the same template serves both
+# with the unsqueeze folded in via {pre_unsqueeze}.
+T_CONCAT = """\
+at::Tensor {kernel}({list_type} tensors, int64_t dim) {{
+  std::vector<at::Tensor> ins;
+  for (const at::Tensor& t : tensors) ins.push_back(t);
+{pre_unsqueeze}
+  // aten's cat ignores empty tensors, and lets them disagree about ndim: the
+  // `torch.cat([torch.tensor([]), x], dim=-2)` that transformers' KV-cache
+  // does on the first step is legal even though the empty operand is 1-D and
+  // `x` is 4-D. Dropping them before anything looks at sizes keeps the shape
+  // arithmetic below on the real operands. (stack has already unsqueezed, and
+  // it does not accept empties, so this is a no-op there.)
+  std::vector<at::Tensor> kept;
+  for (const auto& t : ins) {{
+    if (t.numel() != 0 || t.dim() != 1) kept.push_back(t);
+  }}
+  if (kept.empty()) {{
+    return at::{at_op}(tensors, dim);
+  }}
+  bool ok = true;
+  for (const auto& t : kept) {{
+    if (!musa_ops::{dtype_pred}(t.scalar_type()) ||
+        t.scalar_type() != kept[0].scalar_type()) {{
+      ok = false;
+      break;
+    }}
+  }}
+  if (!ok) {{
+    std::vector<at::Tensor> cpu_ins;
+    for (const auto& t : kept) cpu_ins.push_back(t.cpu());
+    return at::cat(cpu_ins, dim).to(kept[0].device());
+  }}
+  int64_t ndim = kept[0].dim();
+  int64_t d = dim < 0 ? dim + ndim : dim;
+  auto out_shape = kept[0].sizes().vec();
+  int64_t total = 0;
+  for (const auto& t : kept) total += t.size(d);
+  out_shape[d] = total;
+  auto out = at::empty(out_shape, kept[0].options());
+
+  std::vector<at::Tensor> ins_c;
+  std::vector<std::unique_ptr<musa_ops::MudnnTensorWrapper>> wraps;
+  std::vector<musa_ops::mudnn::Tensor> raw;
+  for (const auto& t : kept) {{
+    ins_c.push_back(t.contiguous());
+    wraps.push_back(
+        std::make_unique<musa_ops::MudnnTensorWrapper>(ins_c.back()));
+    raw.push_back(wraps.back()->get());
+  }}
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Concat op;
+  op.SetAxis(static_cast<int>(d));
+  EXEC_MUDNN_CMD(
+      "{at_op}", kept[0],
+      op.Run(_mudnn_h, t_out.get(), static_cast<int>(raw.size()), raw.data()));
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kMusa, {kernel})
+"""
+
+# gather(self, dim, index, sparse_grad) -> GatherX::GATHER_ELEMENTS, which is
+# aten's element-wise gather (index has the output's shape and selects along
+# `dim` only). Probed: axis 1 over [[1,2,3],[4,5,6]] with index [[2,1,0],[0,1,2]]
+# gave [3,2,1,4,5,6]. NB the Run argument order is (out, index, in).
+T_GATHER = """\
+at::Tensor {kernel}(
+    const at::Tensor& self,
+    int64_t dim,
+    const at::Tensor& index,
+    bool sparse_grad) {{
+  if (!musa_ops::{dtype_pred}(self.scalar_type()) ||
+      index.scalar_type() != at::kLong || sparse_grad ||
+      index.device() != self.device()) {{
+    return at::{at_op}(self.cpu(), dim, index.cpu(), sparse_grad)
+        .to(self.device());
+  }}
+  int64_t d = dim < 0 ? dim + self.dim() : dim;
+  auto self_c = self.contiguous();
+  auto index_c = index.contiguous();
+  auto out = at::empty(index.sizes(), self.options());
+
+  musa_ops::MudnnTensorWrapper t_self(self_c);
+  musa_ops::MudnnTensorWrapper t_index(index_c);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::GatherX op;
+  op.SetMode(musa_ops::mudnn::GatherX::Mode::{mode});
+  op.SetAxis(static_cast<int>(d));
+  EXEC_MUDNN_CMD(
+      "{at_op}", self,
+      op.Run(_mudnn_h, t_out.get(), t_index.get(), t_self.get()));
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kMusa, {kernel})
+"""
+
+# index_select(self, dim, index) -> GatherX::GATHER: a 1-D index picks whole
+# slices along `dim`, so the output takes self's shape with dim replaced by
+# index.numel(). Probed on axis 0: index [1,0] over [[1,2,3],[4,5,6]] gave
+# [4,5,6,1,2,3].
+T_INDEX_SELECT = """\
+at::Tensor {kernel}(
+    const at::Tensor& self, int64_t dim, const at::Tensor& index) {{
+  if (!musa_ops::{dtype_pred}(self.scalar_type()) ||
+      index.scalar_type() != at::kLong || index.dim() > 1 ||
+      index.device() != self.device()) {{
+    return at::{at_op}(self.cpu(), dim, index.cpu()).to(self.device());
+  }}
+  int64_t d = dim < 0 ? dim + self.dim() : dim;
+  auto self_c = self.contiguous();
+  auto index_c = index.contiguous();
+  auto out_shape = self.sizes().vec();
+  out_shape[d] = index.numel();
+  auto out = at::empty(out_shape, self.options());
+
+  musa_ops::MudnnTensorWrapper t_self(self_c);
+  musa_ops::MudnnTensorWrapper t_index(index_c);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::GatherX op;
+  op.SetMode(musa_ops::mudnn::GatherX::Mode::{mode});
+  op.SetAxis(static_cast<int>(d));
+  EXEC_MUDNN_CMD(
+      "{at_op}", self,
+      op.Run(_mudnn_h, t_out.get(), t_index.get(), t_self.get()));
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kMusa, {kernel})
+"""
+
+# embedding(weight, indices, ...) is index_select along dim 0 with an
+# arbitrarily-shaped index, so the output is indices.shape + weight.shape[1:].
+# padding_idx only affects the backward, and scale_grad_by_freq/sparse likewise,
+# so the forward ignores them exactly as the dense CUDA kernel does.
+T_EMBEDDING = """\
+at::Tensor {kernel}(
+    const at::Tensor& weight,
+    const at::Tensor& indices,
+    int64_t padding_idx,
+    bool scale_grad_by_freq,
+    bool sparse) {{
+  if (!musa_ops::{dtype_pred}(weight.scalar_type()) ||
+      (indices.scalar_type() != at::kLong &&
+       indices.scalar_type() != at::kInt) ||
+      sparse || indices.device() != weight.device()) {{
+    return at::{at_op}(
+               weight.cpu(), indices.cpu(), padding_idx, scale_grad_by_freq,
+               sparse)
+        .to(weight.device());
+  }}
+  auto weight_c = weight.contiguous();
+  auto index_c = indices.reshape({{-1}}).contiguous();
+  std::vector<int64_t> out_shape = indices.sizes().vec();
+  for (int64_t i = 1; i < weight.dim(); ++i) {{
+    out_shape.push_back(weight.size(i));
+  }}
+  std::vector<int64_t> flat_shape = weight.sizes().vec();
+  flat_shape[0] = index_c.numel();
+  auto out = at::empty(flat_shape, weight.options());
+
+  musa_ops::MudnnTensorWrapper t_weight(weight_c);
+  musa_ops::MudnnTensorWrapper t_index(index_c);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::GatherX op;
+  op.SetMode(musa_ops::mudnn::GatherX::Mode::{mode});
+  op.SetAxis(0);
+  EXEC_MUDNN_CMD(
+      "{at_op}", weight,
+      op.Run(_mudnn_h, t_out.get(), t_index.get(), t_weight.get()));
+  return out.view(out_shape);
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kMusa, {kernel})
+"""
+
+# scatter.src / scatter_add: out = self with index/src scattered along dim.
+# mudnn's in-place Run(self, idx, update, dim) mutates its first argument, and
+# aten's out-of-place form must not touch self, so the kernel clones first. The
+# clone is what the functional op would allocate anyway. Probed both modes.
+#
+# NB on duplicate indices: when the same (dim-slice, index) pair appears twice,
+# aten's own docs call scatter's result nondeterministic -- "which value ends up
+# there is unspecified" -- so mudnn's winner may differ from CPU's. That is
+# within spec and is not a correctness gap; scatter_add is unambiguous because
+# it sums, and scatter.value is unambiguous because every write is the same
+# value. Both match CPU exactly.
+T_SCATTER = """\
+at::Tensor {kernel}(
+    const at::Tensor& self,
+    int64_t dim,
+    const at::Tensor& index,
+    const at::Tensor& src) {{
+  if (!musa_ops::{dtype_pred}(self.scalar_type()) ||
+      !musa_ops::{dtype_pred}(src.scalar_type()) ||
+      self.scalar_type() != src.scalar_type() ||
+      index.scalar_type() != at::kLong ||
+      index.device() != self.device() ||
+      src.device() != self.device()) {{
+    return at::{at_op}(self.cpu(), dim, index.cpu(), src.cpu())
+        .to(self.device());
+  }}
+  int64_t d = dim < 0 ? dim + self.dim() : dim;
+  auto out = self.contiguous().clone();
+  auto index_c = index.contiguous();
+  auto src_c = src.contiguous();
+
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::MudnnTensorWrapper t_index(index_c);
+  musa_ops::MudnnTensorWrapper t_src(src_c);
+  musa_ops::mudnn::Scatter op;
+  op.SetMode(musa_ops::mudnn::Scatter::Mode::{mode});
+  EXEC_MUDNN_CMD(
+      "{at_op}", self,
+      op.Run(_mudnn_h, t_out.get(), t_index.get(), t_src.get(),
+             static_cast<int>(d), musa_ops::MudnnWorkspaceFor(out)));
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kMusa, {kernel})
+"""
+
+# scatter.value: same as above with a scalar `src`, expanded to the index shape.
+# mudnn has no scalar-update form, so the scalar is materialized once at
+# index.sizes() -- small relative to the clone the op already does.
+T_SCATTER_VALUE = """\
+at::Tensor {kernel}(
+    const at::Tensor& self,
+    int64_t dim,
+    const at::Tensor& index,
+    const at::Scalar& value) {{
+  if (!musa_ops::{dtype_pred}(self.scalar_type()) ||
+      index.scalar_type() != at::kLong ||
+      index.device() != self.device()) {{
+    return at::{at_op}(self.cpu(), dim, index.cpu(), value)
+        .to(self.device());
+  }}
+  int64_t d = dim < 0 ? dim + self.dim() : dim;
+  auto out = self.contiguous().clone();
+  auto index_c = index.contiguous();
+  auto src_c = at::full(index.sizes(), value, self.options());
+
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::MudnnTensorWrapper t_index(index_c);
+  musa_ops::MudnnTensorWrapper t_src(src_c);
+  musa_ops::mudnn::Scatter op;
+  op.SetMode(musa_ops::mudnn::Scatter::Mode::{mode});
+  EXEC_MUDNN_CMD(
+      "{at_op}", self,
+      op.Run(_mudnn_h, t_out.get(), t_index.get(), t_src.get(),
+             static_cast<int>(d), musa_ops::MudnnWorkspaceFor(out)));
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kMusa, {kernel})
+"""
+
+# fill_.Scalar / zero_: in-place, no input tensor. Fill::SetValue is overloaded
+# on double vs int64_t and the integral overload must be chosen for integral
+# dtypes, or an int64 fill of 3 writes the bit pattern of 3.0.
+T_FILL_SCALAR = """\
+at::Tensor& {kernel}(at::Tensor& self{value_param}) {{
+  if (!musa_ops::{dtype_pred}(self.scalar_type()) || !self.is_contiguous()) {{
+    auto cpu = self.cpu();
+    cpu.{at_op}({value_arg_cpu});
+    self.copy_(cpu);
+    return self;
+  }}
+  musa_ops::MudnnTensorWrapper t_self(self);
+  musa_ops::mudnn::Fill op;
+  if (at::isIntegralType(self.scalar_type(), true)) {{
+    op.SetValue(static_cast<int64_t>({value_int}));
+  }} else {{
+    op.SetValue(static_cast<double>({value_double}));
+  }}
+  EXEC_MUDNN_CMD("{at_op}", self, op.Run(_mudnn_h, t_self.get()));
+  return self;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kMusa, {kernel})
+"""
+
+# masked_fill.Scalar -> Fill's masked Run, which writes `value` only where the
+# mask is true and leaves the rest untouched. Probed: value 9 with mask
+# [1,0,1,0,1,0] over [1..6] gave 9 2 9 4 9 6. aten's masked_fill is
+# out-of-place, so the kernel clones self first; the mask broadcasts to self.
+T_MASKED_FILL = """\
+at::Tensor {kernel}(
+    const at::Tensor& self,
+    const at::Tensor& mask,
+    const at::Scalar& value) {{
+  if (!musa_ops::{dtype_pred}(self.scalar_type()) ||
+      mask.scalar_type() != at::kBool ||
+      mask.device() != self.device()) {{
+    return at::{at_op}(self.cpu(), mask.cpu(), value).to(self.device());
+  }}
+  auto out_shape = at::infer_size(self.sizes(), mask.sizes());
+  auto out = self.expand(out_shape).contiguous();
+  auto mask_c = mask.expand(out_shape).contiguous();
+
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::MudnnTensorWrapper t_mask(mask_c);
+  musa_ops::mudnn::Fill op;
+  if (at::isIntegralType(self.scalar_type(), true)) {{
+    op.SetValue(value.to<int64_t>());
+  }} else {{
+    op.SetValue(value.to<double>());
+  }}
+  EXEC_MUDNN_CMD(
+      "{at_op}", self, op.Run(_mudnn_h, t_out.get(), t_mask.get()));
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kMusa, {kernel})
+"""
+
+# topk -> (values, indices). mudnn's TopK matches aten's argument set exactly
+# (k / dim / largest / sorted), but its dtype support is narrower than the rest
+# of the library: FLOAT/HALF/BFLOAT16/DOUBLE/INT32 work, while INT64, INT16,
+# INT8 and UINT8 are rejected outright ("Unsupported in data type: INT64,
+# TopKPreProcess failed"). Sort accepts all of them, so the restriction is
+# TopK's alone and is spelled out here rather than in the shared predicate.
+T_TOPK = """\
+::std::tuple<at::Tensor, at::Tensor> {kernel}(
+    const at::Tensor& self,
+    int64_t k,
+    int64_t dim,
+    bool largest,
+    bool sorted) {{
+  auto st = self.scalar_type();
+  bool topk_dtype = st == at::kFloat || st == at::kHalf ||
+                    st == at::kBFloat16 || st == at::kDouble || st == at::kInt;
+  if (!musa_ops::{dtype_pred}(st) || !topk_dtype) {{
+    auto r = at::{at_op}(self.cpu(), k, dim, largest, sorted);
+    return std::make_tuple(
+        std::get<0>(r).to(self.device()), std::get<1>(r).to(self.device()));
+  }}
+  int64_t d = dim < 0 ? dim + self.dim() : dim;
+  auto self_c = self.contiguous();
+  auto out_shape = self.sizes().vec();
+  out_shape[d] = k;
+  auto values = at::empty(out_shape, self.options());
+  auto indices = at::empty(out_shape, self.options().dtype(at::kLong));
+
+  musa_ops::MudnnTensorWrapper t_self(self_c);
+  musa_ops::MudnnTensorWrapper t_values(values);
+  musa_ops::MudnnTensorWrapper t_indices(indices);
+  musa_ops::mudnn::TopK op;
+  op.SetK(static_cast<int>(k));
+  op.SetDim(static_cast<int>(d));
+  op.SetLargest(largest);
+  op.SetSorted(sorted);
+  EXEC_MUDNN_CMD(
+      "{at_op}", self,
+      op.Run(_mudnn_h, t_values.get(), t_indices.get(), t_self.get(),
+             musa_ops::MudnnWorkspaceFor(values)));
+  return std::make_tuple(values, indices);
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kMusa, {kernel})
+"""
+
+# sort / sort.stable -> (values, indices). aten's `stable` is an optional that
+# defaults to false; mudnn takes it as a plain flag. {stable_param}/{stable_expr}
+# absorb the difference between the two overloads.
+#
+# On ties: with stable=false (aten's default) the returned *values* always match
+# CPU, but the *indices* chosen among equal elements need not -- measured on
+# randint(-9,9) inputs across int64/int32/float32/float16. aten documents that
+# order as unspecified unless stable=true, and with stable=true mudnn's indices
+# do match CPU exactly, so this is conformant rather than a gap.
+T_SORT = """\
+::std::tuple<at::Tensor, at::Tensor> {kernel}(
+    const at::Tensor& self,{stable_param}
+    int64_t dim,
+    bool descending) {{
+  if (!musa_ops::{dtype_pred}(self.scalar_type())) {{
+    auto r = at::{at_op}(self.cpu(),{stable_cpu_arg} dim, descending);
+    return std::make_tuple(
+        std::get<0>(r).to(self.device()), std::get<1>(r).to(self.device()));
+  }}
+  int64_t d = dim < 0 ? dim + self.dim() : dim;
+  auto self_c = self.contiguous();
+  auto values = at::empty(self.sizes(), self.options());
+  auto indices = at::empty(self.sizes(), self.options().dtype(at::kLong));
+
+  musa_ops::MudnnTensorWrapper t_self(self_c);
+  musa_ops::MudnnTensorWrapper t_values(values);
+  musa_ops::MudnnTensorWrapper t_indices(indices);
+  musa_ops::mudnn::Sort op;
+  op.SetDim(static_cast<int>(d));
+  op.SetDescending(descending);
+  op.SetStable({stable_expr});
+  EXEC_MUDNN_CMD(
+      "{at_op}", self,
+      op.Run(_mudnn_h, t_values.get(), t_indices.get(), t_self.get(),
+             musa_ops::MudnnWorkspaceFor(values)));
+  return std::make_tuple(values, indices);
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kMusa, {kernel})
+"""
+
+# cumsum / cumprod -> Cum::ADD / Cum::MUL. mudnn's Cum has only these two modes,
+# so cummax/cummin/logcumsumexp stay on the fallback rather than being faked.
+T_CUM = """\
+at::Tensor {kernel}(
+    const at::Tensor& self,
+    int64_t dim,
+    ::std::optional<at::ScalarType> dtype) {{
+  if (!musa_ops::{dtype_pred}(self.scalar_type()) ||
+      (dtype.has_value() && !musa_ops::{dtype_pred}(dtype.value()))) {{
+    return at::{at_op}(self.cpu(), dim, dtype).to(self.device());
+  }}
+  auto acc = dtype.has_value() ? dtype.value() : self.scalar_type();
+  auto self_c = self.to(acc).contiguous();
+  int64_t d = dim < 0 ? dim + self.dim() : dim;
+  auto out = at::empty(self.sizes(), self.options().dtype(acc));
+
+  musa_ops::MudnnTensorWrapper t_self(self_c);
+  musa_ops::MudnnTensorWrapper t_out(out);
+  musa_ops::mudnn::Cum op;
+  op.SetMode(musa_ops::mudnn::Cum::Mode::{mode});
+  op.SetDim(static_cast<int>(d));
+  EXEC_MUDNN_CMD(
+      "{at_op}", self,
+      op.Run(_mudnn_h, t_out.get(), t_self.get(),
+             musa_ops::MudnnWorkspaceFor(out)));
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kMusa, {kernel})
+"""
+
+# max.dim / min.dim -> Reduce::RunWithIndices, which fills the values and the
+# argmax/argmin in one pass. Probed against both MAX and MIN; ties resolve to the
+# lowest index, as aten does. The 0-strided guard is the same one the plain
+# reductions carry (see MudnnReduceNeedsContiguous).
+T_REDUCE_WITH_INDICES = """\
+::std::tuple<at::Tensor, at::Tensor> {kernel}(
+    const at::Tensor& self, int64_t dim, bool keepdim) {{
+  if (!musa_ops::{dtype_pred}(self.scalar_type())) {{
+    auto r = at::{at_op}(self.cpu(), dim, keepdim);
+    return std::make_tuple(
+        std::get<0>(r).to(self.device()), std::get<1>(r).to(self.device()));
+  }}
+  int64_t ndim = self.dim();
+  int64_t d = dim < 0 ? dim + ndim : dim;
+  auto out_shape = self.sizes().vec();
+  auto squeezed_shape = self.sizes().vec();
+  if (keepdim) out_shape[d] = 1;
+  else out_shape.erase(out_shape.begin() + d);
+  squeezed_shape.erase(squeezed_shape.begin() + d);
+
+  auto self_c = self;
+  if (musa_ops::MudnnReduceNeedsContiguous(self_c)) {{
+    self_c = self_c.contiguous();
+  }}
+  auto values = at::empty(squeezed_shape, self.options());
+  auto indices = at::empty(squeezed_shape, self.options().dtype(at::kLong));
+  int mudnn_dim = static_cast<int>(d);
+
+  musa_ops::MudnnTensorWrapper t_self(self_c);
+  musa_ops::MudnnTensorWrapper t_values(values);
+  musa_ops::MudnnTensorWrapper t_indices(indices);
+  musa_ops::mudnn::Reduce op;
+  op.SetMode(musa_ops::mudnn::Reduce::Mode::{mode});
+  op.SetDim(1, &mudnn_dim);
+  EXEC_MUDNN_CMD(
+      "{at_op}", self,
+      op.RunWithIndices(_mudnn_h, t_values.get(), t_indices.get(),
+                        t_self.get(), musa_ops::MudnnWorkspaceFor(values)));
+  if (keepdim) {{
+    return std::make_tuple(values.view(out_shape), indices.view(out_shape));
+  }}
+  return std::make_tuple(values, indices);
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kMusa, {kernel})
+"""
+
+# argmax / argmin -> Reduce::RunIndices, the indices-only form. aten allows a
+# nullopt dim meaning "over the flattened tensor", which is a reduce over dim 0
+# of self.reshape(-1).
+T_REDUCE_INDICES = """\
+at::Tensor {kernel}(
+    const at::Tensor& self, ::std::optional<int64_t> dim, bool keepdim) {{
+  if (!musa_ops::{dtype_pred}(self.scalar_type())) {{
+    return at::{at_op}(self.cpu(), dim, keepdim).to(self.device());
+  }}
+  auto self_r = dim.has_value() ? self : self.reshape({{-1}});
+  int64_t ndim = self_r.dim();
+  int64_t d = dim.has_value() ? (dim.value() < 0 ? dim.value() + ndim
+                                                 : dim.value())
+                              : 0;
+  auto out_shape = self_r.sizes().vec();
+  auto squeezed_shape = self_r.sizes().vec();
+  if (keepdim) out_shape[d] = 1;
+  else out_shape.erase(out_shape.begin() + d);
+  squeezed_shape.erase(squeezed_shape.begin() + d);
+
+  auto self_c = self_r;
+  if (musa_ops::MudnnReduceNeedsContiguous(self_c)) {{
+    self_c = self_c.contiguous();
+  }}
+  auto indices = at::empty(squeezed_shape, self.options().dtype(at::kLong));
+  int mudnn_dim = static_cast<int>(d);
+
+  musa_ops::MudnnTensorWrapper t_self(self_c);
+  musa_ops::MudnnTensorWrapper t_indices(indices);
+  musa_ops::mudnn::Reduce op;
+  op.SetMode(musa_ops::mudnn::Reduce::Mode::{mode});
+  op.SetDim(1, &mudnn_dim);
+  EXEC_MUDNN_CMD(
+      "{at_op}", self,
+      op.RunIndices(_mudnn_h, t_indices.get(), t_self.get(),
+                    musa_ops::MudnnWorkspaceFor(indices)));
+  return keepdim ? indices.view(out_shape) : indices;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kMusa, {kernel})
+"""
+
 CATEGORIES = {
     "unary": T_UNARY,
     "unary_alpha_const": T_UNARY_ALPHA_CONST,
@@ -1752,6 +2350,20 @@ CATEGORIES = {
     "reduce_norm": T_REDUCE_NORM,
     "layer_norm": T_LAYER_NORM,
     "layer_norm_bwd": T_LAYER_NORM_BWD,
+    # ---- P3: shape / index / sort / scan ----
+    "concat": T_CONCAT,
+    "gather": T_GATHER,
+    "index_select": T_INDEX_SELECT,
+    "embedding": T_EMBEDDING,
+    "scatter": T_SCATTER,
+    "scatter_value": T_SCATTER_VALUE,
+    "fill_scalar": T_FILL_SCALAR,
+    "masked_fill": T_MASKED_FILL,
+    "topk": T_TOPK,
+    "sort": T_SORT,
+    "cum": T_CUM,
+    "reduce_with_indices": T_REDUCE_WITH_INDICES,
+    "reduce_indices": T_REDUCE_INDICES,
 }
 
 # Categories whose mudnn mode is arithmetic, and therefore rejects bool operands
@@ -1792,6 +2404,14 @@ ARITHMETIC_CATEGORIES = {
     "reduce_norm",
     "layer_norm",
     "layer_norm_bwd",
+    # P3. The data-movement categories (concat/gather/scatter/fill/sort/topk)
+    # are deliberately absent: they copy elements rather than compute on them,
+    # so bool is accepted there and they use the permissive predicate. Cum and
+    # the Reduce index-returning variants do arithmetic/compares and stay
+    # strict, like the other reductions.
+    "cum",
+    "reduce_with_indices",
+    "reduce_indices",
 }
 
 # The mudnn class each category configures, for symbol validation.
@@ -1833,6 +2453,22 @@ CATEGORY_CLASS = {
     "reduce_norm": "Reduce",
     "layer_norm": "LayerNorm",
     "layer_norm_bwd": "LayerNorm",
+    # P3. Concat/Fill/Permute/Reduce live in mudnn_tensor.h rather than
+    # mudnn_ops.h, but they are the same ImplBase-derived classes and the symbol
+    # gate resolves them identically.
+    "concat": "Concat",
+    "gather": "GatherX",
+    "index_select": "GatherX",
+    "embedding": "GatherX",
+    "scatter": "Scatter",
+    "scatter_value": "Scatter",
+    "fill_scalar": None,  # Fill has no Mode enum -- SetValue is the whole config
+    "masked_fill": None,
+    "topk": None,  # TopK has no Mode enum either
+    "sort": None,
+    "cum": "Cum",
+    "reduce_with_indices": "Reduce",
+    "reduce_indices": "Reduce",
 }
 
 FILE_HEADER = """\
@@ -1978,6 +2614,24 @@ def main():
             fmt["param"] = extra[0]
         elif cat == "clamp_one_sided":
             fmt["param"], fmt["lo"], fmt["hi"] = extra[0], extra[1], extra[2]
+        elif cat == "concat":
+            # cat takes an ITensorListRef, stack a plain TensorList, and stack
+            # has to unsqueeze every operand before concatenating.
+            fmt["list_type"] = extra[0]
+            fmt["pre_unsqueeze"] = (
+                "  for (auto& t : ins) t = t.unsqueeze(dim);" if extra[1] else ""
+            )
+        elif cat == "fill_scalar":
+            # zero_ has no value argument; fill_.Scalar takes a Scalar.
+            fmt["value_param"] = extra[0]
+            fmt["value_arg_cpu"] = extra[1]
+            fmt["value_int"] = extra[2]
+            fmt["value_double"] = extra[3]
+        elif cat == "sort":
+            # sort.stable carries an extra optional<bool> ahead of `dim`.
+            fmt["stable_param"] = extra[0]
+            fmt["stable_cpu_arg"] = extra[1]
+            fmt["stable_expr"] = extra[2]
         bodies.append(CATEGORIES[cat].format(**fmt))
         covered.append((op, mode_name, cat))
 
