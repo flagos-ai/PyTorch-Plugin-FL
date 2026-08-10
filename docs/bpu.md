@@ -277,6 +277,21 @@ torch-side view is what you want.
   `torch_fl._C._empty_cache()` before exit frees the same blocks cleanly, which
   is what confirms only the exit ordering is at fault. The kernel reclaims the
   carveout when the fd closes.
+- **The `cuda` alias must not break FX or Dynamo.** `_alias_cuda_to_flagos`
+  rebinds `torch.device` to a Python wrapper so hardcoded-`cuda` code lands on
+  the accelerator that is present. Two torch registries compare against that
+  attribute by *identity*, so the swap silently changed their behaviour:
+  `torch.fx.graph.add_global` special-cases `obj != torch.device` to emit a
+  device constant as the bare name `device(type='cpu')`, and with the attribute
+  swapped it fell through to the qualified-name path for custom ops — the name
+  was never added to the generated module's globals and running the graph raised
+  `NameError: name 'device' is not defined`. `torch._dynamo.utils`'s
+  `common_constant_types` is membership-tested with `type(obj) in ...`, so
+  reading `tensor.device` while tracing asserted instead. Between them these
+  took out every model that calls `torch.arange(..., device=...)`, which is how
+  HF builds position ids — i.e. every transformer. Both registries are keyed on
+  objects, so `_keep_device_identity_checks_working` corrects them in place at
+  import. `tests/unit/bpu/test_device_alias.py` covers it.
 
 ## Measured performance
 
@@ -408,8 +423,54 @@ clean answer. Tracing the vendor took about twenty minutes and settled it.
 `tests/unit/bpu/test_kv_window.py` pins the geometry to values transcribed from
 that trace, so a regression fails loudly instead of producing plausible prose.
 
-This path drives a prebuilt vendor artifact, not a `torch.compile` graph. The
-compile side is not there yet — see the limitations below.
+This path drives a prebuilt vendor artifact, not a `torch.compile` graph. For
+what the compile path does on a stock transformer, see below.
+
+### Stock transformers under `torch.compile`
+
+A HuggingFace `Qwen3ForCausalLM` (2 layers, d=64) under
+`torch.compile(backend="bpu")` runs on the board, compiled from the traced graph
+rather than from a vendor artifact: **cosine 0.9910 against eager float**, with
+the largest partitions offloading whole — 30/30 and 22/22 compute nodes, one
+partition each. It is correct, not yet fast: each Dynamo region becomes its own
+`.hbm` submission rather than one graph over a device-resident cache, so the
+82 tok/s above still belongs to `infer.py` alone.
+
+Three things had to be fixed to get here, and the order they were found in is
+the useful part.
+
+**The `cuda` alias was breaking FX codegen.** This looked exactly like a torch
+2.10 bug and was not; see the entry under *Runtime notes*. Until it was fixed,
+every HF model failed at `NameError: name 'device' is not defined` before any
+BPU code ran.
+
+**`pow`, `rsqrt`, `sqrt` and `neg` were missing from the supported set.** Those
+four ops *are* RMSNorm, and without them a norm block split in two at 86%
+coverage. `convert(advice=True)` shows hbdk4 lowering the lot to b30vpu with
+zero CPU fallbacks, so the whitelist was wrong, not the hardware. `slice` joined
+for the same reason on the attention side — it is how attention takes its causal
+window.
+
+**What actually caps coverage is Dynamo's symbolic shapes, not any missing op.**
+This is worth measuring rather than assuming: the obvious suspect,
+`aten._scaled_dot_product_flash_attention_for_cpu`, is a fused tuple-returning
+node that keeps attention proper on the CPU — but forcing the math SDPA backend
+decomposes it and moves whole-model coverage only 56% → 60%. Of the nodes
+rejected on a 1-layer Qwen3, 21 are whitelisted ops carrying a symbolic dim
+(`slice` x10, `view` x4, `unsqueeze` x3, `cat` x2, `mul` x2) and 5 are
+int64/bool, against 8 that are genuinely unsupported (`embedding`, `arange`,
+`scalar_tensor`, `lift_fresh_copy`). hbdk4 bakes memspace offsets and SRAM
+tiling into the artifact, so a symbolic dim cannot be compiled at all and
+`partition.py` rejects it deliberately. Tracing at a fixed sequence length is
+what removes them.
+
+One partition also falls back on an `expand` feeding a 5-D broadcast, which
+fails hbdk4 shape inference (`'hbir.tile' op ... axis 0 is inferred to be 1, but
+got 0`) — the constant-folding gap noted in the limitations. The model still
+runs.
+
+Compile time dominates: **~350 s for a 2-layer model**, because every partition
+goes through hbdk4 under box64. Cached after the first run.
 
 ### Smaller graphs
 
@@ -460,14 +521,14 @@ signature, march and Q/DQ pass version, so this is a first-run cost only.
   on the BPU's VPU rather than its MAC array. `convert(advice=True)` is how to
   check what a given graph actually lowers to.
 - **LLM inference runs a prebuilt vendor artifact, not a compiled graph.**
-  `infer.py` is the runtime half only. Driving a `torch.compile`d transformer
-  the same way needs, in rough order: `aten.slice.Tensor` in `partition.py`'s
-  supported set (without it a transformer block fragments; with it decode and
-  prefill are each a single partition at 100% node coverage), an ONNX
-  constant-folding pass after export (torch's `aten.expand` emits a
-  `Shape->Equal->Where->Expand` chain hbdk4 cannot shape-infer through), and
+  `infer.py` is the runtime half only, and it is what the 82 tok/s above
+  measures. A `torch.compile`d transformer is a separate path that works but is
+  not yet fast — see *Stock transformers under `torch.compile`*. Closing the gap
+  needs an ONNX constant-folding pass after export (torch's `aten.expand` emits
+  a `Shape->Equal->Where->Expand` chain hbdk4 cannot shape-infer through) and
   mixed-precision Q/DQ — the vendor artifact uses si16 for the K cache, si8 for
   V, and f16 for the mask and logits, where `qdq.py` is si8-only. With folding
   alone, `convert(advice=True)` already puts 54 of 66 ops on the BPU; the 12
   fallbacks all report `"fallback to float, op is not completely quantized"`,
   which is the Q/DQ gap rather than a hardware limit.
+

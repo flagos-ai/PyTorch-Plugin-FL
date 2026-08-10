@@ -669,6 +669,13 @@ out = compiled(torch.randn(1, 3, 224, 224))
   **82.1 tok/s decode on Qwen3-0.6B against the vendor `llm` demo's 84.8–87.7**
   on the same artifact. Run `benchmarks/bpu_qwen3_bench.py`. This drives a
   prebuilt vendor `.hbm`, not a `torch.compile` graph.
+- **Stock transformers compile too, correctly but not yet quickly.** A
+  HuggingFace `Qwen3ForCausalLM` under `torch.compile(backend="bpu")` runs from
+  its traced graph at **cosine 0.9910 against eager float**, with its largest
+  partitions offloading whole (30/30 and 22/22 nodes). Coverage is capped by
+  Dynamo's symbolic shapes rather than by missing ops — hbdk4 cannot compile a
+  symbolic dim at all — so tracing at a fixed sequence length is what raises it.
+  See [docs/bpu.md](docs/bpu.md#stock-transformers-under-torchcompile).
 
 ### Build Environment Variables
 

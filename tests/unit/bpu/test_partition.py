@@ -168,3 +168,58 @@ def test_backend_falls_back_without_hbdk(caplog, monkeypatch):
 
     torch.testing.assert_close(got, expected)
     assert "no hbdk4 compiler reachable" in caplog.text
+
+
+# -- transformer coverage ------------------------------------------------------
+
+
+class RMSNormBlock(torch.nn.Module):
+    """RMSNorm + gated MLP: the shape of every layer in a recent LLM."""
+
+    def __init__(self, d=64):
+        super().__init__()
+        self.w = torch.nn.Parameter(torch.ones(d))
+        self.fc1 = torch.nn.Linear(d, 2 * d)
+        self.fc2 = torch.nn.Linear(2 * d, d)
+
+    def forward(self, x):
+        v = x.pow(2).mean(-1, keepdim=True)
+        y = x * torch.rsqrt(v + 1e-6) * self.w
+        return x + self.fc2(torch.nn.functional.silu(self.fc1(y)))
+
+
+def test_rmsnorm_block_is_one_partition():
+    """`pow` and `rsqrt` are what a norm is made of.
+
+    Without them on the whitelist the graph splits at every norm: 86% of the
+    nodes offloaded across two partitions, each paying its own boundary copy,
+    for an op hbdk4 lowers entirely to b30vpu (checked with
+    `convert(advice=True)`: 6 ops, zero CPU fallbacks).
+    """
+    from torch_fl.accelerator.bpu.decompose import decompose
+
+    gm, _ = _aot_graph(RMSNormBlock().eval(), torch.randn(1, 8, 64))
+    decompose(gm)  # as the backend does, before partitioning
+    parts = partition_graph(gm, min_nodes=2)
+
+    assert len(parts) == 1, summarize(gm, parts)
+    targets = {n.target for n in parts[0].nodes}
+    assert torch.ops.aten.pow.Tensor_Scalar in targets
+    assert torch.ops.aten.rsqrt.default in targets
+
+    compute = [n for n in gm.graph.nodes if n.op == "call_function"]
+    assert len(parts[0].nodes) == len(compute), "every compute node should offload"
+
+
+def test_slice_does_not_split_a_partition():
+    """Attention takes its causal window with `slice`, once per layer."""
+
+    class Sliced(torch.nn.Module):
+        def forward(self, x):
+            return torch.relu(x[:, :4] * 2) + 1
+
+    gm, _ = _aot_graph(Sliced(), torch.randn(2, 8))
+    parts = partition_graph(gm, min_nodes=1)
+
+    assert len(parts) == 1, summarize(gm, parts)
+    assert torch.ops.aten.slice.Tensor in {n.target for n in parts[0].nodes}
