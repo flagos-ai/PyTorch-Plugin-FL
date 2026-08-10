@@ -205,6 +205,23 @@ OPS = {
     "sigmoid_backward": ("act_backward", None),
     # ---- threshold_backward: (grad_output, self, Scalar threshold) ----
     "threshold_backward": ("threshold_backward", None),
+    # ---- activation backward: forward was already routed, backward was not,
+    # so inference worked and .backward() died at runtime. See the template
+    # block for the two ops whose CANN name is NOT the derived PascalCase one.
+    "hardshrink_backward": ("grad_scalar_backward", None),
+    "softshrink_backward": ("grad_scalar_backward", None),
+    "softplus_backward": ("grad_two_scalar_backward", None),
+    "hardtanh_backward": ("grad_two_scalar_backward", None),
+    "leaky_relu_backward": ("leaky_relu_backward", None),
+    "elu_backward": ("elu_backward", None),
+    # CANN spells these two differently from the derived name:
+    #   native_dropout_backward -> aclnnDropoutBackward   (not NativeDropout*)
+    #   _prelu_kernel_backward  -> aclnnPreluBackward     (not PreluKernel*)
+    # composed from routed ops, not aclnnDropoutBackward (mask format
+    # mismatch -- see the template). Listed in NO_ACLNN_CATEGORIES.
+    "native_dropout_backward": ("dropout_backward", None),
+    "_prelu_kernel": ("binary", "Prelu"),
+    "_prelu_kernel_backward": ("prelu_backward", "PreluBackward"),
     # ---- pow_scalar_tensor: (Scalar self, Tensor exponent) ----
     "pow.Scalar": ("pow_scalar_tensor", "PowScalarTensor"),
     # ---- reduce_max_dim: (Tensor, int64_t dim, bool keepdim) -> (values, indices) ----
@@ -443,6 +460,28 @@ OPS = {
         "foreach_inplace_addcdiv_scalarlist",
         "ForeachAddcdivScalarList",
     ),
+    # ---- foreach ops behind torch.nn.utils.clip_grad_* ----
+    # clip_grad_norm_ needs _foreach_norm; clip_grad_value_ needs
+    # _foreach_clamp_min_. CANN has no ForeachClampMin* spelling at all, but
+    # clamp_min == elementwise maximum against a scalar, so the Maximum entry
+    # is exactly equivalent. Use the V2 form: non-V2 declares its scalar as
+    # aclTensor*, V2 as aclScalar*.
+    "_foreach_norm.Scalar": ("foreach_norm", "ForeachNorm"),
+    "_foreach_clamp_min_.Scalar": (
+        "foreach_inplace_maximum_scalar",
+        "ForeachMaximumScalarV2",
+    ),
+    # clamp_max == elementwise minimum against a scalar; same template, other
+    # direction. clip_grad_value_ issues both clamp_min_ and clamp_max_.
+    "_foreach_clamp_max_.Scalar": (
+        "foreach_inplace_maximum_scalar",
+        "ForeachMinimumScalarV2",
+    ),
+    # linalg_vector_norm backs torch.norm / F.normalize / cosine_similarity and
+    # is what clip_grad_norm_ reduces each per-tensor norm with.
+    "linalg_vector_norm": ("linalg_vector_norm", "LinalgVectorNorm"),
+    # clip_grad_norm_ finishes by scaling every gradient by one clip coefficient.
+    "_foreach_mul_.Tensor": ("foreach_inplace_mul_tensor", "ForeachMulList"),
     # ---- embedding + pad (single-aclnn-call, migrated from handwritten) ----
     "embedding": ("embedding", "Embedding"),
     "embedding_dense_backward": ("embedding_dense_backward", "EmbeddingDenseBackward"),
@@ -1705,6 +1744,166 @@ void {kernel}(at::TensorList self, at::TensorList tensor1, at::TensorList tensor
     size_t n = std::min<size_t>({chunk}, self.size() - off);
     {kernel}Chunk(self.slice(off, n), tensor1.slice(off, n), tensor2.slice(off, n),
         scalars.slice(off, n));
+  }}
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# --- foreach ops needed by torch.nn.utils.clip_grad_* ----------------------
+#
+# Gradient clipping is near-universal in real training scripts and both of its
+# entry points were dead on Ascend:
+#   clip_grad_norm_  -> _foreach_norm.Scalar        (aclnnForeachNorm)
+#   clip_grad_value_ -> _foreach_clamp_min_.Scalar  (no aclnnForeachClampMin*)
+#
+# For the second one CANN has no clamp_min spelling at all, but clamp_min is
+# elementwise max against a scalar, so aclnnForeachMaximumScalarV2 is exactly
+# equivalent. Use the V2 entry: the non-V2 aclnnForeachMaximumScalar declares
+# its scalar as `const aclTensor*`, while V2 takes a proper `const aclScalar*`.
+#
+# Both chunk at FOREACH_CHUNK for the same reason as the AdamW foreach ops --
+# aclnn silently drops list entries past 50.
+
+# _foreach_norm.Scalar: (self[], Scalar ord, optional<ScalarType>) -> Tensor[].
+#   aclnnForeachNorm(x, scalar, out) with out a list of 0-d per-tensor norms.
+# Only ord==2 is supported by CANN's kernel; anything else must not silently
+# return a 2-norm, so it is rejected loudly here.
+T_FOREACH_NORM = """\
+static void {kernel}Chunk(at::TensorList self, at::TensorList outs, const at::Scalar& ord) {{
+  namespace ascend = at::native::flagos::ascend;
+
+  std::vector<ascend::AclTensorWrapper> in_w, out_w;
+  in_w.reserve(self.size());
+  out_w.reserve(outs.size());
+  for (const auto& t : self) in_w.emplace_back(t);
+  for (const auto& t : outs) out_w.emplace_back(t);
+
+  std::vector<const aclTensor*> in_ptrs, out_ptrs;
+  in_ptrs.reserve(self.size());
+  out_ptrs.reserve(outs.size());
+  for (auto& w : in_w) in_ptrs.push_back(w.get());
+  for (auto& w : out_w) out_ptrs.push_back(w.get());
+
+  aclTensorList* in_list = aclCreateTensorList(in_ptrs.data(), in_ptrs.size());
+  aclTensorList* out_list = aclCreateTensorList(out_ptrs.data(), out_ptrs.size());
+  // aic-ops-info: ForeachNorm's `scalar` is float32 regardless of x's dtype.
+  ascend::AclScalarWrapper acl_ord(ord, at::kFloat);
+
+  EXEC_ASCEND_CMD({aclnn}, in_list, acl_ord.get(), out_list);
+
+  (void)in_list; (void)out_list;  // owned by in_w/out_w
+}}
+
+::std::vector<at::Tensor> {kernel}(at::TensorList self, const at::Scalar& ord, ::std::optional<at::ScalarType> dtype) {{
+  TORCH_CHECK(!self.empty(), "{disp}: expected a non-empty list of tensors");
+  TORCH_CHECK(ord.toDouble() == 2.0,
+      "{disp}: only ord=2 is supported on Ascend (aclnnForeachNorm), got ", ord.toDouble());
+  std::vector<at::Tensor> outs;
+  outs.reserve(self.size());
+  for (const auto& t : self) {{
+    auto opts = dtype.has_value() ? t.options().dtype(dtype.value()) : t.options();
+    outs.push_back(at::native::flagos::ascend::OpPreparation::apply_tensor_without_format(
+        {{}}, opts));
+  }}
+  for (size_t off = 0; off < self.size(); off += {chunk}) {{
+    size_t n = std::min<size_t>({chunk}, self.size() - off);
+    {kernel}Chunk(self.slice(off, n), at::TensorList(outs).slice(off, n), ord);
+  }}
+  return outs;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# _foreach_clamp_min_.Scalar: (self[]&, Scalar) -> void, self = max(self, scalar).
+#   aclnnForeachMaximumScalarV2(x, scalar, out=x)
+T_FOREACH_INPLACE_MAXIMUM_SCALAR = """\
+static void {kernel}Chunk(at::TensorList self, const at::Scalar& scalar) {{
+  namespace ascend = at::native::flagos::ascend;
+
+  std::vector<ascend::AclTensorWrapper> wrappers;
+  wrappers.reserve(self.size());
+  for (const auto& t : self) wrappers.emplace_back(t);
+
+  std::vector<const aclTensor*> acl_tensors;
+  acl_tensors.reserve(self.size());
+  for (auto& w : wrappers) acl_tensors.push_back(w.get());
+
+  aclTensorList* tensor_list = aclCreateTensorList(acl_tensors.data(), acl_tensors.size());
+  // Same bf16 carve-out as ForeachMulScalar/ForeachAddScalar: no bf16 scalar
+  // entry in aic-ops-info, so a bf16 x needs its scalar as float32.
+  auto scalar_dtype = self[0].scalar_type() == at::kBFloat16 ? at::kFloat : self[0].scalar_type();
+  ascend::AclScalarWrapper acl_scalar(scalar, scalar_dtype);
+
+  EXEC_ASCEND_CMD({aclnn}, tensor_list, acl_scalar.get(), tensor_list);
+
+  (void)tensor_list;  // aclTensor* owned by wrappers; do not aclDestroyTensorList
+}}
+
+void {kernel}(at::TensorList self, const at::Scalar& scalar) {{
+  TORCH_CHECK(!self.empty(), "{disp}: expected a non-empty list of tensors");
+  for (size_t off = 0; off < self.size(); off += {chunk}) {{
+    size_t n = std::min<size_t>({chunk}, self.size() - off);
+    {kernel}Chunk(self.slice(off, n), scalar);
+  }}
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# _foreach_mul_.Tensor: (self[]&, Tensor other) -> void, every entry scaled by
+# the SAME single `other`. clip_grad_norm_ ends here: it computes one clip
+# coefficient tensor and multiplies every gradient by it.
+#
+# aclnnForeachMulList requires x2[i] to have the SAME SHAPE as x1[i] ("The
+# input 1 shape should be same with input 0"), so a list of n aliases of a 0-d
+# `other` is rejected. Broadcast `other` to each entry's shape first. The
+# expand is a stride-0 view, but aclnn needs dense memory, so it is
+# materialized -- one temporary per entry, sized like that entry.
+#
+# `other` is a 1-element device tensor in the clip_grad_norm_ path, which is
+# the only caller that matters here; a non-scalar `other` would broadcast the
+# same way.
+T_FOREACH_INPLACE_MUL_TENSOR = """\
+static void {kernel}Chunk(at::TensorList self, const at::Tensor& other) {{
+  namespace ascend = at::native::flagos::ascend;
+
+  // aclnn compares x1[i]/x2[i] shapes elementwise, so materialize `other`
+  // at each entry's shape rather than aliasing one 0-d tensor n times.
+  std::vector<at::Tensor> others;
+  others.reserve(self.size());
+  for (const auto& t : self) {{
+    auto o = other.scalar_type() == t.scalar_type() ? other : other.to(t.scalar_type());
+    others.push_back(o.sizes().equals(t.sizes()) ? o.contiguous()
+                                                 : o.expand(t.sizes()).contiguous());
+  }}
+
+  std::vector<ascend::AclTensorWrapper> self_w, other_w;
+  self_w.reserve(self.size());
+  other_w.reserve(others.size());
+  for (const auto& t : self) self_w.emplace_back(t);
+  for (const auto& t : others) other_w.emplace_back(t);
+
+  std::vector<const aclTensor*> self_ptrs, other_ptrs;
+  self_ptrs.reserve(self.size());
+  other_ptrs.reserve(others.size());
+  for (auto& w : self_w) self_ptrs.push_back(w.get());
+  for (auto& w : other_w) other_ptrs.push_back(w.get());
+
+  aclTensorList* self_list = aclCreateTensorList(self_ptrs.data(), self_ptrs.size());
+  aclTensorList* other_list = aclCreateTensorList(other_ptrs.data(), other_ptrs.size());
+
+  EXEC_ASCEND_CMD({aclnn}, self_list, other_list, self_list);
+
+  (void)self_list; (void)other_list;  // owned by self_w/other_w
+}}
+
+void {kernel}(at::TensorList self, const at::Tensor& other) {{
+  TORCH_CHECK(!self.empty(), "{disp}: expected a non-empty list of tensors");
+  for (size_t off = 0; off < self.size(); off += {chunk}) {{
+    size_t n = std::min<size_t>({chunk}, self.size() - off);
+    {kernel}Chunk(self.slice(off, n), other);
   }}
 }}
 
@@ -3291,6 +3490,249 @@ at::Tensor {kernel}(const at::Tensor& grad_output, const at::Tensor& self, const
 REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
 """
 
+# --- activation backward family --------------------------------------------
+#
+# These close the "forward routed, backward not" gap: the forward half of each
+# of these activations already dispatches to aclnn, so inference works while
+# .backward() dies at runtime with "<op>: backend not registered". Same failure
+# shape as the in-place gap -- invisible at build time, only training hits it.
+#
+# NOTE on aclnn naming: the derived PascalCase name is right for most of these
+# (elu_backward -> aclnnEluBackward), but NOT for the two most valuable ones.
+# CANN spells them aclnnDropoutBackward (not NativeDropoutBackward) and
+# aclnnRmsNormGrad (not RmsNormBackward), so both need an explicit override.
+# Grep libopapi.so per spelling; the derived name is a guess, not a contract.
+
+# grad_scalar_backward: (grad_output, self, Scalar) -> grad_input, self-shaped.
+#   aclnn<Name>(gradOutput, self, scalar, gradInput)
+# e.g. hardshrink_backward (lambd) / softshrink_backward (lambda).
+T_GRAD_SCALAR_BACKWARD = """\
+at::Tensor {kernel}(const at::Tensor& grad_output, const at::Tensor& self, const at::Scalar& value) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options());
+
+  ascend::AclTensorWrapper acl_grad(grad_output);
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclScalarWrapper acl_value(value, self.scalar_type());
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_grad.get(), acl_self.get(), acl_value.get(), acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# grad_two_scalar_backward: (grad_output, self, Scalar a, Scalar b) -> grad_input.
+#   aclnn<Name>(gradOutput, self, a, b, gradInput)
+# e.g. softplus_backward (beta, threshold) / hardtanh_backward (min, max).
+T_GRAD_TWO_SCALAR_BACKWARD = """\
+at::Tensor {kernel}(const at::Tensor& grad_output, const at::Tensor& self, const at::Scalar& a, const at::Scalar& b) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options());
+
+  ascend::AclTensorWrapper acl_grad(grad_output);
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclScalarWrapper acl_a(a, self.scalar_type());
+  ascend::AclScalarWrapper acl_b(b, self.scalar_type());
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_grad.get(), acl_self.get(), acl_a.get(), acl_b.get(), acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# leaky_relu_backward: (grad_output, self, Scalar negative_slope, bool self_is_result).
+#   aclnnLeakyReluBackward(gradOutput, self, negativeSlope, selfIsResult, out)
+# `self_is_result` passes through as a bool, which survives varargs promotion
+# (unlike float -- see EXEC_ASCEND_CMD_SIG).
+T_LEAKY_RELU_BACKWARD = """\
+at::Tensor {kernel}(const at::Tensor& grad_output, const at::Tensor& self, const at::Scalar& negative_slope, bool self_is_result) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options());
+
+  ascend::AclTensorWrapper acl_grad(grad_output);
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclScalarWrapper acl_slope(negative_slope, self.scalar_type());
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_grad.get(), acl_self.get(), acl_slope.get(),
+      self_is_result, acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# elu_backward: (grad_output, alpha, scale, input_scale, is_result, self_or_result).
+#   aclnnEluBackward(gradOutput, alpha, scale, inputScale, isResult, selfOrResult, gradInput)
+# Argument order matches aten's exactly, which is unusual -- most backward
+# entries lead with (gradOutput, self).
+T_ELU_BACKWARD = """\
+at::Tensor {kernel}(const at::Tensor& grad_output, const at::Scalar& alpha, const at::Scalar& scale, const at::Scalar& input_scale, bool is_result, const at::Tensor& self_or_result) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      self_or_result.sizes(), self_or_result.options());
+
+  ascend::AclTensorWrapper acl_grad(grad_output);
+  ascend::AclScalarWrapper acl_alpha(alpha, self_or_result.scalar_type());
+  ascend::AclScalarWrapper acl_scale(scale, self_or_result.scalar_type());
+  ascend::AclScalarWrapper acl_input_scale(input_scale, self_or_result.scalar_type());
+  ascend::AclTensorWrapper acl_self(self_or_result);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_grad.get(), acl_alpha.get(), acl_scale.get(),
+      acl_input_scale.get(), is_result, acl_self.get(), acl_out.get());
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# native_dropout_backward: (grad_output, mask, double scale) -> grad_input.
+#
+# NOT routed through aclnnDropoutBackward, despite that symbol existing.
+# aclnn's dropout pair speaks a BIT-PACKED uint8 mask (1 bit per element,
+# 128-byte aligned) while aten's schema promises a bool tensor, and our
+# native_dropout forward (rng.cc) already returns the bool form because that is
+# what the schema requires. Feeding it to aclnnDropoutBackward fails the shape
+# check -- "Size of maskOut has to be 64, but current is 512" for a 512-element
+# input, i.e. it wants the 64-byte packed buffer, not 512 bools.
+#
+# Round-tripping bool -> packed -> aclnn would mean re-packing on device for no
+# gain: the backward is just `grad * mask * scale`, two already-routed aclnn
+# ops. Compose it instead. Stays on device, no CPU round-trip.
+T_DROPOUT_BACKWARD = """\
+at::Tensor {kernel}(const at::Tensor& grad_output, const at::Tensor& mask, double scale) {{
+  auto m = mask.scalar_type() == grad_output.scalar_type()
+      ? mask : mask.to(grad_output.scalar_type());
+  return grad_output * m * scale;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# _prelu_kernel_backward: (grad_output, self, weight) -> (grad_self, grad_weight).
+#   aclnnPreluBackward(gradOutput, self, weight, gradInput, gradWeight)
+#
+# TRAP: the two sides disagree on grad_weight's shape.
+#   aclnn wants it WEIGHT-shaped -- it reduces internally, and rejects anything
+#     else with ret=161002 ("Expected tensor for gradWeight to have same size
+#     as [4], but got [8, 4]").
+#   aten's contract is the UN-reduced, self-shaped per-element gradient; the
+#     sum over broadcast dims is autograd's job downstream.
+# Allocating either shape alone is wrong: aclnn's shape breaks aten's callers,
+# aten's shape breaks the aclnn call. So take aclnn's reduced result and expand
+# it back along the broadcast dims to satisfy aten.
+#
+# The weight broadcasts over dim 1 for ndim>=2 (the channel dim) and is a
+# single element otherwise, which is exactly how the forward broadcasts it.
+# _prelu_kernel_backward: (grad_output, self, weight) -> (grad_self, grad_weight).
+#   aclnnPreluBackward(gradOutput, self, weight, gradInput, gradWeight)
+#
+# aclnn is only usable here for HALF of this op. The two sides disagree on
+# grad_weight and the disagreement is not a reshape:
+#   aclnn  returns grad_weight already SUMMED over the broadcast dims, flat,
+#          shaped exactly [weight.numel()].
+#   aten's contract is the UN-reduced per-element gradient, shaped like `self`;
+#          autograd sums it afterwards.
+# Broadcasting aclnn's reduced vector back to self's shape does not recover the
+# per-element values -- it repeats the total, so autograd's later sum inflates
+# each entry by the number of rows (measured: exactly 4x on a 4-row input).
+#
+# grad_weight's true per-element value is just `self < 0 ? self * grad_output
+# : 0`, which is two already-routed device ops, so compute grad_input with
+# aclnn (it is correct and matches CPU exactly) and grad_weight directly.
+# No CPU round-trip either way.
+T_PRELU_BACKWARD = """\
+::std::tuple<at::Tensor, at::Tensor> {kernel}(const at::Tensor& grad_output, const at::Tensor& self, const at::Tensor& weight) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto grad_self = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options());
+  // aclnn's gradWeight is reduced, and its shape check is self-contradictory
+  // across the two weight kinds -- measured against CANN 9.0.0:
+  //   weight [1, 4] (channel-wise, as autograd broadcasts it) -> demands [4]
+  //     "Expected tensor for gradWeight to have same size as [4], but got [1,4]"
+  //   weight [1, 1] (single shared slope)                     -> demands [1, 1]
+  //     "Expected tensor for weight to have same size as tensor for
+  //      gradWeight, but [1,1] does not equal [1]"
+  // So a single rule cannot satisfy both: flat [numel] for the multi-element
+  // case, weight.sizes() verbatim for the scalar case. Its contents are not
+  // what aten wants either way; see the note above.
+  const int64_t w_numel = weight.numel();
+  auto grad_weight_reduced = w_numel == 1
+      ? ascend::OpPreparation::apply_tensor_without_format(
+            weight.sizes(), weight.options())
+      : ascend::OpPreparation::apply_tensor_without_format(
+            {{w_numel}}, weight.options());
+
+  ascend::AclTensorWrapper acl_grad(grad_output);
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_weight(weight);
+  ascend::AclTensorWrapper acl_grad_self(grad_self);
+  ascend::AclTensorWrapper acl_grad_weight(grad_weight_reduced);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_grad.get(), acl_self.get(), acl_weight.get(),
+      const_cast<aclTensor*>(acl_grad_self.get()),
+      const_cast<aclTensor*>(acl_grad_weight.get()));
+
+  // aten's grad_weight: d/dw of (x<0 ? w*x : x) = (x<0 ? x : 0), times the
+  // incoming gradient. Both ops are aclnn-routed, so this stays on device.
+  auto grad_weight = at::where(self < 0, self, at::zeros({{}}, self.options())) * grad_output;
+  return std::make_tuple(grad_self, grad_weight);
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# linalg_vector_norm: (self, Scalar ord, dims?, keepdim, dtype?) -> Tensor.
+#   aclnnLinalgVectorNorm(self, ord, dims, keepDims, dtype, out)
+# Reached by torch.norm / F.normalize / cosine_similarity / clip_grad_norm_.
+# `dims` absent means "all dims"; aclnn wants an explicit aclIntArray, so
+# materialize 0..ndim-1 rather than passing null.
+T_LINALG_VECTOR_NORM = """\
+at::Tensor {kernel}(const at::Tensor& self, const at::Scalar& ord, at::OptionalIntArrayRef dim, bool keepdim, ::std::optional<at::ScalarType> dtype) {{
+  namespace ascend = at::native::flagos::ascend;
+  auto out_dtype = dtype.value_or(
+      at::isFloatingType(self.scalar_type()) ? self.scalar_type() : at::kFloat);
+  auto x = self.scalar_type() == out_dtype ? self : self.to(out_dtype);
+
+  std::vector<int64_t> dims;
+  if (dim.has_value() && !dim.value().empty()) {{
+    dims.assign(dim.value().begin(), dim.value().end());
+    for (auto& d : dims) if (d < 0) d += x.dim();
+  }} else {{
+    for (int64_t i = 0; i < x.dim(); ++i) dims.push_back(i);
+  }}
+
+  std::vector<int64_t> out_shape;
+  for (int64_t i = 0; i < x.dim(); ++i) {{
+    bool reduced = std::find(dims.begin(), dims.end(), i) != dims.end();
+    if (!reduced) out_shape.push_back(x.size(i));
+    else if (keepdim) out_shape.push_back(1);
+  }}
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      out_shape, x.options().dtype(out_dtype));
+
+  ascend::AclTensorWrapper acl_self(x);
+  ascend::AclScalarWrapper acl_ord(ord, at::kFloat);
+  ascend::AclIntArrayWrapper acl_dims(dims);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, acl_self.get(), acl_ord.get(), acl_dims.get(), keepdim,
+      ascend::ToAclDataType(out_dtype),
+      const_cast<aclTensor*>(acl_out.get()));
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
 # embedding: (weight, indices, padding_idx, scale_grad_by_freq, sparse) -> Tensor.
 #   aclnnEmbedding(weight, indices, out) uses only weight+indices; the trailing
 #   three args are ignored by aclnn. Output = indices.sizes() + [weight.size(1)].
@@ -3960,12 +4402,22 @@ CATEGORIES = {
     "clamp_bound_tensor": T_CLAMP_BOUND_TENSOR,
     "linspace": T_LINSPACE,
     "mse_loss_backward": T_MSE_LOSS_BACKWARD,
+    "grad_scalar_backward": T_GRAD_SCALAR_BACKWARD,
+    "grad_two_scalar_backward": T_GRAD_TWO_SCALAR_BACKWARD,
+    "leaky_relu_backward": T_LEAKY_RELU_BACKWARD,
+    "elu_backward": T_ELU_BACKWARD,
+    "dropout_backward": T_DROPOUT_BACKWARD,
+    "prelu_backward": T_PRELU_BACKWARD,
+    "linalg_vector_norm": T_LINALG_VECTOR_NORM,
     "foreach_inplace_scalar": T_FOREACH_INPLACE_SCALAR,
     "foreach_inplace_lerp_scalar": T_FOREACH_INPLACE_LERP_SCALAR,
     "foreach_inplace_addcmul_scalar": T_FOREACH_INPLACE_ADDCMUL_SCALAR,
     "foreach_sqrt": T_FOREACH_SQRT,
     "foreach_inplace_div_scalarlist": T_FOREACH_INPLACE_DIV_SCALARLIST,
     "foreach_inplace_addcdiv_scalarlist": T_FOREACH_INPLACE_ADDCDIV_SCALARLIST,
+    "foreach_norm": T_FOREACH_NORM,
+    "foreach_inplace_maximum_scalar": T_FOREACH_INPLACE_MAXIMUM_SCALAR,
+    "foreach_inplace_mul_tensor": T_FOREACH_INPLACE_MUL_TENSOR,
     "embedding": T_EMBEDDING,
     "embedding_dense_backward": T_EMBEDDING_DENSE_BACKWARD,
     "constant_pad_nd": T_CONSTANT_PAD_ND,
@@ -3984,6 +4436,7 @@ CATEGORIES = {
 # on-host and fill via zero_/fill_, which are themselves device-side aclnn ops).
 # The symbol-validation guard is skipped for these; their OPS override is unused.
 NO_ACLNN_CATEGORIES = {
+    "dropout_backward",
     "zeros",
     "ones",
     "scalar_tensor",
@@ -4005,6 +4458,9 @@ FOREACH_CHUNKED_CATEGORIES = {
     "foreach_sqrt": FOREACH_CHUNK,
     "foreach_inplace_div_scalarlist": FOREACH_CHUNK,
     "foreach_inplace_addcdiv_scalarlist": FOREACH_CHUNK,
+    "foreach_norm": FOREACH_CHUNK,
+    "foreach_inplace_maximum_scalar": FOREACH_CHUNK,
+    "foreach_inplace_mul_tensor": FOREACH_CHUNK,
 }
 
 FILE_HEADER = """\

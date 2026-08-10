@@ -2108,6 +2108,189 @@ at::Tensor ThresholdBackwardKernelAscend(const at::Tensor& grad_output, const at
 
 REGISTER_IMPL_TO_DISPATCHER(ThresholdBackwardFn, threshold_backward_dispatcher, Backend::kAscend, ThresholdBackwardKernelAscend)
 
+at::Tensor HardshrinkBackwardKernelAscend(const at::Tensor& grad_output, const at::Tensor& self, const at::Scalar& value) {
+  namespace ascend = at::native::flagos::ascend;
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options());
+
+  ascend::AclTensorWrapper acl_grad(grad_output);
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclScalarWrapper acl_value(value, self.scalar_type());
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD(aclnnHardshrinkBackward, acl_grad.get(), acl_self.get(), acl_value.get(), acl_out.get());
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(HardshrinkBackwardFn, hardshrink_backward_dispatcher, Backend::kAscend, HardshrinkBackwardKernelAscend)
+
+at::Tensor SoftshrinkBackwardKernelAscend(const at::Tensor& grad_output, const at::Tensor& self, const at::Scalar& value) {
+  namespace ascend = at::native::flagos::ascend;
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options());
+
+  ascend::AclTensorWrapper acl_grad(grad_output);
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclScalarWrapper acl_value(value, self.scalar_type());
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD(aclnnSoftshrinkBackward, acl_grad.get(), acl_self.get(), acl_value.get(), acl_out.get());
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(SoftshrinkBackwardFn, softshrink_backward_dispatcher, Backend::kAscend, SoftshrinkBackwardKernelAscend)
+
+at::Tensor SoftplusBackwardKernelAscend(const at::Tensor& grad_output, const at::Tensor& self, const at::Scalar& a, const at::Scalar& b) {
+  namespace ascend = at::native::flagos::ascend;
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options());
+
+  ascend::AclTensorWrapper acl_grad(grad_output);
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclScalarWrapper acl_a(a, self.scalar_type());
+  ascend::AclScalarWrapper acl_b(b, self.scalar_type());
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD(aclnnSoftplusBackward, acl_grad.get(), acl_self.get(), acl_a.get(), acl_b.get(), acl_out.get());
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(SoftplusBackwardFn, softplus_backward_dispatcher, Backend::kAscend, SoftplusBackwardKernelAscend)
+
+at::Tensor HardtanhBackwardKernelAscend(const at::Tensor& grad_output, const at::Tensor& self, const at::Scalar& a, const at::Scalar& b) {
+  namespace ascend = at::native::flagos::ascend;
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options());
+
+  ascend::AclTensorWrapper acl_grad(grad_output);
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclScalarWrapper acl_a(a, self.scalar_type());
+  ascend::AclScalarWrapper acl_b(b, self.scalar_type());
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD(aclnnHardtanhBackward, acl_grad.get(), acl_self.get(), acl_a.get(), acl_b.get(), acl_out.get());
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(HardtanhBackwardFn, hardtanh_backward_dispatcher, Backend::kAscend, HardtanhBackwardKernelAscend)
+
+at::Tensor LeakyReluBackwardKernelAscend(const at::Tensor& grad_output, const at::Tensor& self, const at::Scalar& negative_slope, bool self_is_result) {
+  namespace ascend = at::native::flagos::ascend;
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options());
+
+  ascend::AclTensorWrapper acl_grad(grad_output);
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclScalarWrapper acl_slope(negative_slope, self.scalar_type());
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD(aclnnLeakyReluBackward, acl_grad.get(), acl_self.get(), acl_slope.get(),
+      self_is_result, acl_out.get());
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(LeakyReluBackwardFn, leaky_relu_backward_dispatcher, Backend::kAscend, LeakyReluBackwardKernelAscend)
+
+at::Tensor EluBackwardKernelAscend(const at::Tensor& grad_output, const at::Scalar& alpha, const at::Scalar& scale, const at::Scalar& input_scale, bool is_result, const at::Tensor& self_or_result) {
+  namespace ascend = at::native::flagos::ascend;
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      self_or_result.sizes(), self_or_result.options());
+
+  ascend::AclTensorWrapper acl_grad(grad_output);
+  ascend::AclScalarWrapper acl_alpha(alpha, self_or_result.scalar_type());
+  ascend::AclScalarWrapper acl_scale(scale, self_or_result.scalar_type());
+  ascend::AclScalarWrapper acl_input_scale(input_scale, self_or_result.scalar_type());
+  ascend::AclTensorWrapper acl_self(self_or_result);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD(aclnnEluBackward, acl_grad.get(), acl_alpha.get(), acl_scale.get(),
+      acl_input_scale.get(), is_result, acl_self.get(), acl_out.get());
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(EluBackwardFn, elu_backward_dispatcher, Backend::kAscend, EluBackwardKernelAscend)
+
+at::Tensor NativeDropoutBackwardKernelAscend(const at::Tensor& grad_output, const at::Tensor& mask, double scale) {
+  auto m = mask.scalar_type() == grad_output.scalar_type()
+      ? mask : mask.to(grad_output.scalar_type());
+  return grad_output * m * scale;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(NativeDropoutBackwardFn, native_dropout_backward_dispatcher, Backend::kAscend, NativeDropoutBackwardKernelAscend)
+
+at::Tensor PrivPreluKernelKernelAscend(const at::Tensor& self, const at::Tensor& other) {
+  namespace ascend = at::native::flagos::ascend;
+  auto result_dtype = self.scalar_type();
+  auto other_c = other.is_privateuseone()
+      ? (other.scalar_type() == result_dtype ? other : other.to(result_dtype))
+      : other.to(self.options());
+  auto out_shape = at::infer_size(self.sizes(), other_c.sizes());
+  // aclnn binary ops broadcast and honor strides internally (verified), so we
+  // pass self/other_c straight through instead of expand().contiguous(). This
+  // avoids up to two device strided-copies + host view construction per op on
+  // the eager decode hot path. Only materialize a contiguous copy when the
+  // tensor is genuinely non-contiguous AND the aclnn path would otherwise need
+  // it — measured unnecessary for the common same-shape/contiguous case, which
+  // is the overwhelming majority in Qwen3.
+  const at::Tensor& self_b = self;
+  const at::Tensor& other_b = other_c;
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      out_shape, self.options());
+
+  static void* opApiFuncAddr = nullptr;
+  static void* getWsFuncAddr = nullptr;
+  ascend::SigHasher hsh; hsh.tensor(self_b); hsh.tensor(other_b);
+  ascend::ExecAscendCached(
+      "aclnnPrelu", "aclnnPreluGetWorkspaceSize", opApiFuncAddr, getWsFuncAddr, hsh.h,
+      {&self_b, &other_b}, {&out},
+      [](ascend::GwsFunc gws, std::vector<ascend::AclTensorWrapper>& in,
+         std::vector<ascend::AclTensorWrapper>& out_t, uint64_t* pws, aclOpExecutor** pex) {
+        return gws(in[0].acl_tensor, in[1].acl_tensor, out_t[0].acl_tensor, pws, pex);
+      });
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(PrivPreluKernelFn, priv_prelu_kernel_dispatcher, Backend::kAscend, PrivPreluKernelKernelAscend)
+
+::std::tuple<at::Tensor, at::Tensor> PrivPreluKernelBackwardKernelAscend(const at::Tensor& grad_output, const at::Tensor& self, const at::Tensor& weight) {
+  namespace ascend = at::native::flagos::ascend;
+  auto grad_self = ascend::OpPreparation::apply_tensor_without_format(
+      self.sizes(), self.options());
+  // aclnn's gradWeight is reduced, and its shape check is self-contradictory
+  // across the two weight kinds -- measured against CANN 9.0.0:
+  //   weight [1, 4] (channel-wise, as autograd broadcasts it) -> demands [4]
+  //     "Expected tensor for gradWeight to have same size as [4], but got [1,4]"
+  //   weight [1, 1] (single shared slope)                     -> demands [1, 1]
+  //     "Expected tensor for weight to have same size as tensor for
+  //      gradWeight, but [1,1] does not equal [1]"
+  // So a single rule cannot satisfy both: flat [numel] for the multi-element
+  // case, weight.sizes() verbatim for the scalar case. Its contents are not
+  // what aten wants either way; see the note above.
+  const int64_t w_numel = weight.numel();
+  auto grad_weight_reduced = w_numel == 1
+      ? ascend::OpPreparation::apply_tensor_without_format(
+            weight.sizes(), weight.options())
+      : ascend::OpPreparation::apply_tensor_without_format(
+            {w_numel}, weight.options());
+
+  ascend::AclTensorWrapper acl_grad(grad_output);
+  ascend::AclTensorWrapper acl_self(self);
+  ascend::AclTensorWrapper acl_weight(weight);
+  ascend::AclTensorWrapper acl_grad_self(grad_self);
+  ascend::AclTensorWrapper acl_grad_weight(grad_weight_reduced);
+
+  EXEC_ASCEND_CMD(aclnnPreluBackward, acl_grad.get(), acl_self.get(), acl_weight.get(),
+      const_cast<aclTensor*>(acl_grad_self.get()),
+      const_cast<aclTensor*>(acl_grad_weight.get()));
+
+  // aten's grad_weight: d/dw of (x<0 ? w*x : x) = (x<0 ? x : 0), times the
+  // incoming gradient. Both ops are aclnn-routed, so this stays on device.
+  auto grad_weight = at::where(self < 0, self, at::zeros({}, self.options())) * grad_output;
+  return std::make_tuple(grad_self, grad_weight);
+}
+
+REGISTER_IMPL_TO_DISPATCHER(PrivPreluKernelBackwardFn, priv_prelu_kernel_backward_dispatcher, Backend::kAscend, PrivPreluKernelBackwardKernelAscend)
+
 at::Tensor PowScalarKernelAscend(const at::Scalar& self, const at::Tensor& exponent) {
   namespace ascend = at::native::flagos::ascend;
   auto out = ascend::OpPreparation::apply_tensor_without_format(
@@ -4428,6 +4611,194 @@ void ForeachAddcdivInplaceScalarlistKernelAscend(at::TensorList self, at::Tensor
 }
 
 REGISTER_IMPL_TO_DISPATCHER(ForeachAddcdivInplaceScalarlistFn, foreach_addcdiv_inplace_scalarlist_dispatcher, Backend::kAscend, ForeachAddcdivInplaceScalarlistKernelAscend)
+
+static void ForeachNormScalarKernelAscendChunk(at::TensorList self, at::TensorList outs, const at::Scalar& ord) {
+  namespace ascend = at::native::flagos::ascend;
+
+  std::vector<ascend::AclTensorWrapper> in_w, out_w;
+  in_w.reserve(self.size());
+  out_w.reserve(outs.size());
+  for (const auto& t : self) in_w.emplace_back(t);
+  for (const auto& t : outs) out_w.emplace_back(t);
+
+  std::vector<const aclTensor*> in_ptrs, out_ptrs;
+  in_ptrs.reserve(self.size());
+  out_ptrs.reserve(outs.size());
+  for (auto& w : in_w) in_ptrs.push_back(w.get());
+  for (auto& w : out_w) out_ptrs.push_back(w.get());
+
+  aclTensorList* in_list = aclCreateTensorList(in_ptrs.data(), in_ptrs.size());
+  aclTensorList* out_list = aclCreateTensorList(out_ptrs.data(), out_ptrs.size());
+  // aic-ops-info: ForeachNorm's `scalar` is float32 regardless of x's dtype.
+  ascend::AclScalarWrapper acl_ord(ord, at::kFloat);
+
+  EXEC_ASCEND_CMD(aclnnForeachNorm, in_list, acl_ord.get(), out_list);
+
+  (void)in_list; (void)out_list;  // owned by in_w/out_w
+}
+
+::std::vector<at::Tensor> ForeachNormScalarKernelAscend(at::TensorList self, const at::Scalar& ord, ::std::optional<at::ScalarType> dtype) {
+  TORCH_CHECK(!self.empty(), "foreach_norm_scalar_dispatcher: expected a non-empty list of tensors");
+  TORCH_CHECK(ord.toDouble() == 2.0,
+      "foreach_norm_scalar_dispatcher: only ord=2 is supported on Ascend (aclnnForeachNorm), got ", ord.toDouble());
+  std::vector<at::Tensor> outs;
+  outs.reserve(self.size());
+  for (const auto& t : self) {
+    auto opts = dtype.has_value() ? t.options().dtype(dtype.value()) : t.options();
+    outs.push_back(at::native::flagos::ascend::OpPreparation::apply_tensor_without_format(
+        {}, opts));
+  }
+  for (size_t off = 0; off < self.size(); off += 32) {
+    size_t n = std::min<size_t>(32, self.size() - off);
+    ForeachNormScalarKernelAscendChunk(self.slice(off, n), at::TensorList(outs).slice(off, n), ord);
+  }
+  return outs;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(ForeachNormScalarFn, foreach_norm_scalar_dispatcher, Backend::kAscend, ForeachNormScalarKernelAscend)
+
+static void ForeachClampMinInplaceScalarKernelAscendChunk(at::TensorList self, const at::Scalar& scalar) {
+  namespace ascend = at::native::flagos::ascend;
+
+  std::vector<ascend::AclTensorWrapper> wrappers;
+  wrappers.reserve(self.size());
+  for (const auto& t : self) wrappers.emplace_back(t);
+
+  std::vector<const aclTensor*> acl_tensors;
+  acl_tensors.reserve(self.size());
+  for (auto& w : wrappers) acl_tensors.push_back(w.get());
+
+  aclTensorList* tensor_list = aclCreateTensorList(acl_tensors.data(), acl_tensors.size());
+  // Same bf16 carve-out as ForeachMulScalar/ForeachAddScalar: no bf16 scalar
+  // entry in aic-ops-info, so a bf16 x needs its scalar as float32.
+  auto scalar_dtype = self[0].scalar_type() == at::kBFloat16 ? at::kFloat : self[0].scalar_type();
+  ascend::AclScalarWrapper acl_scalar(scalar, scalar_dtype);
+
+  EXEC_ASCEND_CMD(aclnnForeachMaximumScalarV2, tensor_list, acl_scalar.get(), tensor_list);
+
+  (void)tensor_list;  // aclTensor* owned by wrappers; do not aclDestroyTensorList
+}
+
+void ForeachClampMinInplaceScalarKernelAscend(at::TensorList self, const at::Scalar& scalar) {
+  TORCH_CHECK(!self.empty(), "foreach_clamp_min_inplace_scalar_dispatcher: expected a non-empty list of tensors");
+  for (size_t off = 0; off < self.size(); off += 32) {
+    size_t n = std::min<size_t>(32, self.size() - off);
+    ForeachClampMinInplaceScalarKernelAscendChunk(self.slice(off, n), scalar);
+  }
+}
+
+REGISTER_IMPL_TO_DISPATCHER(ForeachClampMinInplaceScalarFn, foreach_clamp_min_inplace_scalar_dispatcher, Backend::kAscend, ForeachClampMinInplaceScalarKernelAscend)
+
+static void ForeachClampMaxInplaceScalarKernelAscendChunk(at::TensorList self, const at::Scalar& scalar) {
+  namespace ascend = at::native::flagos::ascend;
+
+  std::vector<ascend::AclTensorWrapper> wrappers;
+  wrappers.reserve(self.size());
+  for (const auto& t : self) wrappers.emplace_back(t);
+
+  std::vector<const aclTensor*> acl_tensors;
+  acl_tensors.reserve(self.size());
+  for (auto& w : wrappers) acl_tensors.push_back(w.get());
+
+  aclTensorList* tensor_list = aclCreateTensorList(acl_tensors.data(), acl_tensors.size());
+  // Same bf16 carve-out as ForeachMulScalar/ForeachAddScalar: no bf16 scalar
+  // entry in aic-ops-info, so a bf16 x needs its scalar as float32.
+  auto scalar_dtype = self[0].scalar_type() == at::kBFloat16 ? at::kFloat : self[0].scalar_type();
+  ascend::AclScalarWrapper acl_scalar(scalar, scalar_dtype);
+
+  EXEC_ASCEND_CMD(aclnnForeachMinimumScalarV2, tensor_list, acl_scalar.get(), tensor_list);
+
+  (void)tensor_list;  // aclTensor* owned by wrappers; do not aclDestroyTensorList
+}
+
+void ForeachClampMaxInplaceScalarKernelAscend(at::TensorList self, const at::Scalar& scalar) {
+  TORCH_CHECK(!self.empty(), "foreach_clamp_max_inplace_scalar_dispatcher: expected a non-empty list of tensors");
+  for (size_t off = 0; off < self.size(); off += 32) {
+    size_t n = std::min<size_t>(32, self.size() - off);
+    ForeachClampMaxInplaceScalarKernelAscendChunk(self.slice(off, n), scalar);
+  }
+}
+
+REGISTER_IMPL_TO_DISPATCHER(ForeachClampMaxInplaceScalarFn, foreach_clamp_max_inplace_scalar_dispatcher, Backend::kAscend, ForeachClampMaxInplaceScalarKernelAscend)
+
+at::Tensor LinalgVectorNormKernelAscend(const at::Tensor& self, const at::Scalar& ord, at::OptionalIntArrayRef dim, bool keepdim, ::std::optional<at::ScalarType> dtype) {
+  namespace ascend = at::native::flagos::ascend;
+  auto out_dtype = dtype.value_or(
+      at::isFloatingType(self.scalar_type()) ? self.scalar_type() : at::kFloat);
+  auto x = self.scalar_type() == out_dtype ? self : self.to(out_dtype);
+
+  std::vector<int64_t> dims;
+  if (dim.has_value() && !dim.value().empty()) {
+    dims.assign(dim.value().begin(), dim.value().end());
+    for (auto& d : dims) if (d < 0) d += x.dim();
+  } else {
+    for (int64_t i = 0; i < x.dim(); ++i) dims.push_back(i);
+  }
+
+  std::vector<int64_t> out_shape;
+  for (int64_t i = 0; i < x.dim(); ++i) {
+    bool reduced = std::find(dims.begin(), dims.end(), i) != dims.end();
+    if (!reduced) out_shape.push_back(x.size(i));
+    else if (keepdim) out_shape.push_back(1);
+  }
+  auto out = ascend::OpPreparation::apply_tensor_without_format(
+      out_shape, x.options().dtype(out_dtype));
+
+  ascend::AclTensorWrapper acl_self(x);
+  ascend::AclScalarWrapper acl_ord(ord, at::kFloat);
+  ascend::AclIntArrayWrapper acl_dims(dims);
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD(aclnnLinalgVectorNorm, acl_self.get(), acl_ord.get(), acl_dims.get(), keepdim,
+      ascend::ToAclDataType(out_dtype),
+      const_cast<aclTensor*>(acl_out.get()));
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(LinalgVectorNormFn, linalg_vector_norm_dispatcher, Backend::kAscend, LinalgVectorNormKernelAscend)
+
+static void ForeachMulInplaceTensorKernelAscendChunk(at::TensorList self, const at::Tensor& other) {
+  namespace ascend = at::native::flagos::ascend;
+
+  // aclnn compares x1[i]/x2[i] shapes elementwise, so materialize `other`
+  // at each entry's shape rather than aliasing one 0-d tensor n times.
+  std::vector<at::Tensor> others;
+  others.reserve(self.size());
+  for (const auto& t : self) {
+    auto o = other.scalar_type() == t.scalar_type() ? other : other.to(t.scalar_type());
+    others.push_back(o.sizes().equals(t.sizes()) ? o.contiguous()
+                                                 : o.expand(t.sizes()).contiguous());
+  }
+
+  std::vector<ascend::AclTensorWrapper> self_w, other_w;
+  self_w.reserve(self.size());
+  other_w.reserve(others.size());
+  for (const auto& t : self) self_w.emplace_back(t);
+  for (const auto& t : others) other_w.emplace_back(t);
+
+  std::vector<const aclTensor*> self_ptrs, other_ptrs;
+  self_ptrs.reserve(self.size());
+  other_ptrs.reserve(others.size());
+  for (auto& w : self_w) self_ptrs.push_back(w.get());
+  for (auto& w : other_w) other_ptrs.push_back(w.get());
+
+  aclTensorList* self_list = aclCreateTensorList(self_ptrs.data(), self_ptrs.size());
+  aclTensorList* other_list = aclCreateTensorList(other_ptrs.data(), other_ptrs.size());
+
+  EXEC_ASCEND_CMD(aclnnForeachMulList, self_list, other_list, self_list);
+
+  (void)self_list; (void)other_list;  // owned by self_w/other_w
+}
+
+void ForeachMulInplaceTensorKernelAscend(at::TensorList self, const at::Tensor& other) {
+  TORCH_CHECK(!self.empty(), "foreach_mul_inplace_tensor_dispatcher: expected a non-empty list of tensors");
+  for (size_t off = 0; off < self.size(); off += 32) {
+    size_t n = std::min<size_t>(32, self.size() - off);
+    ForeachMulInplaceTensorKernelAscendChunk(self.slice(off, n), other);
+  }
+}
+
+REGISTER_IMPL_TO_DISPATCHER(ForeachMulInplaceTensorFn, foreach_mul_inplace_tensor_dispatcher, Backend::kAscend, ForeachMulInplaceTensorKernelAscend)
 
 at::Tensor EmbeddingKernelAscend(const at::Tensor& weight, const at::Tensor& indices, int64_t padding_idx, bool scale_grad_by_freq, bool sparse) {
   namespace ascend = at::native::flagos::ascend;

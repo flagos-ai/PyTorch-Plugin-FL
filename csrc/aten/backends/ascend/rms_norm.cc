@@ -81,4 +81,95 @@ REGISTER_IMPL_TO_DISPATCHER(
     Backend::kAscend,
     PrivFusedRmsNormKernelAscend)
 
+// Fused RMSNorm backward via aclnnRmsNormGrad. Without this the forward above
+// makes inference work while training dies at runtime with
+// "_fused_rms_norm_backward: backend not registered" -- so any model using
+// nn.RMSNorm (or the F.rms_norm monkey-patch that routes to the forward) can
+// be evaluated but not trained.
+//
+// aten's schema lines up 1:1 with aclnn's:
+//   aten:  (grad_out, input, normalized_shape, rstd, weight?, output_mask[2])
+//   aclnn: aclnnRmsNormGrad(dy, x, rstd, gamma, dxOut, dgammaOut)
+// `normalized_shape` only sizes gamma, and `output_mask` selects which grads
+// the caller wants -- CANN always computes both, so we honour the mask by
+// dropping the unwanted half rather than by skipping work.
+std::tuple<at::Tensor, at::Tensor> PrivFusedRmsNormBackwardKernelAscend(
+    const at::Tensor& grad_out,
+    const at::Tensor& input,
+    at::IntArrayRef normalized_shape,
+    const at::Tensor& rstd,
+    const std::optional<at::Tensor>& weight,
+    std::array<bool, 2> output_mask) {
+  namespace ascend = at::native::flagos::ascend;
+
+  const int64_t norm_ndim = static_cast<int64_t>(normalized_shape.size());
+  TORCH_CHECK(norm_ndim >= 1 && input.dim() >= norm_ndim,
+              "_fused_rms_norm_backward: invalid normalized_shape for input of dim ",
+              input.dim());
+
+  at::Tensor x = input.is_contiguous() ? input : input.contiguous();
+  at::Tensor dy = grad_out.is_contiguous() ? grad_out : grad_out.contiguous();
+  if (dy.scalar_type() != x.scalar_type()) {
+    dy = dy.to(x.scalar_type());
+  }
+
+  // Same gamma synthesis as the forward: aclnn requires it even when aten's
+  // weight is absent, in which case its grad is meaningless and discarded.
+  at::Tensor gamma;
+  if (weight.has_value() && weight.value().defined()) {
+    gamma = weight.value();
+    if (gamma.scalar_type() != x.scalar_type()) {
+      gamma = gamma.to(x.scalar_type());
+    }
+    if (!gamma.is_contiguous()) {
+      gamma = gamma.contiguous();
+    }
+  } else {
+    gamma = at::ones(normalized_shape, x.options());
+  }
+
+  // rstd comes straight from the forward's second output: fp32, leading dims
+  // preserved with the normalized dims collapsed to 1.
+  at::Tensor rstd_c = rstd.is_contiguous() ? rstd : rstd.contiguous();
+  if (rstd_c.scalar_type() != at::kFloat) {
+    rstd_c = rstd_c.to(at::kFloat);
+  }
+
+  at::Tensor dx = ascend::OpPreparation::apply_tensor_without_format(
+      x.sizes(), x.options());
+  // CANN writes dgamma in fp32 regardless of gamma's dtype.
+  at::Tensor dgamma = ascend::OpPreparation::apply_tensor_without_format(
+      gamma.sizes(), gamma.options().dtype(at::kFloat));
+
+  ascend::AclTensorWrapper acl_dy(dy);
+  ascend::AclTensorWrapper acl_x(x);
+  ascend::AclTensorWrapper acl_rstd(rstd_c);
+  ascend::AclTensorWrapper acl_gamma(gamma);
+  ascend::AclTensorWrapper acl_dx(dx);
+  ascend::AclTensorWrapper acl_dgamma(dgamma);
+
+  EXEC_ASCEND_CMD(aclnnRmsNormGrad,
+                  acl_dy.get(),
+                  acl_x.get(),
+                  acl_rstd.get(),
+                  acl_gamma.get(),
+                  const_cast<aclTensor*>(acl_dx.get()),
+                  const_cast<aclTensor*>(acl_dgamma.get()));
+
+  at::Tensor grad_input = output_mask[0] ? dx : at::Tensor();
+  at::Tensor grad_weight;
+  if (output_mask[1] && weight.has_value() && weight.value().defined()) {
+    grad_weight = dgamma.scalar_type() == weight.value().scalar_type()
+        ? dgamma
+        : dgamma.to(weight.value().scalar_type());
+  }
+  return std::make_tuple(grad_input, grad_weight);
+}
+
+REGISTER_IMPL_TO_DISPATCHER(
+    PrivFusedRmsNormBackwardFn,
+    priv_fused_rms_norm_backward_dispatcher,
+    Backend::kAscend,
+    PrivFusedRmsNormBackwardKernelAscend)
+
 } // namespace at::native::flagos
