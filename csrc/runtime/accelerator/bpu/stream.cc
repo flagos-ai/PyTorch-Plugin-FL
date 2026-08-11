@@ -25,7 +25,7 @@
 // EventElapsedTime is genuinely useful despite this: since submission is
 // synchronous, wall-clock between two records is the real device time.
 
-#include <include/flagos.h>
+#include <flagos.h>
 
 #include <chrono>
 #include <cstdint>

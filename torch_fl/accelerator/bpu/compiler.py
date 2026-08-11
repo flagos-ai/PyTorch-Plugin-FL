@@ -73,7 +73,7 @@ X86_EMULATOR = os.environ.get("FLAGOS_BPU_X86_EMULATOR", "")
 # hundred MB in the emulated environment for code that never runs.
 #
 # Defaults to <x86 python prefix>/../stubs so a self-contained setup needs no
-# extra configuration; see docs/bpu.md.
+# extra configuration; see docs/vendors/bpu/integration.md.
 X86_STUBS = os.environ.get("FLAGOS_BPU_X86_STUBS", "")
 
 _UNSET = object()
@@ -364,7 +364,7 @@ def compile_hbm(onnx_path: Path, out_path: Path, march: str = DEFAULT_MARCH) -> 
             "aarch64 board point FLAGOS_BPU_X86_PYTHON at an x86_64 python "
             "that has hbdk4-compiler installed, and use a recent box64 (0.4.x; "
             "the distro 0.2.6 aborts on this board's "
-            f"{os.sysconf('SC_PAGESIZE')}-byte pages) -- see docs/bpu.md for "
+            f"{os.sysconf('SC_PAGESIZE')}-byte pages) -- see docs/vendors/bpu/integration.md for "
             "the one-time setup."
         )
 

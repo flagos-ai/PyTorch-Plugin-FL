@@ -259,5 +259,5 @@ tests live alongside it:
 - [PyTorch 2.0 torch.compile documentation](https://pytorch.org/docs/stable/torch.compiler.html)
 - [TorchInductor overview](https://pytorch.org/docs/stable/torch.compiler_inductor_overview.html)
 - [FlagTree repository](https://github.com/flagos-ai/FlagTree)
-- [CPU torch + external libtorch_cuda.so](cpu_torch_external_libtorch_cuda.md) — why several `torch.cuda` bindings need shimming
+- [CPU torch + external libtorch_cuda.so](../vendors/cuda/external-libtorch-cuda.md) — why several `torch.cuda` bindings need shimming
 - [torch_fl/compile/README.md](../torch_fl/compile/README.md) — the registration surface in detail

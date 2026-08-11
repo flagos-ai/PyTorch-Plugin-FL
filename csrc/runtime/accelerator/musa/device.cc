@@ -16,7 +16,7 @@
 // the MUSA toolkit, so this is a direct port of the CUDA runtime sources onto
 // the native musa* API (musa_runtime_api.h), which mirrors CUDA 1:1.
 
-#include <include/flagos.h>
+#include <flagos.h>
 #include <musa_runtime.h>
 
 Error_t GetDeviceCount(int* count) {

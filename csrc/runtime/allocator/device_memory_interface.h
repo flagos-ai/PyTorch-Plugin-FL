@@ -4,7 +4,7 @@
 
 #include <cstddef>
 
-#include <include/flagos.h>
+#include <flagos.h>
 
 #include "allocator_stats.h"
 

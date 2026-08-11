@@ -2,7 +2,7 @@
 # 在进程内外挂版本匹配的 libtorch_cuda.so 后，透传执行任意命令。
 #
 # 让 torch_fl 的 CUDA 后端（boxing 写法）复用 PyTorch 已注册的 CUDA kernel，
-# 而无需 pip 安装 CUDA 版 torch。详见 docs/cpu_torch_external_libtorch_cuda.md。
+# 而无需 pip 安装 CUDA 版 torch。详见 docs/vendors/cuda/external-libtorch-cuda.md。
 #
 # 硬约束（docs §约束1）：libtorch_cuda.so 必须在 `import torch` 之前载入
 # （CUDAHooks 缓存问题），因此这里用 LD_PRELOAD 注入，而不是在 __init__.py 里后加载。
@@ -24,7 +24,7 @@ fi
 for _so in libc10_cuda.so libtorch_cuda.so; do
   if [ ! -f "${CUDA_ASSETS}/${_so}" ]; then
     echo "error: missing ${CUDA_ASSETS}/${_so}" >&2
-    echo "  (see docs/cpu_torch_external_libtorch_cuda.md for how these assets are produced)" >&2
+    echo "  (see docs/vendors/cuda/external-libtorch-cuda.md for how these assets are produced)" >&2
     exit 1
   fi
 done

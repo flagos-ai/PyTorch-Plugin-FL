@@ -2,7 +2,7 @@
 
 #include "../../cat.h"
 
-#include <include/flagos.h>
+#include <flagos.h>
 
 #include <vector>
 

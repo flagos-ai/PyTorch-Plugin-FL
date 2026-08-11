@@ -13,7 +13,7 @@
 #include <ATen/core/Tensor.h>
 #include <ATen/native/ReduceOpsUtils.h>
 #include <c10/util/Exception.h>
-#include <include/flagos.h>
+#include <flagos.h>
 
 #include "metax_elementwise.cuh"
 

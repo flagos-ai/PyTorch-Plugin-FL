@@ -434,7 +434,7 @@ def _offload(
             "hbdk4 ships x86_64-only wheels, so it runs on this board under "
             "box64. Run scripts/setup_bpu_hbdk4.sh once, then set "
             "FLAGOS_BPU_X86_PYTHON and FLAGOS_BPU_X86_EMULATOR. The stock "
-            "64 KB-page kernel is fine (box64 0.4+); see docs/bpu.md."
+            "64 KB-page kernel is fine (box64 0.4+); see docs/vendors/bpu/integration.md."
         )
         if strict:
             raise CompileError(msg % len(partitions))

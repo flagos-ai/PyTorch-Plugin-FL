@@ -7,7 +7,7 @@
 #include "empty.h"
 
 #include <ATen/native/Resize.h>
-#include <include/flagos.h>
+#include <flagos.h>
 
 namespace at::native::flagos {
 

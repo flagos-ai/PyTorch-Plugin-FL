@@ -10,7 +10,7 @@
 
 #include <acl/acl_rt.h>
 
-#include <include/macros.h>
+#include <macros.h>
 
 namespace at::native::flagos::ascend {
 

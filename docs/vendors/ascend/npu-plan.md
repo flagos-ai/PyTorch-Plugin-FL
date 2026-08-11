@@ -7,7 +7,7 @@
 
 ## 0. 结论先行
 
-- CUDA 的"外挂 `libtorch_cuda.so` 零成本兜底"路线**在 NPU 上不成立**（torch_npu 与 flagos 同占 PrivateUse1 key，详见 [cpu_torch_external_libtorch_npu.md](cpu_torch_external_libtorch_npu.md)）。NPU 必须**自己出算子**。
+- CUDA 的"外挂 `libtorch_cuda.so` 零成本兜底"路线**在 NPU 上不成立**（torch_npu 与 flagos 同占 PrivateUse1 key，详见 [external-libtorch-npu.md](external-libtorch-npu.md)）。NPU 必须**自己出算子**。
 - NPU 出算子的最优底座是 **CANN aclnn（`libopapi.so`）公开 C ABI**，现有 `csrc/aten/backends/ascend/`（33 个手写算子）已验证这条路可跑通。
 - **决定性现状问题**：#10/`285f52c` 的 codegen 清理把 `csrc/aten/*.h` 的**逐算子头文件删掉、统一进 `csrc/aten/generated/ops.h`**，但 33 个手写 ascend `.cc` 仍 `#include "../../mm.h"` 这类**已不存在的头**。**当前 main 上 Ascend 后端无法编译**（这是任何 NPU 工作的第一道门槛）。
 - 可行性已用**独立原型**在真机验证：`aclnn<Op>GetWorkspaceSize + aclnn<Op>` 两段式调用 + 裸 NPU 存储构造 `aclTensor`，`aclnnSqrt` 计算结果与 CPU 参考一致（`max_err=2.85e-07`）。见 §4。
@@ -68,8 +68,8 @@ aclnn 命名与调用高度规律：
 
 独立原型（不依赖 torch_fl 构建，规避 P0 阻塞）证明 codegen 将要发射的**内核体形状**在真机可算：
 
-- 源码：[`docs/ascend_aclnn_codegen_prototype.cc`](ascend_aclnn_codegen_prototype.cc)
-- 构建运行：[`docs/build_ascend_prototype.sh`](build_ascend_prototype.sh)
+- 原型源码与构建脚本已删除（工程化后不再需要）；如需回看，见 git 历史中的
+  `docs/ascend_aclnn_codegen_prototype.cc` 与 `docs/build_ascend_prototype.sh`。
 - 做法：裸 `aclrtMalloc` 显存 → `aclCreateTensor`（同 `AclTensorWrapper`）→ 两段式 `aclnnSqrtGetWorkspaceSize` + `aclnnSqrt`（同 `EXEC_ASCEND_CMD`）→ 拷回校验。
 - 结果：
 

@@ -18,7 +18,7 @@
 
 #include <stdint.h>
 
-#include <include/macros.h>
+#include <macros.h>
 
 #ifdef __cplusplus
 extern "C" {

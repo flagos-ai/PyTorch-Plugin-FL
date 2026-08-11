@@ -20,7 +20,7 @@
 // keeps torch's device indices honest -- claiming four would imply four separate
 // memory spaces, which is wrong, since UCP memory is allocated for the SoC.
 
-#include <include/flagos.h>
+#include <flagos.h>
 
 extern "C" {
 #include <hb_bpu.h>

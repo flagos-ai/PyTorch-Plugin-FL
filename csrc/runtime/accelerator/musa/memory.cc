@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <include/flagos.h>
+#include <flagos.h>
 #include <musa_runtime.h>
 
 #include <map>

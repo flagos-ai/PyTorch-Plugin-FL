@@ -31,7 +31,7 @@
 #include <torch/csrc/autograd/python_variable.h>
 
 #include <runtime/functions.h>
-#include <include/macros.h>
+#include <macros.h>
 #include <runtime/allocator/caching_device_allocator.h>
 
 namespace {

@@ -6,7 +6,7 @@
 
 ## 背景
 
-CUDA 方案（见 [cpu_torch_external_libtorch_cuda.md](cpu_torch_external_libtorch_cuda.md)）成立的**根本前提**是：
+CUDA 方案（见 [../cuda/external-libtorch-cuda.md](../cuda/external-libtorch-cuda.md)）成立的**根本前提**是：
 
 - PyTorch 的 CUDA kernel 注册在**专属的 `CUDA` dispatch key** 下。
 - torch_fl 的 `vm`/`flagos` 后端占用的是 **`PrivateUse1`** key。

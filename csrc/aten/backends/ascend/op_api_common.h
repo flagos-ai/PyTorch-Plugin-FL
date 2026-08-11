@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include <include/flagos.h>
+#include <flagos.h>
 #include "runtime/accelerator/ascend/acl_stream.h"
 #include "runtime/allocator/caching_device_allocator.h"
 

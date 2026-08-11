@@ -290,5 +290,6 @@ sub/div/pow 等所有"标量走 Tensor overload"的路径。
 
 ## 8. 相关
 
-见 `docs/ascend_npu_plan.md`（总纲）、`docs/ascend_aclnn_codegen_prototype.cc`（裸 aclnn 原型）。
+见 `docs/vendors/ascend/npu-plan.md`（总纲）。裸 aclnn 原型已删除，见 git 历史
+`docs/ascend_aclnn_codegen_prototype.cc`。
 记忆：[[ascend-aclnn-codegen-plan]]、[[ascend-backend-broken-on-2.11]]。

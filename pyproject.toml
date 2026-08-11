@@ -63,7 +63,7 @@ dev = [
 # (ProcessGroupFlagOS tries it first, then falls back to the vendor-native
 # backend — NCCL/HCCL). It is a hardware-specific compiled artifact (per-vendor
 # adaptor + CCL) with no PyPI release, so it must be built from source:
-# https://github.com/FlagOpen/FlagCX (see docs/distributed_flagcx_plan.md).
+# https://github.com/FlagOpen/FlagCX (see docs/architecture/distributed-flagcx.md).
 # This extra is a marker only; installing it does not fetch a wheel.
 flagcx = [
     "flagcx",

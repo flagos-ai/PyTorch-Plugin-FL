@@ -648,7 +648,7 @@ out = compiled(torch.randn(1, 3, 224, 224))
   Run `scripts/setup_bpu_hbdk4.sh` once, then export
   `FLAGOS_BPU_X86_PYTHON` and `FLAGOS_BPU_X86_EMULATOR`. Without a reachable
   hbdk4 the backend logs a warning and runs every partition on the CPU, so the
-  install is still usable. Details in [docs/bpu.md](docs/bpu.md).
+  install is still usable. Details in [docs/vendors/bpu/integration.md](docs/vendors/bpu/integration.md).
 - **Quantization is a precondition, not an optimization.** hbdk4 lowers float
   conv to the CPU, so int8 Q/DQ insertion is what puts work on the BPU at all.
   On by default; `FLAGOS_BPU_QUANTIZE=0` for bit-exact float artifacts.
@@ -675,7 +675,7 @@ out = compiled(torch.randn(1, 3, 224, 224))
   partitions offloading whole (30/30 and 22/22 nodes). Coverage is capped by
   Dynamo's symbolic shapes rather than by missing ops — hbdk4 cannot compile a
   symbolic dim at all — so tracing at a fixed sequence length is what raises it.
-  See [docs/bpu.md](docs/bpu.md#stock-transformers-under-torchcompile).
+  See [docs/vendors/bpu/integration.md](docs/vendors/bpu/integration.md#stock-transformers-under-torchcompile).
 
 ### Build Environment Variables
 
@@ -697,7 +697,7 @@ out = compiled(torch.randn(1, 3, 224, 224))
 | `GCU_KERNEL` | Enable Enflame GCU topsaten kernel build (`ON`/`OFF`, auto-enabled when `ACCELERATOR=gcu`) |
 | `MUSA_HOME` | Moore Threads MUSA toolkit path (default `/usr/local/musa`; required for MUSA build) |
 | `MUSA_KERNEL` | Enable the MUSA mudnn kernel build (`ON`/`OFF`, auto-enabled when `ACCELERATOR=musa`); `OFF` falls back to CPU for all compute |
-| `FLAGOS_BPU_X86_PYTHON` | Path to an x86_64 python with `hbdk4-compiler`, run under box64 (BPU compile path; see [docs/bpu.md](docs/bpu.md)) |
+| `FLAGOS_BPU_X86_PYTHON` | Path to an x86_64 python with `hbdk4-compiler`, run under box64 (BPU compile path; see [docs/vendors/bpu/integration.md](docs/vendors/bpu/integration.md)) |
 | `FLAGOS_BPU_X86_EMULATOR` | Path to a box64 binary (0.4+); the packaged 0.2.6 cannot run on this board's 64 KB pages |
 | `FLAGOS_BPU_X86_STUBS` | numba/torch import stubs for the emulated interpreter (defaults next to the x86 python) |
 

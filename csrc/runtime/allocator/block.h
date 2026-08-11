@@ -5,7 +5,7 @@
 #include <cstddef>
 #include <set>
 
-#include <include/flagos.h>
+#include <flagos.h>
 
 namespace c10::flagos {
 

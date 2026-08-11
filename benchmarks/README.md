@@ -19,7 +19,7 @@ prints it: `cd oellm_runtime/examples/llm_demo && ./llm -c qwen3_0.6b_config.jso
 Prefill is quoted per 512-token chunk, which is what the graph computes
 regardless of prompt length — a 17-token prompt reads as 219 tok/s for the same
 78 ms of work. Details and the KV cache layout in
-[docs/bpu.md](../docs/bpu.md#qwen3-06b-against-the-vendor-llm-demo).
+[docs/vendors/bpu/integration.md](../docs/vendors/bpu/integration.md#qwen3-06b-against-the-vendor-llm-demo).
 
 ## BPU ResNet-18 vs the vendor artifact
 
@@ -40,7 +40,7 @@ The vendor artifact is the honest upper bound for this board — eager CPU only
 proves the offload happened. The two are not the same workload, and the script
 says so: the official one takes NV12 (74 KB) where ours takes float32 NCHW
 (588 KB), and it was quantized by HMCT with real calibration data. Numbers and
-analysis in [docs/bpu.md](../docs/bpu.md#measured-performance).
+analysis in [docs/vendors/bpu/integration.md](../docs/vendors/bpu/integration.md#measured-performance).
 
 ## FlagGems dispatch-overhead microbenchmark
 

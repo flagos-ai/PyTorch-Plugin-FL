@@ -1,6 +1,6 @@
 # no_dispatcher 88 个算子接入分析
 
-`docs/flaggems_unrouted_ops.md` 里最大的一桶是 no_dispatcher（88 个）：gems 有实现，但 aten 侧 codegen 没为它们生成 CUDA dispatcher，因此 discovery 直接跳过（`op not in codegen_ops`）。
+`docs/vendors/flaggems/unrouted-ops.md` 里最大的一桶是 no_dispatcher（88 个）：gems 有实现，但 aten 侧 codegen 没为它们生成 CUDA dispatcher，因此 discovery 直接跳过（`op not in codegen_ops`）。
 
 本文回答:**这 88 个为什么没 dispatcher,以及怎么才能接入**。逐个复现 `enumerate_all_cuda_ops()` 的 gating 后,88 个归因如下:
 

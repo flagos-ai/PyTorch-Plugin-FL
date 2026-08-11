@@ -238,7 +238,7 @@ _relink_vendor_libtorch()
 def _preload_cuda_assets() -> None:
     """Load the bundled CUDA .so into this process BEFORE `import torch`.
 
-    Hard constraint (docs/cpu_torch_external_libtorch_cuda.md, constraint 1):
+    Hard constraint (docs/vendors/cuda/external-libtorch-cuda.md, constraint 1):
     PyTorch caches its CUDAHooks on first `import torch`. If libtorch_cuda.so is
     loaded afterwards, device init fails with "Cannot initialize CUDA without
     ATen_cuda library" even though the kernels register. So we ctypes-dlopen it
