@@ -1,0 +1,188 @@
+# Testing Guide
+
+This document describes the test structure, pytest markers, and commands for running torch_fl tests.
+
+## Test Structure
+
+Tests are organized by scope and purpose:
+
+| Directory | Responsibility |
+|-----------|----------------|
+| `tests/unit/` | Fast, isolated unit tests for utilities, routing logic, and device registration |
+| `tests/integration/` | End-to-end tests requiring GPU hardware: model inference, training, distributed |
+| `tests/integration/ops/` | Individual operator correctness tests against PyTorch reference implementations |
+| `tests/manual/` | Manual verification scripts for features that require specific hardware or interactive setup |
+| `tests/perf/` | Performance benchmarks and profiling scripts |
+
+## Pytest Markers
+
+Operator tests (`tests/integration/ops/`) use markers to select backend-specific and platform-specific tests. All markers are registered in `tests/integration/ops/conftest.py`.
+
+### Backend Markers
+
+| Marker | Meaning | When to Use |
+|--------|---------|-------------|
+| `main_ops` | Representative operator in the CI smoke subset | Applied to frequently-used ops (add, matmul, conv, etc.) for fast feedback |
+| `anyplatform` | Runs on any accelerator backend | Device-agnostic tests (operator registration, dispatch routing) |
+| `cuda` | Requires CUDA boxing kernels or NVIDIA hardware | Tests asserting `-> cuda` backend routing |
+| `metax` | Requires MetaX C++ (mxcc) backend | Tests asserting `-> metax` backend routing; skipped when `FLAGOS_METAX_BOXING=1` |
+| `ascend` | Requires Ascend ACL backend | Tests asserting `-> ascend` backend routing |
+| `musa` | Requires Moore Threads MUSA backend | Tests asserting `-> musa` backend routing |
+| `flaggems` | Requires FlagGems runtime path on (`FLAGOS_USE_FLAGGEMS=1`) | Tests asserting `-> flagos_python` or vendor-fallback routing |
+| `flaggems_python` | Requires FlagGems Python wrapper backend | Tests checking Python-layer integration (dispatch overhead, GIL behavior) |
+| `flaggems_cpp` | Requires FlagGems C++ runtime (`FLAGOS_USE_FLAGGEMS_CPP=1` + wheel built with `FLAGGEMS_KERNEL=ON`) | Tests asserting `-> kFlagOs` (C++) dispatch |
+
+### Platform Detection
+
+Test filtering is automatic: `conftest.py` detects the active platform from `ACCELERATOR`, `lib/flagos_platform`, or `FLAGOS_BACKEND_CONFIG` and skips tests marked for unavailable backends.
+
+## Running Tests
+
+### Prerequisites
+
+- **Unit tests**: No hardware dependencies; run on CPU-only environments.
+- **Integration tests**: Require GPU hardware matching the build (CUDA, MetaX, Ascend, DCU, MUSA, or GCU).
+- **Operator tests**: Require the SDK and runtime libraries for the target platform.
+
+### Unit Tests
+
+```bash
+pytest tests/unit/ -v
+```
+
+### Platform-filtered Operator Tests
+
+Run all operator tests for the current platform:
+
+```bash
+pytest tests/integration/ops/ -v
+```
+
+Run only main operators (CI smoke subset):
+
+```bash
+pytest tests/integration/ops/ -m main_ops -v
+```
+
+Run FlagGems-routed operators (requires `FLAGOS_USE_FLAGGEMS=1`):
+
+```bash
+FLAGOS_USE_FLAGGEMS=1 pytest tests/integration/ops/ -m "flaggems and main_ops" -v
+```
+
+Run FlagGems C++ operators (requires `FLAGGEMS_KERNEL=ON` build + `FLAGOS_USE_FLAGGEMS_CPP=1`):
+
+```bash
+FLAGOS_USE_FLAGGEMS_CPP=1 pytest tests/integration/ops/ -m "flaggems_cpp and main_ops" -v
+```
+
+### Model Tests
+
+Model integration tests accept command-line options for model path and hyperparameters.
+
+**Inference test**:
+
+```bash
+pytest tests/integration/test_inference.py --model <model-path> --max-new-tokens 128 -v
+```
+
+**Training test**:
+
+```bash
+pytest tests/integration/test_train.py --model <model-path> --steps 10 --batch-size 2 -v
+```
+
+Replace `<model-path>` with a Hugging Face model identifier (e.g., `Qwen/Qwen3-0.6B`) or a local directory containing model weights.
+
+### Distributed Tests
+
+Distributed tests require multi-GPU hardware and a collective communication backend (NCCL, FlagCX, or HCCL).
+
+```bash
+pytest tests/integration/test_distributed.py -v
+```
+
+### torch.compile Tests
+
+Compile integration tests verify operator compatibility with PyTorch's inductor backend.
+
+```bash
+pytest tests/integration/test_compile.py -v
+```
+
+**Note**: Compile tests require a working torch.compile environment. On some platforms, additional environment setup may be needed (see [torch.compile Integration](../features/compile.md)).
+
+### Profiler Tests
+
+Profiler tests validate CUPTI integration and device timeline capture.
+
+```bash
+pytest tests/integration/test_profiler.py -v
+```
+
+**Hardware requirement**: NVIDIA GPU with CUDA toolkit installed (CUPTI library).
+
+## Code Generation
+
+torch_fl uses code generation to create operator bindings and backend-specific kernels. Generated files live under `csrc/aten/generated/` and should not be edited manually.
+
+### Regenerating Operator Bindings
+
+When PyTorch's operator schema changes or new operators are added, regenerate the CUDA boxing kernels:
+
+```bash
+python scripts/codegen_ops.py
+```
+
+This reads `torch._C._dispatch_tls_local_include()` and `native_functions.yaml` to generate `csrc/aten/generated/RegisterFlagOS.cpp` and related files.
+
+### Platform-specific Codegen
+
+| Script | Purpose | When to Run |
+|--------|---------|-------------|
+| `scripts/codegen_ops.py` | CUDA boxing kernels (kCUDA dispatch) | After PyTorch version bump or schema changes |
+| `scripts/codegen_autograd.py` | Autograd backward operator wrappers | After adding autograd support for new operators |
+| `scripts/codegen_ascend.py` | Ascend ACL kernel wrappers | After updating CANN version or adding Ascend ops |
+| `scripts/codegen_gcu.py` | GCU topsaten kernel wrappers | After updating TopsRider SDK or adding GCU ops |
+| `scripts/codegen_mudnn.py` | MUSA mudnn kernel wrappers | After updating MUSA toolkit or adding MUSA ops |
+
+**Environment variables for codegen**:
+
+- `FLAGOS_CODEGEN_ALL`: Set to `1` to regenerate all operator bindings (slow; usually unnecessary).
+- Platform SDK paths (`ASCEND_HOME`, `TOPS_HOME`, `MUSA_HOME`, etc.): Required by platform-specific codegen scripts.
+
+## Linting
+
+torch_fl enforces code style with ruff. CI runs these exact commands:
+
+```bash
+ruff check .
+ruff format --check .
+git diff --check
+```
+
+**Required ruff version**: `0.15.12` (pinned in CI; install with `pip install ruff==0.15.12`).
+
+Fix formatting issues automatically:
+
+```bash
+ruff format .
+```
+
+Fix linting issues automatically where possible:
+
+```bash
+ruff check --fix .
+```
+
+`git diff --check` detects trailing whitespace and conflicts. Run it before committing to catch issues early.
+
+## CI Test Selection
+
+GitHub Actions CI runs a subset of tests based on pytest marks:
+
+- **Smoke tests**: `-m main_ops` (CUDA boxing kernels only)
+- **FlagGems tests**: `-m "flaggems and main_ops"` (when `FLAGOS_USE_FLAGGEMS=1`)
+- **Platform tests**: Vendor-specific runners filter by platform marker (e.g., `-m "ascend and main_ops"`)
+
+To replicate CI behavior locally, use the same mark expressions shown above.
