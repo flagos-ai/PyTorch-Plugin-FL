@@ -65,10 +65,11 @@ profiler-tracer parity are not represented in tests or docs for this platform.
 ### Ascend
 
 [`.github/configs/ascend.yml`](../../.github/configs/ascend.yml) (lines 78-97) runs the
-Ascend-marked operator suite and the full RNG dispatch suite in CI; FlagGems tests are not
-included in the CI test selection. Model-level (Qwen3) validation exists as a point measurement
-outside CI — training at 0.82x `torch_npu` on real Ascend 910 hardware
-(`tests/perf/e2e_qwen3_train_ascend.py`) — but
+Ascend-marked operator suite and the full RNG dispatch suite in CI. FlagGems-marked tests in
+`test_rng_dispatch.py` are selected via `-m "main_ops"` (lines 90-94) but the FlagGems runtime
+path is not enabled in CI, so those tests run against the native ACLNN backend. Model-level
+(Qwen3) validation exists as a point measurement outside CI — training at 0.82x `torch_npu` on
+real Ascend 910 hardware (`tests/perf/e2e_qwen3_train_ascend.py`) — but
 [`.github/configs/ascend.yml`](../../.github/configs/ascend.yml) (line 110) explicitly defers
 Qwen3 inference/training smoke pending a model mount on the CI runner. Profiler parity is
 explicitly out of scope: the Ascend profiler path does not yet emit device-side event
@@ -101,7 +102,7 @@ of its own (see [`setup.py`](../../setup.py), lines 376-397). FlagGems C++ dispa
 for DCU: [`CMakeLists.txt`](../../CMakeLists.txt) line 81 and [`setup.py`](../../setup.py) lines
 376-393 force `FLAGGEMS_KERNEL=OFF` with the comment "FLAGGEMS_KERNEL needs liboperators.so,
 which is not built for DTK," and [`.github/configs/dcu.yml`](../../.github/configs/dcu.yml) line
-90 excludes C++ tests with `-m "not flaggems_cpp"`. Distributed collectives (all_reduce,
+87 excludes C++ tests with `-m "not flaggems_cpp"`. Distributed collectives (all_reduce,
 broadcast, all_gather, all_gather_into_tensor, reduce_scatter_tensor) and DDP are measured
 working on 2 cards via RCCL (see
 [`torch_fl/comm/process_group.py`](../../torch_fl/comm/process_group.py), lines 103-107), but
