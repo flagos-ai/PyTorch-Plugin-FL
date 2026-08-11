@@ -14,7 +14,6 @@ Exit codes:
 """
 
 import argparse
-import os
 import re
 import subprocess
 import sys
@@ -24,12 +23,13 @@ from typing import List, Tuple
 
 class Color:
     """Terminal colors for output."""
-    RED = '\033[91m'
-    GREEN = '\033[92m'
-    YELLOW = '\033[93m'
-    BLUE = '\033[94m'
-    RESET = '\033[0m'
-    BOLD = '\033[1m'
+
+    RED = "\033[91m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    BLUE = "\033[94m"
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
 
 
 def print_status(message: str, status: str = "INFO"):
@@ -41,7 +41,15 @@ def print_status(message: str, status: str = "INFO"):
         "INFO": Color.BLUE,
     }
     color = colors.get(status, "")
-    symbol = "✓" if status == "PASS" else "✗" if status == "FAIL" else "⚠" if status == "WARN" else "ℹ"
+    symbol = (
+        "✓"
+        if status == "PASS"
+        else "✗"
+        if status == "FAIL"
+        else "⚠"
+        if status == "WARN"
+        else "ℹ"
+    )
     print(f"{color}{symbol} {message}{Color.RESET}")
 
 
@@ -113,7 +121,9 @@ def check_tests() -> bool:
             print_status(f"Test directory found: {test_dir}", "PASS")
 
     print(f"\n{Color.YELLOW}⚠ Note: This script does NOT run tests.{Color.RESET}")
-    print(f"{Color.YELLOW}  You must run tests manually and include output in your PR.{Color.RESET}")
+    print(
+        f"{Color.YELLOW}  You must run tests manually and include output in your PR.{Color.RESET}"
+    )
     print(f"{Color.YELLOW}  Minimum: pytest tests/unit/ -v{Color.RESET}")
 
     return True
@@ -131,7 +141,9 @@ def check_git_status() -> bool:
     if stdout.strip():
         print_status("Uncommitted changes detected", "WARN")
         print(stdout)
-        print(f"{Color.YELLOW}Ensure all changes are committed before creating PR{Color.RESET}")
+        print(
+            f"{Color.YELLOW}Ensure all changes are committed before creating PR{Color.RESET}"
+        )
     else:
         print_status("Working directory clean", "PASS")
 
@@ -143,16 +155,25 @@ def check_commit_messages() -> bool:
     print(f"\n{Color.BOLD}=== Commit Message Checks ==={Color.RESET}")
 
     # Get commits not in main
-    ret, stdout, _ = run_command([
-        "git", "log", "main..HEAD", "--pretty=format:%s", "--no-merges"
-    ])
+    ret, stdout, _ = run_command(
+        ["git", "log", "main..HEAD", "--pretty=format:%s", "--no-merges"]
+    )
 
     if ret != 0 or not stdout.strip():
         print_status("No commits found (may need to fetch main)", "WARN")
         return True
 
-    commits = stdout.strip().split('\n')
-    valid_prefixes = ['feat:', 'fix:', 'perf:', 'refactor:', 'docs:', 'test:', 'ci:', 'build:']
+    commits = stdout.strip().split("\n")
+    valid_prefixes = [
+        "feat:",
+        "fix:",
+        "perf:",
+        "refactor:",
+        "docs:",
+        "test:",
+        "ci:",
+        "build:",
+    ]
 
     all_valid = True
     for commit in commits:
@@ -164,7 +185,9 @@ def check_commit_messages() -> bool:
             all_valid = False
 
     if not all_valid:
-        print(f"\n{Color.YELLOW}Commit messages should follow format: <type>: <description>{Color.RESET}")
+        print(
+            f"\n{Color.YELLOW}Commit messages should follow format: <type>: <description>{Color.RESET}"
+        )
         print(f"{Color.YELLOW}Types: {', '.join(valid_prefixes)}{Color.RESET}")
 
     return all_valid
@@ -182,7 +205,7 @@ def check_pr_body(pr_body_file: str = None) -> bool:
         print_status(f"PR body file not found: {pr_body_file}", "FAIL")
         return False
 
-    with open(pr_body_file, 'r', encoding='utf-8') as f:
+    with open(pr_body_file, "r", encoding="utf-8") as f:
         body = f.read()
 
     # Check for required sections in AI PR template
@@ -208,18 +231,24 @@ def check_pr_body(pr_body_file: str = None) -> bool:
 
     # Check language
     # Simple heuristic: look for common Chinese characters
-    if re.search(r'[一-鿿]', body):
+    if re.search(r"[一-鿿]", body):
         print_status("PR body contains non-English text (Chinese detected)", "FAIL")
-        print(f"{Color.RED}ALL GitHub text must be in English per CLAUDE.md{Color.RESET}")
+        print(
+            f"{Color.RED}ALL GitHub text must be in English per CLAUDE.md{Color.RESET}"
+        )
         all_present = False
     else:
         print_status("Language check passed (English)", "PASS")
 
     # Check for actual test output (not just claims)
-    if "pytest" in body.lower() and ("passed" in body.lower() or "failed" in body.lower()):
+    if "pytest" in body.lower() and (
+        "passed" in body.lower() or "failed" in body.lower()
+    ):
         print_status("Test output appears to be included", "PASS")
     else:
-        print_status("Test output may be missing (should include actual pytest output)", "WARN")
+        print_status(
+            "Test output may be missing (should include actual pytest output)", "WARN"
+        )
 
     return all_present
 
@@ -229,24 +258,28 @@ def check_no_debug_code() -> bool:
     print(f"\n{Color.BOLD}=== Debug Code Checks ==={Color.RESET}")
 
     # Get changed files
-    ret, stdout, _ = run_command([
-        "git", "diff", "main...HEAD", "--name-only", "--diff-filter=AM"
-    ])
+    ret, stdout, _ = run_command(
+        ["git", "diff", "main...HEAD", "--name-only", "--diff-filter=AM"]
+    )
 
     if ret != 0:
         print_status("Could not get changed files", "WARN")
         return True
 
-    changed_files = [f for f in stdout.strip().split('\n') if f.endswith(('.py', '.cc', '.cpp', '.h'))]
+    changed_files = [
+        f
+        for f in stdout.strip().split("\n")
+        if f.endswith((".py", ".cc", ".cpp", ".h"))
+    ]
 
     debug_patterns = [
-        (r'\bprint\s*\(', 'print() call'),
-        (r'#\s*TODO', 'TODO comment'),
-        (r'#\s*FIXME', 'FIXME comment'),
-        (r'#\s*XXX', 'XXX comment'),
-        (r'#\s*HACK', 'HACK comment'),
-        (r'console\.log', 'console.log'),
-        (r'debugger;', 'debugger statement'),
+        (r"\bprint\s*\(", "print() call"),
+        (r"#\s*TODO", "TODO comment"),
+        (r"#\s*FIXME", "FIXME comment"),
+        (r"#\s*XXX", "XXX comment"),
+        (r"#\s*HACK", "HACK comment"),
+        (r"console\.log", "console.log"),
+        (r"debugger;", "debugger statement"),
     ]
 
     issues_found = False
@@ -254,28 +287,32 @@ def check_no_debug_code() -> bool:
         if not Path(file).exists():
             continue
 
-        with open(file, 'r', encoding='utf-8', errors='ignore') as f:
+        with open(file, "r", encoding="utf-8", errors="ignore") as f:
             content = f.read()
             for pattern, name in debug_patterns:
                 matches = re.finditer(pattern, content, re.IGNORECASE)
                 for match in matches:
-                    line_num = content[:match.start()].count('\n') + 1
+                    line_num = content[: match.start()].count("\n") + 1
                     print_status(f"{file}:{line_num} contains {name}", "WARN")
                     issues_found = True
 
     if not issues_found:
         print_status("No obvious debug code found", "PASS")
     else:
-        print(f"\n{Color.YELLOW}Review these carefully - some may be legitimate.{Color.RESET}")
+        print(
+            f"\n{Color.YELLOW}Review these carefully - some may be legitimate.{Color.RESET}"
+        )
 
     return True  # Warning only, not a failure
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Validate AI-generated PR before submission")
-    parser.add_argument('--pr-body', help='Path to PR body markdown file')
-    parser.add_argument('--skip-lint', action='store_true', help='Skip linting checks')
-    parser.add_argument('--strict', action='store_true', help='Fail on warnings')
+    parser = argparse.ArgumentParser(
+        description="Validate AI-generated PR before submission"
+    )
+    parser.add_argument("--pr-body", help="Path to PR body markdown file")
+    parser.add_argument("--skip-lint", action="store_true", help="Skip linting checks")
+    parser.add_argument("--strict", action="store_true", help="Fail on warnings")
     args = parser.parse_args()
 
     print(f"{Color.BOLD}{Color.BLUE}")
@@ -319,9 +356,9 @@ def main():
         print(f"{Color.GREEN}{Color.BOLD}")
         print("✓ All checks passed! You can proceed with PR creation.")
         print(f"{Color.RESET}")
-        print(f"\nNext steps:")
-        print(f"  1. Run tests: pytest tests/unit/ -v")
-        print(f"  2. Create PR: gh pr create --template ai_agent_pr.md")
+        print("\nNext steps:")
+        print("  1. Run tests: pytest tests/unit/ -v")
+        print("  2. Create PR: gh pr create --template ai_agent_pr.md")
         return 0
     else:
         print(f"{Color.RED}{Color.BOLD}")
