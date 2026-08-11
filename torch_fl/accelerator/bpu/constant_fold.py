@@ -154,8 +154,18 @@ def constant_fold(model) -> None:
         if name not in {init.name for init in model.graph.initializer}:
             new_inits.append(onnx.numpy_helper.from_array(val, name=name))
 
+    # A folded name that shape inference already described in value_info would
+    # now be declared twice. hbdk4's ONNX adaptor builds one symbol table from
+    # both lists and rejects the second entry with "value ... already exists",
+    # which fails the whole partition. The initializer carries the shape and
+    # dtype, so the value_info entry is redundant once the value is constant.
+    stale = {v for v in folded_outputs}
+    kept_vi = [v for v in model.graph.value_info if v.name not in stale]
+
     # Rebuild graph in place
     del model.graph.node[:]
     model.graph.node.extend(new_nodes)
     del model.graph.initializer[:]
     model.graph.initializer.extend(new_inits)
+    del model.graph.value_info[:]
+    model.graph.value_info.extend(kept_vi)

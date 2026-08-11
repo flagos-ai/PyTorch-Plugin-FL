@@ -50,7 +50,11 @@ _QUANTIZE_INPUT_ONLY = {"MaxPool", "AveragePool", "GlobalAveragePool"}
 # of this pass produce different artifacts -- without it, adding MaxPool above
 # silently reused the artifact compiled before it, and the measurement showed no
 # change at all.
-QDQ_VERSION = 2
+#
+# Version 3: BF16 boundary promotion. Frozen BF16 weights are converted to F32
+# before export, so previously cached artifacts with BF16 initializers must not
+# be reused.
+QDQ_VERSION = 3
 
 
 def _sym_scale(arr: np.ndarray) -> float:

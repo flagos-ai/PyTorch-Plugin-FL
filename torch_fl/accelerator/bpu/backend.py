@@ -34,6 +34,7 @@ from .decompose import decompose
 from .partition import (
     Partition,
     extract_subgraph,
+    needs_bf16_promotion,
     partition_graph,
     runtime_inputs,
     summarize,
@@ -41,6 +42,20 @@ from .partition import (
 from .runtime import BPURuntime
 
 log = logging.getLogger("torch_fl.bpu")
+
+
+def _aot_decompositions() -> dict[Any, Callable[..., Any]]:
+    """The one upstream decomposition needed to keep CPU attention connected.
+
+    The broad core decomposition table lowers many otherwise supported aten ops
+    to ``prims`` nodes. Requesting only CPU flash SDPA instead yields ordinary
+    bmm/mask/softmax aten operations and removes its tuple-valued boundary.
+    """
+    from torch._decomp import get_decompositions
+
+    op = torch.ops.aten._scaled_dot_product_flash_attention_for_cpu.default
+    return get_decompositions([op])
+
 
 # Dynamo's own graph inputs, stashed so the inner aten compiler can tell which
 # of them are parameters and buffers. By the time AOTAutograd calls us the
@@ -73,6 +88,8 @@ class _BPUCall(torch.nn.Module):
         n_real: int | None = None,
         frozen: list[torch.Tensor] | None = None,
         fallback: Callable[..., Any] | None = None,
+        input_dtypes: list[torch.dtype] | None = None,
+        output_dtypes: list[torch.dtype] | None = None,
     ):
         super().__init__()
         self.rt = rt
@@ -80,6 +97,8 @@ class _BPUCall(torch.nn.Module):
         self.n_real = n_real
         self._frozen = list(frozen or [])
         self._fallback = fallback
+        self.input_dtypes = list(input_dtypes or [])
+        self.output_dtypes = list(output_dtypes or [])
         self._warned = False
 
     def _matches(self, guards: tuple[torch.Tensor, ...]) -> bool:
@@ -107,7 +126,27 @@ class _BPUCall(torch.nn.Module):
                 if self._fallback is not None:
                     return self._fallback(*real, *guards)
             args = real
+        if self.input_dtypes:
+            if len(args) != len(self.input_dtypes):
+                raise RuntimeError(
+                    f"BPU artifact input count mismatch: got {len(args)} tensors, "
+                    f"expected {len(self.input_dtypes)}"
+                )
+            args = tuple(
+                arg.to(dtype) if arg.dtype != dtype else arg
+                for arg, dtype in zip(args, self.input_dtypes, strict=True)
+            )
         outs = self.rt(*args)
+        if self.output_dtypes:
+            if len(outs) != len(self.output_dtypes):
+                raise RuntimeError(
+                    f"BPU artifact output count mismatch: got {len(outs)} tensors, "
+                    f"expected {len(self.output_dtypes)}"
+                )
+            outs = [
+                out.to(dtype) if out.dtype != dtype else out
+                for out, dtype in zip(outs, self.output_dtypes, strict=True)
+            ]
         return outs[0] if self.n_outputs == 1 else tuple(outs)
 
 
@@ -142,6 +181,9 @@ def _example_inputs_for(
                 return None
             if any(not isinstance(d, int) for d in val.shape):
                 return None
+            # Skip zero-sized tensors: ONNX export rejects them
+            if val.numel() == 0:
+                continue
             out.append(torch.zeros(tuple(val.shape), dtype=val.dtype))
     return out
 
@@ -292,6 +334,7 @@ def bpu_backend(
     mode: str | None = None,
     options: dict[str, Any] | None = None,
     min_nodes: int = 3,
+    min_compute_macs: int = 0,
     strict: bool = False,
     act_scales: dict[str, float] | None = None,
 ) -> Callable[..., Any]:
@@ -304,6 +347,10 @@ def bpu_backend(
     Partitions that cannot be compiled stay in the graph and run on CPU, so a
     missing or failing hbdk4 degrades performance but never correctness. Set
     `strict=True` to raise instead.
+
+    `min_compute_macs` sets a MAC threshold: partitions below it are kept on
+    CPU. BPU submission overhead is roughly 0.8 ms, so a partition must do
+    enough arithmetic work to recover that cost. Default 0 disables the filter.
 
     `act_scales` maps ONNX tensor name to quantization scale (see
     `calibrate.calibrate_onnx`). Anything not listed falls back to
@@ -324,17 +371,24 @@ def bpu_backend(
         log.info(
             "mode=%r has no effect on the BPU backend: it selects inductor "
             "codegen strategies, and the BPU runs a .hbm that hbdk4 compiled "
-            "ahead of time. Use options={...} to set min_nodes/strict/act_scales.",
+            "ahead of time. Use options={...} to set min_nodes/min_compute_macs/"
+            "strict/act_scales.",
             mode,
         )
     if options:
-        unknown = set(options) - {"min_nodes", "strict", "act_scales"}
+        unknown = set(options) - {
+            "min_nodes",
+            "min_compute_macs",
+            "strict",
+            "act_scales",
+        }
         if unknown:
             raise TypeError(
                 f"unknown BPU backend option(s): {sorted(unknown)}. "
-                "Supported: min_nodes, strict, act_scales."
+                "Supported: min_nodes, min_compute_macs, strict, act_scales."
             )
         min_nodes = options.get("min_nodes", min_nodes)
+        min_compute_macs = options.get("min_compute_macs", min_compute_macs)
         strict = options.get("strict", strict)
         act_scales = options.get("act_scales", act_scales)
 
@@ -343,6 +397,7 @@ def bpu_backend(
             aten_gm,
             aten_inputs,
             min_nodes=min_nodes,
+            min_compute_macs=min_compute_macs,
             strict=strict,
             act_scales=act_scales,
         )
@@ -350,7 +405,9 @@ def bpu_backend(
     names = [n.name for n in gm.graph.nodes if n.op == "placeholder"]
     token = _OUTER_INPUTS.set((names, list(example_inputs)))
     try:
-        return aot_autograd(fw_compiler=_compile_aten)(gm, example_inputs)
+        return aot_autograd(
+            fw_compiler=_compile_aten, decompositions=_aot_decompositions()
+        )(gm, example_inputs)
     finally:
         _OUTER_INPUTS.reset(token)
 
@@ -410,6 +467,7 @@ def _offload(
     example_inputs: list[torch.Tensor],
     *,
     min_nodes: int = 3,
+    min_compute_macs: int = 0,
     strict: bool = False,
     act_scales: dict[str, float] | None = None,
 ) -> Callable[..., Any]:
@@ -420,7 +478,9 @@ def _offload(
     # ResNet in one piece across its stem max-pool.
     decompose(gm)
 
-    partitions = partition_graph(gm, min_nodes=min_nodes)
+    partitions = partition_graph(
+        gm, min_nodes=min_nodes, min_compute_macs=min_compute_macs
+    )
 
     if not partitions:
         log.info("no BPU-eligible partitions; running on CPU")
@@ -464,8 +524,20 @@ def _offload(
             )
             continue
         try:
-            sub = extract_subgraph(gm, p, frozen)
-            hbm, ins, outs = compile_partition(sub, ex, act_scales=act_scales)
+            promote = needs_bf16_promotion(p)
+            artifact_dtype = torch.float32
+            if promote:
+                log.info("partition %d: promoting BF16 artifact boundaries to F32", i)
+            sub = extract_subgraph(gm, p, frozen, promote_bf16=promote)
+            # Promote compile inputs outside FakeTensorMode
+            from torch._subclasses.fake_tensor import unset_fake_temporarily
+
+            with unset_fake_temporarily():
+                compile_inputs = [
+                    t.float() if promote and t.dtype == torch.bfloat16 else t
+                    for t in ex
+                ]
+            hbm, ins, outs = compile_partition(sub, compile_inputs, act_scales=act_scales)
             rt = BPURuntime(str(hbm), ins, outs)
             real_inputs = runtime_inputs(p, frozen)
             call_inputs, guard_nodes, guard_vals = real_inputs, [], []
@@ -475,6 +547,28 @@ def _offload(
                 guard_nodes = [n for n in p.inputs if n.name in frozen]
                 guard_vals = [frozen[n.name] for n in guard_nodes]
                 call_inputs = real_inputs + guard_nodes
+
+            input_dtypes = None
+            output_dtypes = None
+            if promote:
+                input_dtypes = [
+                    artifact_dtype
+                    if n.meta["val"].dtype == torch.bfloat16
+                    else n.meta["val"].dtype
+                    for n in real_inputs
+                ]
+                output_dtypes = [n.meta["val"].dtype for n in p.outputs]
+                if len(input_dtypes) != len(compile_inputs):
+                    raise CompileError(
+                        f"BF16 input dtype count mismatch: {len(input_dtypes)} "
+                        f"dtypes for {len(compile_inputs)} compile inputs"
+                    )
+                if len(output_dtypes) != len(p.outputs):
+                    raise CompileError(
+                        f"BF16 output dtype count mismatch: {len(output_dtypes)} "
+                        f"dtypes for {len(p.outputs)} outputs"
+                    )
+
             _splice(
                 gm,
                 p,
@@ -486,6 +580,8 @@ def _offload(
                     fallback=_subgraph_fallback(gm, p, frozen)
                     if guard_weights
                     else None,
+                    input_dtypes=input_dtypes,
+                    output_dtypes=output_dtypes,
                 ),
                 f"_bpu_{i}",
                 call_inputs,
@@ -498,7 +594,8 @@ def _offload(
         except Exception as e:  # noqa: BLE001 - never break the user's model
             if strict:
                 raise
-            log.warning("partition %d: unexpected %s: %s", i, type(e).__name__, e)
+            import traceback
+            log.warning("partition %d: unexpected %s: %s\n%s", i, type(e).__name__, e, traceback.format_exc())
 
     if compiled:
         gm.graph.lint()

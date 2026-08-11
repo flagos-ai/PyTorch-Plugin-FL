@@ -40,7 +40,11 @@ class ConvBN(torch.nn.Module):
         return torch.relu(self.bn(self.conv(x)))
 
 
-def _aten_graph(mod: torch.nn.Module, x: torch.Tensor):
+def _aten_graph(
+    mod: torch.nn.Module,
+    x: torch.Tensor,
+    decompositions=None,
+):
     """Capture the post-AOTAutograd aten graph, as the backend sees it."""
     captured = {}
 
@@ -49,7 +53,13 @@ def _aten_graph(mod: torch.nn.Module, x: torch.Tensor):
         return gm.forward
 
     with torch.no_grad():
-        torch.compile(mod, backend=aot_autograd(fw_compiler=fw))(x)
+        torch.compile(
+            mod,
+            backend=aot_autograd(
+                fw_compiler=fw,
+                decompositions=decompositions,
+            ),
+        )(x)
     return captured["gm"]
 
 
@@ -227,8 +237,12 @@ def test_decompose_for_onnx_is_the_same_pass() -> None:
 
 
 SOFTMAX_PRIVATE = torch.ops.aten._softmax.default
+SAFE_SOFTMAX = torch.ops.aten._safe_softmax.default
 UNSAFE_VIEW = torch.ops.aten._unsafe_view.default
 ATEN_T = torch.ops.aten.t.default
+ATEN_ALIAS = torch.ops.aten.alias.default
+MUL_SCALAR = torch.ops.aten.mul.Scalar
+TO_COPY = torch.ops.aten._to_copy.default
 
 
 class Attention(torch.nn.Module):
@@ -271,6 +285,66 @@ def test_rewrites_unsafe_view_and_t() -> None:
     decompose(gm)
 
     assert not [n for n in gm.graph.nodes if n.target in (UNSAFE_VIEW, ATEN_T)]
+
+
+def test_safe_softmax_preserves_fully_masked_rows() -> None:
+    """The private op returns zeros, not NaNs, for an all-`-inf` row."""
+
+    class SafeSoftmax(torch.nn.Module):
+        def forward(self, x):
+            return torch.ops.aten._safe_softmax.default(x, -1)
+
+    mod = SafeSoftmax()
+    x = torch.tensor([[float("-inf"), float("-inf")], [0.0, 1.0]])
+    gm = _aten_graph(mod, x)
+    assert [n for n in gm.graph.nodes if n.target is SAFE_SOFTMAX]
+
+    expected = gm(x)
+    decompose(gm)
+    got = gm(x)
+
+    assert not [n for n in gm.graph.nodes if n.target is SAFE_SOFTMAX]
+    assert torch.ops.aten.softmax.int in {n.target for n in gm.graph.nodes}
+    torch.testing.assert_close(got, expected)
+    assert torch.equal(got[0][0], torch.zeros(2))
+
+
+def test_removes_alias_and_normalizes_scalar_mul() -> None:
+    class AliasAndScale(torch.nn.Module):
+        def forward(self, x):
+            return torch.ops.aten.mul.Scalar(torch.ops.aten.alias.default(x), 0.5)
+
+    x = torch.randn(2, 4)
+    gm = _aten_graph(AliasAndScale(), x)
+    assert [n for n in gm.graph.nodes if n.target is ATEN_ALIAS]
+    assert [n for n in gm.graph.nodes if n.target is MUL_SCALAR]
+
+    expected = gm(x)
+    decompose(gm)
+
+    targets = {n.target for n in gm.graph.nodes}
+    assert ATEN_ALIAS not in targets
+    assert MUL_SCALAR not in targets
+    assert torch.ops.aten.mul.Tensor in targets
+    torch.testing.assert_close(gm(x), expected)
+
+
+def test_normalizes_dtype_only_to_copy() -> None:
+    class Cast(torch.nn.Module):
+        def forward(self, x):
+            return torch.ops.aten._to_copy.default(x, dtype=torch.float32)
+
+    x = torch.randn(2, 4, dtype=torch.bfloat16)
+    gm = _aten_graph(Cast(), x)
+    assert [n for n in gm.graph.nodes if n.target is TO_COPY]
+
+    expected = gm(x)
+    decompose(gm)
+
+    targets = {n.target for n in gm.graph.nodes}
+    assert TO_COPY not in targets
+    assert torch.ops.aten.to.dtype in targets
+    torch.testing.assert_close(gm(x), expected)
 
 
 def test_attention_rewrite_preserves_numerics() -> None:
@@ -339,3 +413,43 @@ def test_t_is_left_alone_below_two_dims() -> None:
     decompose(gm)
 
     assert [n for n in gm.graph.nodes if n.target is ATEN_T] == ts
+
+
+class FlashAttention(torch.nn.Module):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.nn.functional.scaled_dot_product_attention(x, x, x)
+
+
+def test_backend_decomposes_only_cpu_flash_sdpa() -> None:
+    """The fused tuple op must become aten math without introducing prims."""
+    from torch_fl.accelerator.bpu.backend import _aot_decompositions
+
+    x = torch.randn(1, 4, 8, 16)
+    fused = torch.ops.aten._scaled_dot_product_flash_attention_for_cpu.default
+    gm = _aten_graph(FlashAttention().eval(), x)
+    assert [n for n in gm.graph.nodes if n.target is fused]
+
+    gm = _aten_graph(FlashAttention().eval(), x, _aot_decompositions())
+    targets = [n.target for n in gm.graph.nodes if n.op == "call_function"]
+
+    assert fused not in targets
+    assert torch.ops.aten.bmm.default in targets
+    assert torch.ops.aten._safe_softmax.default in targets
+    assert not [target for target in targets if str(target).startswith("prims.")]
+
+
+def test_cpu_flash_sdpa_decomposition_preserves_numerics() -> None:
+    from torch_fl.accelerator.bpu.backend import _aot_decompositions
+
+    mod = FlashAttention().eval()
+    x = torch.randn(2, 4, 8, 16)
+    with torch.no_grad():
+        expected = mod(x)
+        got = torch.compile(
+            mod,
+            backend=aot_autograd(
+                fw_compiler=lambda gm, inputs: gm.forward,
+                decompositions=_aot_decompositions(),
+            ),
+        )(x)
+    torch.testing.assert_close(got, expected)
