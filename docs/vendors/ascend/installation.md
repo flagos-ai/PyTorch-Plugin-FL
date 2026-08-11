@@ -202,5 +202,5 @@ Distributed collectives route through FlagCX (recommended) or an HCCL fallback. 
 - [Ascend NPU integration plan](npu-plan.md): operator coverage strategy and acceptance criteria
 - [External libtorch_npu analysis](external-libtorch-npu.md): why `torch_npu` cannot act as a boxing fallback
 - [Compatibility matrix](../../reference/compatibility.md): platform status and capability claims
-- [Testing guide](../../reference/testing.md): running and interpreting test suites
-- [Configuration reference](../../reference/configuration.md): runtime environment variables and backend configs
+- [Testing guide](../../development/testing.md): running and interpreting test suites
+- [Environment variables](../../reference/environment-variables.md): runtime environment variables and backend configs

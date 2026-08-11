@@ -84,12 +84,12 @@ For BPU-specific compilation variables, see [BPU Integration Guide](../vendors/b
 
 Detailed setup and runtime variables for each accelerator backend are documented in platform guides:
 
-- [CUDA (NVIDIA)](../vendors/cuda/setup.md)
-- [MetaX](../vendors/metax/setup.md)
-- [Ascend (Huawei)](../vendors/ascend/setup.md)
-- [DCU (Hygon)](../vendors/dcu/setup.md)
-- [GCU (Enflame)](../vendors/gcu/setup.md)
-- [MUSA (Moore Threads)](../vendors/musa/setup.md)
+- [CUDA (NVIDIA)](../vendors/cuda/installation.md)
+- [MetaX](../vendors/metax/installation.md)
+- [Ascend (Huawei)](../vendors/ascend/installation.md)
+- [DCU (Hygon)](../vendors/dcu/installation.md)
+- [GCU (Enflame)](../vendors/gcu/installation.md)
+- [MUSA (Moore Threads)](../vendors/musa/installation.md)
 - [BPU (Horizon Robotics)](../vendors/bpu/integration.md)
 
 Platform guides document SDK paths, driver requirements, version compatibility, and any additional environment setup (e.g., `LD_PRELOAD`, `LD_LIBRARY_PATH`).

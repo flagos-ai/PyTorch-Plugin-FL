@@ -191,4 +191,4 @@ All compute ops will fall back to CPU. This mode is useful for testing the runti
 
 - [Codegen source](../../../scripts/codegen_mudnn.py): category-driven kernel generation for `mudnn`
 - [Compatibility matrix](../../reference/compatibility.md): platform status and limitations
-- [Configuration reference](../../reference/configuration.md): runtime environment variables and backend selection
+- [Environment variables](../../reference/environment-variables.md): runtime environment variables and backend selection

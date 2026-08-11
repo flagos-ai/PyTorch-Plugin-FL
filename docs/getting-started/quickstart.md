@@ -106,5 +106,5 @@ The routing is transparent to your code. No changes are needed when switching be
 
 - Explore the [Compatibility Matrix](../reference/compatibility.md) to understand which features are validated for your platform
 - Review platform-specific notes in your [installation guide](installation.md)
-- Learn about distributed training in the [Distributed Guide](../guides/distributed.md)
-- Profile your workload with the [Profiler Guide](../guides/profiling.md)
+- Learn about distributed training in the [Distributed Guide](../architecture/distributed-flagcx.md)
+- Profile your workload with the [Profiler Guide](../architecture/profiler.md)

@@ -114,7 +114,7 @@ New platform integrations require several components. Use existing backends (CUD
 
 Platform integrations must include:
 
-- **Compatibility matrix**: Supported hardware models, SDK versions, and PyTorch versions (see [Compatibility](docs/compatibility.md)).
+- **Compatibility matrix**: Supported hardware models, SDK versions, and PyTorch versions (see [Compatibility](docs/reference/compatibility.md)).
 - **Setup guide**: Installation steps, environment configuration, and validation commands (see [vendor guides](docs/vendors/)).
 - **Environment variables**: Document platform-specific variables in the vendor guide, not the main environment reference.
 - **Testing results**: Evidence that the runtime and operator tests pass on the target hardware.

@@ -110,7 +110,7 @@ Compile integration tests verify operator compatibility with PyTorch's inductor 
 pytest tests/integration/test_compile.py -v
 ```
 
-**Note**: Compile tests require a working torch.compile environment. On some platforms, additional environment setup may be needed (see [torch.compile Integration](../features/compile.md)).
+**Note**: Compile tests require a working torch.compile environment. On some platforms, additional environment setup may be needed (see [torch.compile Integration](../architecture/torch-compile-integration.md)).
 
 ### Profiler Tests
 
