@@ -45,7 +45,7 @@ The English `README.md` will use the following section order:
 
 ```text
 # torch-fl
-  Badges · Documentation · 中文
+  Badges · Documentation · Chinese README
 
 Project positioning
 
