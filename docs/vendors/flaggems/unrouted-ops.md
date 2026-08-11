@@ -1,42 +1,74 @@
-# FlagGems 未接入算子清单
+# FlagGems unrouted operator inventory
 
-FlagGems `_FULL_CONFIG` 共 **433** 个算子,当前 **320 已路由**到 `flagos_python` 路径,**113 个未以自身名字进路由表**。本文按原因分桶列出,供后续逐批攻关。
+FlagGems' `_FULL_CONFIG` holds **433** operators. **320 are currently routed** to the
+`flagos_python` path; **113 do not appear in the routing table under their own name**. This
+document buckets them by cause, for working through in batches.
 
-> **2026-07 更新(本轮 +13,307 → 320)**:攻下 ③varargs 与部分 rng。
-> - **varargs 一元 inplace(7)**:`asinh_`/`sinh_`/`log1p_`/`digamma_`/`sgn_`/`hardswish_`/`logit_` —— gems wrapper 是 `(*args,**kwargs)` 无法内省 arity,但 aten schema 是权威 arity。加 `_FLAGGEMS_ARITY_OVERRIDE` 显式白名单(仅实测跑通、数值正确、不丢参的简单 elementwise)绕过 npos 闸门。`logit_` npos=2(self+eps 均位置传,eps=None ok)。实测数值与 CPU 一致(maxdiff ≤ 1e-6)。
-> - **rng(6)**:`rand`/`randn`(factory)、`rand_like`/`randn_like`(like_factory)、`randperm`(factory,本 torch 版本 schema 无 generator 参)、`multinomial`(新 `rng_dropgen` 类别,剥离尾部 `Generator?`)。阻塞点是 gems `philox_backend_seed_offset(increment)` 取空的 `torch.cuda.default_generators`(CPU-torch+cuda shim,len=0)→ IndexError。运行时在 `torch_fl/__init__.py._patch_flaggems_philox()` monkeypatch 该函数注入 fallback CUDA generator 一次性解锁。实测分布正确、连调结果不同(offset 推进)。
-> - **维持排除**:`i0_`、`zero`、`zero.out`(gems kernel 硬断言 `tensor.is_cuda` / "Input tensor must be on a CUDA device",flagos 是 PrivateUse1 永不满足,`_FLAGGEMS_ARITY_OVERRIDE` 仅记录 arity,实际进 `FLAGGEMS_PYTHON_SKIP`);`normal_`/`normal.*`(gems 硬编码 `generator=None` 不透传,上游 bug)。
+> **2026-07 update (+13 this round, 307 → 320)**: ③varargs and part of rng are now handled.
+> - **varargs unary in-place (7)**: `asinh_`/`sinh_`/`log1p_`/`digamma_`/`sgn_`/`hardswish_`/`logit_`.
+>   The gems wrapper is `(*args,**kwargs)` so arity cannot be introspected, but the aten schema is
+>   the authoritative arity. An explicit `_FLAGGEMS_ARITY_OVERRIDE` allowlist (restricted to simple
+>   elementwise ops verified to run, produce correct numerics, and drop no arguments) bypasses the
+>   npos gate. `logit_` has npos=2 (self and eps both passed positionally; eps=None is fine).
+>   Measured numerics match CPU (maxdiff ≤ 1e-6).
+> - **rng (6)**: `rand`/`randn` (factory), `rand_like`/`randn_like` (like_factory), `randperm`
+>   (factory; this torch version's schema has no generator argument), and `multinomial` (a new
+>   `rng_dropgen` category that strips the trailing `Generator?`). The blocker was that gems'
+>   `philox_backend_seed_offset(increment)` reads the empty `torch.cuda.default_generators`
+>   (CPU-torch + cuda shim, len=0) and raises IndexError. At runtime,
+>   `torch_fl/__init__.py._patch_flaggems_philox()` monkeypatches that function to inject a
+>   fallback CUDA generator, unlocking all six at once. Measured: distributions are correct and
+>   consecutive calls differ (the offset advances).
+> - **Still excluded**: `i0_`, `zero`, `zero.out` (the gems kernel hard-asserts `tensor.is_cuda` /
+>   "Input tensor must be on a CUDA device", which flagos as PrivateUse1 can never satisfy;
+>   `_FLAGGEMS_ARITY_OVERRIDE` only records arity, so these actually land in
+>   `FLAGGEMS_PYTHON_SKIP`), and `normal_`/`normal.*` (gems hardcodes `generator=None` and does
+>   not forward it — an upstream bug).
 
-数据由 `discover_flaggems_ops()`(`scripts/codegen_ops.py`)的逐分支拒绝逻辑对账得出,分桶与实际 codegen 拒绝完全一致。
+The data comes from reconciling the per-branch rejection logic in `discover_flaggems_ops()`
+(`scripts/codegen_ops.py`); the buckets match the actual codegen rejections exactly.
 
-> **重要更正(2026-07 实测)**:①no_dispatcher(88)这一桶**绝大多数并非功能缺口**。实机在 flagos 上逐个探测(`FLAGOS_USE_FLAGGEMS=1`,55 个代表性 op),**54 个 PASS、0 个数值错、0 个真实崩溃**。原因是这些 op 属 `composite_implicit_autograd`,PyTorch 在 PrivateUse1 dispatch key **之上**就把它们分解成 leaf op(conv2d→convolution、divide→div、var→…),而那些 leaf 已经路由好了。给它们单独补 dispatcher 无益(dispatcher 永不命中,属死代码),甚至有害。**"未进路由表" ≠ "不能用"**。
+> **Important correction (measured 2026-07)**: the ①no_dispatcher bucket (88) is **mostly not a
+> functional gap**. Probing them individually on real hardware under flagos
+> (`FLAGOS_USE_FLAGGEMS=1`, 55 representative ops) gave **54 PASS, 0 numerical errors, 0 genuine
+> crashes**. The reason is that these ops are `composite_implicit_autograd`: PyTorch decomposes
+> them into leaf ops **above** the PrivateUse1 dispatch key (conv2d→convolution, divide→div,
+> var→…), and those leaves are already routed. Adding a dispatcher for them is useless (it would
+> never be hit — dead code) and potentially harmful. **"Not in the routing table" ≠ "does not
+> work".**
 
-| 桶 | 数量 | 一句话原因 |
+| Bucket | Count | Cause in one line |
 |---|---|---|
-| ① no_dispatcher | 88 | **多为设计使然,非缺口**:composite 分解到已路由 leaf,已能跑(见上方更正) |
-| ② type_unsupported_kwarg | 13 | 参数类型通用 caller 表达不了(Generator?/Device?/Layout?/MemoryFormat?/Tensor?) |
-| ③ varargs | 12 | gems 签名 `(*args, **kwargs)`,arity 无法内省 |
-| ④ manual_skip | 12 | 运行期崩溃,手工排除(device assert / 必填 out / rng) |
-| ⑤ name_mismatch | 2 | 尾部 aten 参名对不上 gems keyword-only 参名 |
-| ⑥ 其余零散 | 5 | foreach / optlist / arity 重排陷阱 |
-| **合计** | **132** | |
+| ① no_dispatcher | 88 | **Mostly by design, not a gap**: composite decomposition to already-routed leaves; already works (see the correction above) |
+| ② type_unsupported_kwarg | 13 | An argument type the generic caller cannot express (Generator?/Device?/Layout?/MemoryFormat?/Tensor?) |
+| ③ varargs | 12 | gems signature is `(*args, **kwargs)`; arity cannot be introspected |
+| ④ manual_skip | 12 | Crashes at runtime; excluded by hand (device assert / mandatory out / rng) |
+| ⑤ name_mismatch | 2 | Trailing aten parameter names do not match gems' keyword-only parameter names |
+| ⑥ Miscellaneous | 5 | foreach / optlist / arity-reordering traps |
+| **Total** | **132** | |
 
 ---
 
-## ① no_dispatcher —— 88 个(实测:大多已通过 leaf 分解可用)
+## ① no_dispatcher — 88 operators (measured: most already work via leaf decomposition)
 
-gems 有实现,aten 侧 codegen **没以该 op 名生成 dispatcher**。但 torchgen 分类 + 实机验证表明,这 88 个按"该不该补 dispatcher"分成四类:
+gems has an implementation, but the aten-side codegen **generated no dispatcher under that op
+name**. torchgen's classification plus on-hardware verification splits these 88 into four groups
+by "should a dispatcher be added":
 
-| 子类 | 数量 | 实测结论 | 是否值得补 |
+| Subgroup | Count | Measured conclusion | Worth adding? |
 |---|---|---|---|
-| **composite_implicit_autograd** | 61 | 在 PrivateUse1 key 之上被分解成已路由 leaf op;实测 conv1/2/3d、divide、true_divide、var、square、clip、selu、pad、one_hot、hstack、vstack、isfinite、kron、diag、tile、absolute、arcsinh 等**全部跑通且数值正确** | **不该**。补 dispatcher 是永不命中的死代码 |
-| **no_cuda_kernel** | 12 | 无 CUDA leaf 可复用;实测 alias_copy/t_copy/diag_embed/pixel_unshuffle/select_scatter/slice_scatter/select_backward/lift_fresh_copy/equal 亦**跑通**(经 cpu_fallback 或 composite 分解) | 仅 max_pool2d_backward 受 flaggems max_pool2d **forward** 上游 bug 阻挡(与本桶无关) |
-| **NOT_IN_YAML** | 9 | 该 op 名不在本 torch 版本 native_functions.yaml(别名/版本差异);bitwise_left/right_shift、copysign、new_full.Tensor、nll_loss_nd_* 实测经等价 leaf **跑通** | **不该**,无对应 schema |
-| **composite_explicit_autograd** | 6 | repeat / allclose / _to_copy / copy_ / index_put / index_put_ 实测**跑通**;repeat.out 已生成 | 理论可补,但已能用,收益低 |
+| **composite_implicit_autograd** | 61 | Decomposed above the PrivateUse1 key into already-routed leaf ops; measured conv1/2/3d, divide, true_divide, var, square, clip, selu, pad, one_hot, hstack, vstack, isfinite, kron, diag, tile, absolute, arcsinh, etc. **all run with correct numerics** | **No.** A dispatcher would be dead code that is never hit |
+| **no_cuda_kernel** | 12 | No CUDA leaf to reuse; measured alias_copy/t_copy/diag_embed/pixel_unshuffle/select_scatter/slice_scatter/select_backward/lift_fresh_copy/equal **also run** (via cpu_fallback or composite decomposition) | Only max_pool2d_backward is blocked, by an upstream flaggems max_pool2d **forward** bug (unrelated to this bucket) |
+| **NOT_IN_YAML** | 9 | The op name is absent from this torch version's native_functions.yaml (alias / version drift); bitwise_left/right_shift, copysign, new_full.Tensor, nll_loss_nd_* measured **working** via equivalent leaves | **No**, there is no corresponding schema |
+| **composite_explicit_autograd** | 6 | repeat / allclose / _to_copy / copy_ / index_put / index_put_ measured **working**; repeat.out is already generated | Possible in principle, but they already work; low value |
 
-**核心结论**:no_dispatcher 桶几乎不是真实缺口。实测 55 个代表性 op 54 PASS，唯一未通过的 `max_pool2d_backward` 是被 flaggems `max_pool2d_with_indices` **forward** 的 stride 解析上游 bug 挡住,不属本桶职责。因此本桶**优先级应下调为最低**——补 dispatcher 收益近零。
+**Core conclusion**: the no_dispatcher bucket is barely a real gap. Of 55 representative ops
+measured, 54 PASS; the only failure, `max_pool2d_backward`, is blocked by an upstream stride
+parsing bug in flaggems' `max_pool2d_with_indices` **forward** and is not this bucket's
+responsibility. This bucket's **priority should therefore drop to the lowest** — adding
+dispatchers yields near-zero benefit.
 
-（下方保留原始 88 个 op 全清单，供逐个查阅。）
+(The full original list of 88 ops is retained below for lookup.)
 
 ```
 __ior__.Scalar          __ior__.Tensor          __or__.Scalar
@@ -73,11 +105,12 @@ var                     var.dim                 vstack
 
 ---
 
-## ② type_unsupported_kwarg —— 13 个
+## ② type_unsupported_kwarg — 13 operators
 
-gems 收得了参数,但某个参数类型通用 caller 表达不了。
+gems accepts the arguments, but one argument type cannot be expressed by the generic caller.
 
-**`Generator?`(7)** —— 随机算子,PrivateUse1 无 default generator,同 rand/randn 根因:
+**`Generator?` (7)** — random operators. PrivateUse1 has no default generator; same root cause as
+rand/randn:
 
 | op | gems qualname |
 |---|---|
@@ -89,7 +122,8 @@ gems 收得了参数,但某个参数类型通用 caller 表达不了。
 | `normal_` | `normal.normal_` |
 | `uniform_` | `uniform.uniform_` |
 
-**`Device?` / `Layout?` / `MemoryFormat?`(5)** —— factory 元数据,但没有 shape 位置参可推断,factory caller 套用不了:
+**`Device?` / `Layout?` / `MemoryFormat?` (5)** — factory metadata, but with no positional shape
+argument to infer from, the factory caller does not apply:
 
 | op | gems qualname |
 |---|---|
@@ -99,7 +133,7 @@ gems 收得了参数,但某个参数类型通用 caller 表达不了。
 | `randn_like` | `randn_like.randn_like` |
 | `zeros_like` | `zeros_like.zeros_like` |
 
-**`Tensor?`(1)**:
+**`Tensor?` (1)**:
 
 | op | gems qualname |
 |---|---|
@@ -107,9 +141,10 @@ gems 收得了参数,但某个参数类型通用 caller 表达不了。
 
 ---
 
-## ③ varargs —— 12 个
+## ③ varargs — 12 operators
 
-gems 函数签名是 `(*args, **kwargs)`,`inspect.signature` 定不了 arity,过不了 arity 安全闸门(丢尾部参 = 静默错误)。
+The gems function signature is `(*args, **kwargs)`, so `inspect.signature` cannot determine arity
+and the op fails the arity safety gate (dropping a trailing argument would be a silent error).
 
 ```
 _functional_sym_constrain_range_for_size    _upsample_nearest_exact1d
@@ -120,11 +155,11 @@ zero            zero.out
 
 ---
 
-## ④ manual_skip —— 12 个
+## ④ manual_skip — 12 operators
 
-运行期会崩,手工排除(`FLAGGEMS_PYTHON_SKIP`)。
+These crash at runtime and are excluded by hand (`FLAGGEMS_PYTHON_SKIP`).
 
-**device assert(8)** —— gems 内 `assert device == "cuda"`,拒 PrivateUse1:
+**device assert (8)** — gems asserts `device == "cuda"` internally and rejects PrivateUse1:
 
 ```
 maximum   minimum   _safe_softmax   upsample_linear1d
@@ -132,52 +167,67 @@ upsample_nearest1d   upsample_nearest2d   upsample_nearest3d
 _upsample_bicubic2d_aa
 ```
 
-**required out kwarg(1)** —— `mm.out`,gems `mm_out(a, b, *, out)` 强制 out,位置 caller 供不了。
+**required out kwarg (1)** — `mm.out`: gems' `mm_out(a, b, *, out)` requires out, which the
+positional caller cannot supply.
 
-**rng(3)** —— `rand`、`randn`、`randperm`,gems 取 `default_generators[device]` 抛 IndexError(PrivateUse1 无默认 generator);`randperm` 还 assert int dtype。
+**rng (3)** — `rand`, `randn`, `randperm`: gems reads `default_generators[device]` and raises
+IndexError (PrivateUse1 has no default generator); `randperm` additionally asserts an int dtype.
 
 ---
 
-## ⑤ name_mismatch —— 2 个
+## ⑤ name_mismatch — 2 operators
 
-arity-short,尾部 aten 参名对不上 gems keyword-only 参名,无法按名转发。
+Arity-short: the trailing aten parameter names do not match gems' keyword-only parameter names,
+so forwarding by name is impossible.
 
-| op | gems qualname | aten 尾部参 | gems kwonly 参 | 原因 |
+| op | gems qualname | aten trailing args | gems kwonly args | Cause |
 |---|---|---|---|---|
-| `_grouped_mm` | `group_gemm.group_mm` | `bias`, `out_dtype` | *(无)* | gems 无 kwonly 参,无处安放 |
-| `multinomial` | `multinomial.multinomial` | `generator` | `gen` | 名字不一致(且也撞 Generator? 组) |
+| `_grouped_mm` | `group_gemm.group_mm` | `bias`, `out_dtype` | *(none)* | gems has no kwonly args; nowhere to put them |
+| `multinomial` | `multinomial.multinomial` | `generator` | `gen` | Name mismatch (and it also hits the Generator? group) |
 
 ---
 
-## ⑥ 其余零散 —— 5 个
+## ⑥ Miscellaneous — 5 operators
 
-**foreach_tensorlist(2)** —— TensorList 类别未支持:
+**foreach_tensorlist (2)** — the TensorList category is unsupported:
 
 | op | gems qualname |
 |---|---|
 | `cat` | `cat.cat` |
 | `stack` | `stack.stack` |
 
-**special_optlist(1)** —— `Tensor?[]` 索引列表:
+**special_optlist (1)** — a `Tensor?[]` index list:
 
 | op | gems qualname |
 |---|---|
 | `index.Tensor` | `index.index` |
 
-**arity_other(2)** —— 参数重排陷阱:
+**arity_other (2)** — argument-reordering traps:
 
-| op | gems qualname | 原因 |
+| op | gems qualname | Cause |
 |---|---|---|
-| `gather` | `gather.gather` | gems `out=None` 插在第 3 位,aten 第 4 参会错落进 out 槽 |
-| `t_copy.out` | `t_copy.t_copy_out` | gems out 是必填位置参,`npos > with_out` |
+| `gather` | `gather.gather` | gems places `out=None` third, so aten's fourth argument would land in the out slot |
+| `t_copy.out` | `t_copy.t_copy_out` | gems' out is a mandatory positional argument, so `npos > with_out` |
 
 ---
 
-## 攻关优先级参考(2026-07 实测修订)
+## Priority guidance (revised by the 2026-07 measurements)
 
-- **~~no_dispatcher（88）~~ → 优先级最低**:实测证明这桶不是缺口——composite 分解到已路由 leaf,已能跑通且数值正确(55 探测 54 PASS)。补 dispatcher 是永不命中的死代码,**不建议投入**。仅个别 no_cuda_kernel op 若确有专用 flaggems kernel 需求,才逐个走 flaggems python 接入(非补 CUDA dispatcher)。
-- **`*_like` 的 Device?/Layout?/MemoryFormat?(原 5,已接 3)** ✅ 已接 `zeros_like`/`ones_like`/`full_like`(commit 4906d22);`rand_like`/`randn_like` 无 generator 入口,排除。
-- **随机 in-place(原 Generator? 组的一部分,已接 3)** ✅ 已接 `uniform_`/`exponential_`/`bernoulli_.float`(显式注入 CUDA generator)。`normal_`/`normal.*` 因 gems 硬编码 `generator=None` 不透传,排除。
-- **rng factory（rand/randn/randperm/multinomial）** 无 generator 注入入口(签名无 generator 参),需给 PrivateUse1 注册 per-device generator 才能一次解决,工作量在运行时层。
-- **varargs（12）** 需 gems 侧或本地维护一份显式 arity 表才能安全接入。
-- **name_mismatch / arity_other / optlist / foreach（10）** 属逐个特判,收益低。
+- **~~no_dispatcher (88)~~ → lowest priority**: measurement proves this bucket is not a gap —
+  composites decompose to already-routed leaves and run with correct numerics (54 of 55 probes
+  PASS). Adding dispatchers would be dead code that is never hit; **not recommended**. Only if a
+  specific no_cuda_kernel op genuinely needs a dedicated flaggems kernel should it be integrated
+  one at a time through flaggems python (not by adding a CUDA dispatcher).
+- **`*_like` Device?/Layout?/MemoryFormat? (5 originally, 3 done)** ✅ `zeros_like`/`ones_like`/
+  `full_like` are integrated (commit 4906d22); `rand_like`/`randn_like` have no generator entry
+  point and are excluded.
+- **Random in-place ops (part of the original Generator? group, 3 done)** ✅ `uniform_`/
+  `exponential_`/`bernoulli_.float` are integrated (by explicitly injecting a CUDA generator).
+  `normal_`/`normal.*` are excluded because gems hardcodes `generator=None` and does not forward
+  it.
+- **rng factories (rand/randn/randperm/multinomial)** have no generator injection point (no
+  generator argument in the signature); solving this in one shot requires registering per-device
+  generators for PrivateUse1, which is work at the runtime layer.
+- **varargs (12)** need an explicit arity table, maintained either upstream in gems or locally,
+  before they can be integrated safely.
+- **name_mismatch / arity_other / optlist / foreach (10)** each require a special case; low value.

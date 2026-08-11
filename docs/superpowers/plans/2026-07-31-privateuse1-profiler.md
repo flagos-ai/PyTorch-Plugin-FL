@@ -1,128 +1,143 @@
-# PrivateUse1 Profiler 支持 Implementation Plan
+# PrivateUse1 profiler support — implementation plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: use
+> superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to
+> implement this plan task by task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 让 `torch.profiler` 对 flagos(PrivateUse1)设备提供与 torch-cuda 等价的能力：算子级 device 计时(Stage A)+ CUPTI kernel 级时间线(Stage B)。
+**Goal:** give `torch.profiler` flagos (PrivateUse1) capabilities equivalent to torch-cuda:
+operator-level device timing (Stage A) plus a CUPTI kernel-level timeline (Stage B).
 
-**Architecture:** Stage A 实现 `torch::profiler::impl::ProfilerStubs` 子类经 `registerPrivateUse1Methods` 注册，走已有 flagos event ABI，并修复 guard 使其携带真实 CUDA stream。Stage B 自写 `libkineto::IActivityProfiler` 子类、自 dlopen 系统 libcupti 采 GPU 事件，经 kineto 外部 profiler 接口注入。不重编 libtorch/libkineto。
+**Architecture:** Stage A implements and registers a
+`torch::profiler::impl::ProfilerStubs` subclass through `registerPrivateUse1Methods`, using the
+existing flagos event ABI and fixing the guard to carry the real CUDA stream. Stage B implements a
+`libkineto::IActivityProfiler` subclass, dlopens the system libcupti to collect GPU events, and
+injects them through kineto's external-profiler interface. libtorch/libkineto are not rebuilt.
 
-**Tech Stack:** C++17, PyTorch 2.11 PrivateUse1, libkineto 外部 profiler 接口, CUPTI Activity API (dlopen), CMake, pytest。
+**Tech stack:** C++17, PyTorch 2.11 PrivateUse1, libkineto's external-profiler interface, CUPTI
+Activity API (dlopen), CMake, pytest.
 
-## Global Constraints
+## Global constraints
 
-- 构建/测试环境: conda env `torch-fl-211`, python 3.12, torch `2.11.0+cpu`(CPU wheel，绝不装 pip CUDA torch)。加载 conda: `source /nfs/lvyufeng/env.sh`。
-- 构建命令: `FLAGGEMS_KERNEL=OFF FLAGGEMS_PYTHON=OFF CUDA_KERNEL=ON pip install -e . --no-build-isolation`(g++ only，CUDA 符号运行时从外挂 .so 解析)。
-- 所有运行/测试必须经包装器: `bash scripts/with_cuda_libtorch.sh <cmd>`(LD_PRELOAD 注入 libtorch_cuda.so；直接 pytest 会 device init 失败)。
-- 后端配置: `FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_cuda.conf`。
-- Qwen3 测试需: `HF_HOME=/nfs/lvyufeng/hf_cache HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1`，模型 `Qwen/Qwen3-0.6B`。
-- 外挂 CUDA assets 在 `.libtorch_cuda_assets/`(cu128)。CMake 需 `-DC10_CUDA_NO_CMAKE_CONFIGURE_FILE`(CPU wheel 缺 cuda_cmake_macros.h)。
-- 硬件: A100-SXM4-40GB ×8, driver 580, 主机 CUDA 13.0 toolkit(用 cu128 userspace)。
-- `csrc/CMakeLists.txt` 用 `GLOB_RECURSE *.cc`，新增 `csrc/profiler/*.cc` 自动纳入编译，无需 add_subdirectory。
-- CUPTI: 头 `/usr/local/cuda-13.0/targets/x86_64-linux/include/cupti_activity.h`；运行时库系统 `libcupti.so.13` 或 pip `nvidia/cuda_cupti/lib/libcupti.so.12`。
-- 提交粒度: 每个 Task 末尾 commit，遵循 TDD、DRY、YAGNI。
+- Build/test environment: conda env `torch-fl-211`, Python 3.12, torch `2.11.0+cpu` (CPU wheel;
+  never install pip CUDA torch). Activate conda through its portable shell hook:
+  `source "$(conda info --base)/etc/profile.d/conda.sh" && conda activate torch-fl-211`.
+- Build command:
+  `FLAGGEMS_KERNEL=OFF FLAGGEMS_PYTHON=OFF CUDA_KERNEL=ON pip install -e . --no-build-isolation`
+  (g++ only; CUDA symbols resolve from the external .so at runtime).
+- Every run/test goes through `bash scripts/with_cuda_libtorch.sh <cmd>` (`LD_PRELOAD` injects
+  libtorch_cuda.so; direct pytest fails during device initialization).
+- Backend config: `FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_cuda.conf`.
+- Qwen3 tests need an offline Hugging Face cache supplied by the user:
+  `HF_HOME="$HF_HOME" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1`; model
+  `Qwen/Qwen3-0.6B`.
+- External cu128 CUDA assets live in `.libtorch_cuda_assets/`. CMake needs
+  `-DC10_CUDA_NO_CMAKE_CONFIGURE_FILE` because the CPU wheel lacks
+  `cuda_cmake_macros.h`.
+- Hardware used for verification: 8× A100-SXM4-40GB, driver 580, host CUDA 13.0 toolkit with
+  cu128 userspace.
+- `csrc/CMakeLists.txt` uses `GLOB_RECURSE *.cc`, so adding `csrc/profiler/*.cc` includes them
+  automatically; no `add_subdirectory` is needed.
+- CUPTI: discover `cupti_activity.h` through `$CUDA_HOME` / `find_path`; runtime library is the
+  system `libcupti.so.13` or pip's `nvidia/cuda_cupti/lib/libcupti.so.12`.
+- Commit after every task; follow TDD, DRY, and YAGNI.
+- Unless a command says otherwise, run it from the repository root.
 
 ---
 
-## File Structure
+## File structure
 
-- `csrc/profiler/flagos_profiler_stubs.cc` (新建) — Stage A: `FlagosProfilerStubs` + 静态注册。
-- `csrc/runtime/guard.h` (修改, :58-77 stream 方法, :119-126 record) — 真实 CUDA stream。
-- `csrc/profiler/flagos_cupti_profiler.h` (新建) — Stage B: 类声明。
-- `csrc/profiler/flagos_cupti_profiler.cc` (新建) — Stage B: CUPTI dlopen + IActivityProfiler 实现 + kineto 注册。
-- `csrc/profiler/cupti_shim.h` (新建) — CUPTI 函数指针 dlopen 封装(隔离 cupti 头，避免污染)。
-- `tests/unit/test_profiler_privateuse1.py` (新建) — Stage A/B python 单测。
-- `csrc/CMakeLists.txt` (修改，仅 Stage B 加 cupti include 路径)。
+- `csrc/profiler/flagos_profiler_stubs.cc` (new) — Stage A:
+  `FlagosProfilerStubs` plus static registration.
+- `csrc/runtime/guard.h` (modify stream methods and record) — real CUDA streams.
+- `csrc/profiler/flagos_cupti_profiler.h` (new) — Stage B class declarations.
+- `csrc/profiler/flagos_cupti_profiler.cc` (new) — Stage B CUPTI dlopen,
+  `IActivityProfiler` implementation, and kineto registration.
+- `csrc/profiler/cupti_shim.h` (new) — CUPTI function-pointer dlopen wrapper, isolating CUPTI
+  headers.
+- `tests/unit/test_profiler_privateuse1.py` (new) — Stage A/B Python unit tests.
+- `csrc/CMakeLists.txt` (modify) — add the CUPTI include path for Stage B only.
 
 ---
 
-## Task 0: worktree 编出 `_C`，`import torch_fl` 通过
+## Task 0: build `_C` in the worktree and get `import torch_fl` working
 
 **Files:**
-- Modify: 无源码改动(仅构建环境)
+- Modify: no source changes; build environment only
 
 **Interfaces:**
-- Consumes: 无
-- Produces: 可用的 `torch_fl._C` 扩展，为后续所有验证提供运行基础。
+- Consumes: none
+- Produces: a usable `torch_fl._C` extension on which all later verification depends
 
-- [ ] **Step 1: 确认外挂 CUDA assets 存在**
+- [ ] **Step 1: confirm the external CUDA assets exist**
 
-Run:
 ```bash
-source /nfs/lvyufeng/env.sh && conda activate torch-fl-211
-ls -la /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support/.libtorch_cuda_assets/ 2>/dev/null || \
-  ls -la /nfs/lvyufeng/PyTorch-Plugin-FL/.libtorch_cuda_assets/
-```
-Expected: 看到 libtorch_cuda.so / libc10_cuda.so 等。若 worktree 无此目录，从主 checkout 软链或复制:
-```bash
-ln -s /nfs/lvyufeng/PyTorch-Plugin-FL/.libtorch_cuda_assets \
-  /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support/.libtorch_cuda_assets
+ls -la .libtorch_cuda_assets/
 ```
 
-- [ ] **Step 2: 生成算子代码**
+Expected: `libtorch_cuda.so`, `libc10_cuda.so`, and the other runtime assets. If a worktree does
+not have this ignored directory, copy the assets into it from an environment-specific location;
+do not commit a machine-local symlink.
 
-Run:
+- [ ] **Step 2: generate the operator code**
+
 ```bash
-cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support
 python scripts/codegen_ops.py
 ```
-Expected: 生成 csrc/aten/generated/*.cc(约 1824 ops)，无报错。
 
-- [ ] **Step 3: 构建 `_C`**
+Expected: generate `csrc/aten/generated/*.cc` (about 1824 ops) without errors.
 
-Run:
+- [ ] **Step 3: build `_C`**
+
 ```bash
-cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support
-FLAGGEMS_KERNEL=OFF FLAGGEMS_PYTHON=OFF CUDA_KERNEL=ON pip install -e . --no-build-isolation
+FLAGGEMS_KERNEL=OFF FLAGGEMS_PYTHON=OFF CUDA_KERNEL=ON \
+  pip install -e . --no-build-isolation
 ```
-Expected: 编译成功。注: 关闭 FLAGGEMS 以绕开 §背景的 `libtriton_jit.so` undefined symbol `c10::MessageLogger`(pip flag_gems 与 liboperators.so 同源版本问题)。
 
-- [ ] **Step 4: 验证 import 通过**
+Expected: compilation succeeds. FlagGems is disabled to avoid the background
+`libtriton_jit.so` undefined `c10::MessageLogger` symbol caused by a source-version mismatch
+between pip flag_gems and liboperators.so.
 
-Run:
+- [ ] **Step 4: verify import**
+
 ```bash
-cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support
 FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_cuda.conf \
   bash scripts/with_cuda_libtorch.sh python -c \
   "import torch_fl, torch; x=torch.randn(8,8,device='flagos'); torch.flagos.synchronize(); print('OK', (x@x).sum().item())"
 ```
-Expected: 打印 `OK <number>`，无 ImportError / device init 错误。
 
-- [ ] **Step 5: 记录基线(无需 commit — 纯环境)**
+Expected: prints `OK <number>` with no ImportError or device-initialization error.
 
-若前述步骤对构建脚本有任何必要修复(如软链逻辑)，则 `git add` 相关文件并:
-```bash
-git commit -m "chore: worktree build bootstrap for profiler work"
-```
-否则跳过。
+- [ ] **Step 5: record the baseline (no commit — environment only)**
+
+If any build script needed a portable fix, stage and commit that file. Otherwise skip.
 
 ---
 
-## Task 1: guard.h 携带真实 CUDA stream
+## Task 1: make guard.h carry the real CUDA stream
 
 **Files:**
-- Modify: `csrc/runtime/guard.h:58-77`(stream getters), `:119-126`(record)
-- Test: `tests/unit/test_profiler_privateuse1.py`(stream 回归部分)
+- Modify: `csrc/runtime/guard.h` (stream getters and record)
+- Test: `tests/unit/test_profiler_privateuse1.py` (stream regression)
 
 **Interfaces:**
-- Consumes: 外挂 libtorch_cuda 的 `c10::cuda::getCurrentCUDAStream(DeviceIndex)`、`c10::cuda::CUDAStream`；flagos ABI `::EventRecord(Event_t, Stream_t)`。
-- Produces: guard 的 `getStream/getDefaultStream/exchangeStream/getNewStream` 返回携带真实 CUDA StreamId 的 `c10::Stream`；`record` 在传入流(而非 nullptr)上记录 event。后续 Task 2 的 `record()` 依赖这一点做正确 stream 归因。
+- Consumes: external libtorch_cuda's `c10::cuda::getCurrentCUDAStream(DeviceIndex)` and
+  `c10::cuda::CUDAStream`; flagos ABI `::EventRecord(Event_t, Stream_t)`
+- Produces: guard `getStream/getDefaultStream/exchangeStream/getNewStream` results that carry a
+  real CUDA StreamId; `record` records on the supplied stream rather than `nullptr`. Task 2's
+  `record()` depends on this for correct stream attribution.
 
-- [ ] **Step 1: 写失败测试(多流下 event 归因)**
+- [ ] **Step 1: write the failing multi-stream attribution test**
 
-在 `tests/unit/test_profiler_privateuse1.py` 追加:
+Append to `tests/unit/test_profiler_privateuse1.py`:
+
 ```python
-import os, sys
 import torch
 import torch_fl  # noqa: F401
 
 
 def test_guard_stream_is_real_not_synthetic():
-    """guard 返回的 current stream id 应与 torch.flagos.current_stream 一致，
-    而不是恒为 0 的合成流。"""
-    dev = torch.device("flagos", 0)
+    """The guard current stream must match torch.flagos, not a constant synthetic zero."""
     s = torch.flagos.current_stream()
-    # 合成流恒为 0；真实流几乎不可能恒为 0(默认流也有非零 unwrap 在多数场景)
-    # 用两条不同流断言 id 不同来证明不是写死的 0
     s2 = torch.flagos.Stream()
     with torch.flagos.stream(s2):
         cur = torch.flagos.current_stream()
@@ -130,87 +145,93 @@ def test_guard_stream_is_real_not_synthetic():
     assert s.stream_id != s2.stream_id or s2.stream_id != 0
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [ ] **Step 2: run and confirm it fails**
 
-Run:
 ```bash
-cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support
 FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_cuda.conf \
   bash scripts/with_cuda_libtorch.sh python -m pytest \
   tests/unit/test_profiler_privateuse1.py::test_guard_stream_is_real_not_synthetic -v
 ```
-Expected: FAIL(当前 guard 返回合成 id=0，两条流 id 相同)。
 
-- [ ] **Step 3: 修改 guard.h stream getters**
+Expected: FAIL; the current guard returns the synthetic id=0 for both streams.
 
-在 `csrc/runtime/guard.h` 顶部(CUDA vendor 区)加入(用现有 vendor 宏护住，参照文件已有 `#if !defined(USE_ASCEND)...` 模式):
+- [ ] **Step 3: modify the guard.h stream getters**
+
+Add in the CUDA-vendor section at the top of `csrc/runtime/guard.h`, protected with the existing
+vendor-macro style:
+
 ```cpp
 #if !defined(USE_ASCEND) && !defined(USE_GCU) && !defined(USE_TSINGMICRO)
 #include <c10/cuda/CUDAStream.h>
 #endif
 ```
-将 `getStream`(:58)改为:
+
+Change `getStream` to:
+
 ```cpp
-  c10::Stream getStream(c10::Device d) const noexcept override {
+c10::Stream getStream(c10::Device d) const noexcept override {
 #if !defined(USE_ASCEND) && !defined(USE_GCU) && !defined(USE_TSINGMICRO)
-    auto s = c10::cuda::getCurrentCUDAStream(d.index());
-    return c10::Stream(c10::Stream::UNSAFE, d, s.id());
+  auto s = c10::cuda::getCurrentCUDAStream(d.index());
+  return c10::Stream(c10::Stream::UNSAFE, d, s.id());
 #else
-    return c10::Stream(c10::Stream::UNSAFE, d, 0);
+  return c10::Stream(c10::Stream::UNSAFE, d, 0);
 #endif
-  }
+}
 ```
-同理修改 `getDefaultStream`(用 `getDefaultCUDAStream(d.index())`)、`getStreamFromGlobalPool`(用 `getStreamFromPool(isHighPriority, d.index())`)、`exchangeStream`(用 `setCurrentCUDAStream(CUDAStream(...))` 后返回旧流)、`getNewStream`(用 `getStreamFromPool`)。非 CUDA vendor 分支保留原合成流。
 
-- [ ] **Step 4: 修改 guard.h record 使用传入流**
+Apply the same pattern to `getDefaultStream` (use `getDefaultCUDAStream(d.index())`),
+`getStreamFromGlobalPool` (use `getStreamFromPool(isHighPriority, d.index())`), `exchangeStream`
+(use `setCurrentCUDAStream(CUDAStream(...))` and return the old stream), and `getNewStream` (use
+`getStreamFromPool`). Non-CUDA vendor branches retain the synthetic stream.
 
-将 `record`(:119)改为(把 `c10::Stream` 转 `cudaStream_t`):
+- [ ] **Step 4: make guard.h record on the supplied stream**
+
 ```cpp
-  void record(void** event, const c10::Stream& stream,
-              const c10::DeviceIndex device_index,
-              const c10::EventFlag flag) const override {
-    if (!*event) {
-      ::EventCreate((Event_t*)event);
-    }
-#if !defined(USE_ASCEND) && !defined(USE_GCU) && !defined(USE_TSINGMICRO)
-    auto cs = c10::cuda::CUDAStream(c10::cuda::CUDAStream::UNCHECKED,
-                                    c10::Stream(c10::Stream::UNSAFE,
-                                                stream.device(), stream.id()));
-    ::EventRecord(*(Event_t*)event, (Stream_t)cs.stream());
-#else
-    ::EventRecord(*(Event_t*)event, nullptr);
-#endif
+void record(void** event, const c10::Stream& stream,
+            const c10::DeviceIndex device_index,
+            const c10::EventFlag flag) const override {
+  if (!*event) {
+    ::EventCreate((Event_t*)event);
   }
+#if !defined(USE_ASCEND) && !defined(USE_GCU) && !defined(USE_TSINGMICRO)
+  auto cs = c10::cuda::CUDAStream(c10::cuda::CUDAStream::UNCHECKED,
+                                  c10::Stream(c10::Stream::UNSAFE,
+                                              stream.device(), stream.id()));
+  ::EventRecord(*(Event_t*)event, (Stream_t)cs.stream());
+#else
+  ::EventRecord(*(Event_t*)event, nullptr);
+#endif
+}
 ```
-(注: `cs.stream()` 返回 `cudaStream_t`，`Stream_t` 是 `struct Stream*`，二者按 flagos ABI 约定互转 — 见 `cuda/stream.cc` 里 `(cudaStream_t)stream` 的既有转换。)
 
-- [ ] **Step 5: 重新构建并运行测试**
+`cs.stream()` returns a `cudaStream_t`; `Stream_t` is `struct Stream*`. They are converted under
+the flagos ABI exactly as the existing `(cudaStream_t)stream` conversion in `cuda/stream.cc`.
 
-Run:
+- [ ] **Step 5: rebuild and run the test**
+
 ```bash
-cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support
-FLAGGEMS_KERNEL=OFF FLAGGEMS_PYTHON=OFF CUDA_KERNEL=ON pip install -e . --no-build-isolation
+FLAGGEMS_KERNEL=OFF FLAGGEMS_PYTHON=OFF CUDA_KERNEL=ON \
+  pip install -e . --no-build-isolation
 FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_cuda.conf \
   bash scripts/with_cuda_libtorch.sh python -m pytest \
   tests/unit/test_profiler_privateuse1.py::test_guard_stream_is_real_not_synthetic -v
 ```
-Expected: PASS。
 
-- [ ] **Step 6: guard 回归 — 普通 op / copy 不破坏**
+Expected: PASS.
 
-Run(跑既有核心 ops 套件确认 stream 改动无回归):
+- [ ] **Step 6: guard regression — ordinary ops and copy remain correct**
+
 ```bash
-cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support
 FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_cuda.conf \
   bash scripts/with_cuda_libtorch.sh python -m pytest \
   tests/integration/ops/ -m "not flaggems and not flaggems_python" -q
 ```
-Expected: 与基线一致(311 passed 附近)，无新增 fail。
 
-- [ ] **Step 7: Commit**
+Expected: matches the baseline (roughly 311 passed), with no new failure.
+
+- [ ] **Step 7: commit**
 
 ```bash
-cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support
 git add csrc/runtime/guard.h tests/unit/test_profiler_privateuse1.py
 git commit -m "feat(profiler): guard.h carries real CUDA stream for event attribution"
 ```
@@ -221,15 +242,21 @@ git commit -m "feat(profiler): guard.h carries real CUDA stream for event attrib
 
 **Files:**
 - Create: `csrc/profiler/flagos_profiler_stubs.cc`
-- Test: `tests/unit/test_profiler_privateuse1.py`(Stage A 部分)
+- Test: `tests/unit/test_profiler_privateuse1.py` (Stage A)
 
 **Interfaces:**
-- Consumes: `torch::profiler::impl::ProfilerStubs`(`torch/csrc/profiler/stubs/base.h`)、`registerPrivateUse1Methods`；flagos ABI `EventCreateWithFlags/EventRecord/EventElapsedTime/EventDestroy/DeviceSynchronize/GetDeviceCount`(`include/flagos.h`)；Task 1 修好的 guard record 语义;`torch::profiler::impl::getTime()`。
-- Produces: 进程加载时经静态初始化调用 `registerPrivateUse1Methods(new FlagosProfilerStubs())`，使 `profile(activities=[CPU, PrivateUse1])` 走 `KINETO_PRIVATEUSE1_FALLBACK` 得到 op 级 device self-time。
+- Consumes: `torch::profiler::impl::ProfilerStubs`
+  (`torch/csrc/profiler/stubs/base.h`), `registerPrivateUse1Methods`; flagos ABI
+  `EventCreateWithFlags/EventRecord/EventElapsedTime/EventDestroy/DeviceSynchronize/GetDeviceCount`
+  (`csrc/include/flagos.h`); the guard record semantics from Task 1; and
+  `torch::profiler::impl::getTime()`
+- Produces: static initialization calls
+  `registerPrivateUse1Methods(new FlagosProfilerStubs())`, allowing
+  `profile(activities=[CPU, PrivateUse1])` to obtain operator-level device self-time via
+  `KINETO_PRIVATEUSE1_FALLBACK`
 
-- [ ] **Step 1: 写失败测试(op 级 device 计时)**
+- [ ] **Step 1: write the failing operator-level device timing test**
 
-在 `tests/unit/test_profiler_privateuse1.py` 追加:
 ```python
 from torch.profiler import profile, ProfilerActivity
 
@@ -242,25 +269,24 @@ def test_stage_a_privateuse1_device_time():
             y = x @ x
         torch.flagos.synchronize()
     ka = prof.key_averages()
-    # 至少一个条目有非零 device self-time
     dev_times = [getattr(e, "self_device_time_total", 0) for e in ka]
     assert any(t > 0 for t in dev_times), f"no device time recorded: max={max(dev_times, default=0)}"
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [ ] **Step 2: run and confirm it fails**
 
-Run:
 ```bash
-cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support
 FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_cuda.conf \
   bash scripts/with_cuda_libtorch.sh python -m pytest \
   tests/unit/test_profiler_privateuse1.py::test_stage_a_privateuse1_device_time -v
 ```
-Expected: FAIL(无 ProfilerStubs 注册，device time 全 0)。
 
-- [ ] **Step 3: 实现 flagos_profiler_stubs.cc**
+Expected: FAIL; no ProfilerStubs is registered, so every device time is zero.
+
+- [ ] **Step 3: implement flagos_profiler_stubs.cc**
 
 Create `csrc/profiler/flagos_profiler_stubs.cc`:
+
 ```cpp
 // Copyright 2026 FlagOS Contributors. Apache-2.0.
 #include <torch/csrc/profiler/stubs/base.h>
@@ -268,7 +294,7 @@ Create `csrc/profiler/flagos_profiler_stubs.cc`:
 #include <functional>
 #include <memory>
 
-#include "flagos.h"  // flagos C ABI: Event_t, EventCreateWithFlags, ...
+#include "flagos.h"
 
 namespace c10::flagos {
 namespace {
@@ -289,7 +315,7 @@ struct FlagosProfilerStubs : public ProfilerStubs {
     }
     Event_t ev = nullptr;
     ::EventCreateWithFlags(&ev, EventEnableTiming);
-    ::EventRecord(ev, nullptr);  // 记在当前(默认)流；多流由 guard 路径覆盖
+    ::EventRecord(ev, nullptr);  // current/default stream; multi-stream handling lives in guard
     *event = std::shared_ptr<void>(ev, [](void* p) {
       if (p) ::EventDestroy((Event_t)p);
     });
@@ -300,10 +326,10 @@ struct FlagosProfilerStubs : public ProfilerStubs {
     ::EventSynchronize((Event_t)event2->get());
     float ms = 0.0f;
     ::EventElapsedTime(&ms, (Event_t)event->get(), (Event_t)event2->get());
-    return ms * 1000.0f;  // µs
+    return ms * 1000.0f;  // us
   }
 
-  void mark(const char*) const override {}       // Stage A: no-op (NVTX 后补)
+  void mark(const char*) const override {}       // Stage A: no-op; add NVTX later
   void rangePush(const char*) const override {}
   void rangePop() const override {}
   bool enabled() const override { return true; }
@@ -315,7 +341,6 @@ struct FlagosProfilerStubs : public ProfilerStubs {
   }
 
   void synchronize() const override { ::DeviceSynchronize(); }
-
   ~FlagosProfilerStubs() override = default;
 };
 
@@ -330,44 +355,49 @@ static RegisterFlagosStubs g_register_flagos_stubs;
 }  // namespace
 }  // namespace c10::flagos
 ```
-注: `record` 参数中 torch 传入的 `flag`/`stream` 由 fallback 路径管理；此处按 `CUDAStubs` 语义在当前流记录。若 profiler 复用同一 `*event`(已非空)，torch 侧不会重复调 record，因此这里始终新建。
 
-- [ ] **Step 4: 重新构建并运行测试**
+The fallback path owns the flag/stream semantics passed to `record`; this implementation follows
+`CUDAStubs` and records on the current stream. torch does not call `record` again when reusing a
+non-empty `*event`, so this function always creates a new one.
 
-Run:
+- [ ] **Step 4: rebuild and run the test**
+
 ```bash
-cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support
-FLAGGEMS_KERNEL=OFF FLAGGEMS_PYTHON=OFF CUDA_KERNEL=ON pip install -e . --no-build-isolation
+FLAGGEMS_KERNEL=OFF FLAGGEMS_PYTHON=OFF CUDA_KERNEL=ON \
+  pip install -e . --no-build-isolation
 FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_cuda.conf \
   bash scripts/with_cuda_libtorch.sh python -m pytest \
   tests/unit/test_profiler_privateuse1.py::test_stage_a_privateuse1_device_time -v
 ```
-Expected: PASS(有非零 device self-time)。若链接报 `registerPrivateUse1Methods` 未定义，确认 csrc 链接的是 `torch_python_library`(见 csrc/CMakeLists.txt:129)且头路径正确。
 
-- [ ] **Step 5: Commit**
+Expected: PASS with non-zero device self-time. If linking reports
+`registerPrivateUse1Methods` undefined, confirm csrc links `torch_python_library` and uses the
+matching torch headers.
+
+- [ ] **Step 5: commit**
 
 ```bash
-cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support
 git add csrc/profiler/flagos_profiler_stubs.cc tests/unit/test_profiler_privateuse1.py
 git commit -m "feat(profiler): Stage A FlagosProfilerStubs for op-level device timing"
 ```
 
 ---
 
-## Task 3: Stage A 真实模型验证
+## Task 3: verify Stage A on a real model
 
 **Files:**
-- Test: 复用 `tests/integration/test_qwen3_infer.py`(外套 profiler，不改原文件；新增独立脚本断言)
+- Test: reuse `tests/integration/test_qwen3_infer.py` under a profiler, adding a separate
+  assertion script rather than changing the original file
 
 **Interfaces:**
-- Consumes: Task 2 的 ProfilerStubs 注册。
-- Produces: 证据——真实模型下 op 级 device time 可用。
+- Consumes: Task 2's ProfilerStubs registration
+- Produces: evidence that operator-level device timing works under a real model
 
-- [ ] **Step 1: 写验证脚本**
+- [ ] **Step 1: write the verification script**
 
 Create `tests/integration/test_profiler_qwen3_infer.py`:
+
 ```python
-import os
 import torch
 import torch_fl  # noqa: F401
 from torch.profiler import profile, ProfilerActivity
@@ -391,22 +421,20 @@ def test_profiler_over_qwen3_infer():
     print(ka.table(sort_by="self_device_time_total", row_limit=10))
 ```
 
-- [ ] **Step 2: 运行**
+- [ ] **Step 2: run**
 
-Run:
 ```bash
-cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support
 FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_cuda.conf \
-  HF_HOME=/nfs/lvyufeng/hf_cache HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+  HF_HOME="$HF_HOME" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
   bash scripts/with_cuda_libtorch.sh python -m pytest \
   tests/integration/test_profiler_qwen3_infer.py -v -s
 ```
-Expected: PASS，打印含非零 device time 的算子表。
 
-- [ ] **Step 3: Commit**
+Expected: PASS and prints an operator table containing non-zero device time.
+
+- [ ] **Step 3: commit**
 
 ```bash
-cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support
 git add tests/integration/test_profiler_qwen3_infer.py
 git commit -m "test(profiler): Stage A verification over qwen3 infer"
 ```
@@ -417,57 +445,55 @@ git commit -m "test(profiler): Stage A verification over qwen3 infer"
 
 **Files:**
 - Create: `csrc/profiler/cupti_shim.h`
-- Test: `tests/unit/test_profiler_privateuse1.py`(cupti 可加载探针)
+- Test: `tests/unit/test_profiler_privateuse1.py` (CUPTI loadability probe)
 
 **Interfaces:**
-- Consumes: 系统 `libcupti.so.13` / pip `libcupti.so.12`；cupti 头(仅类型/枚举)。
-- Produces: `c10::flagos::CuptiShim` 单例，暴露 `bool available()` 与函数指针 `activityEnable/activityRegisterCallbacks/activityFlushAll/activityGetNextRecord/activityPushExternalCorrelationId/activityPopExternalCorrelationId`。Task 5 消费之。
+- Consumes: system `libcupti.so.13` / pip `libcupti.so.12`; CUPTI headers (types/enums only)
+- Produces: the `c10::flagos::CuptiShim` singleton, exposing `bool available()` and function
+  pointers for activityEnable/activityRegisterCallbacks/activityFlushAll/activityGetNextRecord/
+  activityPushExternalCorrelationId/activityPopExternalCorrelationId; consumed by Task 5
 
-- [ ] **Step 1: 写失败测试(python 侧探针 — cupti 库能定位)**
+- [ ] **Step 1: write the environment probe**
 
-在 `tests/unit/test_profiler_privateuse1.py` 追加:
+Append to `tests/unit/test_profiler_privateuse1.py`:
+
 ```python
 import ctypes
-import glob
+import ctypes.util
 
 
 def test_cupti_library_locatable():
-    """确认运行环境能 dlopen 到 libcupti(Stage B 前提)。"""
-    candidates = ["libcupti.so.13", "libcupti.so.12", "libcupti.so"]
-    candidates += glob.glob("/usr/local/cuda-13.0/targets/*/lib/libcupti.so*")
-    candidates += glob.glob(
-        os.path.join(os.path.dirname(os.__file__),
-                     "../site-packages/nvidia/cuda_cupti/lib/libcupti.so*"))
+    """Confirm that the Stage B runtime can locate and dlopen libcupti."""
+    candidates = [ctypes.util.find_library("cupti"), "libcupti.so.13", "libcupti.so.12", "libcupti.so"]
     loaded = None
-    for c in candidates:
+    for candidate in filter(None, candidates):
         try:
-            loaded = ctypes.CDLL(c)
+            loaded = ctypes.CDLL(candidate)
             break
         except OSError:
             continue
     assert loaded is not None, f"cannot dlopen libcupti from {candidates}"
 ```
 
-- [ ] **Step 2: 运行确认(此测试应直接 PASS — 证明库在；若 FAIL 说明环境缺库需先解决)**
+- [ ] **Step 2: run it**
 
-Run:
 ```bash
-cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support
 FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_cuda.conf \
   bash scripts/with_cuda_libtorch.sh python -m pytest \
   tests/unit/test_profiler_privateuse1.py::test_cupti_library_locatable -v
 ```
-Expected: PASS(库存在)。此步是环境守卫，非 TDD 红。
 
-- [ ] **Step 3: 实现 cupti_shim.h**
+Expected: PASS because the library exists. This is an environment guard, not a TDD red test.
+
+- [ ] **Step 3: implement cupti_shim.h**
 
 Create `csrc/profiler/cupti_shim.h`:
+
 ```cpp
 // Copyright 2026 FlagOS Contributors. Apache-2.0.
 #pragma once
-#include <cupti_activity.h>  // 仅类型/枚举，运行时符号 dlopen
+#include <cupti_activity.h>  // types/enums only; runtime symbols are dlopened
 #include <dlfcn.h>
-#include <cstdio>
 
 namespace c10::flagos {
 
@@ -493,13 +519,13 @@ struct CuptiShim {
  private:
   CuptiShim() {
     const char* names[] = {"libcupti.so.13", "libcupti.so.12", "libcupti.so"};
-    void* h = nullptr;
-    for (auto n : names) {
-      h = dlopen(n, RTLD_LAZY | RTLD_GLOBAL);
-      if (h) break;
+    void* handle = nullptr;
+    for (auto name : names) {
+      handle = dlopen(name, RTLD_LAZY | RTLD_GLOBAL);
+      if (handle) break;
     }
-    if (!h) return;
-#define LOAD(field, sym) field = (decltype(field))dlsym(h, sym)
+    if (!handle) return;
+#define LOAD(field, sym) field = (decltype(field))dlsym(handle, sym)
     LOAD(ActivityEnable, "cuptiActivityEnable");
     LOAD(ActivityDisable, "cuptiActivityDisable");
     LOAD(ActivityRegisterCallbacks, "cuptiActivityRegisterCallbacks");
@@ -509,61 +535,66 @@ struct CuptiShim {
     LOAD(ActivityPushExternalCorrelationId, "cuptiActivityPushExternalCorrelationId");
     LOAD(ActivityPopExternalCorrelationId, "cuptiActivityPopExternalCorrelationId");
 #undef LOAD
-    ok = ActivityEnable && ActivityRegisterCallbacks && ActivityFlushAll &&
-         ActivityGetNextRecord;
+    ok = ActivityEnable && ActivityRegisterCallbacks && ActivityFlushAll && ActivityGetNextRecord;
   }
 };
 
 }  // namespace c10::flagos
 ```
 
-- [ ] **Step 4: 加 cupti include 路径到 CMake**
+- [ ] **Step 4: add the CUPTI include path to CMake**
 
-Modify `csrc/CMakeLists.txt`(在 `add_library(${LIBRARY_NAME} ...)` 之后)追加:
+After `add_library(${LIBRARY_NAME} ...)` in `csrc/CMakeLists.txt`:
+
 ```cmake
-# CUPTI headers for the profiler child (Stage B). Runtime symbols are dlopen'd,
-# so we only need the include path, not the link library.
+# CUPTI headers for the profiler child. Runtime symbols are dlopened, so only
+# the include path is needed, not the link library.
 find_path(CUPTI_INCLUDE_DIR cupti_activity.h
-  PATHS /usr/local/cuda-13.0/targets/x86_64-linux/include
-        /usr/local/cuda/extras/CUPTI/include)
+  HINTS "$ENV{CUDA_HOME}/extras/CUPTI/include"
+        "$ENV{CUDA_HOME}/targets/x86_64-linux/include")
 if(CUPTI_INCLUDE_DIR)
   target_include_directories(${LIBRARY_NAME} PRIVATE ${CUPTI_INCLUDE_DIR})
   target_compile_definitions(${LIBRARY_NAME} PRIVATE FLAGOS_HAVE_CUPTI=1)
 endif()
 ```
 
-- [ ] **Step 5: 重新构建确认 shim 编译通过**
+- [ ] **Step 5: rebuild and confirm the shim compiles**
 
-Run:
 ```bash
-cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support
-FLAGGEMS_KERNEL=OFF FLAGGEMS_PYTHON=OFF CUDA_KERNEL=ON pip install -e . --no-build-isolation
+FLAGGEMS_KERNEL=OFF FLAGGEMS_PYTHON=OFF CUDA_KERNEL=ON \
+  pip install -e . --no-build-isolation
 ```
-Expected: 编译成功(shim 仅头，暂无 .cc 引用它，靠 Task 5 引入；此步只验证 CMake include 生效——可临时在一个既有 .cc 加 `#include "profiler/cupti_shim.h"` 冒烟后回退，或直接进 Task 5)。
 
-- [ ] **Step 6: Commit**
+Expected: compilation succeeds. The shim is header-only and Task 5 introduces the `.cc` that
+uses it; proceed directly to Task 5 if the header is not compiled yet.
+
+- [ ] **Step 6: commit**
 
 ```bash
-cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support
 git add csrc/profiler/cupti_shim.h csrc/CMakeLists.txt tests/unit/test_profiler_privateuse1.py
 git commit -m "feat(profiler): Stage B CUPTI dlopen shim + cmake include path"
 ```
 
 ---
 
-## Task 5: Stage B — FlagosCuptiProfiler + kineto 注册
+## Task 5: Stage B — FlagosCuptiProfiler and kineto registration
 
 **Files:**
-- Create: `csrc/profiler/flagos_cupti_profiler.h`, `csrc/profiler/flagos_cupti_profiler.cc`
-- Test: `tests/unit/test_profiler_privateuse1.py`(Chrome trace 有 kernel 事件)
+- Create: `csrc/profiler/flagos_cupti_profiler.h`,
+  `csrc/profiler/flagos_cupti_profiler.cc`
+- Test: `tests/unit/test_profiler_privateuse1.py` (Chrome trace contains kernel events)
 
 **Interfaces:**
-- Consumes: Task 4 的 `CuptiShim`；kineto `libkineto::IActivityProfiler` / `IActivityProfilerSession` / `GenericTraceActivity` / `libkineto::api().registerProfilerFactory`(`torch/include/kineto/*.h`)。
-- Produces: 进程加载时经静态初始化 `libkineto::api().registerProfilerFactory(...)` 注册 `FlagosCuptiProfiler`(name `"flagos_cupti"`, activities `CONCURRENT_KERNEL`/`GPU_MEMCPY`)。profile 后 `export_chrome_trace` 含 GPU kernel 事件。
+- Consumes: Task 4's `CuptiShim`; kineto's `libkineto::IActivityProfiler`,
+  `IActivityProfilerSession`, `GenericTraceActivity`, and
+  `libkineto::api().registerProfilerFactory` (`torch/include/kineto/*.h`)
+- Produces: static initialization registers `FlagosCuptiProfiler` (name `"flagos_cupti"`,
+  activities `CONCURRENT_KERNEL`/`GPU_MEMCPY`) through
+  `libkineto::api().registerProfilerFactory(...)`; after profiling, `export_chrome_trace`
+  contains GPU kernel events
 
-- [ ] **Step 1: 写失败测试(chrome trace 有 kernel 事件)**
+- [ ] **Step 1: write the failing Chrome trace test**
 
-在 `tests/unit/test_profiler_privateuse1.py` 追加:
 ```python
 import json
 import tempfile
@@ -582,27 +613,29 @@ def test_stage_b_chrome_trace_has_gpu_kernels():
     with open(path) as fh:
         data = json.load(fh)
     events = data.get("traceEvents", data) if isinstance(data, dict) else data
-    kernel_like = [e for e in events
-                   if isinstance(e, dict) and (
-                       e.get("cat") in ("kernel", "Kernel", "gpu_op") or
-                       "kernel" in str(e.get("name", "")).lower())]
-    assert len(kernel_like) > 0, "no GPU kernel events in chrome trace"
+    kernel_like = [
+        event for event in events
+        if isinstance(event, dict)
+        and (
+            event.get("cat") in ("kernel", "Kernel", "gpu_op")
+            or "kernel" in str(event.get("name", "")).lower()
+        )
+    ]
+    assert kernel_like, "no GPU kernel events in chrome trace"
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [ ] **Step 2: run and confirm it fails**
 
-Run:
 ```bash
-cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support
 FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_cuda.conf \
   bash scripts/with_cuda_libtorch.sh python -m pytest \
   tests/unit/test_profiler_privateuse1.py::test_stage_b_chrome_trace_has_gpu_kernels -v
 ```
-Expected: FAIL(无 CUPTI child profiler，trace 无 kernel 事件)。
 
-- [ ] **Step 3: 声明 flagos_cupti_profiler.h**
+Expected: FAIL; without a CUPTI child profiler the trace has no kernel events.
 
-Create `csrc/profiler/flagos_cupti_profiler.h`:
+- [ ] **Step 3: declare flagos_cupti_profiler.h**
+
 ```cpp
 // Copyright 2026 FlagOS Contributors. Apache-2.0.
 #pragma once
@@ -647,59 +680,79 @@ void registerFlagosCuptiProfiler();
 
 }  // namespace c10::flagos
 ```
-注: 各虚函数签名必须以本 env 的 `torch/include/kineto/IActivityProfiler.h` 为准 — 实现前先 `grep -n "virtual" torch/include/kineto/IActivityProfiler.h` 逐一核对并对齐(该文件 §设计已确认存在)。
 
-- [ ] **Step 4: 实现 flagos_cupti_profiler.cc**
+Every virtual signature must be checked against
+`torch/include/kineto/IActivityProfiler.h` in the active environment before implementation.
 
-Create `csrc/profiler/flagos_cupti_profiler.cc`。核心逻辑:
-1. `start()`: `CuptiShim::get()` 若 `ok`，`ActivityRegisterCallbacks(bufferRequested, bufferCompleted)` + `ActivityEnable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL)`、`ActivityEnable(CUPTI_ACTIVITY_KIND_MEMCPY)`。
-2. buffer 回调: `bufferRequested` 分配对齐 buffer；`bufferCompleted` 用 `ActivityGetNextRecord` 遍历，把 `CUpti_ActivityKernel*`/`CUpti_ActivityMemcpy` 转成 `libkineto::GenericTraceActivity`(填 name、device、resource=streamId、startTime=start ns、endTime=end ns、id=correlationId、activityType)，push 进当前 session 的 `activities_`(经全局指针指向活跃 session)。
-3. `stop()`: `ActivityFlushAll(1)`。
-4. `processTrace(logger)`: 对 `activities_` 逐个 `logger.handleGenericActivity(a)`。
-5. `getDeviceInfo`/`getResourceInfos`: 返回设备与 stream 资源描述(name "flagos:GPU")。
-6. `pushCorrelationId(id)`: 若 shim 有 `ActivityPushExternalCorrelationId`，`ActivityPushExternalCorrelationId(CUPTI_EXTERNAL_CORRELATION_KIND_CUSTOM0, id)`;`popCorrelationId` 对应 pop。
-7. `configure(...)` 两个重载都返回 `std::make_unique<FlagosCuptiProfilerSession>()`。
-8. `name()` 返回静态 `"flagos_cupti"`；`availableActivities()` 返回静态 `{CONCURRENT_KERNEL, GPU_MEMCPY}`。
-9. `registerFlagosCuptiProfiler()`: `libkineto::api().registerProfilerFactory([]{ return std::make_unique<FlagosCuptiProfiler>(); });`
-10. 文件底部静态初始化: `struct R { R(){ if (CuptiShim::get().ok) registerFlagosCuptiProfiler(); } } g_r;`
+- [ ] **Step 4: implement flagos_cupti_profiler.cc**
 
-(完整实现体依 kineto 头签名填充；GenericTraceActivity 字段名以 `torch/include/kineto/output_base.h` / `ITraceActivity.h` 为准，实现前 grep 核对。)
+Create `csrc/profiler/flagos_cupti_profiler.cc` with this core logic:
 
-- [ ] **Step 5: 重新构建并运行测试**
+1. `start()`: if `CuptiShim::get().ok`, call
+   `ActivityRegisterCallbacks(bufferRequested, bufferCompleted)`, then enable
+   `CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL` and `CUPTI_ACTIVITY_KIND_MEMCPY`.
+2. Buffer callbacks: `bufferRequested` allocates an aligned buffer; `bufferCompleted` walks
+   records with `ActivityGetNextRecord`, converts `CUpti_ActivityKernel*` /
+   `CUpti_ActivityMemcpy` into `libkineto::GenericTraceActivity` (name, device,
+   resource=streamId, start/end ns, id=correlationId, activityType), and pushes them into the
+   active session's `activities_` through a global pointer.
+3. `stop()`: call `ActivityFlushAll(1)`.
+4. `processTrace(logger)`: call `logger.handleGenericActivity(a)` for each activity.
+5. `getDeviceInfo`/`getResourceInfos`: return device and stream-resource descriptions named
+   `"flagos:GPU"`.
+6. `pushCorrelationId(id)`: if available, call
+   `ActivityPushExternalCorrelationId(CUPTI_EXTERNAL_CORRELATION_KIND_CUSTOM0, id)`; pop in
+   `popCorrelationId`.
+7. Both `configure(...)` overloads return
+   `std::make_unique<FlagosCuptiProfilerSession>()`.
+8. `name()` returns static `"flagos_cupti"`; `availableActivities()` returns static
+   `{CONCURRENT_KERNEL, GPU_MEMCPY}`.
+9. `registerFlagosCuptiProfiler()` calls
+   `libkineto::api().registerProfilerFactory([] { return std::make_unique<FlagosCuptiProfiler>(); });`.
+10. A file-local static initializer registers only when `CuptiShim::get().ok`.
 
-Run:
+Use the field names from the active environment's `torch/include/kineto/output_base.h` and
+`ITraceActivity.h`; verify them before writing the complete body.
+
+- [ ] **Step 5: rebuild and run the test**
+
 ```bash
-cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support
-FLAGGEMS_KERNEL=OFF FLAGGEMS_PYTHON=OFF CUDA_KERNEL=ON pip install -e . --no-build-isolation
+FLAGGEMS_KERNEL=OFF FLAGGEMS_PYTHON=OFF CUDA_KERNEL=ON \
+  pip install -e . --no-build-isolation
 FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_cuda.conf \
   bash scripts/with_cuda_libtorch.sh python -m pytest \
   tests/unit/test_profiler_privateuse1.py::test_stage_b_chrome_trace_has_gpu_kernels -v
 ```
-Expected: PASS(trace 含 GPU kernel 事件)。若 kineto 未回调本 profiler，检查 `registerProfilerFactory` 是否在 `import torch_fl` 时执行(静态初始化在 libtorch_fl.so 加载时触发)。
 
-- [ ] **Step 6: Commit**
+Expected: PASS with GPU kernel events in the trace. If kineto never calls this profiler, confirm
+`registerProfilerFactory` runs on `import torch_fl` (the static initializer runs when
+libtorch_fl.so is loaded).
+
+- [ ] **Step 6: commit**
 
 ```bash
-cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support
-git add csrc/profiler/flagos_cupti_profiler.h csrc/profiler/flagos_cupti_profiler.cc tests/unit/test_profiler_privateuse1.py
+git add csrc/profiler/flagos_cupti_profiler.h csrc/profiler/flagos_cupti_profiler.cc \
+  tests/unit/test_profiler_privateuse1.py
 git commit -m "feat(profiler): Stage B CUPTI child profiler injected via kineto"
 ```
 
 ---
 
-## Task 6: Stage B correlation 桥接(可降级验收)
+## Task 6: Stage B correlation bridge (degradable acceptance)
 
 **Files:**
-- Modify: `csrc/profiler/flagos_cupti_profiler.cc`(correlation 转发已在 Task 5 埋入，此处验证/加固)
-- Test: `tests/unit/test_profiler_privateuse1.py`(correlation 断言，可降级)
+- Modify: `csrc/profiler/flagos_cupti_profiler.cc` (Task 5 already forwards correlation; verify
+  and harden it here)
+- Test: `tests/unit/test_profiler_privateuse1.py` (correlation assertion with degradation)
 
 **Interfaces:**
-- Consumes: Task 5 的 session `pushCorrelationId/popCorrelationId`。
-- Produces: GPU kernel 事件带 correlationId 且可对应 CPU op(达标)；否则降级为"GPU track 存在"(Task 5 已保证)即视为完成，correlation 记 follow-up。
+- Consumes: Task 5 session's `pushCorrelationId/popCorrelationId`
+- Produces: GPU kernel events with correlationId mapped to CPU ops when possible; otherwise the
+  acceptance bar degrades to "GPU track exists" (already guaranteed by Task 5), with correlation
+  recorded as follow-up work
 
-- [ ] **Step 1: 写 correlation 测试(允许降级)**
+- [ ] **Step 1: write the correlation test**
 
-在 `tests/unit/test_profiler_privateuse1.py` 追加:
 ```python
 def test_stage_b_correlation_or_degrade():
     x = torch.randn(512, 512, device="flagos")
@@ -714,52 +767,52 @@ def test_stage_b_correlation_or_degrade():
         data = json.load(fh)
     events = data.get("traceEvents", data) if isinstance(data, dict) else data
     flows = [e for e in events if isinstance(e, dict) and e.get("ph") in ("s", "t", "f")]
-    kernels = [e for e in events if isinstance(e, dict)
-               and "kernel" in str(e.get("name", "")).lower()]
-    # 达标: 有 flow 事件连接 op↔kernel；降级: 至少 kernel track 存在
+    kernels = [
+        e for e in events
+        if isinstance(e, dict) and "kernel" in str(e.get("name", "")).lower()
+    ]
     if flows:
         print(f"correlation OK: {len(flows)} flow events")
     else:
-        assert len(kernels) > 0, "neither correlation flows nor kernel track present"
+        assert kernels, "neither correlation flows nor kernel track present"
         print("DEGRADED: kernel track present, no op<->kernel correlation (follow-up)")
 ```
 
-- [ ] **Step 2: 运行**
+- [ ] **Step 2: run**
 
-Run:
 ```bash
-cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support
 FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_cuda.conf \
   bash scripts/with_cuda_libtorch.sh python -m pytest \
   tests/unit/test_profiler_privateuse1.py::test_stage_b_correlation_or_degrade -v -s
 ```
-Expected: PASS(打印 correlation OK 或 DEGRADED)。若 DEGRADED，在 §设计 §4.4 记 follow-up，不阻塞。
 
-- [ ] **Step 3: Commit**
+Expected: PASS and prints either `correlation OK` or `DEGRADED`. A degraded result is recorded as
+follow-up but does not block this stage.
+
+- [ ] **Step 3: commit**
 
 ```bash
-cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support
 git add tests/unit/test_profiler_privateuse1.py
 git commit -m "test(profiler): Stage B correlation acceptance (degradable)"
 ```
 
 ---
 
-## Task 7: Stage B 真实模型验证 + 收尾
+## Task 7: verify Stage B on a real model and wrap up
 
 **Files:**
-- Test: `tests/integration/test_profiler_qwen3_infer.py`(扩展断言 kernel track)
+- Test: extend `tests/integration/test_profiler_qwen3_infer.py` to assert the kernel track
 
 **Interfaces:**
-- Consumes: Task 3 脚本 + Task 5 profiler。
-- Produces: 真实模型下 Chrome trace 同时含 op device time 与 GPU kernel 时间线的最终证据。
+- Consumes: the Task 3 test and the Task 5 profiler
+- Produces: final real-model evidence that the Chrome trace contains both operator device time
+  and the GPU kernel timeline
 
-- [ ] **Step 1: 扩展 qwen3 验证脚本导出 trace 并断言 kernel**
+- [ ] **Step 1: extend the qwen3 verification to export the trace and assert kernels**
 
-在 `tests/integration/test_profiler_qwen3_infer.py` 追加函数:
 ```python
-import json, tempfile
-from torch.profiler import profile, ProfilerActivity
+import json
+import tempfile
 
 
 def test_profiler_qwen3_chrome_trace_kernels():
@@ -777,46 +830,49 @@ def test_profiler_qwen3_chrome_trace_kernels():
     with open(path) as fh:
         events = json.load(fh)["traceEvents"]
     kernels = [e for e in events if "kernel" in str(e.get("name", "")).lower()]
-    assert len(kernels) > 0, "no GPU kernels in qwen3 chrome trace"
+    assert kernels, "no GPU kernels in qwen3 chrome trace"
     print(f"qwen3 trace: {len(kernels)} kernel events, saved {path}")
 ```
 
-- [ ] **Step 2: 运行**
+- [ ] **Step 2: run**
 
-Run:
 ```bash
-cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support
 FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_cuda.conf \
-  HF_HOME=/nfs/lvyufeng/hf_cache HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+  HF_HOME="$HF_HOME" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
   bash scripts/with_cuda_libtorch.sh python -m pytest \
   tests/integration/test_profiler_qwen3_infer.py -v -s
 ```
-Expected: 两个测试都 PASS。
 
-- [ ] **Step 3: 全量回归(确保整套改动无副作用)**
+Expected: both tests PASS.
 
-Run:
+- [ ] **Step 3: full regression**
+
 ```bash
-cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support
 FLAGOS_BACKEND_CONFIG=torch_fl/configs/backends_cuda.conf \
   bash scripts/with_cuda_libtorch.sh python -m pytest \
   tests/integration/ops/ -m "not flaggems and not flaggems_python" -q
 ```
-Expected: 与基线一致，无回归。
 
-- [ ] **Step 4: Commit**
+Expected: matches the baseline, with no regression.
+
+- [ ] **Step 4: commit**
 
 ```bash
-cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support
 git add tests/integration/test_profiler_qwen3_infer.py
 git commit -m "test(profiler): Stage B verification over qwen3 infer (kernel timeline)"
 ```
 
 ---
 
-## Self-Review Notes
+## Self-review notes
 
-- **Spec 覆盖**: §2 架构→Task 1/2(A)、Task 4/5(B);§3.3 guard→Task 1;§4.2 CUPTI 自接→Task 4;§4.3 kineto 注入→Task 5;§4.4 correlation 可降级→Task 6;§5 测试→Task 3/7 单测+真实模型;§5 构建前置→Task 0;§5 CMake→Task 4 Step 4。全覆盖。
-- **类型一致性**: `FlagosProfilerStubs`(Task 2)、`CuptiShim`(Task 4)、`FlagosCuptiProfiler`/`FlagosCuptiProfilerSession`(Task 5/6/7)命名跨任务一致;flagos ABI 函数名以 `include/flagos.h` 为准。
-- **已知不确定点**: Task 5 kineto 虚函数签名、GenericTraceActivity 字段名必须实现前对齐本 env 头文件(计划已在步骤内注明 grep 核对);Task 6 correlation 允许降级。
-```
+- **Spec coverage**: architecture §2 → Tasks 1/2 (A) and Tasks 4/5 (B); guard §3.3 → Task 1;
+  CUPTI wiring §4.2 → Task 4; kineto injection §4.3 → Task 5; degradable correlation §4.4 →
+  Task 6; testing §5 → Tasks 3/7 for unit + real model; build prerequisite §5 → Task 0; CMake
+  §5 → Task 4 Step 4. Full coverage.
+- **Naming consistency**: `FlagosProfilerStubs` (Task 2), `CuptiShim` (Task 4), and
+  `FlagosCuptiProfiler`/`FlagosCuptiProfilerSession` (Tasks 5/6/7) are consistent across tasks;
+  flagos ABI names follow `csrc/include/flagos.h`.
+- **Known uncertainties**: before Task 5, align kineto virtual signatures and
+  `GenericTraceActivity` field names with the active environment's headers (the plan explicitly
+  requires grepping them); Task 6 permits correlation to degrade.

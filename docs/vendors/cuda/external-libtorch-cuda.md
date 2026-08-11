@@ -1,121 +1,170 @@
-# 实测：CPU torch + 外挂 libtorch_cuda.so 复用 CUDA 算子
+# Measured: CPU torch + an external libtorch_cuda.so reuses CUDA operators
 
-> 实测日期：2026-07-16
-> 实测机器：2080ti（4× RTX 2080 Ti，driver 550.163.01）
-> 结论：**成立**。pip 只装 CPU 版 torch、不装 CUDA torch，通过外挂一个版本匹配的 `libtorch_cuda.so`，即可复用 PyTorch 全套已注册的 CUDA kernel，真实计算结果正确。
+> Measured: 2026-07-16
+> Machine: 2080ti (4× RTX 2080 Ti, driver 550.163.01)
+> Verdict: **it works.** With only CPU-version torch installed via pip — no CUDA torch — loading
+> a version-matched `libtorch_cuda.so` externally makes PyTorch's full set of registered CUDA
+> kernels reusable, and the computed results are correct.
 
-## 背景与动机
+## Background and motivation
 
-torch_fl（`vm` / PrivateUse1 后端）希望：
+torch_fl (the `vm` / PrivateUse1 backend) wants to:
 
-- 在 NVIDIA 上**不手写 kernel**，直接复用 PyTorch 已优化好的 CUDA 算子（经 `device_boxing` 把 `vm` 张量改成 CUDA 元数据后调 `structured_*_out_cuda`）。
-- 但**不想 pip 安装 CUDA 版 torch**（体积大、拉一堆 CUDA 依赖、且会把 Python 环境绑定到特定 CUDA 版本）。
+- Write **no kernels by hand** on NVIDIA, reusing PyTorch's already-optimized CUDA operators
+  (via `device_boxing`: rewrite a `vm` tensor's metadata to CUDA, then call
+  `structured_*_out_cuda`).
+- Do so **without pip-installing CUDA torch** (large, drags in a pile of CUDA dependencies, and
+  pins the Python environment to a specific CUDA version).
 
-核心疑问：**能否 pip 只装 CPU torch，另外单独挂一个 `libtorch_cuda.so` 进程内，让 CUDA kernel 注册进 dispatcher 供 boxing 使用？**
+The core question: **can we pip-install CPU torch only, load a separate `libtorch_cuda.so` into
+the process, and have the CUDA kernels register into the dispatcher for boxing to use?**
 
-此前的推演倾向于"走不通"，理由是"CPU wheel（`USE_CUDA=0` 构建）的 `libtorch_cpu.so` 可能裁剪了 CUDA 相关符号，喂不饱 CUDA 构建产出的 `libtorch_cuda.so`"。**本次实测推翻了这个判断。**
+Earlier reasoning leaned toward "no", on the theory that the CPU wheel's `libtorch_cpu.so`
+(built with `USE_CUDA=0`) might have CUDA-related symbols stripped and would fail to satisfy a
+CUDA-built `libtorch_cuda.so`. **This measurement overturned that judgment.**
 
-## 实测环境搭建
+## Setting up the measurement
 
 ```bash
-# 1. 干净 conda 环境 + 只装 CPU torch
+# 1. Clean conda env with CPU torch only
 conda create -n libtorch_test python=3.12
 pip install torch --index-url https://download.pytorch.org/whl/cpu
-#   → torch 2.13.0+cpu
-#   torch/lib 下只有 libc10.so + libtorch_cpu.so，无任何 CUDA .so
+#   -> torch 2.13.0+cpu
+#   torch/lib contains only libc10.so + libtorch_cpu.so; no CUDA .so at all
 #   torch.cuda.is_available() == False
 
-# 2. 下载版本完全匹配的 CUDA wheel（只下载，不安装）
+# 2. Download the exactly version-matched CUDA wheel (download only, do NOT install)
 pip download torch==2.13.0+cu126 --index-url https://download.pytorch.org/whl/cu126 -d /tmp/cuda_wheel --no-deps
-#   解压 wheel，取出 libtorch_cuda.so (≈1GB) + libc10_cuda.so
+#   unzip the wheel, extract libtorch_cuda.so (~1GB) + libc10_cuda.so
 
-# 3. 装 CUDA runtime 依赖库（这些是独立的 nvidia-* 包，不碰 torch 本体）
+# 3. Install the CUDA runtime dependencies (standalone nvidia-* packages; they do not touch torch itself)
 pip install nvidia-cuda-runtime-cu12 nvidia-cublas-cu12 nvidia-cudnn-cu12 \
     nvidia-cuda-nvrtc-cu12 nvidia-cufft-cu12 nvidia-curand-cu12 \
     nvidia-cusolver-cu12 nvidia-cusparse-cu12 nvidia-nccl-cu12 \
     nvidia-nvtx-cu12 nvidia-cuda-cupti-cu12 nvidia-cusparselt-cu12 \
     nvidia-nvjitlink-cu12 nvidia-cuda-cccl-cu12 nvidia-nvshmem-cu12
-#   torch 仍是 2.13.0+cpu 不变
+#   torch remains 2.13.0+cpu
 ```
 
-> **关键点：libtorch release 独立包（download.pytorch.org/libtorch/...）在 2.13.0 上 404，不可用；改用 `pip download` 拿 CUDA wheel 抽 .so 更可靠**——它和 CPU wheel 出自同一套 pip 构建体系，ABI 匹配度最高，且版本可逐位对齐。
+> **Key point: the standalone libtorch release packages (download.pytorch.org/libtorch/...) 404
+> on 2.13.0 and are unusable. Extracting the .so from a `pip download`ed CUDA wheel is more
+> reliable** — it comes from the same pip build system as the CPU wheel, so ABI compatibility is
+> highest and versions can be matched exactly.
 
-## 四个关卡的实测结果
+## Results across four gates
 
-验证按依赖顺序分四关，逐一通过：
+Verification proceeded in dependency order through four gates, each of which passed:
 
-| # | 关卡 | 结果 | 说明 |
+| # | Gate | Result | Notes |
 |---|---|---|---|
-| 1 | **符号解析** | ✅ 无 undefined symbol | `ctypes.CDLL(libtorch_cuda.so, RTLD_GLOBAL)` 成功加载。CPU wheel 的 `libtorch_cpu.so`/`libc10.so` **完整满足** CUDA 构建 `libtorch_cuda.so` 的全部符号需求——**未发生符号裁剪** |
-| 2 | **kernel 注册** | ✅ 加载后 CUDA key 全部就位 | 加载前 `mm/add/_softmax/bmm` 的 `CUDA=False`，加载后全部 `CUDA=True`。证明 dispatcher 是 `libc10.so` 的全局单例，谁加载 `.so`，kernel 就注册进那张表 |
-| 3 | **CUDAHooks / 设备初始化** | ✅ 但**必须 `LD_PRELOAD`** | 见下方「关键约束」 |
-| 4 | **真实计算** | ✅ 结果正确 | `mm max_err=9.5e-06`（fp32 GEMM 正常精度）、`add max_err=0.0`、`softmax rowsum=1.0`，确在 `cuda:0` 上执行 |
+| 1 | **Symbol resolution** | ✅ no undefined symbols | `ctypes.CDLL(libtorch_cuda.so, RTLD_GLOBAL)` loads successfully. The CPU wheel's `libtorch_cpu.so`/`libc10.so` **fully satisfy** every symbol the CUDA-built `libtorch_cuda.so` needs — **no symbol stripping occurred** |
+| 2 | **Kernel registration** | ✅ the CUDA key is fully populated after loading | Before loading, `mm/add/_softmax/bmm` all show `CUDA=False`; after, all `CUDA=True`. This shows the dispatcher is a global singleton in `libc10.so`: whoever loads the `.so`, the kernels register into that one table |
+| 3 | **CUDAHooks / device init** | ✅ but **`LD_PRELOAD` is mandatory** | see "Hard constraints" below |
+| 4 | **Real computation** | ✅ correct results | `mm max_err=9.5e-06` (normal fp32 GEMM precision), `add max_err=0.0`, `softmax rowsum=1.0`, genuinely executing on `cuda:0` |
 
-### 关卡 1/2 的验证（无副作用检查）
+### Verifying gates 1 and 2 (side-effect-free check)
 
 ```python
 import ctypes, torch
-from torch._C import _dispatch_dump_table  # 简化示意
-# 加载前：aten::mm 只有 CPU
+from torch._C import _dispatch_dump_table  # simplified illustration
+# before loading: aten::mm has CPU only
 ctypes.CDLL(".../libc10_cuda.so", ctypes.RTLD_GLOBAL)
 ctypes.CDLL(".../libtorch_cuda.so", ctypes.RTLD_GLOBAL)
-# 加载后：aten::mm / add / _softmax / bmm 均出现 CUDA 实现
+# after loading: aten::mm / add / _softmax / bmm all show a CUDA implementation
 ```
 
-前置：需先把所有 `nvidia/*/lib` 目录加进 `LD_LIBRARY_PATH`（cudart、cublas、cudnn、nvshmem 等），否则会因缺 `libcudart.so.12`、`libnvshmem_host.so.3` 等运行库而加载失败（**注意：这类失败是"缺 CUDA 运行库"，不是符号不匹配**）。
+Prerequisite: every `nvidia/*/lib` directory must be on `LD_LIBRARY_PATH` first (cudart, cublas,
+cudnn, nvshmem, …), or loading fails for want of runtime libraries such as `libcudart.so.12` or
+`libnvshmem_host.so.3`. (**Note: that class of failure is "missing CUDA runtime library", not a
+symbol mismatch.**)
 
-### 关卡 4 的验证（真实计算）
+### Verifying gate 4 (real computation)
 
 ```python
-# 关键：libtorch_cuda.so 需在 import torch 之前载入（见下方约束）
-a = torch.empty([N, K], device='cuda')  # 走 factory 路径，C++ 层直接建，成功
-# ... 填充数据、执行 mm/add/softmax ...
+# Key: libtorch_cuda.so must be loaded before import torch (see the constraints below)
+a = torch.empty([N, K], device='cuda')  # factory path, constructed directly in C++; succeeds
+# ... fill data, run mm/add/softmax ...
 # mm  max_err = 9.5367431640625e-06
 # add max_err = 0.0
 # softmax rowsum mean = 1.0
 ```
 
-## 关键约束
+## Hard constraints
 
-### 约束 1（硬约束）：libtorch_cuda.so 必须在 `import torch` 之前载入
+### Constraint 1 (hard): libtorch_cuda.so must be loaded before `import torch`
 
-- **现象**：若在 `import torch` **之后**再 `ctypes.CDLL(libtorch_cuda.so)`，虽然 kernel 注册进了 dispatcher（关卡 2 过），但设备初始化会报 `Cannot initialize CUDA without ATen_cuda library`。
-- **根因**：PyTorch 的 **CUDAHooks 机制**——`getCUDAHooks()` 在 `import torch` 时首次调用并**缓存**了 `libtorch_cpu.so` 里的"桩 Hooks"（专门抛该错）；后加载的 `libtorch_cuda.so` 注册的真 Hooks 覆盖不掉已缓存的桩。
-- **解法**：用 `LD_PRELOAD`（或构建期 rpath / 在 `import torch` 前 `ctypes.CDLL`）让 `libtorch_cuda.so` 先于 torch 载入。实测 `LD_PRELOAD=".../libc10_cuda.so:.../libtorch_cuda.so"` 后，连最苛刻的 factory 路径 `torch.empty(device='cuda')` 都成功返回 `cuda:0`。
+- **Symptom**: calling `ctypes.CDLL(libtorch_cuda.so)` *after* `import torch` does register the
+  kernels into the dispatcher (gate 2 passes), but device initialization raises
+  `Cannot initialize CUDA without ATen_cuda library`.
+- **Root cause**: PyTorch's **CUDAHooks mechanism**. `getCUDAHooks()` is first called during
+  `import torch` and **caches** the stub hooks from `libtorch_cpu.so` (whose only job is to
+  raise that error). The real hooks registered by a later-loaded `libtorch_cuda.so` cannot
+  displace the cached stub.
+- **Fix**: use `LD_PRELOAD` (or a build-time rpath, or `ctypes.CDLL` before `import torch`) so
+  `libtorch_cuda.so` loads ahead of torch. Measured: with
+  `LD_PRELOAD=".../libc10_cuda.so:.../libtorch_cuda.so"`, even the most demanding factory path,
+  `torch.empty(device='cuda')`, returns a `cuda:0` tensor.
 
-### 约束 2（对 torch_fl 无影响）：Python 层 `torch.cuda._lazy_init` gate
+### Constraint 2 (no impact on torch_fl): the Python-level `torch.cuda._lazy_init` gate
 
-- **现象**：`torch.randn(device='cuda')`、`a @ b`、`.to('cuda')`、`.copy_()` 等高层 API 会显式调用 `torch.cuda._lazy_init()`，撞上 `torch/cuda/__init__.py` 里的 `AssertionError: Torch not compiled with CUDA enabled`。这是 **Python 层的编译期旗标 gate**，与 C++ dispatcher 里有没有 CUDA kernel 无关。
-- **对 torch_fl 无影响**：torch_fl 的 `vm`(PrivateUse1) + boxing 路径**从不调用 `torch.cuda.*`**——它用自己的 flagos allocator 分配显存，boxing 改元数据后直接在 C++ 层调 `structured_*_out_cuda`。因此这个 Python gate 天然被绕开。
-- 纯 Python 复现时（本次实测）需短路该 gate 才能测到真实计算，这只是复现手段，不是 torch_fl 的真实约束。
+- **Symptom**: high-level APIs such as `torch.randn(device='cuda')`, `a @ b`, `.to('cuda')`, and
+  `.copy_()` explicitly call `torch.cuda._lazy_init()` and hit
+  `AssertionError: Torch not compiled with CUDA enabled` in `torch/cuda/__init__.py`. This is a
+  **Python-level compile-flag gate**, unrelated to whether the C++ dispatcher holds CUDA kernels.
+- **No impact on torch_fl**: torch_fl's `vm` (PrivateUse1) + boxing path **never calls
+  `torch.cuda.*`** — it allocates device memory through its own flagos allocator, and after
+  boxing rewrites the metadata it calls `structured_*_out_cuda` directly in C++. The Python gate
+  is therefore bypassed by construction.
+- Reproducing this in pure Python (as done here) requires short-circuiting the gate to reach the
+  real computation, but that is an artifact of the reproduction, not a real torch_fl constraint.
 
-### 约束 3：版本必须逐位匹配
+### Constraint 3: versions must match exactly
 
-`libtorch_cuda.so` 与 pip CPU torch 的版本必须**完全一致**（如 `2.13.0` 对 `2.13.0`，nightly 连日期都要对）。混版本会因 `at::Tensor`/ABI 布局差异导致符号或运行时错乱。
+`libtorch_cuda.so` and the pip CPU torch must be **the same version** (e.g. `2.13.0` against
+`2.13.0`; for nightlies, even the date must match). Mixing versions causes symbol or runtime
+corruption from `at::Tensor`/ABI layout differences.
 
-### 约束 4：依赖 CPU wheel 符号完整性（无官方承诺）
+### Constraint 4: relies on CPU wheel symbol completeness (not officially guaranteed)
 
-本方案依赖"CPU wheel 的 `libtorch_cpu.so` 符号足够喂饱 `libtorch_cuda.so`"这一性质。**PyTorch 未明文承诺此性质**——2.13.0 实测成立，但升级 torch 版本时应重跑关卡 1/2 复测一次。
+This approach depends on the property that the CPU wheel's `libtorch_cpu.so` provides every
+symbol `libtorch_cuda.so` needs. **PyTorch makes no explicit guarantee of this.** It held on
+2.13.0, but gates 1 and 2 should be re-run whenever the torch version is bumped.
 
-## 对 `vm` 后端（torch_fl）的落地要点
+## Integration notes for the `vm` backend (torch_fl)
 
-1. **预载时机**：`torch_fl/__init__.py` 已在用 `ctypes.CDLL(..., RTLD_GLOBAL)` 预载 `libtorch.so`。把 `libc10_cuda.so` + `libtorch_cuda.so` 加入预载列表，并确保**在 `import torch` 之前**执行（或通过 `LD_PRELOAD` / 链接期 rpath 保证）。这是唯一的硬约束。
-2. **boxing 路径可用**：`structured_*_out_cuda` 等已注册且能执行，`device_boxing.h`（flagos 自管显存 + 改元数据调 native kernel）成立。**#15 的 boxing/structured 复用成果无需回退。**
-3. **CUDA runtime 依赖**：需要 `nvidia-*` pip 包提供 `libcudart/libcublas/libcudnn/libnvshmem` 等 `.so`，通过 `LD_LIBRARY_PATH` 或 rpath 定位。
-4. **不碰 `torch.cuda` Python API**：保持 boxing 全程在 C++ 层，避免触发 `_lazy_init` gate。
+1. **Preload timing**: `torch_fl/__init__.py` already preloads `libtorch.so` with
+   `ctypes.CDLL(..., RTLD_GLOBAL)`. Add `libc10_cuda.so` + `libtorch_cuda.so` to that list and
+   ensure it runs **before `import torch`** (or guarantee it via `LD_PRELOAD` / link-time rpath).
+   This is the only hard constraint.
+2. **The boxing path works**: `structured_*_out_cuda` and friends are registered and executable,
+   so `device_boxing.h` (flagos-managed device memory + metadata rewrite + native kernel call)
+   holds. **The boxing/structured reuse work from #15 needs no rollback.**
+3. **CUDA runtime dependencies**: the `nvidia-*` pip packages must supply
+   `libcudart/libcublas/libcudnn/libnvshmem` and friends, located via `LD_LIBRARY_PATH` or rpath.
+4. **Do not touch the `torch.cuda` Python API**: keep boxing entirely in C++ so the `_lazy_init`
+   gate is never triggered.
 
-## 换来了什么 / 代价
+## What this buys, and what it costs
 
-**换来：**
-- ✅ 不 pip 装 CUDA torch，Python 侧保持干净的 `+cpu` 环境
-- ✅ 复用 PyTorch 全套优化过的 CUDA kernel，`vm` 后端**零手写 kernel、无需写 cuBLAS/cuDNN 胶水**
-- ✅ 跟得上 torch 最新版：换版本时外挂对应版本的 `libtorch_cuda.so` 即可
+**Buys:**
+- ✅ No pip CUDA torch; the Python side stays a clean `+cpu` environment
+- ✅ Reuse of PyTorch's full set of optimized CUDA kernels — the `vm` backend needs **zero
+  hand-written kernels and no cuBLAS/cuDNN glue**
+- ✅ Keeps pace with the latest torch: bumping versions just means loading the matching
+  `libtorch_cuda.so`
 
-**代价：**
-- ⚠️ 依赖"CPU wheel 符号完整"这一无官方承诺的性质（升级需复测，见约束 4）
-- ⚠️ `LD_PRELOAD` / 预载时机是硬约束（约束 1）
-- ⚠️ 进程内仍有 `libtorch_cuda.so`，仍 ABI-绑定该 torch 版本（这是"能跟上最新版"而非"一份二进制跨版本"）
+**Costs:**
+- ⚠️ Depends on the unguaranteed "CPU wheel symbols are complete" property (re-test on upgrade;
+  see constraint 4)
+- ⚠️ `LD_PRELOAD` / preload timing is a hard constraint (constraint 1)
+- ⚠️ `libtorch_cuda.so` is still in the process and still ABI-bound to that torch version (this
+  is "can keep up with the latest", not "one binary across versions")
 
-## 一句话总结
+## One-line summary
 
-> **pip 只装 CPU torch、外挂版本匹配的 `libtorch_cuda.so`（在 import torch 前载入），即可让 CUDA kernel 注册进 dispatcher 并被 `vm`/boxing 路径复用，实测计算正确。** 唯一硬约束是加载时机（CUDAHooks 缓存问题，用 `LD_PRELOAD` 解决）；Python 层的 `torch.cuda` gate 与 torch_fl 无关。这条路让 NVIDIA 后端零手写 kernel 且不依赖 pip CUDA torch。
+> **Install CPU torch only via pip, load a version-matched `libtorch_cuda.so` externally before
+> `import torch`, and the CUDA kernels register into the dispatcher and become reusable by the
+> `vm`/boxing path — measured, with correct results.** The one hard constraint is load timing
+> (the CUDAHooks caching problem, solved with `LD_PRELOAD`); the Python-level `torch.cuda` gate
+> is irrelevant to torch_fl. This route gives the NVIDIA backend zero hand-written kernels with
+> no dependency on pip CUDA torch.

@@ -1,94 +1,148 @@
-# Ascend NPU 落地方案与算子覆盖计划
+# Ascend NPU integration plan and operator coverage
 
-> 起草日期：2026-07-20
-> 机器：Ascend 910（8×，CANN 9.0.0，aarch64）
-> 场景目标：**推理 + 训练都要**
-> 主手段：**aclnn codegen 优先**（辅以 FlagGems/triton-ascend 与 CPU 兜底）
+> Drafted: 2026-07-20
+> Machine: Ascend 910 (8×, CANN 9.0.0, aarch64)
+> Target: **both inference and training**
+> Primary approach: **aclnn codegen first**, with FlagGems/triton-ascend and a CPU fallback as backup
 
-## 0. 结论先行
+## 0. Conclusions up front
 
-- CUDA 的"外挂 `libtorch_cuda.so` 零成本兜底"路线**在 NPU 上不成立**（torch_npu 与 flagos 同占 PrivateUse1 key，详见 [external-libtorch-npu.md](external-libtorch-npu.md)）。NPU 必须**自己出算子**。
-- NPU 出算子的最优底座是 **CANN aclnn（`libopapi.so`）公开 C ABI**，现有 `csrc/aten/backends/ascend/`（33 个手写算子）已验证这条路可跑通。
-- **决定性现状问题**：#10/`285f52c` 的 codegen 清理把 `csrc/aten/*.h` 的**逐算子头文件删掉、统一进 `csrc/aten/generated/ops.h`**，但 33 个手写 ascend `.cc` 仍 `#include "../../mm.h"` 这类**已不存在的头**。**当前 main 上 Ascend 后端无法编译**（这是任何 NPU 工作的第一道门槛）。
-- 可行性已用**独立原型**在真机验证：`aclnn<Op>GetWorkspaceSize + aclnn<Op>` 两段式调用 + 裸 NPU 存储构造 `aclTensor`，`aclnnSqrt` 计算结果与 CPU 参考一致（`max_err=2.85e-07`）。见 §4。
+- The CUDA route — "load an external `libtorch_cuda.so` and get a free fallback" — **does not
+  hold on NPU** (torch_npu and flagos both claim the PrivateUse1 key; see
+  [external-libtorch-npu.md](external-libtorch-npu.md)). NPU must **provide its own operators**.
+- The best foundation for those operators is the **public C ABI of CANN aclnn
+  (`libopapi.so`)**. The existing `csrc/aten/backends/ascend/` (33 hand-written operators)
+  already proves the path works.
+- **The decisive current blocker**: the codegen cleanup in #10/`285f52c` removed the per-operator
+  headers under `csrc/aten/*.h` and consolidated them into `csrc/aten/generated/ops.h`, but the
+  33 hand-written ascend `.cc` files still `#include "../../mm.h"` and similar **headers that no
+  longer exist**. **The Ascend backend does not compile on current main** — the first gate for
+  any NPU work.
+- Feasibility was verified on real hardware with a **standalone prototype**: the two-stage
+  `aclnn<Op>GetWorkspaceSize + aclnn<Op>` call plus an `aclTensor` built over raw NPU storage;
+  `aclnnSqrt` matched the CPU reference (`max_err=2.85e-07`). See §4.
 
-## 1. 为什么是 aclnn codegen
+## 1. Why aclnn codegen
 
-CUDA 侧 `scripts/codegen_ops.py` 从 `native_functions.yaml` 批量生成 3429 个 boxing 兜底（`cuda_kernels.cc`），把 flagos 张量改元数据后转调 `at::xxx`（native CUDA kernel）。
+On the CUDA side, `scripts/codegen_ops.py` generates 3429 boxing fallbacks
+(`cuda_kernels.cc`) from `native_functions.yaml`: rewrite a flagos tensor's metadata, then
+forward to `at::xxx` (the native CUDA kernel).
 
-Ascend 没有"独立 key 可 box 过去"，所以对应物不是 boxing，而是**批量生成 aclnn 调用胶水**：
+Ascend has no separate key to box into, so the counterpart is not boxing but **bulk generation
+of aclnn call glue**:
 
 ```
-aten op (schema)  ──codegen──▶  KernelAscend(...) { EXEC_ASCEND_CMD(aclnn<Op>, ...); }
-                                └─ 注册进 flagos 内部 Dispatcher 的 kAscend 槽
+aten op (schema)  --codegen-->  KernelAscend(...) { EXEC_ASCEND_CMD(aclnn<Op>, ...); }
+                                └─ registered into the kAscend slot of the flagos internal Dispatcher
 ```
 
-aclnn 命名与调用高度规律：
-- 命名：`aclnn` + 驼峰算子名（`aclnnMm` / `aclnnAdd` / `aclnnCos` / `aclnnSqrt` …）。
-- 调用：统一两段式 `xxxGetWorkspaceSize(inputs..., out, &ws, &exec)` + `xxx(ws_addr, ws, exec, stream)`——已被 `EXEC_ASCEND_CMD`（`op_api_common.h`）抽象。
-- 因此 elementwise / 一元数学 / 部分 reduce / matmul 类算子可由"`aten→aclnn` 映射表 + 类别模板"批量生成。
+aclnn naming and calling conventions are highly regular:
 
-## 2. 现有资产盘点
+- Naming: `aclnn` + the CamelCase operator name (`aclnnMm` / `aclnnAdd` / `aclnnCos` /
+  `aclnnSqrt`, …).
+- Calling: a uniform two-stage `xxxGetWorkspaceSize(inputs..., out, &ws, &exec)` +
+  `xxx(ws_addr, ws, exec, stream)` — already abstracted by `EXEC_ASCEND_CMD`
+  (`op_api_common.h`).
 
-| 资产 | 位置 | 状态 |
+So elementwise, unary math, part of the reductions, and the matmul family can be generated in
+bulk from an `aten→aclnn` mapping table plus per-category templates.
+
+## 2. Existing assets
+
+| Asset | Location | Status |
 |---|---|---|
-| aclnn 调用抽象 | `csrc/aten/backends/ascend/op_api_common.h`（`EXEC_ASCEND_CMD` / `AclTensorWrapper` / `AclScalarWrapper` / dtype 映射） | ✅ 可用 |
-| 输出张量分配 | `op_preparation.h`（`apply_tensor_without_format` = `at::empty(device=PrivateUse1)`） | ✅ 可用 |
-| 内部 Dispatcher | `csrc/aten/dispatcher.h`（`REGISTER_IMPL_TO_DISPATCHER(..., Backend::kAscend, ...)`） | ✅ 可用 |
-| 手写算子 | `backends/ascend/*.cc`（33 个：mm/bmm/add/mul/cat/embedding/softmax/sum/nll_loss/index/…） | ⚠️ 头文件失效，需修 |
-| 后端选择配置 | `torch_fl/configs/backends_ascend.conf`（逐 op `flaggems\|ascend`） | ✅ 可用 |
-| codegen 框架 | `scripts/codegen_ops.py` + `generated/name_map.json`（权威符号命名源） | ✅ 可复用其骨架 |
-| 运行时（stream/allocator/device） | `csrc/runtime/accelerator/ascend/` | ✅ 已有 |
+| aclnn call abstraction | `csrc/aten/backends/ascend/op_api_common.h` (`EXEC_ASCEND_CMD` / `AclTensorWrapper` / `AclScalarWrapper` / dtype mapping) | ✅ usable |
+| Output tensor allocation | `op_preparation.h` (`apply_tensor_without_format` = `at::empty(device=PrivateUse1)`) | ✅ usable |
+| Internal dispatcher | `csrc/aten/dispatcher.h` (`REGISTER_IMPL_TO_DISPATCHER(..., Backend::kAscend, ...)`) | ✅ usable |
+| Hand-written operators | `backends/ascend/*.cc` (33: mm/bmm/add/mul/cat/embedding/softmax/sum/nll_loss/index/…) | ⚠️ dangling headers; needs fixing |
+| Backend selection config | `torch_fl/configs/backends_ascend.conf` (per-op `flaggems\|ascend`) | ✅ usable |
+| codegen framework | `scripts/codegen_ops.py` + `generated/name_map.json` (authoritative symbol naming) | ✅ skeleton is reusable |
+| Runtime (stream/allocator/device) | `csrc/runtime/accelerator/ascend/` | ✅ exists |
 
-## 3. 方案（分层，按 conf 逐 op 选后端）
+## 3. Approach (layered; backend chosen per op via the conf)
 
-三层能力，`backends_ascend.conf` 决定每个 op 走哪层，覆盖不到的自动 CPU fallback：
+Three capability tiers. `backends_ascend.conf` decides which tier each op takes; anything
+uncovered falls back to CPU automatically:
 
-1. **aclnn codegen（主）**——覆盖规律性强的算子（elementwise、一元数学、reduce、matmul 家族）。目标把手写的 33 个扩到上百个。
-2. **FlagGems / triton-ascend（辅）**——融合算子、triton 能编过且更快的热点（已有 `_patch_flaggems_codegen_config` + `patch_triton_ascend.py` 基建）。
-3. **CPU fallback（兜底）**——长尾/不常用算子，显式标注为已知性能点。
+1. **aclnn codegen (primary)** — covers the regular operators (elementwise, unary math,
+   reductions, the matmul family). Goal: grow the hand-written 33 into the hundreds.
+2. **FlagGems / triton-ascend (secondary)** — fused operators and hot spots where Triton both
+   compiles and runs faster (the `_patch_flaggems_codegen_config` and `patch_triton_ascend.py`
+   infrastructure already exists).
+3. **CPU fallback** — the long tail and rarely used operators, explicitly flagged as known
+   performance costs.
 
-### 落地顺序
+### Order of work
 
-- **P0（阻塞项）：修复 Ascend 后端可编译。** 解决 33 个 `.cc` 引用的失效逐算子头。两个方向择一：
-  - (a) codegen 为 ascend 也产出逐算子头（复活 `csrc/aten/*.h`）；或
-  - (b) 改这些 `.cc` 统一 `#include "generated/ops.h"`（更契合 #10 后的单头结构，推荐）。
-  - 先把 Ascend 后端在当前 main 上重新编过、`import torch_fl` 通、33 个算子回归通过，作为基线。
-- **P1：aclnn codegen MVP。** 先覆盖"一输入一输出 elementwise/一元数学"这一最规律类别（sqrt/exp/reciprocal/sigmoid/tanh/floor/ceil/sign/gelu/…），建 `aten→aclnn` 映射表 + 一个类别模板，生成到 `backends/ascend/generated/`。此类别 `AclTensorWrapper(in)/(out)` + `EXEC_ASCEND_CMD(aclnn<Op>, in, out)` 即可，风险最低。
-- **P2：扩类别。** 二元（add/mul/sub/div，处理 broadcast+alpha+dtype 提升，参考现有手写 `add.cc`）、reduce（sum/mean/max，处理 dim/keepdim）、matmul（mm/bmm，cube_math_type）。长尾 aclnn 名不规律或需特殊参数的进 skip 列表走 fallback。
-- **P3：训练算子。** backward 系列（silu_backward/embedding_dense_backward/nll_loss_backward 已手写，补全 relu/gelu/norm 等），优化器 foreach 类评估 aclnnForeach* 覆盖度。
+- **P0 (blocker): make the Ascend backend compile again.** Resolve the dangling per-operator
+  headers referenced by the 33 `.cc` files. Two options:
+  - (a) have codegen also emit per-operator headers for ascend (resurrect `csrc/aten/*.h`); or
+  - (b) change those `.cc` files to a uniform `#include "generated/ops.h"` (better fit for the
+    single-header structure after #10; recommended).
+  - First get the Ascend backend compiling on current main, `import torch_fl` clean, and the
+    33 operators passing regression, as the baseline.
+- **P1: aclnn codegen MVP.** Start with the most regular category — one-input/one-output
+  elementwise and unary math (sqrt/exp/reciprocal/sigmoid/tanh/floor/ceil/sign/gelu/…). Build
+  the `aten→aclnn` mapping table plus one category template, emitting into
+  `backends/ascend/generated/`. For this category `AclTensorWrapper(in)/(out)` +
+  `EXEC_ASCEND_CMD(aclnn<Op>, in, out)` suffices — lowest risk.
+- **P2: more categories.** Binary (add/mul/sub/div — handling broadcast, alpha, and dtype
+  promotion; see the existing hand-written `add.cc`), reductions (sum/mean/max — handling
+  dim/keepdim), matmul (mm/bmm — cube_math_type). Long-tail ops whose aclnn names are irregular
+  or that need special arguments go on a skip list and fall back.
+- **P3: training operators.** The backward family (silu_backward / embedding_dense_backward /
+  nll_loss_backward are already hand-written; fill in relu/gelu/norm and others), and evaluate
+  aclnnForeach* coverage for the optimizer foreach operators.
 
-### 与 CUDA codegen 的关系
+### Relationship to the CUDA codegen
 
-- 复用 `codegen_ops.py` 的 schema 解析（`native_functions.yaml` → 签名/类别/`fn_type`/`dispatcher`）与 `name_map.json` 命名权威。
-- **新增** ascend 专属发射器：不发 boxing 体，发 aclnn 体；输入来源是 `aten→aclnn` 映射表（新文件，如 `torch_fl/ascend_aclnn_map.json`）而非 `backends_cuda.conf`。
-- 生成物落 `csrc/aten/backends/ascend/generated/`，由 `csrc/CMakeLists.txt` 的 `ASCEND_KERNEL` glob 纳入。
+- Reuse `codegen_ops.py`'s schema parsing (`native_functions.yaml` → signature / category /
+  `fn_type` / `dispatcher`) and `name_map.json` as the naming authority.
+- **Add** an ascend-specific emitter: it emits an aclnn body rather than a boxing body, and its
+  input is an `aten→aclnn` mapping table (a new file, e.g. `torch_fl/ascend_aclnn_map.json`)
+  rather than `backends_cuda.conf`.
+- Output lands in `csrc/aten/backends/ascend/generated/`, picked up by the `ASCEND_KERNEL` glob
+  in `csrc/CMakeLists.txt`.
 
-## 4. 可行性验证（已在真机通过）
+## 4. Feasibility verification (passed on real hardware)
 
-独立原型（不依赖 torch_fl 构建，规避 P0 阻塞）证明 codegen 将要发射的**内核体形状**在真机可算：
+A standalone prototype (not depending on the torch_fl build, so it sidesteps the P0 blocker)
+proved that the **kernel body shape codegen will emit** computes correctly on hardware:
 
-- 原型源码与构建脚本已删除（工程化后不再需要）；如需回看，见 git 历史中的
-  `docs/ascend_aclnn_codegen_prototype.cc` 与 `docs/build_ascend_prototype.sh`。
-- 做法：裸 `aclrtMalloc` 显存 → `aclCreateTensor`（同 `AclTensorWrapper`）→ 两段式 `aclnnSqrtGetWorkspaceSize` + `aclnnSqrt`（同 `EXEC_ASCEND_CMD`）→ 拷回校验。
-- 结果：
+- The prototype source and build script have been deleted (no longer needed once engineered);
+  to review them, see `docs/ascend_aclnn_codegen_prototype.cc` and
+  `docs/build_ascend_prototype.sh` in git history.
+- Method: raw `aclrtMalloc` device memory → `aclCreateTensor` (same as `AclTensorWrapper`) →
+  two-stage `aclnnSqrtGetWorkspaceSize` + `aclnnSqrt` (same as `EXEC_ASCEND_CMD`) → copy back
+  and verify.
+- Result:
 
   ```
   aclnnSqrt sample: in[3]=4.0 out[3]=2.000000 (ref=2.000000)  max_err=2.850e-07
   PASS: aclnnSqrt on NPU matches CPU reference
   ```
 
-**结论**：aclnn 两段式 + 裸存储 aclTensor 的 codegen 体形状**成立**。剩下的是工程化（映射表、类别模板、P0 编译修复），无底层不确定性。
+**Conclusion**: the two-stage aclnn call over raw storage aclTensors is a **viable codegen body
+shape**. What remains is engineering — the mapping table, the category templates, the P0 compile
+fix — with no unresolved low-level uncertainty.
 
-## 5. 风险与代价
+## 5. Risks and costs
 
-- ⚠️ **P0 编译修复是硬前置**，否则任何 NPU 算子都无法验证。
-- ⚠️ aclnn 名/签名的长尾不规律：codegen 吃掉 60–80% 规律算子，尾部仍需手写或 fallback，需维护 skip 列表（类比 `codegen_skip_ops.txt`）。
-- ⚠️ 二元/reduce 的 broadcast、dtype 提升、alpha、dim/keepdim 语义需在模板里正确处理（现有手写 `add.cc`/`sum.cc`/`mean.cc` 是参考样本）。
-- ⚠️ 强绑 CANN 版本（aclnn 接口随 CANN 演进），换 CANN 需回归。
+- ⚠️ **The P0 compile fix is a hard prerequisite**; without it no NPU operator can be verified.
+- ⚠️ Irregularity in the long tail of aclnn names and signatures: codegen absorbs 60–80% of the
+  regular operators; the tail still needs hand-writing or fallback, so a skip list must be
+  maintained (analogous to `codegen_skip_ops.txt`).
+- ⚠️ Broadcast, dtype promotion, alpha, and dim/keepdim semantics for the binary and reduction
+  categories must be handled correctly in the templates (the existing hand-written `add.cc` /
+  `sum.cc` / `mean.cc` are the reference samples).
+- ⚠️ Tight coupling to the CANN version (aclnn interfaces evolve with CANN); a CANN upgrade
+  requires a regression pass.
 
-## 6. 下一步（本轮之后）
+## 6. Next steps (after this round)
 
-1. 定 P0 修复方向（推荐 (b) 统一 `generated/ops.h`），跑通 Ascend 基线。
-2. 建 `ascend_aclnn_map.json` + P1 一元 elementwise 类别模板，生成并回归。
-3. 逐步 P2/P3 扩类别，长尾进 skip 走 fallback。
+1. Decide the P0 fix direction (recommend (b), the unified `generated/ops.h`) and get the
+   Ascend baseline running.
+2. Build `ascend_aclnn_map.json` plus the P1 unary elementwise category template; generate and
+   regress.
+3. Progressively extend categories through P2/P3; long-tail ops go on the skip list and fall
+   back.

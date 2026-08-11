@@ -1,104 +1,111 @@
-# torch_fl profiler 与 torch-cuda 能力对齐 — 设计文档
+# torch_fl profiler parity with torch-cuda — design document
 
-日期: 2026-08-03
-分支/worktree: profiler-support
-前置文档: `2026-07-31-privateuse1-profiler-design.md`（Stage A/B 初版设计）
+Date: 2026-08-03
+Branch/worktree: profiler-support
+Prior document: `2026-07-31-privateuse1-profiler-design.md` (the initial Stage A/B design)
 
-目标: 让 `torch.profiler` 对 flagos 设备产出的 trace 在**结构上**与 torch-cuda 一致 ——
-事件类别、op↔kernel 连线、kernel 元数据字段、算子级 device time 归属全部对齐。
+Goal: make the traces `torch.profiler` produces for flagos devices **structurally** identical to
+torch-cuda's — matching event categories, op↔kernel links, kernel metadata fields, and
+operator-level device time attribution.
 
-## 0. 现状与实测差距
+## 0. Current state and the measured gap
 
-Stage B（CUPTI kernel 时间线）已跑通：`torch.profiler` 能拿到真实 GPU kernel 事件，
-qwen3 推理下 2261 个具名 kernel，名字与时长均正确。本文档处理的是它与 torch-cuda 之间
-**剩余的结构性差距**。
+Stage B (the CUPTI kernel timeline) works: `torch.profiler` gets real GPU kernel events — 2261
+named kernels under qwen3 inference, with correct names and durations. This document addresses
+the **structural gap that remains** between that and torch-cuda.
 
-用同一段代码（5 次 `(x@y).relu()` + `sum`，1024×1024）分别在
-`torch-cuda-210`（2.10.0+cu128）和 flagos（2.11.0+cpu + 外挂 libtorch_cuda）下出 trace，
-实测差距：
+Running the same code (5× `(x@y).relu()` + `sum`, 1024×1024) under `torch-cuda-210`
+(2.10.0+cu128) and under flagos (2.11.0+cpu with an external libtorch_cuda) and comparing traces:
 
-| 指标 | torch-cuda | flagos | 
+| Metric | torch-cuda | flagos |
 |---|---|---|
-| flow 箭头 `ac2g` | **59** | **0** |
-| `cuda_runtime` 事件 | **34** | **0** |
-| kernel args 字段数 | **13** | **0** |
-| kernel 名 | `ampere_sgemm_128x64_nn` | `_ZN2at6native...`（未 demangle） |
+| `ac2g` flow arrows | **59** | **0** |
+| `cuda_runtime` events | **34** | **0** |
+| kernel args field count | **13** | **0** |
+| kernel name | `ampere_sgemm_128x64_nn` | `_ZN2at6native...` (not demangled) |
 | `gpu_memset` | 10 | 0 |
-| `key_averages` device time 归属 | `aten::mm` = 821µs | 只挂 kernel 名下，`aten::*` 全 0 |
+| `key_averages` device time attribution | `aten::mm` = 821µs | attributed only to kernel names; all `aten::*` are 0 |
 
-### 根因：整条 correlation 链断了
+### Root cause: the whole correlation chain is broken
 
-torch-cuda 的链路（实测确认，非推断）：
+torch-cuda's chain (confirmed by measurement, not inference):
 
 ```
 cpu_op (External id=2)
-   ↓ 同一 External id
-cuda_runtime "cudaLaunchKernel" (correlation=13)   ← 跑在 CPU 线程 (pid=2102704, tid=2102704)
-   ↓ 同一 correlation
-kernel ampere_sgemm (correlation=13, External id=2) ← 跑在 GPU stream (pid=0, tid=7)
+   |  same External id
+cuda_runtime "cudaLaunchKernel" (correlation=13)   <- runs on a CPU thread (pid=2102704, tid=2102704)
+   |  same correlation
+kernel ampere_sgemm (correlation=13, External id=2) <- runs on a GPU stream (pid=0, tid=7)
 
-flow: s@runtime(id=13) ──ac2g──> f@kernel(id=13)
+flow: s@runtime(id=13) --ac2g--> f@kernel(id=13)
 ```
 
-实测验证：
-- `cpu_op ∩ runtime` 的 External id = 15 个，`cpu_op ∩ kernel` = 同样 15 个
-- runtime 与 kernel 共享 15 个 correlation id
-- flow 起点 id ⊆ runtime 的 correlation 集合（True）
+Measured verification:
 
-`cuda_runtime` 是**枢纽**：它同时持有 `External id`（连回 cpu_op）和 `correlation`（连到 kernel）。
-我们没有采集 RUNTIME 活动，所以上表 6 行差距里有 5 行源于这一处。
+- `cpu_op ∩ runtime` yields 15 External ids; `cpu_op ∩ kernel` yields the same 15.
+- runtime and kernel share 15 correlation ids.
+- The flow start ids are a subset of runtime's correlation set (True).
 
-### 两个机制性发现
+`cuda_runtime` is the **hub**: it holds both the `External id` (linking back to cpu_op) and the
+`correlation` (linking forward to the kernel). We do not collect RUNTIME activities, which
+accounts for 5 of the 6 rows of gap above.
 
-1. **`IActivityProfilerSession::processTrace` 有四参重载**
-   （`IActivityProfiler.h:104`），签名含
-   `getLinkedActivityCallback = std::function<const ITraceActivity*(int32_t)>`
-   —— kineto 用 correlationId 反查 CPU 侧 activity 并交还给我们，这是填 `linked` / `flow`
-   的官方通道。**我们只覆写了单参版本**，所以该回调从未被调用。这是 flow=0 的机制性原因。
+### Two mechanism-level findings
 
-2. **Stage A 的 `ProfilerStubs` 是结构性死代码**。
-   `autograd/profiler.py:330` 是 if/else 二选一：
-   `ProfilerActivity.PrivateUse1 in _supported_activities()` 为 True（实测确认）
-   → 走 `kineto_activities.add(PrivateUse1)`，即普通 kineto 路径；
-   只有为 False 才降级到 `KINETO_PRIVATEUSE1_FALLBACK` 去调 stubs。
-   实测 `profiler_kind` = `ProfilerState.KINETO`，且 `privateuse1_elapsed_us()` 全为 0。
-   torch-cuda 自己走的也是 kineto 路径。
-   → 原测试里 "requires torch+cuda wheel" 的 skip 理由是错的，但"这条路不该走"的结论对。
+1. **`IActivityProfilerSession::processTrace` has a four-argument overload**
+   (`IActivityProfiler.h:104`) whose signature includes
+   `getLinkedActivityCallback = std::function<const ITraceActivity*(int32_t)>` — kineto looks up
+   the CPU-side activity by correlationId and hands it back to us. That is the official channel
+   for populating `linked` / `flow`. **We only override the single-argument version**, so the
+   callback is never invoked. This is the mechanical reason flow is 0.
 
-## 1. 决策（2026-08-03，用户确认）
+2. **Stage A's `ProfilerStubs` is structurally dead code.**
+   `autograd/profiler.py:330` is an if/else: `ProfilerActivity.PrivateUse1 in
+   _supported_activities()` is True (confirmed by measurement) → it takes
+   `kineto_activities.add(PrivateUse1)`, i.e. the ordinary kineto path. Only when that is False
+   does it degrade to `KINETO_PRIVATEUSE1_FALLBACK` and call the stubs. Measured `profiler_kind` is
+   `ProfilerState.KINETO`, and `privateuse1_elapsed_us()` is uniformly 0. torch-cuda itself also
+   takes the kineto path.
+   → The original test's "requires torch+cuda wheel" skip reason was wrong, but the conclusion
+   that "this path should not be taken" was right.
 
-| 决策点 | 选择 |
+## 1. Decisions (2026-08-03, confirmed by the user)
+
+| Decision point | Choice |
 |---|---|
-| 验收线 | **结构一致 + 自动 diff 门禁**；数值耗时不比对 |
-| 基线来源 | **固化快照进仓**，附重生成脚本；CI 不需要 CUDA torch |
-| 采集器抽象 | **分层**：通用 kineto 层 + 可插拔 vendor 采集器 |
-| metadata 表示 | **窄核心 + 开放 `map<string,string>`** |
-| correlation 路线 | **走 RUNTIME 活动**（与 torch-cuda 同机制） |
-| Stage A stubs | **删除** |
+| Acceptance bar | **Structural equality + an automated diff gate**; timing values are not compared |
+| Baseline source | **A frozen snapshot committed to the repo**, with a regeneration script; CI needs no CUDA torch |
+| Collector abstraction | **Layered**: a generic kineto layer plus a pluggable vendor collector |
+| metadata representation | **A narrow core plus an open `map<string,string>`** |
+| correlation approach | **Collect RUNTIME activities** (the same mechanism as torch-cuda) |
+| Stage A stubs | **Delete** |
 | activity kinds | KERNEL + MEMCPY + RUNTIME + MEMSET |
-| runtime 的 ActivityType | **先试 `PRIVATEUSE1_RUNTIME`，不达标回退 `CUDA_RUNTIME`** |
+| ActivityType for runtime | **Try `PRIVATEUSE1_RUNTIME` first; fall back to `CUDA_RUNTIME` if it does not meet the bar** |
 
-不做（YAGNI）：不重编 libkineto/libtorch；不采 DRIVER/OVERHEAD/CUDA_SYNC；
-不追求 `overhead`、`Activity Buffer Request` 等 kineto 内部记账事件。
+Out of scope (YAGNI): no rebuilding of libkineto/libtorch; no collection of
+DRIVER/OVERHEAD/CUDA_SYNC; no attempt to reproduce kineto-internal bookkeeping events such as
+`overhead` and `Activity Buffer Request`.
 
-### 被否决的方案
+### Rejected approaches
 
-- **重编 libkineto 打开 `LIBKINETO_NOCUPTI`**：kineto 静态编进 `libtorch_cpu.so`，
-  等于重编 libtorch，与「CPU torch + 外挂 libtorch_cuda」的架构前提冲突，且每次 torch 升级都要重编。
-- **复用外挂 `libtorch_cuda.so` 的 CUDA profiler 通路**：该 so 的 kineto 符号数实测为 0，无路可走。
+- **Rebuilding libkineto with `LIBKINETO_NOCUPTI` turned off**: kineto is statically compiled into
+  `libtorch_cpu.so`, so this amounts to rebuilding libtorch. It conflicts with the "CPU torch +
+  external libtorch_cuda" architectural premise and would require a rebuild on every torch upgrade.
+- **Reusing the external `libtorch_cuda.so`'s CUDA profiler path**: that .so measurably has zero
+  kineto symbols; there is nothing to reuse.
 
-## 2. 架构
+## 2. Architecture
 
 ```
 csrc/profiler/
-  device_tracer.h            ← 新增。vendor 无关接口，零 CUPTI 类型
-  cupti_device_tracer.cc     ← 新增。NVIDIA 实现（现有采集逻辑迁入）
-  flagos_kineto_profiler.cc  ← 现 flagos_cupti_profiler.cc 改名重写。通用层
-  cupti_shim.h               ← 保留（已完成版本解耦，见 §6）
-  flagos_profiler_stubs.cc   ← 删除
+  device_tracer.h            <- new. Vendor-agnostic interface, zero CUPTI types
+  cupti_device_tracer.cc     <- new. The NVIDIA implementation (existing collection logic moves here)
+  flagos_kineto_profiler.cc  <- the current flagos_cupti_profiler.cc, renamed and rewritten. The generic layer
+  cupti_shim.h               <- kept (version decoupling already done; see §6)
+  flagos_profiler_stubs.cc   <- deleted
 ```
 
-### 2.1 vendor 无关接口
+### 2.1 The vendor-agnostic interface
 
 ```cpp
 // device_tracer.h
@@ -109,10 +116,10 @@ enum class EventKind { Kernel, Memcpy, Memset, Runtime };
 struct DeviceEvent {
   EventKind kind;
   uint64_t start_ns = 0, end_ns = 0;
-  uint32_t correlation_id = 0;   // runtime ↔ kernel 的连接钥匙
+  uint32_t correlation_id = 0;   // the key linking runtime <-> kernel
   uint32_t device = 0, stream = 0;
-  uint32_t thread_id = 0;        // Runtime 事件专用：它落在 CPU 线程上
-  std::string name;              // 已 demangle
+  uint32_t thread_id = 0;        // Runtime events only: they land on a CPU thread
+  std::string name;              // already demangled
   std::map<std::string, std::string> metadata;  // grid/block/registers/...
 };
 
@@ -128,41 +135,44 @@ class DeviceTracer {
   virtual int deviceCount() const = 0;
 };
 
-std::unique_ptr<DeviceTracer> MakeDeviceTracer();  // 编译期按 vendor 选
+std::unique_ptr<DeviceTracer> MakeDeviceTracer();  // chosen by vendor at compile time
 }
 ```
 
-`metadata` 用 `map<string,string>` 而非强类型成员：CUPTI 采集器填
-`metadata["grid"] = "[8,16,5]"`，通用层无脑
-`for (auto& [k,v] : ev.metadata) act.addMetadata(k, v);`。
-加厂商、加字段都不动接口；代价是字段名拼写靠约定，编译期不检查。
+`metadata` uses `map<string,string>` rather than strongly typed members: the CUPTI collector fills
+`metadata["grid"] = "[8,16,5]"`, and the generic layer blindly does
+`for (auto& [k,v] : ev.metadata) act.addMetadata(k, v);`. Adding a vendor or a field touches no
+interface; the cost is that field-name spelling is by convention and unchecked at compile time.
 
-### 2.2 通用层职责
+### 2.2 The generic layer's responsibilities
 
-`flagos_kineto_profiler.cc` 只认 `DeviceEvent`，**一行 CUPTI 代码都没有**：
-- 实现 `libkineto::IActivityProfiler` / `IActivityProfilerSession`，注册进 kineto
-- 四参 `processTrace` 里建立 `linked` / `flow`（§3）
-- 把 `DeviceEvent::metadata` 灌进 `GenericTraceActivity::addMetadata`
-- 产出 `DeviceInfo` / `ResourceInfo`
+`flagos_kineto_profiler.cc` knows only `DeviceEvent` and contains **not one line of CUPTI code**:
 
-日后接 ascend 只需写 `cann_device_tracer.cc`，通用层不动。
+- Implements `libkineto::IActivityProfiler` / `IActivityProfilerSession` and registers with kineto
+- Establishes `linked` / `flow` inside the four-argument `processTrace` (§3)
+- Pours `DeviceEvent::metadata` into `GenericTraceActivity::addMetadata`
+- Produces `DeviceInfo` / `ResourceInfo`
 
-## 3. correlation 链路（方案核心）
+Adding ascend later means writing only `cann_device_tracer.cc`; the generic layer is untouched.
 
-### 3.1 实现步骤
+## 3. The correlation chain (the core of the approach)
 
-1. **采集 RUNTIME 活动**（新增 `CUPTI_ACTIVITY_KIND_RUNTIME`），
-   得到带 `correlationId` 的 host 侧事件，落在 CPU 线程（`thread_id` 字段）。
-2. **实现四参 `processTrace(logger, getLinkedActivity, startTime, endTime)`**。
-3. 对每个事件，用 `getLinkedActivity(correlation_id)` 拿回 CPU 侧 activity，
-   填 `activity.linked`。
-4. 成对设置 flow：
-   - runtime 端：`flow.id = correlation_id`、`flow.type = kLinkAsyncCpuGpu`(=2)、`flow.start = true`
-   - kernel 端：同 id/type，`flow.start = false`
+### 3.1 Implementation steps
 
-### 3.2 device time 归属是免费副产品
+1. **Collect RUNTIME activities** (adding `CUPTI_ACTIVITY_KIND_RUNTIME`) to obtain host-side events
+   carrying a `correlationId`, landing on a CPU thread (the `thread_id` field).
+2. **Implement the four-argument
+   `processTrace(logger, getLinkedActivity, startTime, endTime)`.**
+3. For each event, call `getLinkedActivity(correlation_id)` to retrieve the CPU-side activity and
+   populate `activity.linked`.
+4. Set flows in pairs:
+   - runtime side: `flow.id = correlation_id`, `flow.type = kLinkAsyncCpuGpu` (=2),
+     `flow.start = true`
+   - kernel side: same id/type, `flow.start = false`
 
-torch 的 `autograd/profiler.py:710-735`：
+### 3.2 Device time attribution comes free
+
+From torch's `autograd/profiler.py:710-735`:
 
 ```python
 corr_id = kineto_event.linked_correlation_id()
@@ -177,67 +187,71 @@ for fe in frontend_function_events:
                                  f_evt.time_range.end - f_evt.time_range.start)
 ```
 
-`GenericTraceActivity::correlationId()` 返回 `id` 字段，torch 侧
-`linked_correlation_id()` 取的就是这条链接。**只要 `linked` 设对，
-`aten::mm` 的 `self_device_time_total` 自动就有 —— 不需要碰 torch 任何代码。**
+`GenericTraceActivity::correlationId()` returns the `id` field, and torch's
+`linked_correlation_id()` reads exactly that link. **As long as `linked` is set correctly,
+`aten::mm`'s `self_device_time_total` populates itself — no torch code needs touching.**
 
-> 待验证：此判断由 `autograd/profiler.py:710-735` 的 `device_corr_map` 逻辑与
-> `IActivityProfiler.h:78` 的 `getLinkedActivityCallback` 签名推出，两处均已读到实际代码，
-> 但未端到端实测。实现阶段第一步即验证（§5 Step 1）。
+> To be verified: this conclusion is derived from the `device_corr_map` logic in
+> `autograd/profiler.py:710-735` and the `getLinkedActivityCallback` signature at
+> `IActivityProfiler.h:78`; the actual code was read in both places, but it has not been verified
+> end to end. Verifying it is the first implementation step (§5 Step 1).
 
-## 4. 采集范围与字段填充
+## 4. Collection scope and field population
 
 ### 4.1 activity kinds
 
-| kind | 状态 | 产出类别 |
+| kind | Status | Category produced |
 |---|---|---|
-| `CONCURRENT_KERNEL` | 已有 | `kernel` |
-| `MEMCPY` | 已有 | `gpu_memcpy` |
-| `RUNTIME` | **新增** | `privateuse1_runtime` / `cuda_runtime` |
-| `MEMSET` | **新增** | `gpu_memset` |
+| `CONCURRENT_KERNEL` | existing | `kernel` |
+| `MEMCPY` | existing | `gpu_memcpy` |
+| `RUNTIME` | **new** | `privateuse1_runtime` / `cuda_runtime` |
+| `MEMSET` | **new** | `gpu_memset` |
 
-不采 DRIVER / OVERHEAD / CUDA_SYNC。
+DRIVER / OVERHEAD / CUDA_SYNC are not collected.
 
-### 4.2 kernel 的 13 个 metadata 字段
+### 4.2 The 13 kernel metadata fields
 
-对齐 torch-cuda 的 kernel `args`：
-`grid`、`block`、`registers per thread`、`shared memory`、`stream`、`context`、
-`device`、`correlation`、`External id`、`queued`、`blocks per SM`、`warps per SM`、
-`est. achieved occupancy %`。
+Matching torch-cuda's kernel `args`: `grid`, `block`, `registers per thread`, `shared memory`,
+`stream`, `context`, `device`, `correlation`, `External id`, `queued`, `blocks per SM`,
+`warps per SM`, `est. achieved occupancy %`.
 
-其中 grid / block / registers / shared memory 已在现有
-`CUpti_ActivityKernel9_Compat` 中解出，只是未写进 metadata；
-occupancy 三项需由 SM 数与 block 数推导，属本轮增量。
+Of these, grid / block / registers / shared memory are already decoded in the existing
+`CUpti_ActivityKernel9_Compat` — they are simply not written into metadata. The three occupancy
+fields must be derived from the SM count and the block count; that is this round's increment.
 
 ### 4.3 demangle
 
-`abi::__cxa_demangle`，已验证：
-- mangled 名 → `void at::native::(anonymous namespace)::distribution_elementwise_grid_stride_kernel<float, 4>(long, at::PhiloxCudaState)`
-- 已可读的名（`ampere_sgemm_128x64_nn`）→ status=-2，保留原样
+`abi::__cxa_demangle`, verified:
 
-### 4.4 runtime 事件的 ActivityType（带验证门的决策）
+- mangled name → `void at::native::(anonymous namespace)::distribution_elementwise_grid_stride_kernel<float, 4>(long, at::PhiloxCudaState)`
+- an already-readable name (`ampere_sgemm_128x64_nn`) → status=-2, left as is
 
-kineto 枚举有两个候选：`CUDA_RUNTIME`（→ `cuda_runtime`）和
-`PRIVATEUSE1_RUNTIME`（→ `privateuse1_runtime`，官方为自定义后端准备）。
-两个字符串在 `libtorch_cpu.so` 中均存在。
+### 4.4 The ActivityType for runtime events (a decision with a verification gate)
 
-**先用 `PRIVATEUSE1_RUNTIME`**（语义准确、跨厂商中立）。实现阶段第一步实测三项：
-1. chrome trace 里有 flow 箭头
-2. `key_averages` 里 `aten::mm` 有 `self_device_time_total > 0`
-3. 类别名为 `privateuse1_runtime`
+The kineto enum offers two candidates: `CUDA_RUNTIME` (→ `cuda_runtime`) and
+`PRIVATEUSE1_RUNTIME` (→ `privateuse1_runtime`, provided officially for custom backends). Both
+strings exist in `libtorch_cpu.so`.
 
-**任一不达标 → 改用 `CUDA_RUNTIME` 重测。** 验收脚本对
-`{"cuda_runtime", "privateuse1_runtime"}` 任一即通过。
+**Start with `PRIVATEUSE1_RUNTIME`** (semantically accurate and vendor-neutral). The first
+implementation step measures three things:
 
-风险来源：torch 后处理侧靠 `kineto_event.device_type()` 分类，该映射在 C++ 侧，
-`PRIVATEUSE1_RUNTIME` 是否被识别为参与 correlation 归属的 device runtime 需实测。
+1. flow arrows appear in the chrome trace
+2. `aten::mm` in `key_averages` has `self_device_time_total > 0`
+3. the category name is `privateuse1_runtime`
 
-## 5. 验收门禁
+**If any of them fails → switch to `CUDA_RUNTIME` and re-measure.** The acceptance script passes
+on either of `{"cuda_runtime", "privateuse1_runtime"}`.
 
-### 5.1 固化基线快照
+Source of risk: torch's post-processing classifies via `kineto_event.device_type()`, and that
+mapping lives on the C++ side. Whether `PRIVATEUSE1_RUNTIME` is recognized as a device runtime
+that participates in correlation attribution must be measured.
 
-`tests/data/profiler_cuda_baseline.json`，附重生成脚本
-（升级 torch 时手动刷新）：
+## 5. The acceptance gate
+
+### 5.1 A frozen baseline snapshot
+
+`tests/data/profiler_cuda_baseline.json`, with a regeneration script (refreshed manually when
+torch is upgraded):
 
 ```json
 {
@@ -249,65 +263,74 @@ kineto 枚举有两个候选：`CUDA_RUNTIME`（→ `cuda_runtime`）和
   "flow_cat": "ac2g",
   "runtime_cat_equivalents": ["cuda_runtime", "privateuse1_runtime"],
   "generated_by": "torch 2.10.0+cu128 / A100",
-  "note": "数值耗时不比对，只比结构"
+  "note": "structure only; timing values are not compared"
 }
 ```
 
-`categories` 记录的是 **torch-cuda 侧的原样事实**（那里必然是 `cuda_runtime`）。
-比对时 runtime 那一项按 `runtime_cat_equivalents` 做等价类处理 ——
-flagos 侧产出 `privateuse1_runtime` 或 `cuda_runtime` 均视为满足（见 §4.4）。
-其余类别名要求逐字相同。
+`categories` records the **torch-cuda side verbatim** (which is necessarily `cuda_runtime`). When
+comparing, the runtime entry is treated as an equivalence class per `runtime_cat_equivalents` —
+flagos producing either `privateuse1_runtime` or `cuda_runtime` satisfies it (see §4.4). All other
+category names must match exactly.
 
-CI 只跑 flagos 侧，对照快照断言。**基线由 `torch-cuda-210` 环境生成**
-（该环境存在且 `torch.cuda.is_available()` 为 True）。
+CI runs only the flagos side and asserts against the snapshot. **The baseline is generated in the
+`torch-cuda-210` environment** (which exists and reports `torch.cuda.is_available()` as True).
 
-### 5.2 断言项
+### 5.2 Assertions
 
-1. categories 集合覆盖基线（runtime 类别名接受两种之一）
-2. flow 箭头数 > 0，且 op↔kernel 配对
-3. kernel args 13 字段齐全
-4. `key_averages()` 中 `aten::mm` 等算子 `self_device_time_total > 0`
-5. kernel 名已 demangle（不含 `_ZN` 前缀）
+1. The category set covers the baseline (the runtime category name may be either variant)
+2. Flow arrow count > 0, with op↔kernel pairing
+3. All 13 kernel args fields present
+4. Operators such as `aten::mm` in `key_averages()` have `self_device_time_total > 0`
+5. Kernel names are demangled (no `_ZN` prefix)
 
-### 5.3 CI 接入（必做）
+### 5.3 CI integration (mandatory)
 
-现有 profiler 测试**一个 pytest marker 都没有**，且 `grep profiler .github/` 为空
-—— 与 `test_rng_dispatch.py` 曾经的「文件在但 CI 永远选不中」是同类问题，且更彻底。
+The existing profiler tests carry **no pytest marker at all**, and `grep profiler .github/` returns
+nothing — the same class of problem as `test_rng_dispatch.py`'s "the file exists but CI never
+selects it", only more complete.
 
-新测试必须：
-- 带 `main_ops` marker（`.github/configs/cuda.yml` 的 CI 选择器）
-- 显式接进 cuda workflow
-- 落地后用 CI 日志确认真的执行了（不能只看本地绿）
+The new tests must:
 
-## 6. 错误处理与退化
+- carry the `main_ops` marker (the CI selector in `.github/configs/cuda.yml`)
+- be wired explicitly into the cuda workflow
+- be confirmed by CI logs to have actually run once landed (a local green run is not enough)
 
-| 情况 | 行为 |
+## 6. Error handling and degradation
+
+| Situation | Behavior |
 |---|---|
-| CUPTI 不可用（无 GPU / dlopen 失败） | `MakeDeviceTracer()` 的 tracer `available()` 为 false，不注册进 kineto；CPU 侧 profiling 不受影响 |
-| 记录布局不匹配 | 已实现的自检拦截：丢弃该记录 + 一次性诊断，指名绑定的库与 API 版本 |
-| `getLinkedActivity` 返回 null | 该事件不设 `linked`/`flow`，仍作为独立 GPU 事件发出，不丢数据 |
-| 某版本 kineto 不调四参 `processTrace` | 基类默认转发到单参版本，退化为无 flow，不崩 |
+| CUPTI unavailable (no GPU / dlopen fails) | `MakeDeviceTracer()`'s tracer reports `available()` false and is not registered with kineto; CPU-side profiling is unaffected |
+| Record layout mismatch | Caught by the implemented self-check: drop the record plus a one-time diagnostic naming the bound library and API version |
+| `getLinkedActivity` returns null | That event gets no `linked`/`flow` but is still emitted as a standalone GPU event; no data is lost |
+| A kineto version that never calls the four-argument `processTrace` | The base class forwards to the single-argument version by default, degrading to no flow without crashing |
 
-### 已完成的版本解耦（commit `a2296e0`）
+### Version decoupling already completed (commit `a2296e0`)
 
-CUPTI 绑定优先级：`FLAGOS_CUPTI_LIBRARY` → 进程内已加载的 CUPTI → soname fallback。
-override 必须**最先**检查：促使用户设置它的场景正是「预加载的 CUPTI 解不出来」，
-若只在无预加载时检查，它在唯一被推荐的场景里恰好是死的。
+CUPTI binding priority: `FLAGOS_CUPTI_LIBRARY` → an already-loaded in-process CUPTI → soname
+fallback. The override must be checked **first**: the scenario that prompts a user to set it is
+precisely "the preloaded CUPTI does not resolve", so checking it only when nothing is preloaded
+would make it dead in the one situation it is recommended for.
 
-记录解码前做合理性自检（`end >= start`、start 非零、时长 < 1 小时、name 可读非空）
-—— 四条都是任何 CUPTI 版本上正常记录都满足的性质，不含 cu12 特有知识。
+Before decoding a record, a sanity self-check runs (`end >= start`, non-zero start, duration
+< 1 hour, name readable and non-empty) — four properties any normal record satisfies on any CUPTI
+version, encoding no cu12-specific knowledge.
 
-已验证：pip cu12 CUPTI（API 26）与系统 CUDA-13（API 130000）两个大版本均 21/21 通过；
-阈值强制改 1ns 时全部拒绝、一次诊断、不崩。
+Verified: both pip cu12 CUPTI (API 26) and system CUDA-13 (API 130000) pass 21/21 across the two
+major versions; forcing the threshold to 1ns rejects everything, emits one diagnostic, and does
+not crash.
 
-## 7. 交付顺序
+## 7. Delivery order
 
-1. **验证门**：用 `PRIVATEUSE1_RUNTIME` 采 RUNTIME + 四参 `processTrace` 建 flow，
-   实测三项指标；不达标回退 `CUDA_RUNTIME`。此步决定后续所有工作的地基。
-2. 抽出 `device_tracer.h` 接口，现有 CUPTI 逻辑迁入 `cupti_device_tracer.cc`。
-3. 通用层补齐：MEMSET 采集、13 个 metadata 字段、demangle、多 device 的
-   DeviceInfo/ResourceInfo。
-4. 删除 `flagos_profiler_stubs.cc` 及其 skip 掉的测试。
-5. 生成基线快照 + 重生成脚本 + 对照测试（带 `main_ops` marker）。
-6. 接进 `.github/configs/cuda.yml`，用 CI 日志确认真的执行。
-7. qwen3 真实模型回归：确认 trace 有完整 op↔kernel 连线与算子级 device time。
+1. **The verification gate**: collect RUNTIME with `PRIVATEUSE1_RUNTIME` and build flows via the
+   four-argument `processTrace`, then measure the three metrics; fall back to `CUDA_RUNTIME` if
+   the bar is not met. This step determines the foundation for everything after it.
+2. Extract the `device_tracer.h` interface and move the existing CUPTI logic into
+   `cupti_device_tracer.cc`.
+3. Complete the generic layer: MEMSET collection, the 13 metadata fields, demangle, and
+   DeviceInfo/ResourceInfo for multiple devices.
+4. Delete `flagos_profiler_stubs.cc` and the tests it skipped.
+5. Generate the baseline snapshot, the regeneration script, and the comparison test (with the
+   `main_ops` marker).
+6. Wire it into `.github/configs/cuda.yml` and confirm via CI logs that it actually runs.
+7. qwen3 real-model regression: confirm the trace has complete op↔kernel links and operator-level
+   device time.

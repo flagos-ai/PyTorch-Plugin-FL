@@ -1,23 +1,36 @@
-# no_dispatcher 88 个算子接入分析
+# Integration analysis of the 88 no_dispatcher operators
 
-`docs/vendors/flaggems/unrouted-ops.md` 里最大的一桶是 no_dispatcher（88 个）：gems 有实现，但 aten 侧 codegen 没为它们生成 CUDA dispatcher，因此 discovery 直接跳过（`op not in codegen_ops`）。
+The largest bucket in `docs/vendors/flaggems/unrouted-ops.md` is no_dispatcher (88 operators):
+gems has an implementation, but the aten-side codegen never generated a CUDA dispatcher for
+them, so discovery skips them outright (`op not in codegen_ops`).
 
-本文回答:**这 88 个为什么没 dispatcher,以及怎么才能接入**。逐个复现 `enumerate_all_cuda_ops()` 的 gating 后,88 个归因如下:
+This document answers **why these 88 have no dispatcher, and what integrating them would take**.
+Reproducing the gating in `enumerate_all_cuda_ops()` operator by operator attributes the 88 as
+follows:
 
-| 子类 | 数量 | 本质 | 需不需要接 |
+| Subgroup | Count | Nature | Worth integrating? |
 |---|---|---|---|
-| A. composite_implicit(拆解算子) | 61 | PyTorch 在我们 dispatch key **之上**已拆成叶子 | 功能上不需要;只为性能 |
-| B. 无 CUDA kernel 但可 fallback | 9 | 无直连 kernel,靠 CompositeExplicit / cpu_fallback 落地 | 功能上不需要;只为性能 |
-| C. 手工注册(MANUAL_REGISTERED_OPS) | 4 | 已在 register.cc 手写(copy_/_to_copy/index_put_/_index_put_impl_) | 已接入,内存/视图语义特殊 |
-| D. 其余 gems 名与 aten 对不上 | 14 | gems 用别名/融合名,对应的 aten leaf 已单独路由 | 无收益 |
+| A. composite_implicit (decomposed ops) | 61 | PyTorch decomposes them into leaves **above** our dispatch key | Not functionally needed; performance only |
+| B. No CUDA kernel but falls back | 9 | No direct kernel; lands via CompositeExplicit / cpu_fallback | Not functionally needed; performance only |
+| C. Manually registered (MANUAL_REGISTERED_OPS) | 4 | Already hand-written in register.cc (copy_/_to_copy/index_put_/_index_put_impl_) | Already integrated; special memory/view semantics |
+| D. Remaining gems names with no aten counterpart | 14 | gems uses an alias/fused name; the corresponding aten leaf is routed separately | No benefit |
 
-> **关键结论**:no_dispatcher 桶里**没有一个是"功能缺失"**。抽验(`FLAGOS_USE_FLAGGEMS=1`)显示 `divide/square/true_divide/greater/var/selu/vstack`(A 类)与 `diag_embed/pixel_unshuffle/select_backward/slice_scatter/alias_copy/t_copy`(B 类)在 flagos 上**全部能跑并结果正确**。它们已经通过拆解 / fallback 落到已注册的叶子算子。所以"接入"的唯一动机是**让 gems 的融合 kernel 直接接管以提性能**,不是补功能。
+> **Key conclusion**: **not one** of the no_dispatcher bucket is a *functional* gap. Spot checks
+> (`FLAGOS_USE_FLAGGEMS=1`) show `divide/square/true_divide/greater/var/selu/vstack` (group A)
+> and `diag_embed/pixel_unshuffle/select_backward/slice_scatter/alias_copy/t_copy` (group B)
+> **all run on flagos with correct results**. They already land on registered leaf operators via
+> decomposition or fallback. So the only motivation to "integrate" them is **letting gems' fused
+> kernels take over for performance** — not filling a functional hole.
 
 ---
 
-## A. composite_implicit —— 61 个
+## A. composite_implicit — 61 operators
 
-这些算子带 `CompositeImplicitAutograd` kernel 且无 `structured_delegate`/`CompositeExplicitAutograd`。`enumerate_all_cuda_ops` 明确排除它们(codegen_ops.py:143-147),理由:**PyTorch 在到达 PrivateUse1 dispatch key 之前就把它们拆成叶子算子**,注册它们既多余又危险(会拦截拆解、丢掉 autograd 公式)。
+These carry a `CompositeImplicitAutograd` kernel and have no `structured_delegate` /
+`CompositeExplicitAutograd`. `enumerate_all_cuda_ops` excludes them explicitly
+(codegen_ops.py:143-147), because **PyTorch decomposes them into leaf operators before reaching
+the PrivateUse1 dispatch key**; registering them would be both redundant and dangerous (it would
+intercept the decomposition and lose the autograd formula).
 
 ```
 __ior__.Scalar   __ior__.Tensor   __or__.Scalar   __or__.Tensor
@@ -37,56 +50,92 @@ true_divide.Scalar   true_divide.Tensor   true_divide_.Scalar   true_divide_.Ten
 var   var.dim   vstack
 ```
 
-**为什么拆解就够用**:例如 `divide.Tensor` 拆成 `div.Tensor`(已路由 gems)、`square` 拆成 `mul`/`pow`、`vstack` 拆成 `cat`、`selu` 拆成 `elu`/`mul`。叶子已经在 flaggems 或 cuda 上跑,所以整算子无需自己的 kernel。
+**Why decomposition is sufficient**: `divide.Tensor` decomposes into `div.Tensor` (already
+routed to gems), `square` into `mul`/`pow`, `vstack` into `cat`, `selu` into `elu`/`mul`. The
+leaves already run on flaggems or cuda, so the composite operator needs no kernel of its own.
 
-**如果一定要接(性能)**,两条路,都要慎重:
-1. **在 CUDA dispatch key 强注册**:把它们从 `enumerate_all_cuda_ops` 的 composite_implicit 排除里放出来,codegen 出 dispatcher + `kFlagOsPython` kernel。风险:拦截了 PyTorch 的拆解,**autograd 公式随之丢失**——`conv1d/embedding_backward/gather_backward/rms_norm/prelu` 这类带梯度语义的会训练出错。只有纯 forward、无梯度依赖的(`isfinite/isclose/conj_physical/resolve_*`)相对安全。
-2. **注册到 `CompositeImplicitAutograd` 之下但 autograd 之上的 key**(如 `Autograd` 后的 functorch 层)——本项目 boxing 方案没有这层,不现实。
+**If integration is truly wanted (for performance)**, there are two routes, both requiring care:
 
-**建议**:整体不接。只有当 profiling 证明某个融合 kernel(如 `rms_norm`、`conv2d`)的收益显著、且我们能同时提供其 backward 时,才逐个特批,并在 backward 也走 gems。
+1. **Force-register under the CUDA dispatch key**: release them from the composite_implicit
+   exclusion in `enumerate_all_cuda_ops` and codegen a dispatcher plus a `kFlagOsPython` kernel.
+   Risk: this intercepts PyTorch's decomposition and **loses the autograd formula along with
+   it** — anything with gradient semantics (`conv1d`, `embedding_backward`, `gather_backward`,
+   `rms_norm`, `prelu`) will train incorrectly. Only pure-forward operators with no gradient
+   dependency (`isfinite`, `isclose`, `conj_physical`, `resolve_*`) are relatively safe.
+2. **Register at a key below `CompositeImplicitAutograd` but above autograd** (e.g. the functorch
+   layer after `Autograd`) — this project's boxing approach has no such layer, so it is not
+   realistic.
+
+**Recommendation**: do not integrate as a group. Grant exceptions one at a time, only when
+profiling proves a specific fused kernel (e.g. `rms_norm`, `conv2d`) delivers a significant gain
+*and* we can supply its backward, which must also route through gems.
 
 ---
 
-## B. 无 CUDA kernel、靠 fallback 落地 —— 9 个
+## B. No CUDA kernel, lands via fallback — 9 operators
 
-无 `CompositeImplicit`、无直连 CUDA kernel,但存在 `CompositeExplicitAutograd` 或走 cpu_fallback 落到已注册叶子。
+No `CompositeImplicit` and no direct CUDA kernel, but a `CompositeExplicitAutograd` exists or
+cpu_fallback carries them to a registered leaf.
 
 ```
 alias_copy   diag_embed   lift_fresh_copy   max_pool2d_backward
 pixel_unshuffle   select_backward   select_scatter   slice_scatter   t_copy
 ```
 
-抽验均能在 flagos 跑通。其中 `*_scatter`/`select_backward`/`alias_copy`/`t_copy`/`diag_embed`/`pixel_unshuffle` 都属于 view/scatter 元操作或可由 as_strided + copy 表达。
+All spot-checked as working on flagos. Of these, `*_scatter`, `select_backward`, `alias_copy`,
+`t_copy`, `diag_embed`, and `pixel_unshuffle` are view/scatter meta-operations, or expressible
+via as_strided + copy.
 
-**接入方式**:这几个**有真正的 CUDA leaf 语义**(不像 A 类是纯拆解),理论上可以:
-- 放开 `cuda_supported` 让它们进 codegen(它们多是 `CompositeExplicitAutograd`,`cuda_supported` 第 3 条本应放行——需查为何没命中,可能是 `has_composite_explicit_autograd_kernel` 为 False 而实际走 structured)。
-- 然后按普通 functional/out 分类生成 `kFlagOsPython` kernel。
+**How to integrate**: unlike group A (pure decomposition), these **have real CUDA leaf
+semantics**, so in principle one could:
 
-**建议**:低优先。它们已能 fallback 正确执行,gems 版收益有限。`max_pool2d_backward` 是唯一可能值得(训练热点),但需确认其 forward `max_pool2d_with_indices` 已路由且 indices 语义对齐。
+- Relax `cuda_supported` to let them into codegen. Most are `CompositeExplicitAutograd`, which
+  the third clause of `cuda_supported` should already admit — worth checking why it does not
+  match; possibly `has_composite_explicit_autograd_kernel` is False while they actually go
+  through structured.
+- Then generate a `kFlagOsPython` kernel using the ordinary functional/out categorization.
+
+**Recommendation**: low priority. They already execute correctly via fallback and the gems
+versions offer limited gain. `max_pool2d_backward` is the only plausible candidate (a training
+hot spot), but its forward `max_pool2d_with_indices` must be confirmed routed with matching
+indices semantics.
 
 ---
 
-## C. 手工注册 —— 4 个
+## C. Manually registered — 4 operators
 
 ```
 copy_   _to_copy   index_put_   _index_put_impl_
 ```
 
-已在 `csrc/aten/.../register.cc` 手写(`MANUAL_REGISTERED_OPS`),因为涉及内存拷贝 / 原地索引写 / 跨设备语义,不能走通用 boxing。**已接入,不在缺口内**——它们出现在 no_dispatcher 只是因为 codegen 主动让位给手写版。不要用 flaggems 覆盖。
+Already hand-written in `csrc/aten/.../register.cc` (`MANUAL_REGISTERED_OPS`), because they
+involve memory copies, in-place indexed writes, and cross-device semantics that generic boxing
+cannot handle. **Already integrated; not a gap** — they appear under no_dispatcher only because
+codegen deliberately yields to the hand-written versions. Do not override them with flaggems.
 
 ---
 
-## D. gems 别名/融合名 —— 其余
+## D. gems alias / fused names — the remainder
 
-剩下少量是 gems 用了融合名或别名(如 `scaled_softmax_forward/backward`、`nll_loss_nd_forward/backward`、`new_full.Tensor`、`repeat`、`bitwise_left_shift`),对应的 aten leaf 要么不在 native schema、要么已单独路由。这些**没有对应的标准 aten dispatcher 可挂**,属于 gems 私有扩展 op,接入需要自定义 schema,收益极低。
+A small number use a gems fused name or alias (`scaled_softmax_forward/backward`,
+`nll_loss_nd_forward/backward`, `new_full.Tensor`, `repeat`, `bitwise_left_shift`), for which the
+corresponding aten leaf either is absent from the native schema or is already routed separately.
+These **have no standard aten dispatcher to hang off**; they are gems-private extension ops, and
+integrating them would require a custom schema for very little gain.
 
 ---
 
-## 总结与建议
+## Summary and recommendations
 
-- **no_dispatcher 88 个全部已能正确执行**(拆解 / fallback / 手写),不是功能缺口。
-- **不建议批量接入**。批量放开 composite_implicit 会丢 autograd,是净损失。
-- **可逐个特批的性能候选**(需同时保证 backward、经 profiling 验证):`rms_norm`、`conv2d`、`max_pool2d_backward`。接入时走"CUDA key 强注册 + gems forward/backward 成对路由",并加数值 + 训练回归。
-- 其余(元操作、别名、手写)**维持现状**。
+- **All 88 no_dispatcher operators already execute correctly** (via decomposition, fallback, or
+  hand-written kernels). This is not a functional gap.
+- **Bulk integration is not recommended.** Releasing composite_implicit wholesale loses autograd
+  and is a net loss.
+- **Performance candidates worth case-by-case approval** (each requiring a backward and profiling
+  evidence): `rms_norm`, `conv2d`, `max_pool2d_backward`. Integrate via "force-register on the
+  CUDA key + route the gems forward/backward as a pair", with numerical and training regressions
+  added.
+- Everything else (meta-operations, aliases, hand-written) **stays as is**.
 
-分析脚本(临时):`/tmp/fg_no_disp.py`、`/tmp/fg_decomp.py`,复现 `enumerate_all_cuda_ops` gating。
+Analysis scripts (temporary): `/tmp/fg_no_disp.py`, `/tmp/fg_decomp.py`, which reproduce the
+`enumerate_all_cuda_ops` gating.

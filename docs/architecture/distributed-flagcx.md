@@ -1,229 +1,237 @@
-# FlagCX 接入 + NCCL 兜底：多硬件统一分布式通信设计
+# FlagCX integration with an NCCL fallback: unified distributed communication across vendors
 
-本文件描述 `torch_fl.distributed` 在 flagos（PrivateUse1）设备上如何统一接入
-FlagCX，并在 FlagCX 不可用时回退到各硬件厂商（vendor）的原生通信后端。目标是
-让 nvidia / metax / ascend 三类硬件共用同一套上层 API，同时把通信正确性缺口补齐。
+This document describes how `torch_fl.distributed` integrates FlagCX uniformly on flagos
+(PrivateUse1) devices, falling back to each hardware vendor's native communication backend when
+FlagCX is unavailable. The goal is a single upper-layer API shared by nvidia, metax, and ascend,
+while closing the correctness gaps in communication.
 
-> 状态：设计 + 第一阶段重构（纯 Python，不依赖 flagcx 环境即可验证正确性）。
-> FlagCX 原生注册 / ascend view 的实机验证留待有 flagcx 与多卡环境时进行。
+> Status: design plus the first refactoring stage (pure Python; correctness can be verified
+> without a flagcx environment). Native FlagCX registration and the ascend view still need
+> on-hardware verification, pending a machine with flagcx and multiple cards.
 
 ---
 
-## 0. 架构演进（当前实现，取代第 4 节）
+## 0. Architecture evolution (current implementation; supersedes §4)
 
-第 1–8 节记录的是最初基于 monkeypatch（`_resolve_backend` /
-`_patch_dist_collectives` / `_register_privateuseone_backend`）的设计，**已被取代**，
-保留作为背景。当前实现改为一个原生的 ProcessGroup 后端：
+Sections 1–8 record the original design based on monkeypatching (`_resolve_backend` /
+`_patch_dist_collectives` / `_register_privateuseone_backend`). That design has been
+**superseded** and is retained as background. The current implementation is a native ProcessGroup
+backend:
 
 - **`torch_fl/comm/process_group.py :: ProcessGroupFlagOS`**
-  继承 `torch.distributed.ProcessGroup`，覆盖全部集合通信虚函数
-  （allreduce / allgather / reduce_scatter / alltoall / broadcast / gather /
-  scatter / reduce / send / recv / barrier 等）。每个虚函数把 privateuseone
-  张量转成内层后端所需的设备视图（`_C._flagos_to_cuda_view`）后委托给
-  `self._inner`，返回内层后端的 Work。内层后端优先级：FlagCX → HCCL(ascend)
-  → NCCL(nvidia/metax)。
+  Subclasses `torch.distributed.ProcessGroup` and overrides every collective virtual function
+  (allreduce / allgather / reduce_scatter / alltoall / broadcast / gather / scatter / reduce /
+  send / recv / barrier, …). Each override converts privateuseone tensors into the device view
+  the inner backend needs (`_C._flagos_to_cuda_view`), delegates to `self._inner`, and returns
+  the inner backend's Work. Inner backend priority: FlagCX → HCCL (ascend) → NCCL
+  (nvidia/metax).
 
-- **注册**：`import torch_fl` 时调用 `register_flagos_backend()`，执行
-  `Backend.register_backend("flagos", creator, devices=["privateuseone"])`
-  并设 `default_device_backend_map["privateuseone"] = "flagos"`。之后标准
-  `torch.distributed.init_process_group("flagos")`（或
-  `device_id=torch.device("privateuseone:0")` 自动探测）即可，无需任何
-  `torch.distributed.*` 猴补丁。
+- **Registration**: `import torch_fl` calls `register_flagos_backend()`, which runs
+  `Backend.register_backend("flagos", creator, devices=["privateuseone"])` and sets
+  `default_device_backend_map["privateuseone"] = "flagos"`. After that, the standard
+  `torch.distributed.init_process_group("flagos")` (or automatic detection via
+  `device_id=torch.device("privateuseone:0")`) works with no `torch.distributed.*` monkeypatching
+  at all.
 
-- **DDP**：`import torch_fl` 时 patch
-  `torch.nn.parallel.DistributedDataParallel.__init__`。当模型在
-  privateuseone 上时，强制 `python_reducer`（绕开 C++ Reducer 的 CUDA 断言），
-  并把默认的 accum-grad hook（走 functional collective，privateuseone 无 dispatch）
-  替换为经 `dist.all_reduce` → ProcessGroupFlagOS 的版本。
+- **DDP**: `import torch_fl` patches
+  `torch.nn.parallel.DistributedDataParallel.__init__`. When the model lives on privateuseone, it
+  forces `python_reducer` (bypassing the C++ Reducer's CUDA assertion) and replaces the default
+  accum-grad hook (which uses functional collectives, and privateuseone has no dispatch for
+  those) with a version that goes through `dist.all_reduce` → ProcessGroupFlagOS.
 
-### 0.1 FlagCX 真实接入契约（GitHub main，v0.13.0，2026-07 核对）
+### 0.1 The real FlagCX integration contract (GitHub main, v0.13.0, verified 2026-07)
 
-务必按此契约对接，勿臆测：
+Integrate against this contract; do not guess:
 
-1. `import flagcx` 时，其 C++ 侧（`backend_flagcx.cpp` 构造函数中）**自行**调用
+1. On `import flagcx`, its C++ side (in the `backend_flagcx.cpp` constructor) calls
    `torch.distributed.Backend.register_backend("flagcx", createFlagcxBackend,
-   devices=(devName,), extended_api=True)`。`devName` 由编译期 adaptor 决定：
-   nvidia/metax/du/klx → `"cuda"`，ascend → `"npu"`，musa → `"musa"` 等。
-   **注册的 device 是 cuda（或厂商加速器），不是 privateuseone。**
-2. backend 名固定 `FLAGCX_BACKEND_NAME = "flagcx"`。
-3. `dist.ProcessGroupFlagCX` 仅在 `USE_NVIDIA_ADAPTOR || USE_METAX_ADAPTOR`
-   且 torch>=2.5 时经 pybind 暴露，继承
-   `torch._C._distributed_c10d.Backend`。
-4. 其构造是 `extended_api=True` 形式：creator
-   `flagcx.createFlagcxBackend(DistributedBackendOptions, Options)`，
-   **不是** `(store, rank, world_size, opts)`。因此 `ProcessGroupFlagOS`
-   在 `_try_build_flagcx` 里用 `torch._C._distributed_c10d._DistributedBackendOptions`
-   填充 store / group_rank / group_size / group_id / global_ranks_in_group /
-   timeout，再传给 creator。`Options`（`enable_tuner` / `tune_group_idx`）取自
-   `ProcessGroupFlagCX.Options`。
-5. FlagCX plugin 的 `__init__.py` 还用 `replace_prefix`（`cuda→flagcx_dev`）
-   hack PrefixStore，并在 torch>=2.7 覆盖 `batch_isend_irecv`。这些是 flagcx
-   自身行为，与 ProcessGroupFlagOS 无关。
-6. flagcx 未安装时，`_try_build_flagcx` 返回 False，自动回退 HCCL/NCCL。
+   devices=(devName,), extended_api=True)` **itself**. `devName` is fixed at compile time by the
+   adaptor: nvidia/metax/du/klx → `"cuda"`, ascend → `"npu"`, musa → `"musa"`, etc.
+   **The registered device is cuda (or the vendor accelerator), not privateuseone.**
+2. The backend name is fixed as `FLAGCX_BACKEND_NAME = "flagcx"`.
+3. `dist.ProcessGroupFlagCX` is exposed through pybind only when
+   `USE_NVIDIA_ADAPTOR || USE_METAX_ADAPTOR` and torch>=2.5; it subclasses
+   `torch._C._distributed_c10d.Backend`.
+4. Its construction takes the `extended_api=True` form: the creator is
+   `flagcx.createFlagcxBackend(DistributedBackendOptions, Options)`, **not**
+   `(store, rank, world_size, opts)`. So `ProcessGroupFlagOS`, in `_try_build_flagcx`, fills a
+   `torch._C._distributed_c10d._DistributedBackendOptions` with store / group_rank / group_size /
+   group_id / global_ranks_in_group / timeout and passes it to the creator. `Options`
+   (`enable_tuner` / `tune_group_idx`) comes from `ProcessGroupFlagCX.Options`.
+5. The FlagCX plugin's `__init__.py` also hacks PrefixStore via `replace_prefix`
+   (`cuda→flagcx_dev`) and overrides `batch_isend_irecv` on torch>=2.7. These are flagcx's own
+   behaviors and are unrelated to ProcessGroupFlagOS.
+6. When flagcx is not installed, `_try_build_flagcx` returns False and the code falls back to
+   HCCL/NCCL automatically.
 
-### 0.2 待实机验证（需 GPU + 已编译 flagcx）
+### 0.2 Pending on-hardware verification (needs a GPU plus a compiled flagcx)
 
-- `_DistributedBackendOptions` → `createFlagcxBackend` 的实例化在真实多卡下是否成功。
-- FlagCX 是否可能直接接受 privateuseone 张量（若是，设 `_needs_view=False`，
-  省掉 view 转换）。
-- ascend 的 `_flagos_to_npu_view`（`csrc/module.cc` 尚未实现；ascend 建议直接用 flagcx）。
-
----
-
-## 1. 背景与现状
-
-### 1.1 零拷贝桥接
-
-flagos 张量与 CUDA 张量共享同一块显存。`torch_fl/csrc/module.cc` 的
-`flagos_to_cuda_view_impl` 用同一个 `data_ptr` 构造一个带 `DispatchKey::CUDA`
-的 tensor（保留对原 flagos tensor 的引用防止显存被释放）。因此通信后端拿到的
-其实是 CUDA tensor，完全感知不到 flagos 的存在。
-
-### 1.2 原有通信路径（重构前）
-
-`torch_fl/distributed.py` 的 `init_process_group` 走两条腿：
-
-- `backend="nccl"`：正常 `dist.init_process_group("nccl")`，然后
-  `_register_privateuseone_backend` 把 cuda 上的 backend 复制注册到
-  privateuseone 设备，再 `_patch_dist_collectives` 把 5 个集合通信 API
-  monkeypatch 成「先转 cuda view 再调原函数」。
-- `backend="flagcx"`：`import flagcx` 触发 entry-point 注册，用
-  `backend="cpu:gloo,cuda:flagcx"` 初始化。
-
-`_patch_dist_collectives` 只覆盖了 5 个 API：`all_reduce`、`broadcast`、
-`reduce`、`all_gather_into_tensor`、`reduce_scatter_tensor`。
-
-### 1.3 vendor 探测的权威来源
-
-`torch_fl/__init__.py` 的 `_patch_flaggems_codegen_config()` 在 import 期就把
-`GEMS_VENDOR` 环境变量设为 `nvidia` / `metax` / `ascend` 之一。分布式层应
-**直接复用** 这个变量，不要另起一套硬件探测。
+- Whether instantiating `_DistributedBackendOptions` → `createFlagcxBackend` succeeds on real
+  multi-card hardware.
+- Whether FlagCX can accept privateuseone tensors directly (if so, set `_needs_view=False` and
+  skip the view conversion).
+- ascend's `_flagos_to_npu_view` (not yet implemented in `csrc/module.cc`; for ascend, using
+  flagcx directly is recommended).
 
 ---
 
-## 2. 已识别的问题
+## 1. Background and prior state
 
-1. **BackendType 硬编码 NCCL**：`_register_privateuseone_backend` 写死
-   `BackendType.NCCL`，在 ascend（HCCL 非 NCCL 强类型）上不成立。
-2. **view 目标写死 cuda**：`_ensure_cuda` 无脑 flagos→cuda。nvidia/metax
-   可行（metax 走 maca 的 libtorch_cuda 兼容层），但 **ascend 没有 CUDA
-   兼容层**，这条路根本不通。
-3. **API 覆盖面缺口**：未被 patch 的集合通信 API 一旦被调用，会拿到
-   privateuseone tensor 直接崩溃。缺口包括 `all_gather`（list 版）、
-   `gather`/`scatter`、`all_to_all[_single]`、`send`/`recv`/`isend`/`irecv`、
-   `barrier`，以及最隐蔽的 `torch.ops._c10d_functional.*`（torch.compile /
-   DTensor / FSDP2 编译路径都走这条）。
-4. **回退逻辑缺失**：flagcx 不可用时没有自动降级到 vendor 原生后端。
+### 1.1 Zero-copy bridging
+
+flagos tensors and CUDA tensors share the same device memory. `flagos_to_cuda_view_impl` in
+`torch_fl/csrc/module.cc` builds a tensor carrying `DispatchKey::CUDA` over the same `data_ptr`
+(holding a reference to the original flagos tensor so the memory is not freed). The communication
+backend therefore receives what is, to it, a CUDA tensor, entirely unaware of flagos.
+
+### 1.2 The original communication path (before the refactor)
+
+`init_process_group` in `torch_fl/distributed.py` had two legs:
+
+- `backend="nccl"`: an ordinary `dist.init_process_group("nccl")`, then
+  `_register_privateuseone_backend` copies the cuda backend registration onto the privateuseone
+  device, and `_patch_dist_collectives` monkeypatches 5 collective APIs into "convert to a cuda
+  view first, then call the original".
+- `backend="flagcx"`: `import flagcx` triggers the entry-point registration, and initialization
+  uses `backend="cpu:gloo,cuda:flagcx"`.
+
+`_patch_dist_collectives` covered only 5 APIs: `all_reduce`, `broadcast`, `reduce`,
+`all_gather_into_tensor`, `reduce_scatter_tensor`.
+
+### 1.3 The authoritative source for vendor detection
+
+`_patch_flaggems_codegen_config()` in `torch_fl/__init__.py` sets the `GEMS_VENDOR` environment
+variable to one of `nvidia` / `metax` / `ascend` at import time. The distributed layer should
+**reuse that variable directly** rather than starting a second hardware detection scheme.
 
 ---
 
-## 3. 目标架构
+## 2. Identified problems
+
+1. **BackendType hardcoded to NCCL**: `_register_privateuseone_backend` hardcodes
+   `BackendType.NCCL`, which does not hold on ascend (HCCL is not the NCCL strong type).
+2. **View target hardcoded to cuda**: `_ensure_cuda` blindly does flagos→cuda. That works on
+   nvidia/metax (metax goes through maca's libtorch_cuda compatibility layer), but **ascend has
+   no CUDA compatibility layer**, so this path simply does not work there.
+3. **API coverage gaps**: any collective API that was not patched crashes as soon as it is called
+   with a privateuseone tensor. The gaps include `all_gather` (the list form), `gather`/`scatter`,
+   `all_to_all[_single]`, `send`/`recv`/`isend`/`irecv`, `barrier`, and — most insidiously —
+   `torch.ops._c10d_functional.*` (used by the torch.compile / DTensor / FSDP2 compiled paths).
+4. **Missing fallback logic**: no automatic downgrade to the vendor's native backend when flagcx
+   is unavailable.
+
+---
+
+## 3. Target architecture
 
 ```
                 flagos_dist.init_process_group(backend="auto")
                                 │
-                ┌───────────────┴───────────────┐
-                │   _resolve_backend()           │  读 GEMS_VENDOR + 用户请求
-                │   FlagCX 优先，vendor 原生兜底  │
-                └───────────────┬───────────────┘
+                ┌───────────────┴────────────────┐
+                │   _resolve_backend()           │  reads GEMS_VENDOR + the user request
+                │   FlagCX first, vendor native  │
+                └───────────────┬────────────────┘
      ┌──────────────────┬───────┴────────┬──────────────────┐
-  flagcx 可用?        nvidia            metax             ascend
-     │ 是               │ nccl 兜底       │ mccl 兜底        │ hccl 兜底
-统一 flagcx backend      │ (NCCL 类型)     │ (走 maca         │ (CUSTOM 类型,
-(CUSTOM 类型)            │                │  libtorch_cuda)  │  torch_npu)
-     │                   └────────┬───────┘                  │
-     │              flagos→cuda view (共享 data_ptr)    flagos→npu view
-     │                            │                    (无 CUDA 兼容层!)
-     └──────────── 原生认 privateuseone，免 view ──────────────┘
+  flagcx available?   nvidia            metax             ascend
+     │ yes              │ nccl fallback   │ mccl fallback    │ hccl fallback
+unified flagcx backend  │ (NCCL type)     │ (via maca        │ (CUSTOM type,
+(CUSTOM type)           │                 │  libtorch_cuda)  │  torch_npu)
+     │                  └────────┬────────┘                  │
+     │            flagos→cuda view (shared data_ptr)     flagos→npu view
+     │                           │                    (no CUDA compat layer!)
+     └────────── natively accepts privateuseone, no view needed ───────────┘
 ```
 
 ---
 
-## 4. 三个改造点
+## 4. Three changes
 
-### 4.1 `_resolve_backend()`：后端解析 + 回退（兜底语义 A）
+### 4.1 `_resolve_backend()`: backend resolution and fallback (fallback semantics A)
 
-收敛所有「选谁 / 降级」逻辑到一个纯 Python 函数：
+Concentrate all "which one / when to downgrade" logic into one pure-Python function:
 
-- 读 `GEMS_VENDOR` 得到 vendor，映射到 vendor 原生后端：
+- Read `GEMS_VENDOR` to get the vendor and map it to the vendor's native backend:
   - `nvidia` → `nccl`
-  - `metax`  → `nccl`（maca 的 mccl 在 PyTorch 眼里就是 NCCL backend，底层链
-    的是 mccl）
+  - `metax`  → `nccl` (maca's mccl looks like the NCCL backend to PyTorch; it links mccl
+    underneath)
   - `ascend` → `hccl`
-- 用户显式指定 `nccl`/`hccl`/`flagcx` 时尊重用户。
-- `auto`（默认）优先 flagcx。
-- flagcx 请求路径 `import flagcx` 失败时，warning 并回退到 vendor 原生后端。
+- Respect an explicit user choice of `nccl`/`hccl`/`flagcx`.
+- `auto` (the default) prefers flagcx.
+- If `import flagcx` fails on the flagcx path, warn and fall back to the vendor's native backend.
 
-返回 `(实际后端字符串, vendor)`。
+Returns `(actual backend string, vendor)`.
 
-### 4.2 `_register_privateuseone_backend()`：BackendType 按 vendor 分流
+### 4.2 `_register_privateuseone_backend()`: BackendType routed by vendor
 
-- BackendType 映射：`flagcx`→`CUSTOM`、`nccl`→`NCCL`、`hccl`→`CUSTOM`。
-- 探测原 backend 的设备：ascend 从 `privateuseone` 取，其余从 `cuda` 取。
+- BackendType mapping: `flagcx`→`CUSTOM`, `nccl`→`NCCL`, `hccl`→`CUSTOM`.
+- Detect the original backend's device: take it from `privateuseone` on ascend, from `cuda`
+  otherwise.
 
-### 4.3 `_patch_dist_collectives()`：view 分流 + API 覆盖面补全（兜底语义 B）
+### 4.3 `_patch_dist_collectives()`: view routing and full API coverage (fallback semantics B)
 
-**(a) view 目标按 vendor 分流**：抽象成 `_ensure_comm_tensor(t, vendor)`：
+**(a) Route the view target by vendor**, abstracted as `_ensure_comm_tensor(t, vendor)`:
 
-- `ascend` → `_flagos_to_npu_view(t)`（需新增 C++ 实现，或走 flagcx 原生注册
-  彻底免 view）
-- 其余 → `_flagos_to_cuda_view(t)`（复用现有）
+- `ascend` → `_flagos_to_npu_view(t)` (needs a new C++ implementation, or use native flagcx
+  registration to avoid views entirely)
+- everything else → `_flagos_to_cuda_view(t)` (reuses the existing one)
 
-**(b) API 覆盖面补全**：用通用 patch 生成器，遍历一张
-`(函数名, 哪些位置/关键字参数是 tensor)` 表批量包裹，避免每个函数手写。至少覆盖：
+**(b) Complete the API coverage**: use a generic patch generator that walks a table of
+`(function name, which positional/keyword arguments are tensors)` and wraps them in bulk, instead
+of hand-writing each function. It must cover at least:
 
-- `all_reduce`、`broadcast`、`reduce`、`all_gather_into_tensor`、
-  `reduce_scatter_tensor`（原有 5 个）
-- `all_gather`（list 版）、`gather`、`scatter`
-- `all_to_all`、`all_to_all_single`
-- `send`、`recv`、`isend`、`irecv`
-- `barrier`（device_ids 参数）
-- `torch.ops._c10d_functional.*`（functional collectives）
-
----
-
-## 5. FlagCX 原生注册（免 view）——优先验证的假设
-
-若 flagcx 的 adaptor 只认 `data_ptr + stream`、不校验 device type，则可给
-privateuseone 直接注册 flagcx backend，**patch 与 view 全都不需要**，且天然覆盖
-所有集合通信 API。这对 ascend 尤其有价值（省掉 `_flagos_to_npu_view` 的 C++
-工作）。拿到 flagcx 环境后，这是第一个该验证的点。
+- `all_reduce`, `broadcast`, `reduce`, `all_gather_into_tensor`, `reduce_scatter_tensor` (the
+  original 5)
+- `all_gather` (the list form), `gather`, `scatter`
+- `all_to_all`, `all_to_all_single`
+- `send`, `recv`, `isend`, `irecv`
+- `barrier` (the device_ids argument)
+- `torch.ops._c10d_functional.*` (functional collectives)
 
 ---
 
-## 6. 各 vendor 落地状态
+## 5. Native FlagCX registration (no views) — the hypothesis to verify first
 
-| vendor | flagcx 路径 | 原生兜底 | view 转换 | 主要缺口 |
-|--------|------------|---------|-----------|---------|
-| nvidia | 现成可跑 | nccl（现成） | flagos→cuda（现成） | 仅 API 覆盖面 |
-| metax  | 应可复用 | "nccl"@maca | flagos→cuda（走 maca） | 需实测 mccl |
-| ascend | **建议主路径** | hccl（CUSTOM） | **缺 flagos→npu** | view 或原生注册二选一 |
-
----
-
-## 7. 实施顺序
-
-1. **重构 `distributed.py`**（不改 nvidia 行为）：抽出 `_resolve_backend` /
-   vendor 分流的 `_register_privateuseone_backend` / `_ensure_comm_tensor`，
-   搭好架构骨架。
-2. **补全 collective API 覆盖面**（含 functional collectives）：纯 Python、
-   不依赖硬件，当前环境即可验证正确性。
-3. **flagcx 环境验证**：验证原生注册免 view 假设 → 决定 ascend 走原生注册
-   还是补 `_flagos_to_npu_view`。
-4. **metax / ascend 实机验证**兜底路径。
+If flagcx's adaptor only cares about `data_ptr + stream` and does not validate the device type,
+then the flagcx backend can be registered directly for privateuseone, **eliminating both the
+patches and the views** and covering every collective API by construction. This matters most for
+ascend (it removes the `_flagos_to_npu_view` C++ work). Once a flagcx environment is available,
+this is the first thing to verify.
 
 ---
 
-## 8. 公共 API（重构后）
+## 6. Per-vendor status
+
+| Vendor | flagcx path | Native fallback | View conversion | Main gap |
+|--------|------------|-----------------|-----------------|----------|
+| nvidia | works today | nccl (works today) | flagos→cuda (works today) | API coverage only |
+| metax  | should be reusable | "nccl"@maca | flagos→cuda (via maca) | mccl needs measuring |
+| ascend | **recommended primary path** | hccl (CUSTOM) | **flagos→npu missing** | either the view or native registration |
+
+---
+
+## 7. Implementation order
+
+1. **Refactor `distributed.py`** (without changing nvidia behavior): extract `_resolve_backend`,
+   the vendor-routed `_register_privateuseone_backend`, and `_ensure_comm_tensor` to establish
+   the architectural skeleton.
+2. **Complete the collective API coverage** (including functional collectives): pure Python, no
+   hardware dependency, verifiable for correctness in the current environment.
+3. **Verify in a flagcx environment**: test the no-view native registration hypothesis, then
+   decide whether ascend uses native registration or needs `_flagos_to_npu_view`.
+4. **Verify the fallback paths on metax / ascend hardware.**
+
+---
+
+## 8. Public API (after the refactor)
 
 ```python
 import torch_fl.distributed as flagos_dist
 
-# backend 取值：
-#   "auto"   -> flagcx 优先，失败回退 vendor 原生（推荐）
-#   "flagcx" -> 强制 flagcx，失败回退 vendor 原生
-#   "nccl"   -> 强制 nccl（nvidia/metax）
-#   "hccl"   -> 强制 hccl（ascend）
+# backend values:
+#   "auto"   -> flagcx first, falling back to the vendor native backend (recommended)
+#   "flagcx" -> force flagcx, falling back to the vendor native backend
+#   "nccl"   -> force nccl (nvidia/metax)
+#   "hccl"   -> force hccl (ascend)
 flagos_dist.init_process_group(backend="auto")
 
 model = flagos_dist.DistributedDataParallel(model)

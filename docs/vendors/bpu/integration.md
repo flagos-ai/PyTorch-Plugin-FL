@@ -31,8 +31,8 @@ error, so the pin is what turns a confusing build break into an install-time
 message. Moving to a newer torch is a deliberate act: re-run
 `scripts/codegen_ops.py`, do not hand-edit the generated files.
 
-The board runs `torch 2.10.0+cpu` on `/home/sunrise/miniconda3/bin/python3.14`
-(the cp314 aarch64 wheel exists on PyPI).
+The verified board environment uses `torch 2.10.0+cpu` with a Python 3.14
+aarch64 interpreter (the cp314 aarch64 wheel exists on PyPI).
 
 ## Why not per-op kernels
 

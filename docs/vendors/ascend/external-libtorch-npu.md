@@ -1,92 +1,126 @@
-# 实测：CPU torch + 外挂 libtorch_npu.so 能否复用 Ascend 算子
+# Measured: can a CPU torch + external libtorch_npu.so reuse Ascend operators?
 
-> 实测日期：2026-07-20
-> 实测机器：Ascend 910（8× 910，npu-smi 25.5.0，CANN 9.0.0，aarch64）
-> 结论：**不成立（此路径无法直接照搬 CUDA 方案）**。torch_npu 的算子注册在 **PrivateUse1** dispatch key 下，与 torch_fl 的 `flagos`(PrivateUse1) 后端**同键冲突**，不能像 `libtorch_cuda.so`（注册在独立的 `CUDA` key）那样"外挂即兜底"。
+> Measured: 2026-07-20
+> Machine: Ascend 910 (8× 910, npu-smi 25.5.0, CANN 9.0.0, aarch64)
+> Verdict: **no — this path cannot simply copy the CUDA approach.** torch_npu registers
+> its operators under the **PrivateUse1** dispatch key, which **collides with the same key**
+> used by torch_fl's `flagos` backend. It cannot act as a drop-in fallback the way
+> `libtorch_cuda.so` does (which registers under the separate `CUDA` key).
 
-## 背景
+## Background
 
-CUDA 方案（见 [../cuda/external-libtorch-cuda.md](../cuda/external-libtorch-cuda.md)）成立的**根本前提**是：
+The CUDA approach (see [../cuda/external-libtorch-cuda.md](../cuda/external-libtorch-cuda.md))
+rests on one **fundamental precondition**:
 
-- PyTorch 的 CUDA kernel 注册在**专属的 `CUDA` dispatch key** 下。
-- torch_fl 的 `vm`/`flagos` 后端占用的是 **`PrivateUse1`** key。
-- 两者 key 互不重叠 → 外挂 `libtorch_cuda.so` 把 CUDA kernel 塞进 dispatcher 后，boxing 路径把 `flagos` 张量改成 CUDA 元数据再调 `structured_*_out_cuda`，天然分层、不打架。
+- PyTorch's CUDA kernels register under a **dedicated `CUDA` dispatch key**.
+- torch_fl's `vm`/`flagos` backend occupies **`PrivateUse1`**.
+- The two keys do not overlap. Once the external `libtorch_cuda.so` has pushed the CUDA
+  kernels into the dispatcher, the boxing path rewrites a `flagos` tensor's metadata to
+  CUDA and calls `structured_*_out_cuda`. The layering is natural; nothing contends.
 
-问题：Ascend 能否照搬——从 torch_npu wheel 抽 `libtorch_npu.so` 外挂，让 NPU kernel 进 dispatcher 供 boxing 兜底？
+The question: can Ascend do the same — extract `libtorch_npu.so` from the torch_npu wheel,
+load it externally, and let NPU kernels enter the dispatcher as a boxing fallback?
 
-## 实测步骤
+## What was measured
 
 ```bash
-# 1. 干净 conda 环境 + 只装 CPU torch（版本对齐 torch_npu）
+# 1. Clean conda env with CPU-only torch (version aligned with torch_npu)
 conda create -n libtorch_npu_test python=3.10
 pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cpu
-#   torch/lib 下只有 libc10/libtorch/libtorch_cpu/libtorch_python/libshm/libtorch_global_deps
+#   torch/lib holds only libc10/libtorch/libtorch_cpu/libtorch_python/libshm/libtorch_global_deps
 
-# 2. 只下载（不安装）版本匹配的 torch_npu wheel，抽出 .so
+# 2. Download (do NOT install) the version-matched torch_npu wheel, extract the .so
 pip download torch_npu==2.7.1 -d /tmp/npu_wheel --no-deps
 #   torch_npu-2.7.1-cp310-cp310-manylinux_2_28_aarch64.whl (22.6 MB)
-#   关键产物：torch_npu/lib/libtorch_npu.so (≈51 MB) —— 对标 libtorch_cuda.so
+#   the artifact that matters: torch_npu/lib/libtorch_npu.so (~51 MB), the libtorch_cuda.so analogue
 
 # 3. CANN runtime
-source /usr/local/Ascend/ascend-toolkit/set_env.sh
+source "$ASCEND_HOME/set_env.sh"
 ```
 
-## 关键实测结果
+## Key results
 
-### 符号解析 ✅（能加载）
+### Symbol resolution ✅ (it loads)
 
-`libtorch_npu.so` 的 `NEEDED` 依赖里含 `libtorch.so / libtorch_cpu.so / libc10.so / libtorch_python.so` + CANN 侧 `libhccl / libascendcl / libge_runner / libgraph` 等。在 `LD_LIBRARY_PATH` 补上 CANN 库路径后，`ctypes.CDLL(libtorch_npu.so, RTLD_GLOBAL)` **加载成功**，无 undefined symbol —— 这一点和 CUDA 一样，CPU wheel 符号喂得饱。
+`libtorch_npu.so`'s `NEEDED` entries include `libtorch.so / libtorch_cpu.so / libc10.so /
+libtorch_python.so` plus the CANN-side `libhccl / libascendcl / libge_runner / libgraph`.
+With the CANN library paths added to `LD_LIBRARY_PATH`,
+`ctypes.CDLL(libtorch_npu.so, RTLD_GLOBAL)` **succeeds** with no undefined symbols — same as
+CUDA. The CPU wheel satisfies every symbol it needs.
 
-> 注意：CUDA 方案有"必须在 import torch 之前 LD_PRELOAD"的硬约束（CUDAHooks 缓存桩问题）。NPU 实测中在 `import torch` **之后**加载也能把 kernel 注册进表（见下），但设备初始化走的是 `PrivateUse1HooksInterface`——这条 hooks 路径同样会与 torch_fl 自己注册的 hooks 冲突。
+> Note: the CUDA approach carries a hard constraint that the library must be `LD_PRELOAD`ed
+> *before* `import torch` (the cached CUDAHooks stub problem). In the NPU measurement,
+> loading *after* `import torch` still registered the kernels into the table (see below), but
+> device initialization goes through `PrivateUse1HooksInterface` — and that hooks path
+> collides with the hooks torch_fl registers itself.
 
-### kernel 注册 ❌（同键冲突，这是决定性差异）
+### Kernel registration ❌ (same-key collision — the decisive difference)
 
 ```python
 import ctypes, torch
 def has(op, key): return torch._C._dispatch_has_kernel_for_dispatch_key(op, key)
 
-# 加载前
+# before loading
 #   aten::mm         PrivateUse1=False  CPU=True
 #   aten::add.Tensor PrivateUse1=False  CPU=True
 ctypes.CDLL(".../libtorch_npu.so", ctypes.RTLD_GLOBAL)
-# 加载后
-#   aten::mm         PrivateUse1=True     ← 注册进了 PrivateUse1！
+# after loading
+#   aten::mm         PrivateUse1=True     <- registered into PrivateUse1!
 #   aten::add.Tensor PrivateUse1=True
 ```
 
-`libtorch_npu.so` 内 `strings` 统计：`PrivateUse1` 出现 25 次、`CUDA` 仅 6 次；并含
-`c10_npu::impl::rename_privateuse1_backend()`、`at::RegisterPrivateUse1HooksInterface`、
-`c10::register_privateuse1_backend(...)` 等符号。**torch_npu 的整套设备/算子/Hooks 都建立在 PrivateUse1 之上**（这也是社区共识：torch_npu 是 PrivateUse1 out-of-tree backend）。
+`strings` over `libtorch_npu.so`: `PrivateUse1` appears 25 times, `CUDA` only 6. It also
+carries `c10_npu::impl::rename_privateuse1_backend()`,
+`at::RegisterPrivateUse1HooksInterface`, and `c10::register_privateuse1_backend(...)`.
+**torch_npu's entire device/operator/hooks stack is built on PrivateUse1** — which matches the
+community understanding that torch_npu is a PrivateUse1 out-of-tree backend.
 
-而 torch_fl 在 `torch_fl/__init__.py` 里正是：
+And torch_fl, in `torch_fl/__init__.py`, does exactly:
 
 ```python
 torch.utils.rename_privateuse1_backend("flagos")
 torch._register_device_module("flagos", flagos)
 ```
 
-**同一个 PrivateUse1 key 只能被一个后端占用**。外挂 `libtorch_npu.so` 会：
-1. 把 NPU kernel 覆盖/抢注到 `PrivateUse1`，与 flagos 自己的 PrivateUse1 注册互相覆盖；
-2. `register_privateuse1_backend` / `PrivateUse1HooksInterface` 与 flagos 的重名冲突（PyTorch 对 PrivateUse1 backend 名与 hooks 只允许注册一次）。
+**A single PrivateUse1 key can only be claimed by one backend.** Loading `libtorch_npu.so`
+externally would:
 
-即：**没有"独立 key 分层"这个前提**，boxing 的"改元数据 → 调 native kernel"模型在 NPU 上失去落脚点——目标 key 就是自己占着的那个。
+1. Overwrite / race the NPU kernels into `PrivateUse1`, clobbering flagos's own PrivateUse1
+   registrations and vice versa.
+2. Collide on `register_privateuse1_backend` / `PrivateUse1HooksInterface` — PyTorch allows
+   the PrivateUse1 backend name and its hooks to be registered only once.
 
-## CUDA vs Ascend 对比
+In short: **the "separate keys, natural layering" precondition is absent**, so boxing's
+"rewrite metadata → call the native kernel" model has nowhere to stand on NPU. The target key
+is the one we already occupy.
 
-| 维度 | CUDA (`libtorch_cuda.so`) | Ascend (`libtorch_npu.so`) |
+## CUDA vs Ascend
+
+| Dimension | CUDA (`libtorch_cuda.so`) | Ascend (`libtorch_npu.so`) |
 |---|---|---|
-| kernel 注册 key | **`CUDA`**（独立） | **`PrivateUse1`**（与 flagos 撞） |
-| 与 flagos(PrivateUse1) 关系 | 正交，可分层 boxing | 同键，直接冲突 |
-| 从 CPU wheel 抽 so 加载 | ✅ 符号完整 | ✅ 符号完整 |
-| 设备 Hooks | `CUDAHooks`（需 preload 解决缓存） | `PrivateUse1HooksInterface`（与 flagos hooks 冲突） |
-| "外挂即兜底"是否成立 | ✅ 成立 | ❌ 不成立 |
+| Kernel registration key | **`CUDA`** (dedicated) | **`PrivateUse1`** (collides with flagos) |
+| Relation to flagos (PrivateUse1) | Orthogonal; boxing can layer | Same key; direct conflict |
+| Extract .so from wheel and load | ✅ symbols complete | ✅ symbols complete |
+| Device hooks | `CUDAHooks` (preload solves the caching) | `PrivateUse1HooksInterface` (conflicts with flagos hooks) |
+| Does "external .so as fallback" work? | ✅ yes | ❌ no |
 
-## 结论与建议
+## Conclusion and recommendation
 
-- **不能直接照搬 CUDA 方案**。CUDA 之所以成立，靠的是"CUDA key 与 PrivateUse1 key 天然分层"；torch_npu 恰恰把自己实现成了 **另一个 PrivateUse1 后端**，和 torch_fl 争同一把 key。
-- 对 Ascend，现有路线（`csrc/aten/backends/ascend/` 手写/接 CANN 算子，或 FlagGems + triton-ascend）仍是应走的方向；`libtorch_npu.so` 无法作为"零成本兜底层"直接外挂。
-- 若确实想复用 torch_npu 已实现的 NPU kernel，需要的不是"外挂 so"，而是**在 C++ 层显式转调 torch_npu 的 op 实现**（绕开 dispatcher 的 PrivateUse1 单键限制），这是另一套工程量，且强绑 torch_npu 版本，收益/代价需另行评估。
+- **The CUDA approach cannot be copied directly.** CUDA works because the `CUDA` key and the
+  `PrivateUse1` key layer naturally. torch_npu implemented itself as **another PrivateUse1
+  backend**, contending with torch_fl for the same key.
+- For Ascend, the existing route stands: hand-written / CANN-backed operators under
+  `csrc/aten/backends/ascend/`, or FlagGems + triton-ascend. `libtorch_npu.so` cannot be
+  loaded externally as a zero-cost fallback layer.
+- If reusing torch_npu's already-implemented NPU kernels is genuinely desirable, the mechanism
+  is not "load the .so" but **explicitly forwarding to torch_npu's op implementations at the
+  C++ level**, bypassing the dispatcher's single-PrivateUse1-key limit. That is a separate
+  body of work, tightly coupled to a torch_npu version, and its cost/benefit needs its own
+  evaluation.
 
-## 一句话总结
+## One-line summary
 
-> `libtorch_npu.so` 能被 CPU torch 加载、符号也喂得饱，但它把 NPU 算子注册在 **PrivateUse1**——正是 torch_fl 的 `flagos` 已占用的 key。CUDA 方案依赖的"独立 key 分层"前提在 Ascend 上不存在，因此**"抽 so 外挂即兜底"在昇腾上不成立**。
+> `libtorch_npu.so` loads fine under CPU torch and every symbol resolves, but it registers NPU
+> operators under **PrivateUse1** — precisely the key torch_fl's `flagos` already holds. The
+> "separate key layering" precondition the CUDA approach depends on does not exist on Ascend,
+> so **"extract the .so and get a fallback for free" does not work there**.
