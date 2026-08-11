@@ -255,6 +255,30 @@ void FlagosKinetoProfilerSession::processTrace(
                    << events_.size() << " events, window=[" << startTime
                    << "," << endTime << "]\n");
 
+  // Count events by kind at the start of processTrace
+  int kernel_count = 0, memcpy_count = 0, memset_count = 0, runtime_count = 0;
+  for (const auto& ev : events_) {
+    switch (ev.kind) {
+      case profiler::EventKind::Kernel: kernel_count++; break;
+      case profiler::EventKind::Memcpy: memcpy_count++; break;
+      case profiler::EventKind::Memset: memset_count++; break;
+      case profiler::EventKind::Runtime: runtime_count++; break;
+    }
+  }
+  FLAGOS_KINETO_LOG("[flagos] processTrace events by kind: kernel=" << kernel_count
+                   << " memcpy=" << memcpy_count << " memset=" << memset_count
+                   << " runtime=" << runtime_count << "\n");
+
+  // Print first and last event timestamps to diagnose window filtering
+  if (!events_.empty()) {
+    auto& first = events_[0];
+    auto& last = events_[events_.size() - 1];
+    FLAGOS_KINETO_LOG("[flagos] First event: kind=" << static_cast<int>(first.kind)
+                     << " start=" << first.start_ns << " end=" << first.end_ns << "\n");
+    FLAGOS_KINETO_LOG("[flagos] Last event: kind=" << static_cast<int>(last.kind)
+                     << " start=" << last.start_ns << " end=" << last.end_ns << "\n");
+  }
+
   // Capture-window predicate.
   //
   // UNITS (verified, not assumed): kineto's startTime/endTime are ns since the
@@ -274,11 +298,23 @@ void FlagosKinetoProfilerSession::processTrace(
   // fell outside the window -- leaves a dangling arrow, which is not what
   // torch+cuda produces.
   std::set<uint32_t> device_correlations;
+  int device_in_window = 0;
+  int device_total = 0;
   for (const auto& ev : events_) {
-    if (ev.kind != profiler::EventKind::Runtime && in_window(ev)) {
-      device_correlations.insert(ev.correlation_id);
+    if (ev.kind != profiler::EventKind::Runtime) {
+      ++device_total;
+      if (device_total <= 3) {
+        FLAGOS_KINETO_LOG("[flagos] Device event #" << device_total << ": kind=" << static_cast<int>(ev.kind)
+                         << " start=" << ev.start_ns << " end=" << ev.end_ns
+                         << " window=[" << startTime << "," << endTime << "]\n");
+      }
+      if (in_window(ev)) {
+        device_correlations.insert(ev.correlation_id);
+        ++device_in_window;
+      }
     }
   }
+  FLAGOS_KINETO_LOG("[flagos] Found " << device_in_window << "/" << device_total << " device events in window\n");
 
   // Whether kineto actually handed us a resolver. An EMPTY callback is a total
   // loss of linking: every activity is then emitted with linked == nullptr,
@@ -307,8 +343,16 @@ void FlagosKinetoProfilerSession::processTrace(
   }
 
   size_t linked_count = 0;
+  // Debug: print first 10 event kinds before processing
+  FLAGOS_KINETO_LOG("[flagos] First 10 events_ kinds: ");
+  for (size_t i = 0; i < std::min<size_t>(10, events_.size()); ++i) {
+    FLAGOS_KINETO_LOG(static_cast<int>(events_[i].kind) << " ");
+  }
+  FLAGOS_KINETO_LOG("\n");
+
   size_t link_candidates = 0;
   size_t dropped_out_of_window = 0;
+  int dropped_kernel = 0, dropped_memcpy = 0, dropped_memset = 0, dropped_runtime = 0;
   for (const auto& ev : events_) {
     // Drop activities outside the capture window. The tracer keeps recording
     // into its buffers across the whole process lifetime (device activity kinds
@@ -317,10 +361,25 @@ void FlagosKinetoProfilerSession::processTrace(
     // before the first cpu_op, including a 250ms entry against a 157ms span.
     if (!in_window(ev)) {
       ++dropped_out_of_window;
+      // Debug: print all dropped device events
+      if (ev.kind != profiler::EventKind::Runtime) {
+        FLAGOS_KINETO_LOG("[flagos] Dropped device event: kind=" << static_cast<int>(ev.kind)
+                         << " start=" << ev.start_ns << " end=" << ev.end_ns
+                         << " (window=[" << startTime << "," << endTime << "])\n");
+      }
+      switch (ev.kind) {
+        case profiler::EventKind::Kernel: ++dropped_kernel; break;
+        case profiler::EventKind::Memcpy: ++dropped_memcpy; break;
+        case profiler::EventKind::Memset: ++dropped_memset; break;
+        case profiler::EventKind::Runtime: ++dropped_runtime; break;
+      }
       continue;
     }
 
     libkineto::GenericTraceActivity activity = detail::toActivity(ev);
+    FLAGOS_KINETO_LOG("[flagos] toActivity: kind=" << static_cast<int>(ev.kind)
+                     << " -> activityType=" << static_cast<int>(activity.activityType)
+                     << " name=" << activity.activityName << "\n");
 
     // Resolve the CPU op that produced this device/runtime activity. The
     // callback is keyed on the *torch* correlation id, which is what
@@ -367,7 +426,9 @@ void FlagosKinetoProfilerSession::processTrace(
                    << link_candidates << " link candidates (of "
                    << events_.size() << " events, resolver="
                    << (have_resolver ? "present" : "EMPTY") << "), dropped "
-                   << dropped_out_of_window << " outside the capture window\n");
+                   << dropped_out_of_window << " outside window (kernel="
+                   << dropped_kernel << " memcpy=" << dropped_memcpy
+                   << " memset=" << dropped_memset << " runtime=" << dropped_runtime << ")\n");
 }
 
 std::unique_ptr<libkineto::DeviceInfo> FlagosKinetoProfilerSession::getDeviceInfo() {
