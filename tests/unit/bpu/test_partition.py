@@ -144,6 +144,23 @@ def test_unsupported_op_splits_partitions():
         assert not any("erfinv" in str(n.target) for n in p.nodes)
 
 
+def test_unsupported_side_branch_does_not_split_supported_path():
+    """Mask bookkeeping may interleave with attention in topological order."""
+
+    class SideBranch(torch.nn.Module):
+        def forward(self, x):
+            main = torch.relu(x)
+            mask = torch.erfinv(x)  # unsupported, consumed by supported add
+            return main * 2 + mask
+
+    gm, _ = _aot_graph(SideBranch(), torch.randn(8, 8))
+    parts = partition_graph(gm, min_nodes=2)
+
+    assert len(parts) == 1, summarize(gm, parts)
+    assert not any("erfinv" in str(n.target) for n in parts[0].nodes)
+    assert any("erfinv" in str(n.target) for n in parts[0].inputs)
+
+
 def test_backend_falls_back_without_hbdk(caplog, monkeypatch):
     """Without hbdk4 the model must still produce bit-exact results.
 
@@ -223,3 +240,122 @@ def test_slice_does_not_split_a_partition():
 
     assert len(parts) == 1, summarize(gm, parts)
     assert torch.ops.aten.slice.Tensor in {n.target for n in parts[0].nodes}
+
+def test_safe_softmax_rewrite_stays_in_one_partition():
+    """The semantic guard around softmax must not split attention again."""
+    from torch_fl.accelerator.bpu.decompose import decompose
+
+    class SafeSoftmax(torch.nn.Module):
+        def forward(self, x):
+            return torch.ops.aten._safe_softmax.default(x, -1)
+
+    gm, _ = _aot_graph(SafeSoftmax(), torch.randn(1, 4, 8, 8))
+    decompose(gm)
+    parts = partition_graph(gm, min_nodes=1)
+
+    assert len(parts) == 1, summarize(gm, parts)
+    targets = {n.target for n in parts[0].nodes}
+    assert torch.ops.aten.softmax.int in targets
+    assert torch.ops.aten.eq.Scalar in targets
+    assert torch.ops.aten.all.dim in targets
+    assert torch.ops.aten.where.self in targets
+
+
+def test_fixed_shape_qwen_has_one_decoder_partition():
+    """Unsupported mask/rotary setup must not fragment decoder arithmetic."""
+    import pytest
+
+    transformers = pytest.importorskip("transformers")
+    from torch_fl.accelerator.bpu.backend import _aot_decompositions
+    from torch_fl.accelerator.bpu.decompose import decompose
+
+    cfg = transformers.AutoConfig.from_pretrained(
+        "Qwen/Qwen2.5-0.5B-Instruct", local_files_only=True
+    )
+    cfg.num_hidden_layers = 1
+    cfg.hidden_size = 64
+    cfg.intermediate_size = 128
+    cfg.num_attention_heads = 4
+    cfg.num_key_value_heads = 2
+    model = transformers.AutoModelForCausalLM.from_config(cfg).eval().float()
+
+    from torch._dynamo.backends.common import aot_autograd
+
+    captured = {}
+
+    def grab(gm, example_inputs):
+        captured["gm"] = gm
+        return gm.forward
+
+    with torch.no_grad():
+        torch.compile(
+            model,
+            backend=aot_autograd(
+                fw_compiler=grab, decompositions=_aot_decompositions()
+            ),
+            dynamic=False,
+        )(torch.tensor([[1, 2, 3, 4]]))
+
+    gm = captured["gm"]
+    decompose(gm)
+    parts = partition_graph(gm, min_nodes=2)
+
+    assert len(parts) <= 2, summarize(gm, parts)
+    decoder = max(parts, key=len)
+    targets = {n.target for n in decoder.nodes}
+    assert torch.ops.aten.bmm.default in targets
+    assert torch.ops.aten.softmax.int in targets
+    assert torch.ops.aten.mm.default in targets
+    assert len(decoder) >= 100, summarize(gm, parts)
+
+
+def test_compile_model_forward_reaches_backend():
+    """torch.compile(model) + model.generate() bypasses the backend entirely.
+
+    OptimizedModule.__getattr__ forwards `.generate` to the original module,
+    bound to self there, so generate()'s internal forward calls never enter
+    Dynamo. The fix for generation is `model.forward = torch.compile(...)`,
+    which makes generate() call the compiled forward.
+
+    This test locks down that the workaround actually invokes the backend.
+    """
+    try:
+        from transformers import AutoConfig, AutoModelForCausalLM
+    except ImportError:
+        import pytest
+
+        pytest.skip("transformers not available")
+
+    # Spy backend that counts invocations
+    call_count = {"n": 0}
+
+    def spy_backend(gm, example_inputs):
+        call_count["n"] += 1
+        return gm.forward
+
+    # Tiny config
+    cfg = AutoConfig.from_pretrained("Qwen/Qwen2.5-0.5B-Instruct")
+    cfg.num_hidden_layers = 1
+    cfg.hidden_size = 64
+    cfg.intermediate_size = 128
+    cfg.num_attention_heads = 4
+    cfg.num_key_value_heads = 2
+    model = AutoModelForCausalLM.from_config(cfg).eval()
+
+    # Test 1: torch.compile(model.forward) invokes backend during generate()
+    call_count["n"] = 0
+    model.forward = torch.compile(model.forward, backend=spy_backend, fullgraph=False)
+    ids = torch.tensor([[1, 2, 3]])
+    with torch.no_grad():
+        model.generate(ids, max_new_tokens=4, do_sample=False, pad_token_id=0)
+    assert call_count["n"] > 0, "backend was never called during generate()"
+
+    # Test 2: torch.compile(model) does NOT invoke backend during generate()
+    call_count["n"] = 0
+    model2 = AutoModelForCausalLM.from_config(cfg).eval()
+    compiled = torch.compile(model2, backend=spy_backend, fullgraph=False)
+    with torch.no_grad():
+        compiled.generate(ids, max_new_tokens=4, do_sample=False, pad_token_id=0)
+    assert call_count["n"] == 0, (
+        "backend should not be called when compiling the module"
+    )

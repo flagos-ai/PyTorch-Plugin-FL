@@ -922,7 +922,12 @@ def _alias_cuda_to_flagos():
     torch.cuda.get_device_properties = flagos.get_device_properties
 
 
-_alias_cuda_to_flagos()
+# The BPU is a whole-graph compile backend; eager operators deliberately run on
+# the CPU. Installing the process-wide alias there wraps every torch call in a
+# TorchFunctionMode and fragments a fixed-shape Transformers forward into many
+# Dynamo graphs. Other PrivateUse1 backends still need the compatibility alias.
+if _build_accelerator() != "bpu":
+    _alias_cuda_to_flagos()
 
 
 # Ops that use torch_device_fn.device(device) with explicit device parameter

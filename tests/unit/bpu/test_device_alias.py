@@ -41,6 +41,13 @@ import torch
 torch_fl = pytest.importorskip("torch_fl")
 
 
+def test_bpu_build_does_not_install_cuda_alias():
+    """BPU eager is CPU fallback; the global mode only fragments Dynamo graphs."""
+    if torch_fl._build_accelerator() != "bpu":
+        pytest.skip("requires a build with ACCELERATOR=bpu")
+    assert torch.device is torch._C.device
+
+
 def _aliased() -> bool:
     """Whether this build actually installed the alias."""
     return torch.device is not torch._C.device
@@ -111,3 +118,30 @@ def test_reading_tensor_device_while_tracing_does_not_assert():
     x = torch.randn(4)
     torch.testing.assert_close(f(x), x + torch.arange(4))
     assert seen, "backend never ran"
+
+
+def test_fixed_shape_qwen_forward_is_one_dynamo_graph():
+    """The BPU alias used to split this single forward into 27 graphs."""
+    if torch_fl._build_accelerator() != "bpu":
+        pytest.skip("requires a build with ACCELERATOR=bpu")
+    transformers = pytest.importorskip("transformers")
+
+    cfg = transformers.AutoConfig.from_pretrained("Qwen/Qwen2.5-0.5B-Instruct")
+    cfg.num_hidden_layers = 1
+    cfg.hidden_size = 64
+    cfg.intermediate_size = 128
+    cfg.num_attention_heads = 4
+    cfg.num_key_value_heads = 2
+    model = transformers.AutoModelForCausalLM.from_config(cfg).eval()
+    seen = []
+
+    def backend(gm, example_inputs):
+        seen.append(gm)
+        return gm.forward
+
+    with torch.no_grad():
+        torch.compile(model, backend=backend, dynamic=False)(
+            torch.tensor([[1, 2, 3, 4]])
+        )
+
+    assert len(seen) == 1

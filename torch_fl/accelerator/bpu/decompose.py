@@ -37,8 +37,12 @@ log = logging.getLogger("torch_fl.bpu")
 _BN_NO_TRAINING = torch.ops.aten._native_batch_norm_legit_no_training.default
 _MAX_POOL_INDICES = torch.ops.aten.max_pool2d_with_indices.default
 _SOFTMAX = torch.ops.aten._softmax.default
+_SAFE_SOFTMAX = torch.ops.aten._safe_softmax.default
 _UNSAFE_VIEW = torch.ops.aten._unsafe_view.default
 _T = torch.ops.aten.t.default
+_ALIAS = torch.ops.aten.alias.default
+_MUL_SCALAR = torch.ops.aten.mul.Scalar
+_TO_COPY = torch.ops.aten._to_copy.default
 
 
 def _only_uses_output(node, index: int) -> bool:
@@ -161,6 +165,100 @@ def _rewrite_softmax(gm: GraphModule) -> int:
     return changed
 
 
+def _rewrite_safe_softmax(gm: GraphModule) -> int:
+    """Lower `_safe_softmax` without losing its all-`-inf` row semantics.
+
+    CPU flash attention uses this private op so a fully masked query produces
+    zeros instead of NaNs. The public softmax is exportable; an explicit mask
+    restores the one semantic difference without using a broad decomposition
+    table (which would introduce unsupported prims operators).
+    """
+    changed = 0
+    for node in list(gm.graph.nodes):
+        if node.op != "call_function" or node.target is not _SAFE_SOFTMAX:
+            continue
+        self_, dim = node.args[:2]
+        dtype = node.args[2] if len(node.args) > 2 else node.kwargs.get("dtype")
+        with gm.graph.inserting_before(node):
+            out = gm.graph.call_function(
+                torch.ops.aten.softmax.int, args=(self_, dim, dtype)
+            )
+            masked = gm.graph.call_function(
+                torch.ops.aten.eq.Scalar, args=(self_, float("-inf"))
+            )
+            masked_rows = gm.graph.call_function(
+                torch.ops.aten.all.dim, args=(masked, dim, True)
+            )
+            zeros = gm.graph.call_function(torch.ops.aten.zeros_like.default, args=(out,))
+            new = gm.graph.call_function(
+                torch.ops.aten.where.self, args=(masked_rows, zeros, out)
+            )
+
+        self_val = self_.meta.get("val")
+        if isinstance(self_val, torch.Tensor):
+            out.meta.update(node.meta)
+            masked.meta["val"] = self_val == float("-inf")
+            masked_rows.meta["val"] = torch.all(masked.meta["val"], dim, True)
+            zeros.meta.update(node.meta)
+        new.meta.update(node.meta)
+        node.replace_all_uses_with(new)
+        gm.graph.erase_node(node)
+        changed += 1
+    return changed
+
+
+def _rewrite_alias_and_scalar_mul(gm: GraphModule) -> int:
+    """Remove value aliases and name scalar multiply as the tensor overload.
+
+    `alias` has no numerical effect in an inference graph. `mul.Scalar` and
+    `mul.Tensor` share ONNX Mul semantics, but only the latter is accepted by
+    the partitioner/export path. Calling the tensor overload with a Python
+    scalar preserves aten's dtype-promotion behavior.
+    """
+    changed = 0
+    for node in list(gm.graph.nodes):
+        if node.op != "call_function":
+            continue
+        if node.target is _ALIAS:
+            node.replace_all_uses_with(node.args[0])
+            gm.graph.erase_node(node)
+            changed += 1
+        elif node.target is _MUL_SCALAR:
+            _replace_1to1(gm, node, torch.ops.aten.mul.Tensor, node.args)
+            changed += 1
+    return changed
+
+
+def _rewrite_cast(gm: GraphModule) -> int:
+    """Name dtype-only `_to_copy` casts as the public `aten.to.dtype` op.
+
+    AOTAutograd emits the private copy form for autocast boundaries. The generic
+    decomposition lowers it to `prims.convert_element_type`, which neither the
+    exporter nor hbdk4 accepts; the public aten overload has the same value and
+    copy semantics and a stable ONNX Cast symbolic.
+    """
+    changed = 0
+    for node in list(gm.graph.nodes):
+        if node.op != "call_function" or node.target is not _TO_COPY:
+            continue
+        dtype = node.kwargs.get("dtype")
+        if dtype is None or any(
+            key in node.kwargs
+            for key in ("layout", "device", "pin_memory", "memory_format")
+        ):
+            continue
+        args = (
+            node.args[0],
+            dtype,
+            node.kwargs.get("non_blocking", False),
+            True,
+            None,
+        )
+        _replace_1to1(gm, node, torch.ops.aten.to.dtype, args)
+        changed += 1
+    return changed
+
+
 def _rewrite_view_and_transpose(gm: GraphModule) -> int:
     """Rewrite the shape ops AOTAutograd emits that the partitioner rejects.
 
@@ -188,13 +286,66 @@ def _rewrite_view_and_transpose(gm: GraphModule) -> int:
     return changed
 
 
+def _rewrite_empty_cat(gm: GraphModule) -> int:
+    """Replace cat([empty, x], dim) with x to avoid ONNX export errors.
+
+    When the first forward has no past_key_values, the KV cache inputs are
+    zero-sized tensors. Concatenating them with current K/V fails ONNX export
+    because ONNX's cat symbolic function rejects empty tensors.
+    """
+    changed = 0
+    for node in list(gm.graph.nodes):
+        if node.op != "call_function" or node.target is not torch.ops.aten.cat.default:
+            continue
+
+        # cat takes a list of tensors as first argument
+        if not node.args or not isinstance(node.args[0], (list, tuple)):
+            continue
+
+        tensors = node.args[0]
+        # Check if any input is a zero-sized tensor
+        non_empty = []
+        for t in tensors:
+            if not hasattr(t, "meta") or "val" not in t.meta:
+                non_empty.append(t)
+                continue
+            val = t.meta["val"]
+            if not isinstance(val, torch.Tensor) or val.numel() > 0:
+                non_empty.append(t)
+
+        # If all tensors are non-empty, or all are empty, leave it alone
+        if len(non_empty) == len(tensors) or len(non_empty) == 0:
+            continue
+
+        # If only one non-empty tensor remains, replace cat with it directly
+        if len(non_empty) == 1:
+            node.replace_all_uses_with(non_empty[0])
+            gm.graph.erase_node(node)
+            changed += 1
+        # Otherwise, cat only the non-empty tensors
+        elif len(non_empty) > 1:
+            with gm.graph.inserting_before(node):
+                new_args = (non_empty, *node.args[1:])
+                new = gm.graph.call_function(torch.ops.aten.cat.default, args=new_args)
+            new.meta.update(node.meta)
+            node.replace_all_uses_with(new)
+            gm.graph.erase_node(node)
+            changed += 1
+
+    return changed
+
+
 def decompose(gm: GraphModule) -> GraphModule:
     """Apply every rewrite. Mutates in place and is safe to call twice."""
     n = (
         _rewrite_batch_norm(gm)
         + _rewrite_max_pool(gm)
         + _rewrite_softmax(gm)
+        + _rewrite_safe_softmax(gm)
+        + _rewrite_alias_and_scalar_mul(gm)
+        + _rewrite_cast(gm)
         + _rewrite_view_and_transpose(gm)
+        + _rewrite_empty_cat(gm)
     )
     if n:
         log.debug("decompose: rewrote %d node(s)", n)

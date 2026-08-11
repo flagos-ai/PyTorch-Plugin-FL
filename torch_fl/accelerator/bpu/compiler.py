@@ -334,6 +334,13 @@ def export_onnx(
             onnx.load(str(path)), strict_mode=False, data_prop=True
         )
 
+        # Fold constant subgraphs (shape computations from Where/Equal chains)
+        # so hbdk4's static shape inference accepts them. Does nothing if the
+        # graph has no foldable constants.
+        from .constant_fold import constant_fold
+
+        constant_fold(proto)
+
         # Without int8 inputs hbdk4 lowers every conv to native::Conv2dNHWC on
         # the CPU, so the BPU sits idle. Q/DQ insertion is what moves the MAC
         # work onto the device — measured 6.1 ms -> 0.64 ms on a 2-conv net.
