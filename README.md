@@ -3,6 +3,7 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.8%2B-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.10.x-orange.svg)](https://pytorch.org/)
+[![CI](https://github.com/flagos-ai/PyTorch-Plugin-FL/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/flagos-ai/PyTorch-Plugin-FL/actions/workflows/ci.yml?query=branch%3Amain)
 
 [Documentation](docs/) · [Installation](docs/getting-started/installation.md) · [Quick Start](docs/getting-started/quickstart.md) · [Compatibility](docs/reference/compatibility.md)
 
