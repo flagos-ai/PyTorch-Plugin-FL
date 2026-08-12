@@ -18,7 +18,7 @@
 - [x] `CONTRIBUTING.md` (contribution guide)
 - [x] `.github/AI_AGENT_GUIDE.md` (AI guidelines)
 - [x] `.github/CLAUDE_CODE_GUIDE.md` (Claude Code specific)
-- [x] `.github/README.md` (template index)
+- [x] `.github/TEMPLATES.md` (template index)
 - [x] `.github/QUICK_REFERENCE.txt` (quick ref card)
 - [x] `.github/IMPLEMENTATION_SUMMARY.md` (this summary)
 
@@ -212,7 +212,7 @@ After deployment, track:
 ## 📞 Support
 
 If issues arise:
-1. Check `.github/README.md` for guidance
+1. Check `.github/TEMPLATES.md` for guidance
 2. Review examples in merged PRs
 3. Open issue with `meta` label
 4. Tag maintainers for clarification

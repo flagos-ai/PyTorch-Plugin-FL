@@ -201,5 +201,5 @@ All documentation must be in English.
 - **README.md** - Project overview and build instructions
 - **.github/AI_AGENT_GUIDE.md** - AI agent specific guidelines
 - **.github/CLAUDE_CODE_GUIDE.md** - Claude Code integration guide
-- **.github/README.md** - Template selection guide
+- **.github/TEMPLATES.md** - Template selection guide
 

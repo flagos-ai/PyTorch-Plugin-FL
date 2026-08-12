@@ -172,7 +172,7 @@
 │ • CONTRIBUTING.md        - Contribution workflow                  │
 │ • README.md              - Build and usage                        │
 │ • .github/AI_AGENT_GUIDE.md - AI agent guidelines                 │
-│ • .github/README.md      - Template index                         │
+│ • .github/TEMPLATES.md   - Template index                         │
 └───────────────────────────────────────────────────────────────────┘
 
 ┌───────────────────────────────────────────────────────────────────┐
@@ -184,5 +184,5 @@
 └───────────────────────────────────────────────────────────────────┘
 
 ╔═══════════════════════════════════════════════════════════════════╗
-║  Questions? See .github/README.md for complete template guide    ║
+║  Questions? See .github/TEMPLATES.md for complete template guide ║
 ╚═══════════════════════════════════════════════════════════════════╝

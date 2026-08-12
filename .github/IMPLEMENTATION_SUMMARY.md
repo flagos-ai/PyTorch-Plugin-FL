@@ -54,7 +54,7 @@ CLAUDE.md                           - Project conventions (top-level)
 CONTRIBUTING.md                     - Complete contribution guide
 .github/AI_AGENT_GUIDE.md          - Detailed AI agent guidelines
 .github/CLAUDE_CODE_GUIDE.md       - Claude Code integration guide
-.github/README.md                  - Template directory index
+.github/TEMPLATES.md               - Template directory index
 .github/QUICK_REFERENCE.txt        - Quick reference card
 .github/IMPLEMENTATION_SUMMARY.md  - This document
 ```
@@ -290,7 +290,7 @@ jobs:
 ```
 CLAUDE.md (top-level conventions)
     ├── CONTRIBUTING.md (detailed workflow)
-    │   ├── .github/README.md (template index)
+    │   ├── .github/TEMPLATES.md (template index)
     │   └── .github/QUICK_REFERENCE.txt (quick ref)
     │
     └── AI-specific docs
