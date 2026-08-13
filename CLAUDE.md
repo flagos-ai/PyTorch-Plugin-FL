@@ -195,6 +195,19 @@ Update documentation when:
 
 All documentation must be in English.
 
+### Operator support records
+
+Any change that adds, enables, removes, disables, or reroutes an operator through
+a vendor-native backend or FlagGems must update
+`docs/reference/operator-support.md` for every affected hardware platform in the
+same change. Rerun `tests/manual/flaggems_overload_survey.py` on the affected
+hardware and update the summary, raw evidence, provenance, and update history
+from measured results. Do not infer support from routing configuration alone.
+
+If affected hardware is unavailable, mark its data as **not revalidated** and
+record the evidence gap in both the support report and the PR. Do not silently
+retain old results as though they were measured against the new cohort.
+
 ## Related Documentation
 
 - **CONTRIBUTING.md** - Detailed contribution workflow

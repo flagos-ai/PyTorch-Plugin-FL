@@ -76,6 +76,28 @@ Run FlagGems C++ operators (requires `FLAGGEMS_KERNEL=ON` build + `FLAGOS_USE_FL
 FLAGOS_USE_FLAGGEMS_CPP=1 pytest tests/integration/ops/ -m "flaggems_cpp and main_ops" -v
 ```
 
+### Manual FlagGems Overload Survey
+
+`tests/manual/flaggems_overload_survey.py` measures active FlagGems routes as
+exact ATen overloads on real accelerator hardware. It is a manual survey, not a
+pytest test, and ordinary CI does not invoke it.
+
+Run it with the generic FlagGems routing configuration:
+
+```bash
+python tests/manual/flaggems_overload_survey.py \
+  --conf torch_fl/configs/backends_flaggems.conf \
+  --out /tmp/flaggems-overloads.json
+```
+
+The JSON output contains per-profile evidence and an overload-level summary.
+Running the same command resumes an interrupted survey; pass `--rerun` only when
+existing results should be replaced. Use `--ops` for a comma-separated subset.
+Record the hardware model, torch-fl and FlagGems revisions, configuration hash,
+route-set hash, and harness version/hash with every published result. See
+[Operator Support](../reference/operator-support.md) for the current baseline
+and update procedure.
+
 ### Model Tests
 
 Model integration tests accept command-line options for model path and hyperparameters.
