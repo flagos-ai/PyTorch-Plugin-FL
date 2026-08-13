@@ -109,9 +109,9 @@ _VENDOR_PROFILES = {
     # Ascend: flagos is NOT a cuda alias; native fallback is HCCL. The flagos->
     # npu view is not implemented yet, so only the FlagCX(cann) path is viable.
     "ascend": _VendorProfile("cann", None, "_try_build_hccl"),
-    # MUSA: FlagCX only (identity view lets FlagCX's MUSA adaptor receive
-    # privateuseone tensors directly). No native fallback wired yet.
-    "musa": _VendorProfile("musa", "_flagos_identity_view", None),
+    # MUSA: FlagCX preferred (identity view lets FlagCX's MUSA adaptor receive
+    # privateuseone tensors directly), with MCCL native fallback.
+    "musa": _VendorProfile("musa", "_flagos_identity_view", "_try_build_mccl"),
     # Cambricon: FlagCX only (no cuda alias, no native fallback wired).
     "cambricon": _VendorProfile("mlu", None, None),
 }
@@ -329,6 +329,26 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
         if hccl_cls is None:
             return False
         self._inner = hccl_cls(store, rank, world_size)
+        return True
+
+    def _try_build_mccl(self, store, rank, world_size, timeout) -> bool:
+        """Build a ProcessGroupMCCL via torch_musa (MUSA native fallback).
+
+        Returns True and sets self._inner on success, False if torch_musa / MCCL
+        is unavailable. MCCL is Moore Threads' collective communication library,
+        analogous to NCCL for CUDA. Combined with the identity view, this provides
+        a pure-MUSA distributed path without requiring FlagCX.
+        """
+        try:
+            import torch_musa.distributed  # noqa: F401
+        except ImportError:
+            return False
+        mccl_cls = getattr(torch.distributed, "ProcessGroupMCCL", None) or getattr(
+            torch_musa.distributed, "ProcessGroupMCCL", None
+        )
+        if mccl_cls is None:
+            return False
+        self._inner = mccl_cls(store, rank, world_size)
         return True
 
     def _try_build_flagcx(self, store, rank, world_size, timeout) -> bool:
