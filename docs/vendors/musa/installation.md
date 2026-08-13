@@ -167,7 +167,16 @@ MUSA has no CI runner (no `.github/configs/musa.yml` config exists), so all test
 
 ### Distributed support
 
-Distributed collectives are not validated on MUSA hardware. The architecture recommends the FlagCX-only path unless live evidence proves more. See [`docs/architecture/distributed-flagcx.md`](../../architecture/distributed-flagcx.md).
+**Status**: Implementation complete, multi-card validation pending.
+
+MUSA distributed communication routes through FlagCX via the identity view path. The `_flagos_identity_view` binding passes privateuseone tensors directly to FlagCX's MUSA adaptor without storage conversion, since FlagCX extracts `data_ptr()` and `musaStream_t` without validating `device().type()`.
+
+Single-card unit tests pass. Multi-card verification requires:
+- 2+ MUSA cards
+- FlagCX built with MUSA adaptor enabled
+- `tests/manual/test_comm_device_index.py --world-size 2`
+
+No native MCCL fallback is wired; if FlagCX initialization fails, `init_process_group` will raise. See [`docs/architecture/distributed-flagcx.md`](../../architecture/distributed-flagcx.md) for the ProcessGroupFlagOS routing architecture.
 
 ### Profiler and torch.compile not validated
 
