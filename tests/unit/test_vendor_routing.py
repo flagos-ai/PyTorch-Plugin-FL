@@ -175,9 +175,16 @@ def _make(monkeypatch, vendor, *, flagcx_ok, native_ok, view_present=True):
             self._inner = object()
         return native_ok
 
+    def fake_mccl(self, store, rank, ws, timeout):
+        calls["native"] = True
+        if native_ok:
+            self._inner = object()
+        return native_ok
+
     monkeypatch.setattr(pg.ProcessGroupFlagOS, "_try_build_flagcx", fake_flagcx)
     monkeypatch.setattr(pg.ProcessGroupFlagOS, "_try_build_nccl", fake_nccl)
     monkeypatch.setattr(pg.ProcessGroupFlagOS, "_try_build_hccl", fake_hccl)
+    monkeypatch.setattr(pg.ProcessGroupFlagOS, "_try_build_mccl", fake_mccl)
 
     # Fake torch_fl._C so _resolve_view finds (or misses) the view helper.
     # _resolve_view does `import torch_fl._C as _C`; when torch_fl is already
@@ -232,14 +239,32 @@ def test_musa_flagcx_identity_view(monkeypatch):
     assert view_fn is identity_marker  # identity view resolved
 
 
-def test_musa_flagcx_only_no_native_fallback(monkeypatch):
-    # musa has native=None: if flagcx fails there is nothing to fall back to.
+def test_musa_uses_mccl_native_when_flagcx_unavailable(monkeypatch):
+    # musa has native=_try_build_mccl: if flagcx fails, MCCL is attempted.
     obj, calls, _ = _make(
-        monkeypatch, "musa", flagcx_ok=False, native_ok=True, view_present=False
+        monkeypatch, "musa", flagcx_ok=False, native_ok=True, view_present=True
     )
-    with pytest.raises(RuntimeError, match="none wired"):
+    # Fake the identity view helper
+    identity_marker = object()
+    fake_c = sys.modules["torch_fl._C"]
+    fake_c._flagos_identity_view = identity_marker
+
+    view_fn = obj._build_inner(None, 0, 1, None)
+    assert calls["flagcx"] and calls["native"]  # flagcx tried first, mccl succeeded
+    assert obj._inner is not None
+    assert view_fn is identity_marker  # identity view for MCCL too
+
+
+def test_musa_no_backend_raises(monkeypatch):
+    # Neither FlagCX nor MCCL available -> must raise with clear error.
+    obj, calls, _ = _make(
+        monkeypatch, "musa", flagcx_ok=False, native_ok=False, view_present=True
+    )
+    with pytest.raises(RuntimeError, match="no suitable inner backend"):
         obj._build_inner(None, 0, 1, None)
-    assert not calls["native"]
+    assert calls["flagcx"] and calls["native"]  # both attempted
+
+
 
 
 def test_musa_flagcx_ok_but_identity_view_missing_raises(monkeypatch):
