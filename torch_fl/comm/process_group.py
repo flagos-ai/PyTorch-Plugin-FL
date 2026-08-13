@@ -130,8 +130,10 @@ _VENDOR_PROFILES = {
     # ProcessGroup. Needs the device guard below (GCU streams/pointers are
     # device-scoped).
     "enflame": _VendorProfile("gcu", None, None, direct=True),
-    # MUSA / Cambricon: FlagCX only (no cuda alias, no native fallback wired).
-    "musa": _VendorProfile("musa", None, None),
+    # MUSA: FlagCX only (identity view lets FlagCX's MUSA adaptor receive
+    # privateuseone tensors directly). No native fallback wired yet.
+    "musa": _VendorProfile("musa", "_flagos_identity_view", None),
+    # Cambricon: FlagCX only (no cuda alias, no native fallback wired).
     "cambricon": _VendorProfile("mlu", None, None),
 }
 
