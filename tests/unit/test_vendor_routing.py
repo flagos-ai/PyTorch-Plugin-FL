@@ -226,6 +226,24 @@ def test_no_backend_raises(monkeypatch):
 def test_musa_flagcx_identity_view(monkeypatch):
     """MUSA uses _flagos_identity_view: FlagCX's MUSA adaptor receives
     privateuseone tensors as-is, no storage conversion needed."""
+<<<<<<< HEAD
+=======
+    obj, calls, _ = _make(
+        monkeypatch, "musa", flagcx_ok=True, native_ok=False, view_present=True
+    )
+    # Fake the identity view helper in torch_fl._C
+    identity_marker = object()
+    fake_c = sys.modules["torch_fl._C"]
+    fake_c._flagos_identity_view = identity_marker
+
+    view_fn = obj._build_inner(None, 0, 1, None)
+    assert calls["flagcx"] and not calls["native"]
+    assert view_fn is identity_marker  # identity view resolved
+
+
+def test_musa_flagcx_only_no_native_fallback(monkeypatch):
+    # musa has native=None: if flagcx fails there is nothing to fall back to.
+>>>>>>> 64c1bf7 (feat: distributed collectives via FlagCX identity view)
     obj, calls, _ = _make(
         monkeypatch, "musa", flagcx_ok=True, native_ok=False, view_present=True
     )
@@ -271,9 +289,13 @@ def test_musa_flagcx_ok_but_identity_view_missing_raises(monkeypatch):
     obj, calls, _ = _make(
         monkeypatch, "musa", flagcx_ok=True, native_ok=False, view_present=False
     )
+<<<<<<< HEAD
     with pytest.raises(
         RuntimeError, match=r"torch_fl\._C\._flagos_identity_view not found"
     ):
+=======
+    with pytest.raises(RuntimeError, match=r"torch_fl\._C\._flagos_identity_view not found"):
+>>>>>>> 64c1bf7 (feat: distributed collectives via FlagCX identity view)
         obj._build_inner(None, 0, 1, None)
 
 
