@@ -273,6 +273,20 @@ PyObject* _cuda_to_flagos_view(PyObject* self, PyObject* args) {
   END_HANDLE_TH_ERRORS
 }
 
+PyObject* _flagos_identity_view(PyObject* self, PyObject* arg) {
+  HANDLE_TH_ERRORS
+  TORCH_CHECK(THPVariable_Check(arg), "Expected a tensor argument");
+  // Identity view: return the tensor unchanged. This allows FlagCX's MUSA
+  // adaptor to receive privateuseone tensors directly, bypassing the need for
+  // a zero-copy flagos->musa storage view. FlagCX extracts data_ptr() and the
+  // musaStream_t from the tensor without validating device().type(), so a
+  // privateuseone tensor works as-is. Verified with FlagCX main branch
+  // (flagcx/adaptor/device/musa_adaptor.cc + plugin/torch/flagcx/src/).
+  Py_INCREF(arg);
+  return arg;
+  END_HANDLE_TH_ERRORS
+}
+
 // --- Caching Allocator APIs ---
 
 PyObject* _empty_cache(PyObject* self, PyObject* noargs) {
@@ -357,6 +371,7 @@ static PyMethodDef methods[] = {
     {"_synchronize", _synchronize, METH_NOARGS, nullptr},
     {"_flagos_to_cuda_view", _flagos_to_cuda_view, METH_O, nullptr},
     {"_cuda_to_flagos_view", _cuda_to_flagos_view, METH_VARARGS, nullptr},
+    {"_flagos_identity_view", _flagos_identity_view, METH_O, nullptr},
     {"_empty_cache", _empty_cache, METH_NOARGS, nullptr},
     {"_memory_stats", _memory_stats, METH_O, nullptr},
     {"_memory_allocated", _memory_allocated, METH_O, nullptr},
