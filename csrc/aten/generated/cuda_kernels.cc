@@ -5550,18 +5550,26 @@ at::Tensor PrivUnsafeIndexTensorKernelCuda(const at::Tensor & self, const c10::L
   std::vector<at::Tensor> boxed_holders;
   for (int64_t i = 0; i < static_cast<int64_t>(indices.size()); ++i) {
     auto opt = indices.get(i);
-    if (opt.has_value() && opt->defined()) {
+    if (opt.has_value() && opt->defined() && opt->is_privateuseone()) {
       BoxToCuda(*opt);
       boxed_holders.push_back(*opt);
     }
   }
-  auto result = at::_unsafe_index(self, indices);
-  UnboxToFlagos(self);
-  for (auto& t : boxed_holders) {
-    UnboxToFlagos(t);
+  try {
+    auto result = at::_unsafe_index(self, indices);
+    UnboxToFlagos(self);
+    for (auto& t : boxed_holders) {
+      UnboxToFlagos(t);
+    }
+    UnboxToFlagos(result);
+    return result;
+  } catch (...) {
+    UnboxToFlagos(self);
+    for (auto& t : boxed_holders) {
+      UnboxToFlagos(t);
+    }
+    throw;
   }
-  UnboxToFlagos(result);
-  return result;
 }
 
 at::Tensor PrivUnsafeViewKernelCuda(const at::Tensor & self, at::IntArrayRef size) {
@@ -9850,18 +9858,26 @@ at::Tensor IndexTensorKernelCuda(const at::Tensor & self, const c10::List<::std:
   std::vector<at::Tensor> boxed_holders;
   for (int64_t i = 0; i < static_cast<int64_t>(indices.size()); ++i) {
     auto opt = indices.get(i);
-    if (opt.has_value() && opt->defined()) {
+    if (opt.has_value() && opt->defined() && opt->is_privateuseone()) {
       BoxToCuda(*opt);
       boxed_holders.push_back(*opt);
     }
   }
-  auto result = at::index(self, indices);
-  UnboxToFlagos(self);
-  for (auto& t : boxed_holders) {
-    UnboxToFlagos(t);
+  try {
+    auto result = at::index(self, indices);
+    UnboxToFlagos(self);
+    for (auto& t : boxed_holders) {
+      UnboxToFlagos(t);
+    }
+    UnboxToFlagos(result);
+    return result;
+  } catch (...) {
+    UnboxToFlagos(self);
+    for (auto& t : boxed_holders) {
+      UnboxToFlagos(t);
+    }
+    throw;
   }
-  UnboxToFlagos(result);
-  return result;
 }
 
 at::Tensor IndexAddKernelCuda(const at::Tensor & self, int64_t dim, const at::Tensor & index, const at::Tensor & source, const at::Scalar & alpha) {

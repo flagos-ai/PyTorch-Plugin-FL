@@ -1920,7 +1920,20 @@ def gen_factory(op, fn_type, ret_type, args, func=None):
 
 
 def gen_optlist(op, fn_type, ret_type, args, func=None):
-    """index.Tensor: box self + each defined optional<Tensor> in the list."""
+    """index.Tensor: box self + each defined optional<Tensor> in the list.
+
+    Only PrivateUse1 tensors may be boxed. CPU index tensors are legal in
+    advanced indexing (PyTorch copies them device-side itself), and BoxToCuda
+    rewrites metadata unconditionally -- boxing a host tensor yields a
+    "fake CUDA" tensor whose storage is host memory, which the vendor kernel
+    rejects ("indices should be either on cpu or on the same device...").
+
+    The unbox step must also be exception-safe: if the at:: call throws
+    (out-of-range index, dtype mismatch, ...), every boxed tensor would
+    otherwise keep its forged CUDA metadata and poison all later ops that
+    touch it -- including failure-reporting code that prints such a tensor
+    (observed as a segfault inside pytest's traceback rendering).
+    """
     kn = kernel_name(fn_type)
     self_name = args[0][1]
     list_name = args[1][1]
@@ -1930,18 +1943,26 @@ def gen_optlist(op, fn_type, ret_type, args, func=None):
   std::vector<at::Tensor> boxed_holders;
   for (int64_t i = 0; i < static_cast<int64_t>({list_name}.size()); ++i) {{
     auto opt = {list_name}.get(i);
-    if (opt.has_value() && opt->defined()) {{
+    if (opt.has_value() && opt->defined() && opt->is_privateuseone()) {{
       BoxToCuda(*opt);
       boxed_holders.push_back(*opt);
     }}
   }}
-  auto result = {api}({self_name}, {list_name});
-  UnboxToFlagos({self_name});
-  for (auto& t : boxed_holders) {{
-    UnboxToFlagos(t);
+  try {{
+    auto result = {api}({self_name}, {list_name});
+    UnboxToFlagos({self_name});
+    for (auto& t : boxed_holders) {{
+      UnboxToFlagos(t);
+    }}
+    UnboxToFlagos(result);
+    return result;
+  }} catch (...) {{
+    UnboxToFlagos({self_name});
+    for (auto& t : boxed_holders) {{
+      UnboxToFlagos(t);
+    }}
+    throw;
   }}
-  UnboxToFlagos(result);
-  return result;
 }}"""
 
 
