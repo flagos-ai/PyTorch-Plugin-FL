@@ -93,6 +93,33 @@ Use standard templates:
 
 See `CONTRIBUTING.md` for detailed contribution guidelines.
 
+### Strict upstream branch policy
+
+**Never create, push, update, or delete a feature branch on an upstream repository.**
+Upstream remotes are read-only for feature development, including when the current
+account happens to have write access.
+
+Before pushing any feature branch:
+
+1. Inspect `git remote -v` and identify the contributor fork and the upstream repository.
+2. Push the feature branch only to the contributor fork (normally `origin`):
+   ```bash
+   git push origin <feature-branch>
+   ```
+3. Create the pull request from `<fork-owner>:<feature-branch>` into the upstream
+   repository's `main` branch:
+   ```bash
+   gh pr create \
+     --repo <upstream-owner>/<upstream-repo> \
+     --head <fork-owner>:<feature-branch> \
+     --base main
+   ```
+4. If a feature branch was accidentally created on the upstream repository, stop,
+   report it, and clean it up only as part of an explicitly authorized correction.
+
+Do **not** run `git push <upstream> <feature-branch>` for ordinary development. A
+successful push is not evidence that the push was appropriate.
+
 ## Commit Message Format
 
 All commits should follow this format:
