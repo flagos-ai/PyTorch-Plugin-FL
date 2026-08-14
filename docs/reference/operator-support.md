@@ -125,8 +125,44 @@ Keep the per-overload JSON as the auditable evidence. Do not expand this report
 into a 546-row inventory; the aggregate tables are the maintained human-facing
 record.
 
+## Native Backend Route Changes
+
+The generic FlagGems survey above does not exercise vendor-native routes such as
+`ascend`. Native route changes are tracked here separately so they are not
+misrepresented as part of the 546-overload FlagGems cohort.
+
+### Ascend FSDP2 routes (2026-08-14)
+
+The Ascend backend added or enabled the following FSDP2 paths:
+
+- `_chunk_cat`
+- `_chunk_cat.out`
+- `_foreach_copy_`
+- `split.Tensor`
+- `split_with_sizes`
+- `split_with_sizes_copy.out`
+
+The standard `flaggems_overload_survey.py` harness cannot measure these routes:
+it deliberately selects only `flagos_python` entries. Instead, these native
+routes were exercised end-to-end on two physical Ascend 910 devices with CANN
+9.0 and `ASCEND_RT_VISIBLE_DEVICES=2,3`:
+
+- FlagCX collective test: passed all-reduce, broadcast, all-gather,
+  reduce-scatter, and barrier.
+- DDP test: passed forward, backward, gradient synchronization, and optimizer
+  step (final losses `0.061326` and `0.118651`).
+- FSDP2 test: passed parameter all-gather, gradient reduce-scatter, forward,
+  backward, and optimizer step; each rank produced four finite gradient tensors
+  (final losses `0.044212` and `0.063512`).
+
+The generic FlagGems rows are **not revalidated** by this change because their
+active route cohort is unchanged. The evidence gap is that there is no
+per-overload synthesized survey for vendor-native Ascend routes; the available
+evidence is the targeted FSDP2/DDP/collective workload described above.
+
 ## Update History
 
 | Date | Hardware | Cohort | Change | Evidence |
 |---|---|---|---|---|
+| 2026-08-14 | Ascend 910 (2 devices) | Native Ascend FSDP2 routes | Added `_chunk_cat`, `_chunk_cat.out`, `_foreach_copy_`, `split.Tensor`, `split_with_sizes`, and `split_with_sizes_copy.out`; generic FlagGems cohort not revalidated because it is unchanged. | Manual FlagCX collective, DDP, and FSDP2 tests on CANN 9.0; standard FlagGems harness is not applicable to native routes. |
 | 2026-08-13 | A100, mc550, 810e, bw1000 | torch-fl `fe2272b5`, FlagGems `7fb49bad`, harness v4 | Established the verified 546-overload four-platform baseline. | Manual survey JSON; aggregate and raw counts recorded above. |
