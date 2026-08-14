@@ -2380,9 +2380,15 @@ def main():
             # (3) DTK triton cannot compile the gems kernel
             "gcd",
             "gcd.out",
-            # (4) wrong numerics on the gems path
+            # (4) wrong numerics or memory safety on the gems path
             "adaptive_max_pool3d_backward",
             "leaky_relu_",
+            # layer_norm_backward assumes a 2-D input and computes M from
+            # input.shape[0] instead of normalized_shape. For 3-D transformer
+            # inputs this makes the weight/bias gradient kernel write past its
+            # outputs; keep the operation on the CUDA boxing path until the
+            # upstream FlagGems fix lands.
+            "native_layer_norm_backward",
         }
 
         # backends_flaggems.conf: same cuda routes, but the auto-discovered
