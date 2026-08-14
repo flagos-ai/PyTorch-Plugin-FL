@@ -283,7 +283,7 @@ class Stream(torch.cuda.Stream):
         # On Ascend with no CUDA, __new__ returns object.__new__(cls) and we need
         # a full native implementation. Import ACL late to avoid crashing on CUDA.
         if not hasattr(torch._C, "_cuda_getCurrentStream"):
-            from torch_fl.csrc.aten.backends.ascend.acl_stream import AclStream
+            from torch_fl.accelerator.ascend.acl_stream import AclStream
 
             self._stream = AclStream(device, priority)
             # Set device attribute for __repr__ compatibility with torch.cuda.Stream
@@ -384,7 +384,7 @@ def _real_current_stream(device=None):
     """
     idx = current_device() if device is None else int(device)
     if not hasattr(torch._C, "_cuda_getCurrentStream"):
-        from torch_fl.csrc.aten.backends.ascend.acl_stream import current_acl_stream
+        from torch_fl.accelerator.ascend.acl_stream import current_acl_stream
 
         try:
             return current_acl_stream(idx)
@@ -447,7 +447,7 @@ class Event(torch.cuda.Event):
         if not hasattr(torch._C, "_cuda_getCurrentStream"):
             try:
                 obj = object.__new__(cls)
-                from torch_fl.csrc.aten.backends.ascend.acl_stream import AclEvent
+                from torch_fl.accelerator.ascend.acl_stream import AclEvent
 
                 obj._event = AclEvent(
                     enable_timing=enable_timing,
@@ -533,7 +533,7 @@ def stream(s):
 
     # On Ascend with no CUDA, switch the thread-local ACL stream registry.
     if not hasattr(torch._C, "_cuda_setStream"):
-        from torch_fl.csrc.aten.backends.ascend.acl_stream import AclStream
+        from torch_fl.accelerator.ascend.acl_stream import AclStream
 
         native = getattr(s, "_stream", s)
         if isinstance(native, AclStream):
