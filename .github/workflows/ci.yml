@@ -16,21 +16,35 @@ name: CI
 
 on:
   push:
-    branches: [main, dev, devops]
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
-      - "LICENSE"
-      - ".github/ISSUE_TEMPLATE/**"
-      - ".github/PULL_REQUEST_TEMPLATE.md"
+    branches: [main, dev, devops, dev-hygon]
+    paths:
+      - "cmake/**"
+      - "csrc/**"
+      - "include/**"
+      - "scripts/**"
+      - "tests/**"
+      - "torch_fl/**"
+      - "CMakeLists.txt"
+      - "pyproject.toml"
+      - "setup.py"
+      - ".github/configs/**"
+      - ".github/scripts/**"
+      - ".github/workflows/**"
   pull_request:
-    branches: [main, dev, devops]
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
-      - "LICENSE"
-      - ".github/ISSUE_TEMPLATE/**"
-      - ".github/PULL_REQUEST_TEMPLATE.md"
+    branches: [main, dev, devops, dev-hygon]
+    paths:
+      - "cmake/**"
+      - "csrc/**"
+      - "include/**"
+      - "scripts/**"
+      - "tests/**"
+      - "torch_fl/**"
+      - "CMakeLists.txt"
+      - "pyproject.toml"
+      - "setup.py"
+      - ".github/configs/**"
+      - ".github/scripts/**"
+      - ".github/workflows/**"
   workflow_dispatch:
 
 concurrency:

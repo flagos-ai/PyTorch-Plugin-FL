@@ -1,0 +1,132 @@
+# Operator Support
+
+This reference records measured operator coverage for torch-fl accelerator
+backends. The current baseline measures the generic FlagGems Python routing
+surface on four hardware platforms. It is an availability and correctness
+survey, not a claim of complete PyTorch conformance, autograd coverage, or
+performance quality.
+
+The measurement unit is an active, unique, exact ATen overload such as
+`sum.dim_IntList`. It is different from an OpInfo base operation, so historical
+OpInfo totals such as 158 must not be compared with the 546-overload denominator
+below.
+
+Routing-table presence alone is not proof that an overload executes correctly.
+Conversely, an overload without a direct route may still execute through a
+composite decomposition or fallback. See the [Compatibility Matrix](compatibility.md),
+[unrouted operator analysis](../vendors/flaggems/unrouted-ops.md), and
+[no-dispatcher analysis](../vendors/flaggems/no-dispatcher-analysis.md) for those
+separate concerns.
+
+## Verdicts
+
+The manual survey first rejects synthesized invocations that are invalid on the
+CPU reference. It then classifies each overload from the remaining valid cases:
+
+| Verdict | Definition |
+|---|---|
+| `STRICT` | Every CPU-valid synthesized case passed on the target hardware. |
+| `BASIC_ONLY` | At least one CPU-valid case passed, but one or more other valid cases failed. |
+| `FAILED` | Valid cases existed and none passed. |
+| `UNTESTED` | No CPU-valid synthesized case existed; this is neither a pass nor a failure. |
+
+**Basic executable** is `STRICT + BASIC_ONLY`.
+
+`PASS`, `INVALID_CASE`, `UNVERIFIABLE`, `ERROR`, `WRONG`, `CRASH`, and
+`TIMEOUT` are case-level statuses, not additional operator verdicts.
+`INVALID_CASE` and `UNVERIFIABLE` are excluded from support classification.
+
+## Baseline Cohort
+
+All hardware rows in this baseline use the same active route set and survey
+methodology. These revisions identify the measured cohort; they do not describe
+the current repository HEAD.
+
+| Field | Value |
+|---|---|
+| torch-fl source | `fe2272b5fd1313eff00017c3f8242afe6c9a2cf6` |
+| FlagGems source | `7fb49bad47116434961bfb2b912811716d383eaf` |
+| Generic config | `torch_fl/configs/backends_flaggems.conf` |
+| Generic config SHA-256 | `f97686deec8aa4863ecd04d359960804cbdf5862d27449e6345e3451512db9d8` |
+| Active route-set SHA-256 | `8a1649e79ef7c419c050d65465c46dcf25575303c74d61dc194c5838ea847456` |
+| Survey harness | `tests/manual/flaggems_overload_survey.py`, version 4 |
+| Survey harness SHA-256 | `2354d4f76a6b37831492979dae25b9318cbe94fb48e08cdf100a4cab09cebd13` |
+| FlagGems `_FULL_CONFIG` entries | 866 |
+| Generated Python routes | 572 |
+| Active surveyed routes | 546 |
+| Forced CUDA fallbacks | 26 |
+| Profiles per overload | 7 |
+
+Full generation discovers 572 Python routes. The generic production
+configuration activates 546 as `flagos_python` and forces 26 to CUDA fallback,
+which explains the 546-route survey denominator.
+
+## Hardware Summary
+
+Rates use all 546 active routes as the denominator and are rounded to one
+decimal place.
+
+| Hardware | Total | STRICT | BASIC_ONLY | FAILED | UNTESTED | Basic executable | Basic rate | Strict rate |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| NVIDIA A100 | 546 | 348 | 54 | 46 | 98 | 402 | 73.6% | 63.7% |
+| MetaX mc550 | 546 | 260 | 33 | 155 | 98 | 293 | 53.7% | 47.6% |
+| PPU 810e | 546 | 347 | 54 | 47 | 98 | 401 | 73.4% | 63.6% |
+| Hygon DCU bw1000 | 546 | 321 | 53 | 74 | 98 | 374 | 68.5% | 58.8% |
+
+For every row, `STRICT + BASIC_ONLY + FAILED + UNTESTED = Total`, and
+`Basic executable = STRICT + BASIC_ONLY`.
+
+## Raw Case Evidence
+
+These counts cover seven synthesized profiles per overload. They are case-level
+data and therefore do not share the 546-overload denominator of the hardware
+summary.
+
+| Hardware | PASS | INVALID_CASE | UNVERIFIABLE | ERROR | WRONG | CRASH | TIMEOUT | Context poison |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| NVIDIA A100 | 2163 | 1309 | 0 | 184 | 152 | 14 | 0 | 0 |
+| MetaX mc550 | 1597 | 1309 | 0 | 812 | 90 | 14 | 0 | 0 |
+| PPU 810e | 2158 | 1305 | 0 | 184 | 154 | 21 | 0 | 0 |
+| Hygon DCU bw1000 | 2016 | 1309 | 0 | 337 | 146 | 14 | 0 | 0 |
+
+The bw1000 baseline excludes 108 initial records that failed before operator
+execution because the child process could not load its MPI runtime. Exactly
+those routes were rerun with the correct runtime environment; the corrected
+result has 14 remaining `CRASH` cases, all return code `-11`.
+
+## Reproducing and Updating the Report
+
+Run the manual survey on each target hardware platform:
+
+```bash
+python tests/manual/flaggems_overload_survey.py \
+  --conf torch_fl/configs/backends_flaggems.conf \
+  --out /tmp/flaggems-overloads.json
+```
+
+When operator routing or implementation changes:
+
+1. Run from an identified torch-fl revision with an identified FlagGems
+   revision on every affected hardware platform.
+2. Record the exact hardware model, run date, source revisions, configuration
+   SHA-256, active route-set SHA-256, and harness version/SHA-256.
+3. Keep the active route set fixed for cross-hardware comparisons. If cohorts
+   differ, label that difference explicitly rather than presenting the rows as
+   directly comparable.
+4. Recompute the four overload verdicts centrally from raw cases. Do not treat
+   `CRASH` or `TIMEOUT` as operator verdicts and do not infer support from a
+   configured route.
+5. Update both tables, verify their arithmetic, and append an update-history
+   entry describing the affected hardware and evidence.
+6. If hardware is unavailable, mark the affected row **not revalidated** and
+   document the evidence gap in this report and the PR.
+
+Keep the per-overload JSON as the auditable evidence. Do not expand this report
+into a 546-row inventory; the aggregate tables are the maintained human-facing
+record.
+
+## Update History
+
+| Date | Hardware | Cohort | Change | Evidence |
+|---|---|---|---|---|
+| 2026-08-13 | A100, mc550, 810e, bw1000 | torch-fl `fe2272b5`, FlagGems `7fb49bad`, harness v4 | Established the verified 546-overload four-platform baseline. | Manual survey JSON; aggregate and raw counts recorded above. |

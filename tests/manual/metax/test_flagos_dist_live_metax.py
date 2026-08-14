@@ -15,7 +15,7 @@
 """Live multi-GPU test for ProcessGroupFlagOS on MetaX (run on the 8xC550 box).
 
 This is the MetaX counterpart of ../test_flagos_dist_live.py. It validates the
-metax comm path documented in docs/distributed_flagcx_plan.md:
+metax comm path documented in docs/architecture/distributed-flagcx.md:
 
   * GEMS_VENDOR=metax  -> _VENDOR_PROFILES["metax"] = (flagcx_dev="cuda",
     view="_flagos_to_cuda_view", native="_try_build_nccl").

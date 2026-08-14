@@ -180,3 +180,49 @@ def test_missing_outer_context_degrades_to_no_freezing():
         )
 
     assert captured["frozen"] == {}
+
+
+def test_identifies_weights_when_dynamo_keeps_them_on_the_module():
+    """Freezing mode hands weights over as module attributes, not inputs.
+
+    `is_parameter_freezing()` -- inductor's config.freezing with grad off -- is
+    what makes Dynamo guard on parameter identity, which the BPU backend needs
+    because it bakes weights into the artifact. In that mode the weights never
+    reach `_OUTER_INPUTS`, and an index-only lookup finds nothing: every weight
+    then crosses the boundary on each call, which is far slower than eager.
+    """
+    prior = torch._inductor.config.freezing
+    torch._dynamo.reset()
+    torch._inductor.config.freezing = True
+    try:
+        cap = _capture(ConvBN().eval(), torch.randn(1, 3, 16, 16))
+    finally:
+        torch._inductor.config.freezing = prior
+        torch._dynamo.reset()
+
+    assert len(cap["frozen"]) == 8
+    for t in cap["frozen"].values():
+        assert isinstance(t, torch.Tensor)
+        assert not t.is_meta
+
+
+def test_frozen_weights_line_up_with_their_placeholders():
+    """A shape mismatch here means the artifact is built with shuffled weights.
+
+    The freezing-mode path pairs placeholders with tensors positionally, so this
+    is the property that catches an off-by-one or a reversed order.
+    """
+    prior = torch._inductor.config.freezing
+    torch._dynamo.reset()
+    torch._inductor.config.freezing = True
+    try:
+        cap = _capture(ConvBN().eval(), torch.randn(1, 3, 16, 16))
+    finally:
+        torch._inductor.config.freezing = prior
+        torch._dynamo.reset()
+
+    gm, frozen = cap["gm"], cap["frozen"]
+    for node in gm.graph.nodes:
+        if node.op == "placeholder" and node.name in frozen:
+            assert tuple(node.meta["val"].shape) == tuple(frozen[node.name].shape)
+            assert node.meta["val"].dtype == frozen[node.name].dtype

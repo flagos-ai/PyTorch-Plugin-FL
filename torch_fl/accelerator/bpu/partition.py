@@ -68,6 +68,15 @@ _SUPPORTED: set[Callable | str] = {
     torch.ops.aten.div.Tensor,
     torch.ops.aten.add_.Tensor,
     torch.ops.aten.mul_.Tensor,
+    # RMSNorm, which every recent LLM uses in place of LayerNorm. hbdk4 lowers
+    # the lot to b30vpu (`pow` -> Pow, `rsqrt` -> Sqrt+Div in ONNX): checked
+    # with convert(advice=True), 6 ops, zero CPU fallbacks. Without these two a
+    # transformer block splits at every norm -- 86% coverage and two partitions
+    # where one will do.
+    torch.ops.aten.pow.Tensor_Scalar,
+    torch.ops.aten.rsqrt.default,
+    torch.ops.aten.sqrt.default,
+    torch.ops.aten.neg.default,
     # shape
     torch.ops.aten.view.default,
     torch.ops.aten.reshape.default,
@@ -78,9 +87,19 @@ _SUPPORTED: set[Callable | str] = {
     torch.ops.aten.contiguous.default,
     torch.ops.aten.squeeze.dim,
     torch.ops.aten.unsqueeze.default,
+    # `slice` is how attention takes its causal window and how any model that
+    # indexes a cache reads it. Without it a transformer fragments at every
+    # slice; with it decode and prefill are each a single partition.
+    torch.ops.aten.slice.Tensor,
+    # `expand` is what AOTAutograd inserts ahead of a batched matmul to
+    # broadcast the operands; ONNX Expand covers it exactly. `_unsafe_view`
+    # and `t` are rewritten to `view`/`transpose` by decompose.py rather than
+    # listed here, because the exporter has no symbolic for either.
+    torch.ops.aten.expand.default,
     # misc
     torch.ops.aten.softmax.int,
-    torch.ops.aten._softmax.default,
+    # `_softmax` stays out: it has no ONNX symbolic. decompose.py rewrites it
+    # to softmax.int before this runs.
     torch.ops.aten.clone.default,
 }
 

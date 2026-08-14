@@ -21,7 +21,7 @@
 // uses the musa* spelling of the same API.
 #include <musa_runtime.h>
 #endif
-#include <include/flagos.h>
+#include <flagos.h>
 
 #include "generator.h"
 #include "host_allocator.h"

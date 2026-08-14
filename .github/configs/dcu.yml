@@ -1,0 +1,99 @@
+# Copyright 2026 FlagOS Contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+display_name: Hygon DCU
+
+# Platform-specific preparation is implemented outside the common workflows.
+setup_script: .github/scripts/set_env_dcu.sh
+
+# Pinned CI image: the base flagos image plus python3.10-venv and patchelf
+# (set_env_dcu.sh needs both; the base image ships neither). Built locally on
+# a DCU host from Dockerfile.dcu-fix and pushed to harbor as manual-<date>-dcu.
+ci_image: harbor.baai.ac.cn/flagos-dev/pytorch-plugin-fl:manual-20260810-dcu-dev
+
+runner_labels:
+  - hg-8g-cicd-pytorch
+
+# Bind-mount the host hyhal driver into the container. libhydmi.so (Hygon DMI
+# device management) and its sibling driver libs live here on the host, not in
+# the flagos image; set_env_dcu.sh probes /usr/local/hyhal/lib and prepends it
+# to LD_LIBRARY_PATH so flagos device init can dlopen libhydmi.so. Mount the
+# real path /usr/local/hyhal (not the /opt/hyhal symlink) -- docker does not
+# follow a symlink bind source. The runner host installs hyhal at the same
+# standard layout as any DCU box, so the source path is portable across hosts.
+container_volumes:
+  - /usr/local/hyhal:/usr/local/hyhal:ro
+
+integration_environment: {}
+
+# DCU is non-NVIDIA: expose the /dev/kfd and /dev/dri device nodes through
+# --privileged (mirrors the MetaX layout) instead of --gpus all.
+container_options: >-
+  --privileged
+  --ipc=host
+  --shm-size=512g
+  --ulimit memlock=-1
+  --cap-add=SYS_PTRACE
+
+timeout_minutes: 60
+wheel_artifact_name: wheel-dcu
+# Keep DCU integration self-contained; transferring the bundled libtorch wheel
+# through the Actions artifact service can exceed the self-hosted runner job
+# timeout.
+integration_wheel_source: local-build
+
+# The common workflow only executes this platform-provided test manifest.
+# DCU is a boxing build (DTK torch is hipified, HIP kernels live under the CUDA
+# dispatch key), so the vendor backend path and the FlagGems runtime path
+# (backends_dcu_flaggems.conf, DTK triton hcu + cuda boxing fallback) mirror
+# CUDA's manifest. Inference/training are deferred until the runner has a model
+# mount and the first CI run confirms the card count.
+integration_tests:
+  - name: Check device availability
+    command: |
+      python - <<'PY'
+      from pathlib import Path
+
+      import torch_fl
+      import torch
+
+      torch_path = Path(torch.__file__).resolve()
+      package_lib = Path(torch_fl.__file__).resolve().parent / "lib"
+
+      assert torch.version.cuda is None, torch.version.cuda
+      assert "/opt/conda/" not in str(torch_path), torch_path
+      assert (package_lib / "libtorch_fl.so").is_file(), package_lib
+      assert torch_fl.flagos.is_available(), "flagos device is unavailable"
+      assert torch_fl.flagos.device_count() > 0, torch_fl.flagos.device_count()
+      print(f"CPU PyTorch: {torch.__version__}")
+      print(f"torch path: {torch_path}")
+      print(f"DCU assets: {package_lib}")
+      print(f"flagos devices: {torch_fl.flagos.device_count()}")
+      PY
+  - name: Run operator tests (vendor backend, main ops)
+    command: >-
+      python -m pytest tests/integration/ops/
+      -m "main_ops and not flaggems_python and not flaggems_cpp"
+      -v -s --tb=short
+  - name: Run operator tests (FlagGems runtime path, main ops)
+    command: >-
+      FLAGOS_USE_FLAGGEMS=1
+      python -m pytest tests/integration/ops/
+      -m "flaggems and main_ops" -v -s --tb=short
+  - name: Run general tests
+    command: python -m pytest tests/integration/test_factory_ops.py -v -s --tb=short
+  - name: Profiler parity test
+    command: >-
+      python -m pytest tests/integration/test_profiler_parity.py
+      -v -m main_ops --tb=short

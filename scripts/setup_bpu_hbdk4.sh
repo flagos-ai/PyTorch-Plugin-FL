@@ -104,7 +104,7 @@ MARCH_WHL=("${WHEELS}"/hbdk4_march-*x86_64.whl)
 shopt -u nullglob
 if [[ ${#COMPILER_WHL[@]} -eq 0 ]]; then
   echo "no hbdk4_compiler cp311 x86_64 wheel in ${WHEELS}" >&2
-  echo "get it from the D-Robotics OE package; see docs/bpu.md" >&2
+  echo "get it from the D-Robotics OE package; see docs/vendors/bpu/integration.md" >&2
   exit 1
 fi
 

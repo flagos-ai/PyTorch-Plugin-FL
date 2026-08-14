@@ -32,6 +32,16 @@ list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/runtime/accelerator/.*")
 # stream_api is built as a separate shared lib
 list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/runtime/accelerator/ascend/stream_api\\.cc")
 
+# Profiler device tracer selection: exclude the wrong tracer based on ACCELERATOR.
+# CUPTI tracer is for CUDA/NVIDIA; ROCtracer is for DCU/AMD; everything else gets
+# the stub (neither). Both tracer files implement the same MakeDeviceTracer() factory,
+# so only one can be in the build.
+if(ACCELERATOR STREQUAL "dcu")
+  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/profiler/cupti_device_tracer\\.cc$")
+else()
+  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/profiler/roctracer_device_tracer\\.cc$")
+endif()
+
 # Exclude backend kernel directories based on options
 if(NOT CUDA_KERNEL)
   list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/aten/backends/cuda/.*")
@@ -183,6 +193,58 @@ else()
   message(STATUS "cuda_occupancy.h NOT found; kernel occupancy fields will be omitted")
 endif()
 
+# ROCtracer headers for DCU profiler support. Similar to CUPTI above, we only
+# need headers at build time; runtime symbols are resolved via dlopen.
+#
+# ROCtracer ships with the DTK (DCU ToolKit) at /opt/dtk. The headers live in
+# /opt/dtk/roctracer/include, and the library is at /opt/dtk/lib/libroctracer64.so.
+# Unlike CUPTI's version-sensitivity, ROCtracer 4.1 is stable across DTK releases.
+if(ACCELERATOR STREQUAL "dcu")
+  find_path(ROCTRACER_INCLUDE_DIR
+    NAMES roctracer.h
+    PATHS
+      $ENV{ROCM_PATH}/roctracer/include
+      $ENV{DTK_ROOT}/roctracer/include
+      /opt/dtk/roctracer/include
+      /opt/rocm/roctracer/include
+    NO_DEFAULT_PATH)
+  find_path(ROCTRACER_INCLUDE_DIR
+    NAMES roctracer.h
+    PATHS
+      /opt/dtk/roctracer/include
+      /opt/rocm/roctracer/include)
+
+  if(ROCTRACER_INCLUDE_DIR)
+    target_include_directories(${LIBRARY_NAME} PRIVATE ${ROCTRACER_INCLUDE_DIR})
+    target_compile_definitions(${LIBRARY_NAME} PRIVATE FLAGOS_HAVE_ROCTRACER=1)
+    target_compile_definitions(${LIBRARY_NAME} PRIVATE __HIP_PLATFORM_AMD__=1)
+    message(STATUS "roctracer.h found: ${ROCTRACER_INCLUDE_DIR}")
+
+    # Find the roctracer library for linking
+    find_library(ROCTRACER_LIBRARY
+      NAMES roctracer64
+      PATHS
+        $ENV{ROCM_PATH}/lib
+        $ENV{DTK_ROOT}/lib
+        /opt/dtk/lib
+        /opt/rocm/lib
+      NO_DEFAULT_PATH)
+    find_library(ROCTRACER_LIBRARY
+      NAMES roctracer64
+      PATHS
+        /opt/dtk/lib
+        /opt/rocm/lib)
+
+    if(ROCTRACER_LIBRARY)
+      message(STATUS "libroctracer64.so found: ${ROCTRACER_LIBRARY}")
+    else()
+      message(WARNING "libroctracer64.so NOT found; profiler may fail at runtime")
+    endif()
+  else()
+    message(STATUS "roctracer.h NOT found; DCU profiler will be unavailable")
+  endif()
+endif()
+
 # Build stream_api as a standalone shared lib so liboperators.so can resolve it at runtime
 if(FLAGGEMS_KERNEL AND ACCELERATOR STREQUAL "ascend")
   add_library(stream_api SHARED "${CMAKE_CURRENT_SOURCE_DIR}/runtime/accelerator/ascend/stream_api.cc")
@@ -276,6 +338,10 @@ elseif(ACCELERATOR STREQUAL "dcu")
   # delegation -- the DCU wheel exports c10::hip, not c10::cuda).
   target_compile_definitions(${LIBRARY_NAME} PRIVATE USE_DCU=1)
   target_link_libraries(${LIBRARY_NAME} PRIVATE ${_torch_fl_link_libs})
+  # Link roctracer library for profiler support
+  if(ROCTRACER_LIBRARY)
+    target_link_libraries(${LIBRARY_NAME} PRIVATE ${ROCTRACER_LIBRARY})
+  endif()
 elseif(ACCELERATOR STREQUAL "musa")
   target_compile_definitions(${LIBRARY_NAME} PRIVATE USE_MUSA=1)
   target_link_libraries(${LIBRARY_NAME} PRIVATE ${_torch_fl_link_libs})

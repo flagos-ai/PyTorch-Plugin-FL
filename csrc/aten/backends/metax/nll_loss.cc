@@ -2,7 +2,7 @@
 
 #include "../../nll_loss.h"
 
-#include <include/flagos.h>
+#include <flagos.h>
 
 #include <c10/core/DispatchKey.h>
 

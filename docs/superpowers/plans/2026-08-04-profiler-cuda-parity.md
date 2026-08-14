@@ -12,10 +12,10 @@
 
 - Worktree: `profiler-support`, branch `worktree-profiler-support`
 - Build env: `torch-fl-211` conda env (2.11.0+cpu + external libtorch_cuda cu12.8)
-- Build: `export CUDA_HOME=/usr/local/cuda-13.0; cmake --build build --target install`
+- Build: set `CUDA_HOME` to the local CUDA toolkit, then run `cmake --build build --target install`
 - Test: `PYTHONPATH=$(pwd) bash scripts/with_cuda_libtorch.sh python -m pytest ...`
 - Git: `git -c user.name=lvyufeng -c user.email=lvyufeng@cqu.edu.cn commit`
-- Network: `source /nfs/lvyufeng/proxy.sh` before any GitHub operation
+- Network: load the locally configured proxy, if needed, before GitHub operations
 - CMake: uses `GLOB_RECURSE` — new files auto-included, deleted files need `rm -rf build; cmake -B build`
 
 ---
@@ -201,8 +201,7 @@ In `flagos_cupti_profiler.cc` `bufferCompleted` function, after the memcpy parsi
 - [ ] **Step 4: Rebuild and run verification**
 
 ```bash
-cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support
-export CUDA_HOME=/usr/local/cuda-13.0
+export CUDA_HOME="${CUDA_HOME:?set CUDA_HOME to the CUDA toolkit root}"
 export PATH=$CUDA_HOME/bin:$PATH
 export CPLUS_INCLUDE_PATH=$CUDA_HOME/targets/x86_64-linux/include:$CPLUS_INCLUDE_PATH
 
@@ -363,8 +362,7 @@ After existing includes at top of file (line ~16):
 
 ```bash
 conda activate torch-fl-211
-cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support
-export CUDA_HOME=/usr/local/cuda-13.0
+export CUDA_HOME="${CUDA_HOME:?set CUDA_HOME to the CUDA toolkit root}"
 cmake --build build --target install
 ```
 
@@ -803,8 +801,7 @@ Delete the `StubCuptiTracer` class and `MakeDeviceTracer` factory added in Task 
 
 ```bash
 conda activate torch-fl-211
-cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/profiler-support
-export CUDA_HOME=/usr/local/cuda-13.0
+export CUDA_HOME="${CUDA_HOME:?set CUDA_HOME to the CUDA toolkit root}"
 cmake --build build --target install
 ```
 

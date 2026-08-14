@@ -7,7 +7,7 @@
 #include <c10/core/Allocator.h>
 #include <ATen/core/TensorBase.h>
 
-#include <include/flagos.h>
+#include <flagos.h>
 
 namespace c10::flagos {
 

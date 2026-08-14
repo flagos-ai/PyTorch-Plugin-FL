@@ -358,11 +358,23 @@ class TestRngMultiDevice:
     @pytest.mark.main_ops
     def test_each_device_has_its_own_generator(self):
         dev = self._second_device()
-        assert len(torch.cuda.default_generators) >= 2
+        # Same empty-backend guard as test_default_generators_populated above:
+        # a backend whose kernels seed from the default CPU generator
+        # (Ascend/aclnn) has no per-device CUDA generator to hold distinct, and
+        # `torch.cuda.default_generators` is legitimately empty there. Without
+        # this the `>= 2` assert below is `assert 0 >= 2` on every such backend,
+        # which contradicts the sibling test's stance within the same file.
+        gens = torch.cuda.default_generators
+        if len(gens) == 0:
+            pytest.skip(
+                "no CUDA generator on this backend; RNG kernels seed from the "
+                "default CPU generator instead (see torch_fl.flagos.default_generators)"
+            )
+        assert len(gens) >= 2
         # Same seed on both devices: the draws are allowed to coincide (identical
         # philox inputs), but the generators must be distinct objects, or seeding
         # one device would silently reset another.
-        assert torch.cuda.default_generators[0] is not torch.cuda.default_generators[1]
+        assert gens[0] is not gens[1]
         torch.manual_seed(SEED)
         d0 = torch.randn(64, device=DEVICE).cpu()
         torch.manual_seed(SEED)

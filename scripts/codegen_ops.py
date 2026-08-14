@@ -397,6 +397,34 @@ def _flaggems_kwonly_names(fn):
     return {p.name for p in params if p.kind == p.KEYWORD_ONLY}
 
 
+def _flaggems_required_kwonly(fn):
+    """Set of keyword-only params of a gems function that have NO default, i.e.
+    the ones a call MUST supply by name or Python raises TypeError.
+
+    Returns None when the signature can't be inspected, so callers can tell
+    "no required kwonly" (empty set) apart from "don't know" and fail closed.
+
+    Every arity gate here counts POSITIONAL params only, so a signature like
+    `sum_out(inp, *, dtype=None, out)` passes an npos check while the call the
+    codegen emits omits `out` entirely -- gems then raises "missing 1 required
+    keyword-only argument: 'out'" at run time. FlagGems master has 32 such
+    `*_out` functions, so this is the rule, not an outlier: the out-variant path
+    below matches them BY NAME against the aten out args and forwards them as
+    kwargs, and every other path rejects the op rather than emitting a call that
+    cannot succeed."""
+    import inspect
+
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (ValueError, TypeError):
+        return None
+    return {
+        p.name
+        for p in params
+        if p.kind == p.KEYWORD_ONLY and p.default is inspect.Parameter.empty
+    }
+
+
 # aten types the keyword-arg forwarding path can express. ScalarType IS allowed
 # here (unlike the positional _FLAGGEMS_GENERIC_OK set): the codegen tags a dtype
 # kwarg so the caller converts it to a torch.dtype by name, sidestepping the
@@ -416,10 +444,16 @@ _FLAGGEMS_KWARG_OK = {
     "str?",
     "SymInt",
     "SymInt?",
+    # Tensor: only ever produced by the out_variant_gemskwout path below, which
+    # forwards an aten `out` arg into a gems required keyword-only tensor param.
+    # BuildPyKwargs -> IValueToPython already handles isTensor(), so no C++
+    # change is needed. Not reachable from _flaggems_split_kwargs: that path
+    # only ever moves TRAILING aten args, and out args are never trailing.
+    "Tensor",
 }
 
 
-def _flaggems_extra_trailing_ok(fn, ncall):
+def _flaggems_extra_trailing_ok(fn, ncall, out_names=()):
     """True if a gems function with more positional params than the `ncall` args
     we intend to pass can be safely called with exactly `ncall` positional args.
 
@@ -429,6 +463,13 @@ def _flaggems_extra_trailing_ok(fn, ncall):
     interleaved. This rejects the reordering trap (e.g. gems gather inserts
     `out=None` at position 3, so aten's 4th arg `sparse_grad` would land in the
     `out` tensor slot). Returns False if uninspectable.
+
+    `out_names` are the aten out arg names for an out-variant. A trailing param
+    matching one of them is never droppable even though it has a default: gems
+    writes `out=None` defaults it cannot honor (`logit_out(input, eps=None,
+    out=None)` raises "logit_out requires an 'out' tensor" the moment it is
+    omitted, and softshrink_out does the same). Refusing here lets the caller
+    fall through to the gemsout branch, which passes the tensor positionally.
     """
     import inspect
 
@@ -439,9 +480,10 @@ def _flaggems_extra_trailing_ok(fn, ncall):
     pos = [p for p in params if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
     if len(pos) < ncall:
         return False
-    # Every gems param beyond the ones we pass must have a default.
+    # Every gems param beyond the ones we pass must have a default, and must not
+    # be an out param we are on the hook for supplying.
     for p in pos[ncall:]:
-        if p.default is inspect.Parameter.empty:
+        if p.default is inspect.Parameter.empty or p.name in out_names:
             return False
     # The first `ncall` gems params (which receive our aten args positionally)
     # must not include a param named `out`: that would mean gems expects `out`
@@ -512,10 +554,10 @@ _FLAGGEMS_RNG_DROPGEN = {"multinomial"}
 # Ops manually held out of the FlagGems Python path (populated during the
 # compile/import/numerical convergence loop with the reason as a comment).
 FLAGGEMS_PYTHON_SKIP = {
-    # Required `out=` kwarg with no default: flag_gems `mm_out(a, b, *, out)`
-    # forces out, but the generic positional caller cannot supply it, so the
-    # kernel would raise. (7 other out-variants take out=None and are fine.)
-    "mm.out",
+    # mm.out used to live here: gems `mm_out(a, b, *, out)` forces `out` and the
+    # positional caller could not supply it. The out_variant_gemskwout category
+    # forwards required keyword-only out params by name, so it is routed now --
+    # along with the other 30-odd gems `*_out` functions that share the shape.
     # Unconditional `assert X.device.type == device` where device == "cuda":
     # flagos tensors are genuinely PrivateUse1 ("privateuseone"), so the assert
     # can never pass without abandoning the boxing scheme. Op-specific to these.
@@ -581,6 +623,12 @@ def discover_flaggems_ops(codegen_ops, funcs):
       - ARITY gate (guards the silent "dropped trailing scalar" trap):
           functional_pure/inplace/tuple_return: gems npos == #aten args.
           out_variant: gems npos == #aten NON-out args (gems doesn't take `out`).
+      - REQUIRED-KEYWORD gate: the arity gates above count positional params
+        only, so a gems function with a required keyword-only param would pass
+        them and then raise TypeError on every call. An out-variant whose
+        required kwonly names match the aten out args is routed via
+        out_variant_gemskwout (they are forwarded by name); anything else is
+        rejected.
       - every arg passed to the gems function has a generic-caller-covered type.
     """
 
@@ -746,11 +794,55 @@ def discover_flaggems_ops(codegen_ops, funcs):
             qualname = _normalize_gems_qualname(fn)
             result[op] = (qualname, "factory", positional)
             continue
+        # Required keyword-only gems params. Every arity gate below counts
+        # POSITIONAL params only, so a signature like
+        # `sum_out(inp, *, dtype=None, out)` sails through them while the call
+        # the codegen emits omits `out` -> TypeError on every invocation.
+        #
+        # A required kwonly is fine as long as SOMETHING ends up forwarding it,
+        # so this is not decided here: it is enforced once at the bottom, after
+        # every branch has filled in `kwargs`. That keeps ops the existing kwarg
+        # path already covers (sort.stable's required `stable`) working, and
+        # only drops the ones nothing supplies. `None` = uninspectable, which no
+        # branch can reason about -> reject outright.
+        req_kwonly = _flaggems_required_kwonly(fn)
+        if req_kwonly is None:
+            continue
+        out_names = {a.name for a in out_args}
+        # Out-variants whose gems out param(s) are required keyword-only and
+        # named exactly like the aten out args: forwarded by the kwout branch.
+        kwout = cat == "out_variant" and bool(req_kwonly) and req_kwonly <= out_names
         if cat == "out_variant":
             non_out = [(str(a.type), a.name) for a in aten_args if a not in out_args]
             with_out = non_out + [(str(a.type), a.name) for a in out_args]
-            if npos == len(non_out) or (
-                npos > len(non_out) and _flaggems_extra_trailing_ok(fn, len(non_out))
+            if kwout:
+                # gems declares the out tensor(s) as REQUIRED keyword-only params
+                # (`sum_out(inp, *, dtype=None, out)`, `softmax_backward_out(...,
+                # *, grad_input)`) whose names match the aten out args -- checked
+                # above. Forward them by name so gems writes into the caller's
+                # tensor directly.
+                #
+                # Only the out args move here; the remaining aten args still have
+                # to line up positionally, or be split off by
+                # _flaggems_split_kwargs when gems declares them as DEFAULTED
+                # keyword-only params (sum_out's `dtype`).
+                out_pairs = [(str(a.type), a.name) for a in out_args]
+                if npos == len(non_out) or (
+                    npos > len(non_out)
+                    and _flaggems_extra_trailing_ok(fn, len(non_out), out_names)
+                ):
+                    passed = non_out
+                elif npos < len(non_out):
+                    passed, kwargs = _flaggems_split_kwargs(fn, npos, non_out)
+                    if passed is None:
+                        continue
+                else:
+                    continue
+                kwargs = kwargs + out_pairs
+                resolved_cat = "out_variant_gemskwout"
+            elif npos == len(non_out) or (
+                npos > len(non_out)
+                and _flaggems_extra_trailing_ok(fn, len(non_out), out_names)
             ):
                 # gems takes only the non-out args (plus optional trailing
                 # defaults), returns a fresh tensor; kernel copy_'s it into out.
@@ -760,8 +852,8 @@ def discover_flaggems_ops(codegen_ops, funcs):
             ):
                 # gems takes `out` positionally and writes into it; pass the out
                 # tensor(s) too (plus optional trailing defaults like
-                # memory_format=None). Distinguished from mm.out, whose gems out
-                # is a required keyword-only arg the positional caller can't supply.
+                # memory_format=None). Distinguished from the kwout branch above,
+                # whose gems out is a required keyword-only param.
                 passed = with_out
                 resolved_cat = "out_variant_gemsout"
             elif npos < len(non_out):
@@ -810,6 +902,16 @@ def discover_flaggems_ops(codegen_ops, funcs):
         if not all(_flaggems_type_ok(t) for t, _ in passed):
             continue
         if kwargs and not all(t in _FLAGGEMS_KWARG_OK for t, _ in kwargs):
+            continue
+        # Final required-keyword gate. Now that every branch has settled
+        # `kwargs`, demand that each required keyword-only gems param is
+        # actually forwarded -- by the kwout branch, by _flaggems_split_kwargs,
+        # or by the ScalarType promotion above. Anything left over is a param
+        # nothing supplies, so the generated call would raise TypeError the
+        # first time the op ran. Drops e.g. gems nonzero_static_out (requires
+        # `size` on top of `out`) while keeping sort.stable (required `stable`,
+        # already forwarded by name).
+        if not req_kwonly <= {name for _t, name in kwargs}:
             continue
         qualname = _normalize_gems_qualname(fn)
         result[op] = (qualname, resolved_cat, kwargs)
@@ -1002,7 +1104,9 @@ def gen_flaggems_python_kernel(
 
     # arg names as they appear in the generated C++ signature. Kwarg-forwarded
     # args are removed from the positional list (they go into the PyKwarg vector).
-    if category == "out_variant":
+    if category in ("out_variant", "out_variant_gemskwout"):
+        # gemskwout carries its out args in `kwargs`, so the kw_names filter
+        # already drops them; the out_args test is what covers plain out_variant.
         passed_names = [
             a.name for a in aten_args if a not in out_args and a.name not in kw_names
         ]
@@ -1065,6 +1169,24 @@ def gen_flaggems_python_kernel(
         # the aten out arg(s). (Only single-out ops reach here today.)
         out_name = [a.name for a in out_args][0]
         body = f"  {gen_call};\n  return {out_name};"
+    elif category == "out_variant_gemskwout":
+        # gems declares the out tensor(s) as REQUIRED keyword-only params and
+        # writes into them in place (see the kwout branch in
+        # discover_flaggems_ops). They are already in `kwargs`, so gen_call
+        # forwards them by name; discard the returned handle -- it aliases the
+        # very tensor(s) we were handed -- and return the aten out arg(s). No
+        # copy_ back: that would be a self-copy.
+        out_names = [a.name for a in out_args]
+        if len(out_names) == 1:
+            call, make = f"  {gen_call};", out_names[0]
+        else:
+            # median.dim_values / nanmedian.dim_values: gems requires `values`
+            # and `indices` by name and returns a namedtuple of both. Use the
+            # tuple caller so the sequence return is unpacked rather than run
+            # through PythonToTensor, which would reject a non-Tensor.
+            call = f"  {tuple_call(len(out_names))};"
+            make = "{" + ", ".join(out_names) + "}"
+        body = f"{call}\n  return {make};"
     else:
         raise ValueError(f"unsupported flaggems-python category {category} for {op}")
 
@@ -1804,20 +1926,15 @@ def gen_optlist(op, fn_type, ret_type, args, func=None):
     list_name = args[1][1]
     api = f"at::{at_api_base(op)}"
     return f"""{ret_type} {kn}({args_decl(args)}) {{
-  BoxToCuda({self_name});
-  std::vector<at::Tensor> boxed_holders;
+  DeviceBoxingGuard self_guard({self_name});
+  TensorListBoxingGuard indices_guard;
   for (int64_t i = 0; i < static_cast<int64_t>({list_name}.size()); ++i) {{
     auto opt = {list_name}.get(i);
-    if (opt.has_value() && opt->defined()) {{
-      BoxToCuda(*opt);
-      boxed_holders.push_back(*opt);
+    if (opt.has_value()) {{
+      indices_guard.box({{*opt}});
     }}
   }}
   auto result = {api}({self_name}, {list_name});
-  UnboxToFlagos({self_name});
-  for (auto& t : boxed_holders) {{
-    UnboxToFlagos(t);
-  }}
   UnboxToFlagos(result);
   return result;
 }}"""
@@ -2221,17 +2338,22 @@ def main():
         #
         # Grouped by cause:
         #  1. gems declares `out` as a REQUIRED keyword-only arg, but the
-        #     out_variant caller passes only the non-out args and copy_'s the
-        #     result -> TypeError: missing keyword-only argument 'out'. The
-        #     out_variant_gemsout category exists for gems-writes-into-out ops
-        #     but only matches when `out` is POSITIONAL, so these fall through.
-        #     Fixing needs a kwarg-out category in the C++ caller.
+        #     out_variant caller passed only the non-out args and copy_'d the
+        #     result -> TypeError: missing keyword-only argument 'out'.
+        #     FIXED at the source: discover_flaggems_ops now routes these
+        #     through out_variant_gemskwout (out forwarded by name) or, for the
+        #     `out=None`-but-raises signatures like logit_out, through
+        #     out_variant_gemsout (out passed positionally). The entries stay
+        #     listed until the DCU re-test confirms them, so this group is a
+        #     conservative hold, not a known breakage -- drop an op from here
+        #     once it passes on hardware.
         #  2. gems asserts the input is a real CUDA tensor (device.type ==
         #     "cuda"); a flagos PrivateUse1 tensor trips the assert.
         #  3. DTK triton (hcu backend) fails to compile the gems kernel.
         #  4. wrong numerics on the gems path (verified correct via cuda).
         flaggems_runtime_broken = {
-            # (1) gems `out` is required keyword-only
+            # (1) gems `out` is required keyword-only -- codegen fixed, pending
+            # a DCU re-test before these come off the list.
             "addcdiv.out",
             "addcmul.out",
             "as_strided_copy.out",

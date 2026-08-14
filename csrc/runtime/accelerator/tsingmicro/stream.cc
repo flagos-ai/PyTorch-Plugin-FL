@@ -1,4 +1,4 @@
-#include <include/flagos.h>
+#include <flagos.h>
 #include <tx_runtime.h>
 
 Error_t StreamCreateWithPriority(

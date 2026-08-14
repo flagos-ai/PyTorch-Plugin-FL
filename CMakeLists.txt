@@ -596,6 +596,8 @@ if(PYTORCH_INSTALL_DIR)
 endif()
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
+# Public C ABI headers (flagos.h / macros.h), included as <flagos.h>.
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/csrc/include)
 include(${PROJECT_SOURCE_DIR}/cmake/TorchPythonTargets.cmake)
 include(${PROJECT_SOURCE_DIR}/cmake/FlagosRpath.cmake)
 

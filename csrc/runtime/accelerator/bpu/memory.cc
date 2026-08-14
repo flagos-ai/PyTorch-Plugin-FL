@@ -25,7 +25,7 @@
 // reads it (see the Memcpy paths below), which is cheaper than uncached host
 // stores.
 
-#include <include/flagos.h>
+#include <flagos.h>
 
 extern "C" {
 #include <hb_ucp_sys.h>

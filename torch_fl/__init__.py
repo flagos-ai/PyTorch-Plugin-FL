@@ -238,7 +238,7 @@ _relink_vendor_libtorch()
 def _preload_cuda_assets() -> None:
     """Load the bundled CUDA .so into this process BEFORE `import torch`.
 
-    Hard constraint (docs/cpu_torch_external_libtorch_cuda.md, constraint 1):
+    Hard constraint (docs/vendors/cuda/external-libtorch-cuda.md, constraint 1):
     PyTorch caches its CUDAHooks on first `import torch`. If libtorch_cuda.so is
     loaded afterwards, device init fails with "Cannot initialize CUDA without
     ATen_cuda library" even though the kernels register. So we ctypes-dlopen it
@@ -439,13 +439,6 @@ torch.utils.generate_methods_for_privateuse1_backend(for_storage=True)
 # satisfies the lookup; flagos._lazy_init is the real initializer, so this is a
 # rename, not a stub. Harmless on backends that never trigger lazy init.
 sys.modules.setdefault("torch_flagos", flagos)
-
-# Enable swap_tensors in Module._apply so that .to("flagos") preserves weight
-# tying.  Without this, _apply creates new Parameter objects for PrivateUse1
-# tensors (since _has_compatible_shallow_copy_type returns False for cross-device),
-# breaking shared-storage relationships like lm_head.weight ↔ embed_tokens.weight.
-# swap_tensors modifies the Parameter in-place, keeping object identity intact.
-torch.__future__.set_swap_module_params_on_conversion(True)
 
 
 # Global library instance to keep registrations alive
@@ -759,6 +752,49 @@ if (
     torch.cuda.init()
 
 
+def _keep_device_identity_checks_working(real_device, shim):
+    """Repair the two torch registries that compare against ``torch.device``.
+
+    Rebinding ``torch.device`` to a Python class (above) is invisible to almost
+    everything -- ``isinstance`` still works, and every consumer that only
+    *calls* it gets a genuine device back. Two places compare the attribute by
+    identity instead, and both silently change behaviour:
+
+    ``torch.fx.graph.add_global`` carves out ``obj != torch.device`` so that a
+    device constant is emitted as the bare name ``device(type='cpu')`` and
+    resolved through the ``device`` custom builtin. With the attribute swapped,
+    the real device class no longer equals it, so the branch falls through to
+    the qualified-name HACK path meant for custom ops -- the name is never added
+    to the module's globals, and the generated forward dies with
+    ``NameError: name 'device' is not defined`` the moment it runs. It is
+    ``torch.arange(..., device=x.device)`` that emits such a constant, which is
+    how every HF model builds its position ids, so this took out essentially
+    every transformer under ``torch.compile``.
+
+    ``torch._dynamo.utils.common_constant_types`` holds the types Dynamo may
+    wrap as a ``ConstantVariable``, and it is tested with ``type(obj) in ...``.
+    Reading ``tensor.device`` while tracing then asserts with "Cannot construct
+    ``ConstantVariable`` for value of type ``torch.device``".
+
+    Both registries are keyed on objects rather than rebuilt per call, so they
+    can be corrected in place once, here. Re-running this is harmless.
+    """
+    from torch.fx.graph import _register_custom_builtin
+
+    # Point the builtin at the shim: `add_global` skips the qualified-name path
+    # for anything not defined under `torch`, so the shim reaches the normal
+    # branch and the name lands in the generated module's globals. Calling it
+    # still yields a real device, which is all the generated code needs.
+    _register_custom_builtin("device", "from torch import device", shim)
+
+    # Dynamo compares `type(obj)`, and a constructed device is always the real
+    # C type whatever `torch.device` currently names -- so it is the real class
+    # that has to be in the set.
+    from torch._dynamo.utils import common_constant_types
+
+    common_constant_types.add(real_device)
+
+
 def _alias_cuda_to_flagos():
     """Make ``device="cuda"`` mean the flagos device when there is no real CUDA.
 
@@ -848,6 +884,7 @@ def _alias_cuda_to_flagos():
             return _orig_device(*args, **kwargs)
 
     torch.device = device
+    _keep_device_identity_checks_working(_orig_device, device)
 
     # Tensor.cuda() / Module.cuda() -> the flagos device.
     def _tensor_cuda(self, device=None, non_blocking=False, **kwargs):

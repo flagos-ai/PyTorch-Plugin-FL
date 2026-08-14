@@ -365,7 +365,24 @@ static std::tuple<at::Tensor, at::Tensor> WrapperMatmulBackward(
 }
 #endif
 
+bool HasCompatibleShallowCopyType(
+    const at::Tensor& self, const at::Tensor& from) {
+  const auto self_keys = self.key_set();
+  const auto from_keys = from.key_set();
+  const auto is_dense = [](c10::DispatchKeySet keys) {
+    return keys.has(c10::DispatchKey::CPU) ||
+        keys.has(c10::DispatchKey::PrivateUse1);
+  };
+  return self_keys == from_keys || (is_dense(self_keys) && is_dense(from_keys));
+}
+
 } // namespace
+
+TORCH_LIBRARY_IMPL(aten, CatchAll, m) {
+  m.impl(
+      "_has_compatible_shallow_copy_type",
+      TORCH_FN(HasCompatibleShallowCopyType));
+}
 
 // Register basic operators for PrivateUse1 dispatch key
 TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {

@@ -177,6 +177,45 @@ class TestShapeOps:
 
 
 class TestCopyTransfer:
+    def test_cpu_and_device_have_compatible_shallow_copy_types(self, device):
+        cpu_tensor = torch.ones(1)
+        device_tensor = cpu_tensor.to(device)
+
+        assert torch._has_compatible_shallow_copy_type(cpu_tensor, device_tensor)
+        assert torch._has_compatible_shallow_copy_type(device_tensor, cpu_tensor)
+
+    def test_module_to_device_preserves_tied_parameters(self, device):
+        previous = torch.__future__.get_swap_module_params_on_conversion()
+        torch.__future__.set_swap_module_params_on_conversion(False)
+
+        class TiedParameters(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.first = torch.nn.Linear(4, 4, bias=False)
+                self.second = torch.nn.Linear(4, 4, bias=False)
+                self.second.weight = self.first.weight
+
+        try:
+            model = TiedParameters().to(device)
+            assert model.first.weight is model.second.weight
+            assert not torch.__future__.get_swap_module_params_on_conversion()
+        finally:
+            torch.__future__.set_swap_module_params_on_conversion(previous)
+
+    def test_module_cpu_after_forward(self, device):
+        model = torch.nn.Sequential(
+            torch.nn.Linear(8, 8),
+            torch.nn.ReLU(),
+            torch.nn.Linear(8, 8),
+        ).to(device)
+        output = model(torch.randn(4, 8, device=device)).sum()
+
+        model.cpu()
+
+        assert output.grad_fn is not None
+        assert all(parameter.device.type == "cpu" for parameter in model.parameters())
+        assert not torch.__future__.get_swap_module_params_on_conversion()
+
     def test_to_cpu(self, device):
         x = torch.randn(4, 4, device=device)
         assert x.cpu().device.type == "cpu"

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <include/flagos.h>
+#include <flagos.h>
 #include <tops_runtime_api.h>
 
 Error_t StreamCreateWithPriority(

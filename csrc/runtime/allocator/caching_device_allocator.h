@@ -5,7 +5,7 @@
 #include <c10/core/Allocator.h>
 #include <c10/core/Device.h>
 
-#include <include/macros.h>
+#include <macros.h>
 
 #include "allocator_stats.h"
 #include "block.h"

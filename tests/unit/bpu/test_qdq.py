@@ -152,6 +152,70 @@ def test_no_quantizable_ops_leaves_graph_unchanged(tmp_path):
     assert [n.op_type for n in out.graph.node] == before
 
 
+# -- pooling -------------------------------------------------------------------
+
+
+class ConvPool(torch.nn.Module):
+    """A ResNet stem: conv, then the pool that used to run on the CPU."""
+
+    def __init__(self):
+        super().__init__()
+        self.c = torch.nn.Conv2d(3, 8, 7, 2, 3, bias=False)
+        self.p = torch.nn.MaxPool2d(3, 2, 1)
+
+    def forward(self, x):
+        return self.p(torch.relu(self.c(x)))
+
+
+def test_pool_input_is_quantized(tmp_path):
+    """hbdk4 keeps a pool on the CPU while its input is f32.
+
+    `convert(advice=True)` on the un-quantized ResNet said it outright:
+    "lower to cpu. P.S. The type of hbir.max_pool's fin is f32, which should be
+    si8, si16, f16 on bpu." It was the only op in the whole network not on the
+    BPU, because the Q/DQ pair around the preceding conv hands the pool a float.
+    """
+    _, proto = _export(tmp_path, ConvPool().eval(), torch.randn(1, 3, 32, 32))
+    out = quantize_onnx(proto)
+
+    produced_by = {o: n for n in out.graph.node for o in n.output}
+    pools = [n for n in out.graph.node if n.op_type == "MaxPool"]
+    assert pools
+    for pool in pools:
+        assert produced_by[pool.input[0]].op_type == "DequantizeLinear"
+    onnx.checker.check_model(out)
+
+
+def test_pool_gets_no_weight_dequantize(tmp_path):
+    """A pool has no weights; only its activation edge may be rewritten."""
+    _, proto = _export(tmp_path, ConvPool().eval(), torch.randn(1, 3, 32, 32))
+    out = quantize_onnx(proto)
+
+    pools = [n for n in out.graph.node if n.op_type == "MaxPool"]
+    assert all(len(p.input) == 1 for p in pools)
+
+
+def test_pooling_stays_numerically_close(tmp_path):
+    ort = pytest.importorskip("onnxruntime")
+
+    model = ConvPool().eval()
+    x = torch.randn(1, 3, 32, 32)
+    path, proto = _export(tmp_path, model, x)
+
+    ref = ort.InferenceSession(
+        onnx.load(str(path)).SerializeToString(), providers=["CPUExecutionProvider"]
+    ).run(None, {"in_0": x.numpy()})[0]
+
+    out = quantize_onnx(proto, default_act_scale=float(x.abs().max()) / 127.0)
+    got = ort.InferenceSession(
+        out.SerializeToString(), providers=["CPUExecutionProvider"]
+    ).run(None, {"in_0": x.numpy()})[0]
+
+    a, b = ref.ravel(), got.ravel()
+    cos = float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-12))
+    assert cos > 0.99, f"cosine similarity {cos}"
+
+
 def test_calibration_scale_covers_observed_range():
     r = TensorRange()
     r.observe(torch.tensor([-2.0, 1.0]))

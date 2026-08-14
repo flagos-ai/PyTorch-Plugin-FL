@@ -8,7 +8,7 @@
 
 #include <ATen/native/Resize.h>
 #include <ATen/ops/copy_native.h>
-#include <include/flagos.h>
+#include <flagos.h>
 #include "device_boxing.h"
 // Included unconditionally: the #else branches below cover TsingMicro, GCU and
 // MUSA-without-mudnn as well as Ascend, and this header supplies inline no-op

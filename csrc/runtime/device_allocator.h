@@ -11,7 +11,7 @@
 #include <c10/core/Allocator.h>
 #include <c10/core/Device.h>
 
-#include <include/flagos.h>
+#include <flagos.h>
 
 namespace c10::flagos {
 

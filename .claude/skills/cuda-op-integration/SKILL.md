@@ -41,7 +41,7 @@ the preloaded `libtorch_cuda.so`.
   `MaterializeToTensorVec` / `Box`/`UnboxToFlagos`. The runtime mechanism.
 - `scripts/with_cuda_libtorch.sh` — wraps any command with the LD_PRELOAD +
   LD_LIBRARY_PATH needed to inject the external CUDA libs. Test/run through this.
-- `docs/cpu_torch_external_libtorch_cuda.md` — full rationale + the 4 hard
+- `docs/vendors/cuda/external-libtorch-cuda.md` — full rationale + the 4 hard
   constraints. Read it once before adapting a new version.
 
 ## Procedure to adapt a new torch version (e.g. branch `2.12`)
@@ -61,8 +61,7 @@ csrc/aten/device_boxing.h
 csrc/aten/dispatcher.h
 csrc/aten/register.cc
 scripts/with_cuda_libtorch.sh
-docs/cpu_torch_external_libtorch_cuda.md
-docs/verify_external_cuda.sh
+docs/vendors/cuda/external-libtorch-cuda.md
 ```
 
 Then **delete the hand-written kernels** that codegen replaces (they will collide at

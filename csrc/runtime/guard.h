@@ -9,7 +9,7 @@
 #include <c10/core/DeviceType.h>
 #include <c10/core/impl/DeviceGuardImplInterface.h>
 
-#include <include/flagos.h>
+#include <flagos.h>
 
 // Real c10::cuda:: stream/event plumbing. Gated the same way as
 // runtime/allocator/caching_device_allocator.cc's delegation to

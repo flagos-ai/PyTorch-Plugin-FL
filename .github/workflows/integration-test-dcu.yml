@@ -1,0 +1,41 @@
+# Copyright 2026 FlagOS Contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Integration Tests (DCU)
+
+on:
+  workflow_call:
+    inputs:
+      timeout-minutes:
+        description: "Timeout for the entire job in minutes"
+        required: false
+        type: number
+        default: 60
+  workflow_dispatch:
+    inputs:
+      timeout-minutes:
+        description: "Timeout for the entire job in minutes"
+        required: false
+        type: number
+        default: 60
+
+jobs:
+  integration-tests:
+    uses: ./.github/workflows/all-tests-common.yml
+    with:
+      platform: dcu
+      run_build: false
+      run_integration_tests: true
+      upload_artifact: false
+      timeout_minutes: ${{ inputs['timeout-minutes'] }}

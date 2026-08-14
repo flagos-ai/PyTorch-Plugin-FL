@@ -15,7 +15,7 @@
 """The emulated-hbdk4 environment: stub discovery, library path, preload.
 
 These are the three things that make hbdk4 importable under box64 (see
-docs/bpu.md). They are pure path logic, so they are tested against a fake
+docs/vendors/bpu/integration.md). They are pure path logic, so they are tested against a fake
 directory layout rather than a real x86 install -- which also means these tests
 run on any platform, not only on a board that has hbdk4 set up.
 """

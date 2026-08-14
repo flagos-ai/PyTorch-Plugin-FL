@@ -6,8 +6,8 @@
 
 #pragma once
 
-#include <include/flagos.h>
-#include <include/macros.h>
+#include <flagos.h>
+#include <macros.h>
 #include <c10/core/Device.h>
 #include <cstdint>
 

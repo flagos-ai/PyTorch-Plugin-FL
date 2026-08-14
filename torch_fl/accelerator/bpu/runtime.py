@@ -195,8 +195,16 @@ class BPURuntime:
     def _from_device(
         self, name: str, arr: np.ndarray, device: torch.device | None = None
     ) -> torch.Tensor:
-        """Dequantize an output array back to a float tensor on `device`."""
-        out = arr.astype(np.float32)
+        """Dequantize an output array back to a float tensor on `device`.
+
+        The dequantization branch copies because it has arithmetic to do. The
+        float path does not: `run()` hands back a freshly allocated buffer on
+        every call rather than reusing one, so the array can be wrapped in place.
+        `asarray` rather than `astype` for the same reason as `_to_device` --
+        astype copies unconditionally, and on a 6 MB output that copy cost more
+        than a fifth of the whole inference.
+        """
+        out = np.asarray(arr, dtype=np.float32)
         scale = _scale_array(self._out_quants.get(name))
         if scale is not None and np.issubdtype(arr.dtype, np.integer):
             quant = self._out_quants[name]

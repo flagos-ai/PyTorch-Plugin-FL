@@ -10,12 +10,12 @@
 
 ## Global Constraints
 
-- Work in the worktree: `/nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/rng-completeness-check`. Run all commands there. Branch `rng-completeness-check`.
-- Env: `source /nfs/lvyufeng/env.sh && conda activate torch-fl-210` (torch `2.10.0+cpu`). Proxy for network: `source /nfs/lvyufeng/proxy.sh`.
+- Work in a dedicated worktree on branch `rng-completeness-check`; run every command from that worktree's repository root.
+- Env: initialize conda through `source "$(conda info --base)/etc/profile.d/conda.sh"`, then `conda activate torch-fl-210` (torch `2.10.0+cpu`). Use the locally configured proxy, if needed, for network access.
 - Build: `FLAGGEMS_KERNEL=OFF FLAGGEMS_PYTHON=OFF CUDA_KERNEL=ON pip install -e . --no-build-isolation` (g++, links torch_cpu; CUDA symbols resolve at runtime).
 - Single-wheel auto-preload build: run tests with plain `python` / `pytest`. Do NOT use `scripts/with_cuda_libtorch.sh` — it double-loads `libc10_cuda.so` → "Duplicated key 'graph_capture_record_stream_reuse'" core dump.
 - Standalone repro scripts MUST `import torch_fl` BEFORE `import torch` (CUDAHooks / auto-preload order). The lazy CUDA generator needs ATen_cuda live — trigger it with a first RNG/CUDA op.
-- Test env for HF models: `HF_HOME=/nfs/lvyufeng/hf_cache HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1`.
+- Test env for HF models: `HF_HOME="$HF_HOME" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1`; set `HF_HOME` to a local cache directory.
 - RNG reproducibility tests only hold with `FLAGOS_USE_FLAGGEMS=1` for the flaggems_python ops, but native RNG unification is independent of that switch — test both.
 - Generated files are committed on-branch. `csrc/aten/generated/cuda_kernels.cc` header says "AUTO-GENERATED - DO NOT EDIT": change the codegen, never hand-edit the generated file.
 - Pre-existing unrelated crash to exclude from suites: `tests/integration/ops/test_conv1d_dispatch.py::test_conv1d_with_bias` (segfaults on clean tree).
@@ -89,8 +89,7 @@ at::Generator GetFlagosDefaultCudaGenerator(int64_t device_index) {
 
 Run:
 ```bash
-cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/rng-completeness-check
-source /nfs/lvyufeng/env.sh && conda activate torch-fl-210
+source "$(conda info --base)/etc/profile.d/conda.sh" && conda activate torch-fl-210
 FLAGGEMS_KERNEL=OFF FLAGGEMS_PYTHON=OFF CUDA_KERNEL=ON pip install -e . --no-build-isolation 2>&1 | tail -20
 ```
 Expected: build succeeds (helper is unused for now — no call sites yet — but must compile). If `py_gen.cast<at::Generator>()` fails to resolve, fall back to `THPGenerator_Unpack(py_gen.ptr())` (from `torch/csrc/Generator.h`), which returns `at::Generator`.
@@ -388,7 +387,7 @@ Expected: PASS (proves the injection works). If any native op is still non-repro
 - [ ] **Step 3: Run the full RNG suites together (flaggems path unaffected)**
 
 ```bash
-FLAGOS_USE_FLAGGEMS=1 HF_HOME=/nfs/lvyufeng/hf_cache HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+FLAGOS_USE_FLAGGEMS=1 HF_HOME="$HF_HOME" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
   python -m pytest tests/integration/ops/test_rng_dispatch.py tests/integration/ops/test_rng_unified_dispatch.py -v 2>&1 | tail -40
 ```
 Expected: existing `test_rng_dispatch.py` (10) still PASS; new tests PASS.
@@ -414,9 +413,8 @@ git commit -m "test(rng): reproducibility for unified native RNG + generator pas
 - [ ] **Step 1: Run the native ops suite (no flaggems)**
 
 ```bash
-cd /nfs/lvyufeng/PyTorch-Plugin-FL/.claude/worktrees/rng-completeness-check
-source /nfs/lvyufeng/env.sh && conda activate torch-fl-210
-export HF_HOME=/nfs/lvyufeng/hf_cache HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+source "$(conda info --base)/etc/profile.d/conda.sh" && conda activate torch-fl-210
+export HF_HOME="$HF_HOME" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 python -m pytest tests/integration/ops/ -m "not flaggems and not flaggems_python and not flaggems_cpp" \
   --deselect tests/integration/ops/test_conv1d_dispatch.py::test_conv1d_with_bias 2>&1 | tail -20
 ```

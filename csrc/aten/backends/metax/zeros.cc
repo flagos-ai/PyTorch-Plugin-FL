@@ -3,7 +3,7 @@
 #include "../../zeros.h"
 
 #include <ATen/ops/empty.h>
-#include <include/flagos.h>
+#include <flagos.h>
 
 namespace at::native::flagos {
 
