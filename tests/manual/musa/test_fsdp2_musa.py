@@ -61,7 +61,9 @@ def worker(rank: int, world_size: int, steps: int):
     dist.init_process_group(backend="flagos", rank=rank, world_size=world_size)
 
     if rank == 0:
-        inner = type(getattr(dist.distributed_c10d._get_default_group(), "_inner", None))
+        inner = type(
+            getattr(dist.distributed_c10d._get_default_group(), "_inner", None)
+        )
         print(f"[setup] world_size={world_size} backend={inner.__name__}", flush=True)
 
     # --- Build a 3-layer MLP and apply FSDP2 ---
@@ -88,7 +90,10 @@ def worker(rank: int, world_size: int, steps: int):
 
     if rank == 0:
         param_count = sum(p.numel() for p in model.parameters())
-        print(f"[rank {rank}] FSDP2 model initialized, total params={param_count}", flush=True)
+        print(
+            f"[rank {rank}] FSDP2 model initialized, total params={param_count}",
+            flush=True,
+        )
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
 
@@ -110,7 +115,7 @@ def worker(rank: int, world_size: int, steps: int):
         dist.all_gather(gathered_losses, loss_buf)
 
         if rank == 0:
-            loss_vals = [l.item() for l in gathered_losses]
+            loss_vals = [t.item() for t in gathered_losses]
             print(
                 f"[step {step}] loss(per-rank)={['%.4f' % v for v in loss_vals]}",
                 flush=True,
@@ -148,4 +153,6 @@ if __name__ == "__main__":
         )
 
     mp.set_start_method("spawn", force=True)
-    mp.spawn(worker, args=(args.world_size, args.steps), nprocs=args.world_size, join=True)
+    mp.spawn(
+        worker, args=(args.world_size, args.steps), nprocs=args.world_size, join=True
+    )

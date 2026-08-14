@@ -265,15 +265,15 @@ def test_musa_no_backend_raises(monkeypatch):
     assert calls["flagcx"] and calls["native"]  # both attempted
 
 
-
-
 def test_musa_flagcx_ok_but_identity_view_missing_raises(monkeypatch):
     # musa profile claims _flagos_identity_view, but the C++ binding wasn't
     # compiled in -> must fail with a clear error pointing to the missing symbol.
     obj, calls, _ = _make(
         monkeypatch, "musa", flagcx_ok=True, native_ok=False, view_present=False
     )
-    with pytest.raises(RuntimeError, match=r"torch_fl\._C\._flagos_identity_view not found"):
+    with pytest.raises(
+        RuntimeError, match=r"torch_fl\._C\._flagos_identity_view not found"
+    ):
         obj._build_inner(None, 0, 1, None)
 
 

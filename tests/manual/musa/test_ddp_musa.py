@@ -66,7 +66,9 @@ def worker(rank: int, world_size: int, steps: int):
     dist.init_process_group(backend="flagos", rank=rank, world_size=world_size)
 
     if rank == 0:
-        inner = type(getattr(dist.distributed_c10d._get_default_group(), "_inner", None))
+        inner = type(
+            getattr(dist.distributed_c10d._get_default_group(), "_inner", None)
+        )
         print(f"[setup] world_size={world_size} backend={inner.__name__}", flush=True)
 
     # --- Build a small 3-layer MLP ---
@@ -151,4 +153,6 @@ if __name__ == "__main__":
         )
 
     mp.set_start_method("spawn", force=True)
-    mp.spawn(worker, args=(args.world_size, args.steps), nprocs=args.world_size, join=True)
+    mp.spawn(
+        worker, args=(args.world_size, args.steps), nprocs=args.world_size, join=True
+    )
