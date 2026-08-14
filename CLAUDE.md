@@ -181,6 +181,27 @@ pytest tests/integration/ops/test_<relevant>.py -v
 - Reuse existing utilities instead of reinventing
 - Keep changes focused (avoid unnecessary refactoring)
 
+### Operator integration on non-CUDA-compatible platforms
+
+For accelerator platforms that are not CUDA-compatible, including Ascend and
+Enflame GCU, operator integration **must be implemented through the platform's
+code generator**. AI agents must extend the relevant operator registry,
+category/template, and generated configuration instead of adding handwritten
+per-operator kernels.
+
+- Do not add a new handwritten operator implementation under
+  `csrc/aten/backends/<platform>/` merely because it is faster to author.
+- Regenerate the platform outputs and commit both the generator change and its
+  generated artifacts.
+- Run the generator a second time and require an empty diff to prove
+  idempotency.
+- A handwritten kernel is allowed only when the platform codegen cannot express
+  the required runtime behavior. The PR must document that concrete limitation
+  and receive explicit human approval before the handwritten implementation is
+  added.
+- CUDA-compatible platforms may follow their existing CUDA boxing/codegen path;
+  this rule does not require vendor-specific native kernels for them.
+
 ## Testing Requirements
 
 ### Test Organization

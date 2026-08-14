@@ -2664,6 +2664,60 @@ at::Tensor CatKernelAscend(const at::ITensorListRef& tensors, int64_t dim) {
 
 REGISTER_IMPL_TO_DISPATCHER(CatFn, cat_dispatcher, Backend::kAscend, CatKernelAscend)
 
+at::Tensor& CatOutKernelAscend(
+    const at::ITensorListRef& tensors,
+    int64_t dim,
+    at::Tensor& out) {
+  namespace ascend = at::native::flagos::ascend;
+
+  auto materialized = tensors.materialize();
+  TORCH_CHECK(!materialized.empty(), "cat.out: expected a non-empty list of tensors");
+
+  std::vector<at::Tensor> valid_tensors;
+  for (const auto& t : materialized) {
+    if (t.get().numel() > 0) {
+      valid_tensors.push_back(t.get());
+    }
+  }
+
+  if (valid_tensors.empty()) {
+    out.copy_(materialized[0].get());
+    return out;
+  }
+  if (valid_tensors.size() == 1) {
+    out.copy_(valid_tensors[0]);
+    return out;
+  }
+
+  auto& first = valid_tensors[0];
+  auto ndim = first.dim();
+  if (dim < 0) dim += ndim;
+
+  std::vector<ascend::AclTensorWrapper> wrappers;
+  wrappers.reserve(valid_tensors.size());
+  for (auto& t : valid_tensors) {
+    wrappers.emplace_back(t);
+  }
+
+  std::vector<const aclTensor*> acl_tensors;
+  acl_tensors.reserve(valid_tensors.size());
+  for (auto& w : wrappers) {
+    acl_tensors.push_back(w.get());
+  }
+
+  aclTensorList* tensor_list = aclCreateTensorList(
+      acl_tensors.data(), acl_tensors.size());
+
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD(aclnnCat, tensor_list, dim, acl_out.get());
+
+  (void)tensor_list;  // aclTensor* owned by wrappers; do not aclDestroyTensorList
+  return out;
+}
+
+REGISTER_IMPL_TO_DISPATCHER(CatOutFn, cat_out_dispatcher, Backend::kAscend, CatOutKernelAscend)
+
 at::Tensor StackKernelAscend(at::TensorList tensors, int64_t dim) {
   namespace ascend = at::native::flagos::ascend;
   TORCH_CHECK(!tensors.empty(), "stack: expected a non-empty list of tensors");

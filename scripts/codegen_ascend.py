@@ -258,8 +258,9 @@ OPS = {
     "mm.out": ("matmul_out", "Mm"),
     "bmm": ("matmul", "BatchMatMul"),
     "bmm.out": ("matmul_out", "BatchMatMul"),
-    # cat: TensorList concat (aclCreateTensorList).
+    # cat: TensorList concat (aclCreateTensorList), functional + .out variants.
     "cat": ("cat", "Cat"),
+    "cat.out": ("cat_out", "Cat"),
     # stack: TensorList concat along a NEW dim (aclCreateTensorList).
     "stack": ("stack", "Stack"),
     # factory ops: at::empty + device-side zero_/fill_ (no direct aclnn call).
@@ -1383,6 +1384,64 @@ at::Tensor {kernel}(const at::ITensorListRef& tensors, int64_t dim) {{
 
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       out_sizes, first.options());
+
+  std::vector<ascend::AclTensorWrapper> wrappers;
+  wrappers.reserve(valid_tensors.size());
+  for (auto& t : valid_tensors) {{
+    wrappers.emplace_back(t);
+  }}
+
+  std::vector<const aclTensor*> acl_tensors;
+  acl_tensors.reserve(valid_tensors.size());
+  for (auto& w : wrappers) {{
+    acl_tensors.push_back(w.get());
+  }}
+
+  aclTensorList* tensor_list = aclCreateTensorList(
+      acl_tensors.data(), acl_tensors.size());
+
+  ascend::AclTensorWrapper acl_out(out);
+
+  EXEC_ASCEND_CMD({aclnn}, tensor_list, dim, acl_out.get());
+
+  (void)tensor_list;  // aclTensor* owned by wrappers; do not aclDestroyTensorList
+  return out;
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+# cat.out: same aclnn call and filtering as T_CAT, but writes into the
+# caller-provided output. The framework has already sized `out`.
+T_CAT_OUT = """\
+at::Tensor& {kernel}(
+    const at::ITensorListRef& tensors,
+    int64_t dim,
+    at::Tensor& out) {{
+  namespace ascend = at::native::flagos::ascend;
+
+  auto materialized = tensors.materialize();
+  TORCH_CHECK(!materialized.empty(), "cat.out: expected a non-empty list of tensors");
+
+  std::vector<at::Tensor> valid_tensors;
+  for (const auto& t : materialized) {{
+    if (t.get().numel() > 0) {{
+      valid_tensors.push_back(t.get());
+    }}
+  }}
+
+  if (valid_tensors.empty()) {{
+    out.copy_(materialized[0].get());
+    return out;
+  }}
+  if (valid_tensors.size() == 1) {{
+    out.copy_(valid_tensors[0]);
+    return out;
+  }}
+
+  auto& first = valid_tensors[0];
+  auto ndim = first.dim();
+  if (dim < 0) dim += ndim;
 
   std::vector<ascend::AclTensorWrapper> wrappers;
   wrappers.reserve(valid_tensors.size());
@@ -4333,6 +4392,7 @@ CATEGORIES = {
     "matmul": T_MATMUL,
     "matmul_out": T_MATMUL_OUT,
     "cat": T_CAT,
+    "cat_out": T_CAT_OUT,
     "stack": T_STACK,
     "mv": T_MV,
     "dot": T_DOT,
