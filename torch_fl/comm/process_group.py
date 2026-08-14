@@ -37,8 +37,15 @@ View conversion
     side immediately. Vendors whose flagos tensor is NOT a cuda alias
     (ascend/musa/cambricon) have ``view=None`` in their profile and currently
     require the FlagCX path; see ``_resolve_view``.
+
+GCU device guard
+    Enflame GCU streams and pointers are device-scoped. The communicator must
+    run on the same device as the tensor, or operations silently no-op. Every
+    collective method on enflame applies a device guard that forces the current
+    device to match the operand device before dispatch.
 """
 
+import functools
 import os
 import warnings
 
@@ -78,21 +85,23 @@ from torch._C import _distributed_c10d as _c10d
 
 #   flagcx_native  True when this vendor's FlagCX adaptor consumes flagos
 #                (privateuseone) tensors directly, so no view is needed for the
-#                FlagCX path even when `view` is None. FlagCX's collectives only
-#                read tensor.data_ptr() and already branch on is_privateuseone(),
-#                so this is safe whenever flagos memory is the vendor's own
-#                device memory. The `view` requirement still applies to the
-#                native (NCCL/HCCL) fallback, which does need a typed tensor.
+#                FlagCX path even when `view` is None. This capability is kept
+#                separate from `direct` because a native fallback may still need
+#                a typed vendor tensor.
 
 
 class _VendorProfile:
-    __slots__ = ("flagcx_dev", "view", "native", "flagcx_native")
+    __slots__ = ("flagcx_dev", "view", "native", "flagcx_native", "direct")
 
-    def __init__(self, flagcx_dev, view, native, flagcx_native=False):
+    def __init__(self, flagcx_dev, view, native, flagcx_native=False, direct=False):
         self.flagcx_dev = flagcx_dev
         self.view = view  # attr name on torch_fl._C, or None
         self.native = native  # method name on ProcessGroupFlagOS, or None
+        # flagcx_native allows the FlagCX adaptor to consume privateuseone
+        # tensors directly. direct applies to all inner backend paths and is
+        # used only for vendors whose backend has been measured to support it.
         self.flagcx_native = flagcx_native
+        self.direct = direct
 
 
 # NOTE: `view`/`native` are looked up lazily so importing this module never
@@ -122,6 +131,14 @@ _VENDOR_PROFILES = {
     # memory here is plain aclrtMalloc device memory) -- measured working for
     # allreduce/broadcast/all_gather/reduce_scatter/barrier on 2x910.
     "ascend": _VendorProfile("cann", None, "_try_build_hccl", flagcx_native=True),
+    # Enflame GCU: FlagCX registers for device "gcu" (USE_ENFLAME_ADAPTOR in
+    # FlagCX backend_flagcx.hpp), and its torch plugin imports torch_gcu and
+    # lists "gcu" in replace_prefix's device_list -- i.e. it addresses the GCU
+    # tensor directly, so direct=True (no view, and none missing). There is no
+    # native fallback: ECCL is reached only through FlagCX, with no separate
+    # ProcessGroup. Needs the device guard below (GCU streams/pointers are
+    # device-scoped).
+    "enflame": _VendorProfile("gcu", None, None, direct=True),
     # MUSA / Cambricon: FlagCX only (no cuda alias, no native fallback wired).
     "musa": _VendorProfile("musa", None, None),
     "cambricon": _VendorProfile("mlu", None, None),
@@ -166,6 +183,58 @@ def _tl(tensors, view_fn):
 def _tll(tensor_lists, view_fn):
     """Convert a list-of-lists of tensors (used by allgather / reduce_scatter)."""
     return [_tl(tl, view_fn) for tl in tensor_lists]
+
+
+# ---------------------------------------------------------------------------
+# GCU device guard decorator
+# ---------------------------------------------------------------------------
+
+
+def _gcu_device_guard(func):
+    """Decorator that sets GCU current device to match the operand before calling func.
+
+    GCU streams and pointers are device-scoped. The communicator must run on the
+    same device as the tensor, or operations silently no-op or produce zeros.
+    FlagCX may cache streams by device index, so an incorrect first binding can
+    permanently poison the communicator.
+
+    Applied to all collective methods when GEMS_VENDOR=enflame. No-op otherwise.
+    """
+
+    @functools.wraps(func)
+    def wrapper(self, *args, **kwargs):
+        vendor = os.environ.get("GEMS_VENDOR", _DEFAULT_VENDOR)
+        if vendor != "enflame":
+            return func(self, *args, **kwargs)
+
+        # Extract device index from first tensor argument
+        device_id = None
+        for arg in args:
+            if isinstance(arg, torch.Tensor):
+                device_id = arg.device.index
+                break
+            elif isinstance(arg, list) and arg and isinstance(arg[0], torch.Tensor):
+                device_id = arg[0].device.index
+                break
+            elif isinstance(arg, list) and arg and isinstance(arg[0], list):
+                # List[List[Tensor]] case (allgather output, reduce_scatter input)
+                if arg[0] and isinstance(arg[0][0], torch.Tensor):
+                    device_id = arg[0][0].device.index
+                    break
+
+        if device_id is not None:
+            import torch_fl._C as _C
+
+            prev = _C._gcu_getDevice()
+            _C._gcu_setDevice(device_id)
+            try:
+                return func(self, *args, **kwargs)
+            finally:
+                _C._gcu_setDevice(prev)
+        else:
+            return func(self, *args, **kwargs)
+
+    return wrapper
 
 
 # ---------------------------------------------------------------------------
@@ -260,15 +329,19 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
         """Return the flagos->comm-device view callable for this profile.
 
         cuda-alias vendors (view set) return the zero-copy _flagos_to_cuda_view.
-        Vendors without a view (ascend/musa/cambricon) have no safe zero-copy
-        reinterpretation implemented yet; using such a backend would pass a raw
-        flagos tensor to a comm lib that cannot handle it, so fail loudly with a
-        pointer to the missing helper rather than corrupt memory.
+        Vendors marked direct=True need no conversion: the inner backend reads the
+        privateuseone tensor itself, so return the identity. Any other vendor
+        without a view has no safe zero-copy reinterpretation implemented yet;
+        using such a backend would pass a raw flagos tensor to a comm lib that
+        cannot handle it, so fail loudly with a pointer to the missing helper
+        rather than corrupt memory.
         """
-        if prof.view is None and backend == "flagcx" and prof.flagcx_native:
-            # FlagCX's adaptor for this vendor takes flagos tensors directly.
-            return None
         if prof.view is None:
+            if backend == "flagcx" and prof.flagcx_native:
+                # FlagCX's adaptor for this vendor takes flagos tensors directly.
+                return None
+            if prof.direct:
+                return lambda t: t
             raise NotImplementedError(
                 f"[ProcessGroupFlagOS] GEMS_VENDOR={vendor!r} selected inner "
                 f"backend {backend!r}, but no flagos->device view is implemented "
@@ -449,16 +522,19 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
     # would be shared singletons. c10d always passes opts explicitly when calling
     # these virtuals, so the fallback construction is just a safety net.
 
+    @_gcu_device_guard
     def allreduce(self, tensors, opts=None):
         if opts is None:
             opts = _c10d.AllreduceOptions()
         return self._inner.allreduce(_tl(tensors, self._view_fn), opts)
 
+    @_gcu_device_guard
     def allreduce_coalesced(self, tensors, opts=None):
         if opts is None:
             opts = _c10d.AllreduceCoalescedOptions()
         return self._inner.allreduce_coalesced(_tl(tensors, self._view_fn), opts)
 
+    @_gcu_device_guard
     def allgather(self, output_tensors, input_tensors, opts=None):
         # output_tensors: List[List[Tensor]], input_tensors: List[Tensor]
         if opts is None:
@@ -469,6 +545,7 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
             opts,
         )
 
+    @_gcu_device_guard
     def allgather_coalesced(self, output_tensors, input_tensors, opts=None):
         if opts is None:
             opts = _c10d.AllgatherOptions()
@@ -478,6 +555,7 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
             opts,
         )
 
+    @_gcu_device_guard
     def allgather_into_tensor_coalesced(self, output_tensors, input_tensors, opts=None):
         if opts is None:
             opts = _c10d.AllgatherOptions()
@@ -487,6 +565,7 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
             opts,
         )
 
+    @_gcu_device_guard
     def _allgather_base(self, output_tensor, input_tensor, opts=None):
         # Single-tensor allgather, backing the functional
         # dist.all_gather_into_tensor. A distinct virtual from allgather(): if it
@@ -501,16 +580,19 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
             opts,
         )
 
+    @_gcu_device_guard
     def broadcast(self, tensors, opts=None):
         if opts is None:
             opts = _c10d.BroadcastOptions()
         return self._inner.broadcast(_tl(tensors, self._view_fn), opts)
 
+    @_gcu_device_guard
     def reduce(self, tensors, opts=None):
         if opts is None:
             opts = _c10d.ReduceOptions()
         return self._inner.reduce(_tl(tensors, self._view_fn), opts)
 
+    @_gcu_device_guard
     def reduce_scatter(self, output_tensors, input_tensors, opts=None):
         # output: List[Tensor], input: List[List[Tensor]]
         if opts is None:
@@ -521,6 +603,7 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
             opts,
         )
 
+    @_gcu_device_guard
     def reduce_scatter_tensor_coalesced(self, output_tensors, input_tensors, opts=None):
         if opts is None:
             opts = _c10d.ReduceScatterOptions()
@@ -530,6 +613,7 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
             opts,
         )
 
+    @_gcu_device_guard
     def _reduce_scatter_base(self, output_tensor, input_tensor, opts=None):
         # Single-tensor reduce_scatter, backing the functional
         # dist.reduce_scatter_tensor; same unoverridden-virtual trap as
@@ -542,6 +626,7 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
             opts,
         )
 
+    @_gcu_device_guard
     def alltoall(self, output_tensors, input_tensors, opts=None):
         if opts is None:
             opts = _c10d.AllToAllOptions()
@@ -569,6 +654,7 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
             opts,
         )
 
+    @_gcu_device_guard
     def gather(self, output_tensors, input_tensors, opts=None):
         # output: List[List[Tensor]], input: List[Tensor]
         if opts is None:
@@ -579,6 +665,7 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
             opts,
         )
 
+    @_gcu_device_guard
     def scatter(self, output_tensors, input_tensors, opts=None):
         # output: List[Tensor], input: List[List[Tensor]]
         if opts is None:
@@ -589,21 +676,26 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
             opts,
         )
 
+    @_gcu_device_guard
     def send(self, tensors, dst_rank: int, tag: int):
         return self._inner.send(_tl(tensors, self._view_fn), dst_rank, tag)
 
+    @_gcu_device_guard
     def recv(self, tensors, src_rank: int, tag: int):
         return self._inner.recv(_tl(tensors, self._view_fn), src_rank, tag)
 
+    @_gcu_device_guard
     def recv_anysource(self, tensors, tag: int):
         return self._inner.recv_anysource(_tl(tensors, self._view_fn), tag)
 
+    @_gcu_device_guard
     def barrier(self, opts=None):
         # barrier carries no tensors; delegate directly
         if opts is None:
             opts = _c10d.BarrierOptions()
         return self._inner.barrier(opts)
 
+    @_gcu_device_guard
     def monitored_barrier(self, opts=None, wait_all_ranks=False):
         if opts is None:
             opts = _c10d.BarrierOptions()

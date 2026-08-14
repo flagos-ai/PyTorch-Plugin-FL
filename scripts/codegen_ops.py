@@ -1926,20 +1926,15 @@ def gen_optlist(op, fn_type, ret_type, args, func=None):
     list_name = args[1][1]
     api = f"at::{at_api_base(op)}"
     return f"""{ret_type} {kn}({args_decl(args)}) {{
-  BoxToCuda({self_name});
-  std::vector<at::Tensor> boxed_holders;
+  DeviceBoxingGuard self_guard({self_name});
+  TensorListBoxingGuard indices_guard;
   for (int64_t i = 0; i < static_cast<int64_t>({list_name}.size()); ++i) {{
     auto opt = {list_name}.get(i);
-    if (opt.has_value() && opt->defined()) {{
-      BoxToCuda(*opt);
-      boxed_holders.push_back(*opt);
+    if (opt.has_value()) {{
+      indices_guard.box({{*opt}});
     }}
   }}
   auto result = {api}({self_name}, {list_name});
-  UnboxToFlagos({self_name});
-  for (auto& t : boxed_holders) {{
-    UnboxToFlagos(t);
-  }}
   UnboxToFlagos(result);
   return result;
 }}"""

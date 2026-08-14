@@ -64,14 +64,20 @@ Integrate against this contract; do not guess:
 6. When flagcx is not installed, `_try_build_flagcx` returns False and the code falls back to
    HCCL/NCCL automatically.
 
-### 0.2 Pending on-hardware verification (needs a GPU plus a compiled flagcx)
+### 0.2 GCU integration status (verified 2026-08)
 
-- Whether instantiating `_DistributedBackendOptions` → `createFlagcxBackend` succeeds on real
-  multi-card hardware.
-- Whether FlagCX can accept privateuseone tensors directly (if so, set `_needs_view=False` and
-  skip the view conversion).
-- ascend's `_flagos_to_npu_view` (not yet implemented in `csrc/module.cc`; for ascend, using
-  flagcx directly is recommended).
+- **Profile added**: `"enflame"` → device `"gcu"`, plain FlagCX creator signature.
+- **Device guard**: GCU-scoped guard added to all collective methods; current device is forced to match operand device before dispatch (GCU streams and pointers are device-scoped).
+- **View conversion**: none. The profile sets `direct=True`, so `_resolve_view` returns the identity instead of raising for the absent view. FlagCX's enflame plugin imports `torch_gcu` and lists `"gcu"` in its `replace_prefix` device list, i.e. it addresses the GCU tensor itself. `direct` is opt-in per vendor: ascend/musa/cambricon keep `direct=False` and still fail loudly, since passing them a raw flagos tensor is not verified.
+- **Fallback backend**: No ECCL Python package; FlagCX is the only communication path for GCU.
+- **Unit tests**: Profile selection, plain creator signature, and device guard logic verified in `tests/unit/test_vendor_routing.py`.
+- **Live multi-card testing**: `tests/manual/test_flagos_dist_gcu.py` provided; requires FlagCX built with `USE_ENFLAME=1` and 2+ GCU cards.
+
+### 0.3 Pending on-hardware verification (needs multi-card GCU + FlagCX)
+
+- Whether FlagCX Enflame adaptor instantiation via the plain creator signature succeeds on real multi-card hardware.
+- Whether all collectives (all_reduce, broadcast, all_gather, reduce_scatter, DDP) complete without errors.
+- Whether the GCU device guard correctly handles operand device != current device cases.
 
 ---
 
@@ -201,11 +207,12 @@ this is the first thing to verify.
 
 ## 6. Per-vendor status
 
-| Vendor | flagcx path | Native fallback | View conversion | Main gap |
-|--------|------------|-----------------|-----------------|----------|
-| nvidia | works today | nccl (works today) | flagos→cuda (works today) | API coverage only |
-| metax  | should be reusable | "nccl"@maca | flagos→cuda (via maca) | mccl needs measuring |
-| ascend | **recommended primary path** | hccl (CUSTOM) | **flagos→npu missing** | either the view or native registration |
+| Vendor  | flagcx path | Native fallback | View conversion | Main gap |
+|---------|------------|-----------------|-----------------|----------|
+| nvidia  | works today | nccl (works today) | flagos→cuda (works today) | API coverage only |
+| metax   | should be reusable | "nccl"@maca | flagos→cuda (via maca) | mccl needs measuring |
+| ascend  | **recommended primary path** | hccl (CUSTOM) | **flagos→npu missing** | either the view or native registration |
+| enflame | primary path (2026-08) | none (FlagCX only) | none needed (`direct=True`) | needs live multi-card test |
 
 ---
 

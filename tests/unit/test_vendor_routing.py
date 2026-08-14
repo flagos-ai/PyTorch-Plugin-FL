@@ -42,7 +42,8 @@ def test_all_vendors_have_consistent_profiles():
     for name, prof in pg._VENDOR_PROFILES.items():
         assert prof.flagcx_dev, f"{name} missing flagcx_dev"
         # cuda-ABI vendors must expose the zero-copy cuda view + NCCL fallback;
-        # non-cuda vendors must NOT claim the cuda view.
+        # non-cuda vendors must NOT claim the cuda view (except enflame, which
+        # has view=None because FlagCX accepts PrivateUse1 directly).
         if prof.flagcx_dev == "cuda":
             assert prof.view == "_flagos_to_cuda_view", name
             assert prof.native == "_try_build_nccl", name
@@ -225,8 +226,9 @@ def test_musa_flagcx_only_no_native_fallback(monkeypatch):
 
 
 def test_musa_flagcx_ok_but_no_view_raises(monkeypatch):
-    # musa flagcx path succeeds, but no flagos->musa view is implemented yet ->
-    # must fail loudly rather than pass a raw flagos tensor to the backend.
+    # musa flagcx path succeeds, but no flagos->musa view is implemented and musa
+    # is not marked direct=True -> must fail loudly rather than pass a raw flagos
+    # tensor to the backend.
     obj, calls, _ = _make(
         monkeypatch, "musa", flagcx_ok=True, native_ok=False, view_present=False
     )
@@ -276,11 +278,58 @@ def test_flagcx_both_signatures_failing_warns_and_falls_back(monkeypatch):
 
 
 def test_ascend_uses_hccl_native(monkeypatch):
-    # ascend flagcx fails -> native hccl succeeds -> but view is None -> raise
-    # NotImplementedError (documents that only the FlagCX(cann) path is viable).
+    # ascend flagcx fails -> native hccl succeeds -> but view is None and ascend
+    # is not direct=True -> raise NotImplementedError (documents that only the
+    # FlagCX(cann) path is viable).
     obj, calls, _ = _make(
         monkeypatch, "ascend", flagcx_ok=False, native_ok=True, view_present=False
     )
     with pytest.raises(NotImplementedError, match="no flagos->device view"):
         obj._build_inner(None, 0, 1, None)
     assert calls["native"]  # hccl was attempted
+
+
+def test_enflame_profile():
+    """Enflame GCU uses device 'gcu' and is direct=True (FlagCX's enflame adaptor
+    reads the privateuseone tensor itself, so no view is needed *and none is
+    missing*), with no native fallback -- ECCL is only reachable via FlagCX."""
+    prof = pg._get_profile("enflame")
+    assert prof.flagcx_dev == "gcu"
+    assert prof.view is None
+    assert prof.native is None
+    assert prof.direct is True
+
+
+def test_direct_is_opt_in_per_vendor():
+    """direct=True suppresses the missing-view error, so it must stay opt-in: a
+    vendor that merely lacks a view must NOT silently inherit it. Guards against
+    flipping the default and handing raw flagos tensors to HCCL/MUSA/CNCL."""
+    assert pg._VENDOR_PROFILES["enflame"].direct is True
+    for v in ("ascend", "musa", "cambricon"):
+        assert pg._VENDOR_PROFILES[v].direct is False, (
+            f"{v} has no flagos->device view; direct=True would pass it a raw "
+            f"privateuseone tensor instead of failing loudly"
+        )
+
+
+def test_enflame_flagcx_returns_identity_view(monkeypatch):
+    """Enflame is direct=True, so _resolve_view returns the identity rather than
+    raising for the absent view."""
+    obj, calls, _ = _make(
+        monkeypatch, "enflame", flagcx_ok=True, native_ok=False, view_present=False
+    )
+    view_fn = obj._build_inner(None, 0, 1, None)
+    assert calls["flagcx"] and not calls["native"]
+    # view_fn should be identity for enflame
+    sentinel = object()
+    assert view_fn(sentinel) is sentinel
+
+
+def test_enflame_no_fallback_when_flagcx_missing(monkeypatch):
+    """Enflame has no native fallback; if FlagCX is unavailable, init fails."""
+    obj, calls, _ = _make(
+        monkeypatch, "enflame", flagcx_ok=False, native_ok=False, view_present=False
+    )
+    with pytest.raises(RuntimeError, match="no suitable inner backend.*none wired"):
+        obj._build_inner(None, 0, 1, None)
+    assert calls["flagcx"] and not calls["native"]
