@@ -65,7 +65,9 @@ def worker(rank: int, world_size: int, model_path: str, steps: int, seq_len: int
 
     dist.init_process_group(backend="flagos", rank=rank, world_size=world_size)
     if rank == 0:
-        inner = type(getattr(dist.distributed_c10d._get_default_group(), "_inner", None))
+        inner = type(
+            getattr(dist.distributed_c10d._get_default_group(), "_inner", None)
+        )
         print(f"[setup] world_size={world_size} backend={inner.__name__}", flush=True)
 
     from transformers import AutoModelForCausalLM, AutoTokenizer

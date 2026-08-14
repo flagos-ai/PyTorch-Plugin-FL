@@ -12,10 +12,9 @@ Does NOT require actual multi-GPU communication, just backend initialization.
 
 import os
 import sys
-import warnings
 
 # Force MUSA vendor
-os.environ['GEMS_VENDOR'] = 'musa'
+os.environ["GEMS_VENDOR"] = "musa"
 
 
 def test_musa_profile():
@@ -27,10 +26,10 @@ def test_musa_profile():
     print("=" * 60)
 
     # Check MUSA profile exists
-    assert 'musa' in _VENDOR_PROFILES, "MUSA profile missing"
+    assert "musa" in _VENDOR_PROFILES, "MUSA profile missing"
 
-    prof = _get_profile('musa')
-    print(f"✓ MUSA profile found")
+    prof = _get_profile("musa")
+    print("✓ MUSA profile found")
     print(f"  flagcx_dev: {prof.flagcx_dev}")
     print(f"  view: {prof.view}")
     print(f"  native: {prof.native}")
@@ -54,20 +53,19 @@ def test_identity_view_binding():
     torch_fl._C._init()
 
     # Test identity view
-    t = torch.randn(3, 4, device='flagos:0')
+    t = torch.randn(3, 4, device="flagos:0")
     viewed = torch_fl._C._flagos_identity_view(t)
 
     assert viewed is t, "Identity view must return same object"
     assert viewed.data_ptr() == t.data_ptr(), "Data pointer must match"
 
-    print(f"✓ _flagos_identity_view works correctly")
+    print("✓ _flagos_identity_view works correctly")
     print(f"  Same object: {viewed is t}")
     print(f"  Same data_ptr: {hex(viewed.data_ptr())} == {hex(t.data_ptr())}")
 
 
 def test_backend_routing():
     """Test ProcessGroupFlagOS initialization routing logic."""
-    import torch
     import torch_fl
     from torch_fl.comm.process_group import ProcessGroupFlagOS
 
@@ -83,21 +81,24 @@ def test_backend_routing():
     try:
         # Mock store for testing (won't actually communicate)
         from torch.distributed import TCPStore
+
         store = TCPStore("127.0.0.1", 0, 1, True)
 
-        pg = ProcessGroupFlagOS(store, 0, 1)
+        ProcessGroupFlagOS(store, 0, 1)
         print("✗ Unexpected success - should have failed with no backend")
         sys.exit(1)
     except RuntimeError as e:
         error_msg = str(e)
-        print(f"✓ Got expected RuntimeError")
+        print("✓ Got expected RuntimeError")
         print(f"  Message: {error_msg}")
 
         # Verify error message mentions MUSA and MCCL
-        assert "GEMS_VENDOR='musa'" in error_msg, \
+        assert "GEMS_VENDOR='musa'" in error_msg, (
             f"Error should mention MUSA vendor: {error_msg}"
-        assert "_try_build_mccl" in error_msg, \
+        )
+        assert "_try_build_mccl" in error_msg, (
             f"Error should mention MCCL fallback: {error_msg}"
+        )
 
         print("✓ Error message correctly identifies MUSA and MCCL requirement")
 
@@ -127,9 +128,10 @@ def main():
     except Exception as e:
         print(f"\n✗ TEST FAILED: {e}")
         import traceback
+
         traceback.print_exc()
         sys.exit(1)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

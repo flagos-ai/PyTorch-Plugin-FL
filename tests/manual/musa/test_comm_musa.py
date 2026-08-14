@@ -80,8 +80,13 @@ def worker(rank: int, world_size: int):
     dist.broadcast(b, src=0)
     expected_bc = list(range(4))
     ok_bc = b.cpu().tolist() == expected_bc
-    failures += [] if ok_bc else [f"broadcast got {b.cpu().tolist()} want {expected_bc}"]
-    print(f"[rank {rank}] broadcast -> {b.cpu().tolist()} {'OK' if ok_bc else 'FAIL'}", flush=True)
+    failures += (
+        [] if ok_bc else [f"broadcast got {b.cpu().tolist()} want {expected_bc}"]
+    )
+    print(
+        f"[rank {rank}] broadcast -> {b.cpu().tolist()} {'OK' if ok_bc else 'FAIL'}",
+        flush=True,
+    )
 
     # --- all_gather (parameter gathering) ---
     src = torch.ones(2, device=dev, dtype=torch.float32) * (rank + 1)
@@ -98,7 +103,11 @@ def worker(rank: int, world_size: int):
     dist.all_gather_into_tensor(agb, torch.full((1,), float(rank), device=dev))
     expected_agb = [float(i) for i in range(world_size)]
     ok_agb = agb.cpu().tolist() == expected_agb
-    failures += [] if ok_agb else [f"all_gather_into_tensor got {agb.cpu().tolist()} want {expected_agb}"]
+    failures += (
+        []
+        if ok_agb
+        else [f"all_gather_into_tensor got {agb.cpu().tolist()} want {expected_agb}"]
+    )
     print(
         f"[rank {rank}] all_gather_into_tensor -> {agb.cpu().tolist()} "
         f"{'OK' if ok_agb else 'FAIL'}",
@@ -113,7 +122,11 @@ def worker(rank: int, world_size: int):
     dist.reduce_scatter_tensor(rs_out, rs_in)
     exp_rs = [float(world_size) * (2 * rank), float(world_size) * (2 * rank + 1)]
     ok_rs = rs_out.cpu().tolist() == exp_rs
-    failures += [] if ok_rs else [f"reduce_scatter_tensor got {rs_out.cpu().tolist()} want {exp_rs}"]
+    failures += (
+        []
+        if ok_rs
+        else [f"reduce_scatter_tensor got {rs_out.cpu().tolist()} want {exp_rs}"]
+    )
     print(
         f"[rank {rank}] reduce_scatter_tensor -> {rs_out.cpu().tolist()} "
         f"(expect {exp_rs}) {'OK' if ok_rs else 'FAIL'}",
