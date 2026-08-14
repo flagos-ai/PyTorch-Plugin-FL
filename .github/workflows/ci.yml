@@ -16,7 +16,9 @@ name: CI
 
 on:
   push:
-    branches: [main, dev, devops, dev-hygon]
+
+    branches: [main, dev, devops, dev-hygon, dev-thead]
+
     paths:
       - "cmake/**"
       - "csrc/**"
