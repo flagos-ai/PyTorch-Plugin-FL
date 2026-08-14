@@ -271,7 +271,62 @@ class Stream(torch.cuda.Stream):
     def __new__(cls, device=None, priority=0, **kwargs):
         if device is None:
             device = current_device()
-        return super().__new__(cls, device=device, priority=priority, **kwargs)
+        try:
+            return super().__new__(cls, device=device, priority=priority, **kwargs)
+        except RuntimeError as e:
+            # torch.cuda.Stream unavailable (CPU-only build on Ascend, etc.)
+            if "cuda" in str(e).lower():
+                return object.__new__(cls)
+            raise
+
+    def __init__(self, device=None, priority=0, **kwargs):
+        # On Ascend with no CUDA, __new__ returns object.__new__(cls) and we need
+        # a full native implementation. Import ACL late to avoid crashing on CUDA.
+        if not hasattr(torch._C, "_cuda_getCurrentStream"):
+            from torch_fl.csrc.aten.backends.ascend.acl_stream import AclStream
+
+            self._stream = AclStream(device, priority)
+            # Set device attribute for __repr__ compatibility with torch.cuda.Stream
+            self.device = self._stream.device
+        else:
+            # Real torch.cuda.Stream path: __new__ constructed it, do nothing.
+            pass
+
+    def __repr__(self):
+        if hasattr(self, "_stream"):
+            return f"<torch_fl.flagos.Stream device={self.device} acl_stream={self._stream.handle:#x}>"
+        return super().__repr__()
+
+    def wait_stream(self, other):
+        if hasattr(self, "_stream"):
+            return self._stream.wait_stream(other)
+        return super().wait_stream(other)
+
+    def wait_event(self, event):
+        if hasattr(self, "_stream"):
+            return self._stream.wait_event(event)
+        return super().wait_event(event)
+
+    def record_event(self, event=None):
+        if hasattr(self, "_stream"):
+            return self._stream.record_event(event)
+        return super().record_event(event)
+
+    def synchronize(self):
+        if hasattr(self, "_stream"):
+            return self._stream.synchronize()
+        return super().synchronize()
+
+    def query(self):
+        if hasattr(self, "_stream"):
+            return self._stream.query()
+        return super().query()
+
+    @property
+    def cuda_stream(self):
+        if hasattr(self, "_stream"):
+            return self._stream.handle
+        return super().cuda_stream
 
 
 class _DefaultStreamHandle:
@@ -305,6 +360,9 @@ class _DefaultStreamHandle:
     def query(self) -> bool:
         return True
 
+    def wait_event(self, event):
+        return None
+
 
 def _real_current_stream(device=None):
     """Resolve the actual current CUDA stream as a real ``torch.cuda.Stream``.
@@ -326,7 +384,12 @@ def _real_current_stream(device=None):
     """
     idx = current_device() if device is None else int(device)
     if not hasattr(torch._C, "_cuda_getCurrentStream"):
-        return _DefaultStreamHandle(idx)
+        from torch_fl.csrc.aten.backends.ascend.acl_stream import current_acl_stream
+
+        try:
+            return current_acl_stream(idx)
+        except RuntimeError:
+            return _DefaultStreamHandle(idx)
     stream_id, device_index, device_type = torch._C._cuda_getCurrentStream(idx)
     return torch.cuda.Stream(
         stream_id=stream_id, device_index=device_index, device_type=device_type
@@ -376,50 +439,73 @@ class _HostTimedEvent:
 
 
 class Event(torch.cuda.Event):
-    """Flagos event that wraps a CUDA event (same physical GPU under boxing).
-
-    Since flagos shares the CUDA stream/GPU, a real ``torch.cuda.Event`` gives
-    true device-side semantics (maca event under the hood): ``record`` and
-    ``wait`` enforce cross-stream ordering, ``elapsed_time`` measures on-device
-    time, and ``query`` reflects actual completion -- unlike the previous
-    host-timestamp stand-in whose ``wait`` was a no-op.
-
-    ``record``/``wait`` are overridden to default to the *real* current stream
-    (see :func:`_real_current_stream`) rather than ``torch.cuda.current_stream``,
-    which boxing replaces with a non-Stream shim.
-    """
+    """Flagos event backed by CUDA or native ACL runtime state."""
 
     def __new__(
         cls, enable_timing=False, blocking=False, interprocess=False, external=False
     ):
-        try:
-            return super().__new__(
-                cls,
-                enable_timing=enable_timing,
-                blocking=blocking,
-                interprocess=interprocess,
-                external=external,
-            )
-        except RuntimeError:
-            # No CUDA event underneath (Ascend): torch.cuda.Event is a dummy base
-            # class there. Fall back to host timing rather than propagating, so
-            # triton's autotuner can still bench configs.
-            return _HostTimedEvent(
-                enable_timing=enable_timing,
-                blocking=blocking,
-                interprocess=interprocess,
-                external=external,
-            )
+        if not hasattr(torch._C, "_cuda_getCurrentStream"):
+            try:
+                obj = object.__new__(cls)
+                from torch_fl.csrc.aten.backends.ascend.acl_stream import AclEvent
+
+                obj._event = AclEvent(
+                    enable_timing=enable_timing,
+                    blocking=blocking,
+                    external=external,
+                )
+                return obj
+            except RuntimeError:
+                return _HostTimedEvent(
+                    enable_timing=enable_timing,
+                    blocking=blocking,
+                    interprocess=interprocess,
+                    external=external,
+                )
+        return super().__new__(
+            cls,
+            enable_timing=enable_timing,
+            blocking=blocking,
+            interprocess=interprocess,
+            external=external,
+        )
+
+    def __init__(
+        self, enable_timing=False, blocking=False, interprocess=False, external=False
+    ):
+        del enable_timing, blocking, interprocess, external
 
     def record(self, stream=None):
+        if hasattr(self, "_event"):
+            native = getattr(stream, "_stream", stream)
+            return self._event.record(native)
         if stream is None:
             stream = _real_current_stream()
         return super().record(stream)
 
     def wait(self, stream=None):
+        if hasattr(self, "_event"):
+            native = getattr(stream, "_stream", stream)
+            return self._event.wait(native)
         if stream is None:
             stream = _real_current_stream()
         return super().wait(stream)
+
+    def synchronize(self):
+        if hasattr(self, "_event"):
+            return self._event.synchronize()
+        return super().synchronize()
+
+    def query(self):
+        if hasattr(self, "_event"):
+            return self._event.query()
+        return super().query()
+
+    def elapsed_time(self, end_event):
+        if hasattr(self, "_event"):
+            other = getattr(end_event, "_event", end_event)
+            return self._event.elapsed_time(other)
+        return super().elapsed_time(end_event)
 
 
 def current_stream(device=None):
@@ -444,6 +530,24 @@ def stream(s):
     if s is None:
         yield
         return
+
+    # On Ascend with no CUDA, switch the thread-local ACL stream registry.
+    if not hasattr(torch._C, "_cuda_setStream"):
+        from torch_fl.csrc.aten.backends.ascend.acl_stream import AclStream
+
+        native = getattr(s, "_stream", s)
+        if isinstance(native, AclStream):
+            previous = _real_current_stream(native.device_index)
+            native.set_current()
+            try:
+                yield
+            finally:
+                previous.set_current()
+            return
+        yield
+        return
+
+    # CUDA path: real stream switching via _cuda_setStream
     prev = _real_current_stream(s.device.index)
     torch._C._cuda_setStream(
         stream_id=s.stream_id,

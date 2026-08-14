@@ -11,6 +11,12 @@
 
 #include <flagos.h>
 
+#include <cstdint>
+
+#ifdef USE_ASCEND
+#include "runtime/accelerator/ascend/acl_stream.h"
+#endif
+
 // Real c10::cuda:: stream/event plumbing. Gated the same way as
 // runtime/allocator/caching_device_allocator.cc's delegation to
 // c10::cuda::CUDACachingAllocator (NOT the looser cuda_runtime.h guard used
@@ -30,6 +36,29 @@
 #endif
 
 namespace c10::flagos {
+
+#ifdef USE_ASCEND
+inline int ResolveAscendDevice(c10::Device d) {
+  if (d.index() >= 0) {
+    return d.index();
+  }
+  int device = 0;
+  ::GetDevice(&device);
+  return device;
+}
+
+inline c10::Stream MakeAscendStream(int device, aclrtStream stream) {
+  return c10::Stream(
+      c10::Stream::UNSAFE,
+      c10::Device(c10::DeviceType::PrivateUse1, device),
+      static_cast<c10::StreamId>(reinterpret_cast<uintptr_t>(stream)));
+}
+
+inline aclrtStream AscendStreamHandle(const c10::Stream& stream) {
+  return reinterpret_cast<aclrtStream>(
+      static_cast<uintptr_t>(stream.id()));
+}
+#endif
 
 struct GuardImpl final : public c10::impl::DeviceGuardImplInterface {
   static constexpr c10::DeviceType static_type = c10::DeviceType::PrivateUse1;
@@ -92,9 +121,12 @@ struct GuardImpl final : public c10::impl::DeviceGuardImplInterface {
         c10::Stream::UNSAFE,
         c10::Device(c10::DeviceType::PrivateUse1, s.device_index()),
         s.id());
+#elif defined(USE_ASCEND)
+    auto device = ResolveAscendDevice(d);
+    return MakeAscendStream(
+        device,
+        at::native::flagos::ascend::GetCurrentAclStreamForDevice(device));
 #else
-    // Return stream with ID 0 (not DEFAULT which is -1)
-    // The autograd engine expects valid stream IDs
     return c10::Stream(c10::Stream::UNSAFE, d, 0);
 #endif
   }
@@ -106,6 +138,11 @@ struct GuardImpl final : public c10::impl::DeviceGuardImplInterface {
         c10::Stream::UNSAFE,
         c10::Device(c10::DeviceType::PrivateUse1, s.device_index()),
         s.id());
+#elif defined(USE_ASCEND)
+    auto device = ResolveAscendDevice(d);
+    return MakeAscendStream(
+        device,
+        at::native::flagos::ascend::GetDefaultAclStream());
 #else
     return c10::Stream(c10::Stream::UNSAFE, d, 0);
 #endif
@@ -118,6 +155,11 @@ struct GuardImpl final : public c10::impl::DeviceGuardImplInterface {
         c10::Stream::UNSAFE,
         c10::Device(c10::DeviceType::PrivateUse1, s.device_index()),
         s.id());
+#elif defined(USE_ASCEND)
+    auto device = ResolveAscendDevice(d);
+    aclrtStream stream = nullptr;
+    aclrtCreateStream(&stream);
+    return MakeAscendStream(device, stream);
 #else
     return c10::Stream(c10::Stream::UNSAFE, d, 0);
 #endif
@@ -143,6 +185,12 @@ struct GuardImpl final : public c10::impl::DeviceGuardImplInterface {
         c10::Stream::UNSAFE,
         c10::Device(c10::DeviceType::PrivateUse1, old.device_index()),
         old.id());
+#elif defined(USE_ASCEND)
+    auto device = ResolveAscendDevice(s.device());
+    auto old = at::native::flagos::ascend::GetCurrentAclStreamForDevice(device);
+    at::native::flagos::ascend::SetCurrentAclStreamForDevice(
+        device, AscendStreamHandle(s));
+    return MakeAscendStream(device, old);
 #else
     return c10::Stream(c10::Stream::UNSAFE, s.device(), 0);
 #endif
@@ -155,19 +203,36 @@ struct GuardImpl final : public c10::impl::DeviceGuardImplInterface {
         c10::Stream::UNSAFE,
         c10::Device(c10::DeviceType::PrivateUse1, s.device_index()),
         s.id());
+#elif defined(USE_ASCEND)
+    auto device = ResolveAscendDevice(d);
+    aclrtStream stream = nullptr;
+    aclrtCreateStream(&stream);
+    return MakeAscendStream(device, stream);
 #else
     return c10::Stream(c10::Stream::UNSAFE, d, 0);
 #endif
   }
 
   bool queryStream(const c10::Stream& stream) const override {
-    // Synchronize CUDA to ensure all operations are complete
+#ifdef USE_ASCEND
+    aclrtStream handle = AscendStreamHandle(stream);
+    aclrtStreamStatus status;
+    if (aclrtStreamQuery(handle, &status) != ACL_SUCCESS) {
+      return false;
+    }
+    return status == ACL_STREAM_STATUS_COMPLETE;
+#else
     ::DeviceSynchronize();
     return true;
+#endif
   }
 
   void synchronizeStream(const c10::Stream& stream) const override {
+#ifdef USE_ASCEND
+    aclrtSynchronizeStream(AscendStreamHandle(stream));
+#else
     ::DeviceSynchronize();
+#endif
   }
 
   void synchronizeEvent(void* event) const override {
@@ -230,13 +295,20 @@ struct GuardImpl final : public c10::impl::DeviceGuardImplInterface {
     // accelerator/cuda/stream.cc), so this reinterpret is the established
     // flagos<->CUDA stream conversion, not a new pattern.
     ::EventRecord(*(Event_t*)event, (Stream_t)cs.stream());
+#elif defined(USE_ASCEND)
+    ::EventRecord(*(Event_t*)event, (Stream_t)AscendStreamHandle(stream));
 #else
     ::EventRecord(*(Event_t*)event, nullptr);
 #endif
   }
 
   void block(void* event, const c10::Stream& stream) const override {
+#ifdef USE_ASCEND
+    ::StreamWaitEvent(
+        (Stream_t)AscendStreamHandle(stream), (Event_t)event, 0);
+#else
     ::StreamWaitEvent(nullptr, (Event_t)event, 0);
+#endif
   }
 
   bool queryEvent(void* event) const override {

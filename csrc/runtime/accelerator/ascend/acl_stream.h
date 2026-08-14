@@ -26,6 +26,13 @@ namespace at::native::flagos::ascend {
 // silent corruption under async dispatch. Keep it a plain exported function.
 FLAGOS_EXPORT aclrtStream GetDefaultAclStream();
 
+// Return the stream selected for the calling thread and device. If no
+// auxiliary stream has been selected, this returns the shared default stream.
+FLAGOS_EXPORT aclrtStream GetCurrentAclStream();
+FLAGOS_EXPORT aclrtStream GetCurrentAclStreamForDevice(int device_index);
+FLAGOS_EXPORT void SetCurrentAclStream(aclrtStream stream);
+FLAGOS_EXPORT void SetCurrentAclStreamForDevice(int device_index, aclrtStream stream);
+
 } // namespace at::native::flagos::ascend
 
 #endif // USE_ASCEND

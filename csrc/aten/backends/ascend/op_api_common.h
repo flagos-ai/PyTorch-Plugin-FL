@@ -158,10 +158,6 @@ struct AclTensorWrapper {
   const aclTensor* get() const { return acl_tensor; }
 };
 
-inline aclrtStream GetCurrentAclStream() {
-  return GetDefaultAclStream();
-}
-
 // Defer reuse of an aclnn scratch-workspace block until the given stream has
 // finished the op that consumes it. Records an event on the stream via the
 // caching allocator so free_block holds the block back until the event fires.
