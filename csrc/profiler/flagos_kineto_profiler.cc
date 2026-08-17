@@ -298,6 +298,7 @@ void FlagosKinetoProfilerSession::processTrace(
   // fell outside the window -- leaves a dangling arrow, which is not what
   // torch+cuda produces.
   std::set<uint32_t> device_correlations;
+  std::set<uint32_t> runtime_correlations;
   int device_in_window = 0;
   int device_total = 0;
   for (const auto& ev : events_) {
@@ -312,9 +313,21 @@ void FlagosKinetoProfilerSession::processTrace(
         device_correlations.insert(ev.correlation_id);
         ++device_in_window;
       }
+    } else if (in_window(ev) && ev.correlation_id != 0) {
+      runtime_correlations.insert(ev.correlation_id);
     }
   }
   FLAGOS_KINETO_LOG("[flagos] Found " << device_in_window << "/" << device_total << " device events in window\n");
+
+  // A renderable flow requires one runtime and one device activity with the same
+  // vendor correlation id. Device records without a runtime counterpart occur
+  // for work submitted by an internal vendor thread and must not emit a lone
+  // finish half.
+  std::set<uint32_t> paired_correlations;
+  std::set_intersection(
+      device_correlations.begin(), device_correlations.end(),
+      runtime_correlations.begin(), runtime_correlations.end(),
+      std::inserter(paired_correlations, paired_correlations.end()));
 
   // Whether kineto actually handed us a resolver. An EMPTY callback is a total
   // loss of linking: every activity is then emitted with linked == nullptr,
@@ -408,7 +421,7 @@ void FlagosKinetoProfilerSession::processTrace(
     // is the vendor correlation id (shared by a launch's runtime event and the
     // kernel/memcpy event it produced). Using the torch correlation id here
     // instead would emit only unpaired 'f' halves that no viewer renders.
-    if (ev.correlation_id != 0 && device_correlations.count(ev.correlation_id)) {
+    if (ev.correlation_id != 0 && paired_correlations.count(ev.correlation_id)) {
       activity.flow.id = ev.correlation_id;
       activity.flow.type = libkineto::kLinkAsyncCpuGpu;
       activity.flow.start = (ev.kind == profiler::EventKind::Runtime) ? 1 : 0;

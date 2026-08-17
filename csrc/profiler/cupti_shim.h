@@ -31,9 +31,11 @@ typedef struct CUctx_st* CUcontext;
 typedef enum {
   CUPTI_SUCCESS = 0,
   CUPTI_ERROR_INVALID_PARAMETER = 1,
-  CUPTI_ERROR_NOT_INITIALIZED = 15,
-  CUPTI_ERROR_MAX_LIMIT_REACHED = 28,
-  CUPTI_ERROR_INVALID_KIND = 32
+  // PPU's CUPTI compatibility layer forwards HGPTI result values, whose
+  // MAX_LIMIT_REACHED and INVALID_KIND differ from NVIDIA CUPTI. Avoid using
+  // either vendor's numeric result here; ActivityGetNextRecord returns a null
+  // record when iteration is complete, which is the portable termination signal.
+  CUPTI_ERROR_NOT_INITIALIZED = 15
 } CUptiResult;
 
 // Activity kinds (subset). Values MUST match the cu12 runtime's
@@ -158,6 +160,7 @@ struct CuptiShim {
       CUpti_ExternalCorrelationKind, uint64_t) = nullptr;
   CUptiResult (*ActivityPopExternalCorrelationId)(
       CUpti_ExternalCorrelationKind, uint64_t*) = nullptr;
+  CUptiResult (*GetTimestamp)(uint64_t*) = nullptr;
   // Optional: only used for diagnostics, so a failure to resolve it is not fatal.
   CUptiResult (*GetVersion)(uint32_t*) = nullptr;
 
@@ -254,6 +257,7 @@ struct CuptiShim {
              "cuptiActivityPushExternalCorrelationId");
     LOAD_SYM(ActivityPopExternalCorrelationId,
              "cuptiActivityPopExternalCorrelationId");
+    LOAD_SYM(GetTimestamp, "cuptiGetTimestamp");
     LOAD_SYM(GetVersion, "cuptiGetVersion");
 
 #undef LOAD_SYM

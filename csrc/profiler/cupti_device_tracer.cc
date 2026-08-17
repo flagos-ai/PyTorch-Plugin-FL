@@ -36,6 +36,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <time.h>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -583,6 +584,14 @@ std::string demangleName(const char* mangled) {
 class CuptiDeviceTracer;
 
 namespace {
+void bufferRequested(uint8_t** buffer, size_t* size, size_t* maxNumRecords);
+void bufferCompleted(
+    CUcontext context,
+    uint32_t streamId,
+    uint8_t* buffer,
+    size_t size,
+    size_t validSize);
+
 // Global tracer pointer for the buffer callbacks (CUPTI callbacks are C-style
 // and cannot capture context).
 CuptiDeviceTracer* g_active_tracer = nullptr;
@@ -610,6 +619,12 @@ class CuptiDeviceTracer : public DeviceTracer {
       return;
     }
 
+    // CUPTI activity timestamps are in the clock domain returned by
+    // cuptiGetTimestamp. Kineto's capture window uses CLOCK_REALTIME. Sample both
+    // domains at each end of the session: PPU's compatibility clock differs in
+    // both epoch and observed rate under load, so a single offset is insufficient.
+    start_clock_sample_ = sampleClocks(shim);
+
     // Publish this tracer and reset its buffers under the lock, then RELEASE the
     // lock before touching CUPTI. cuptiActivityFlushAll() invokes bufferCompleted
     // synchronously on this same thread, and bufferCompleted also locks
@@ -624,15 +639,30 @@ class CuptiDeviceTracer : public DeviceTracer {
 
     FLAGOS_CUPTI_LOG("[flagos] CuptiDeviceTracer::start() called\n");
 
-    // Callbacks are registered globally at init time; just enable activities here
+    // PyTorch's kineto owns the process-global CUPTI activity callbacks on
+    // CUDA-enabled builds, so reclaim them for the FlagOS session. Registering at
+    // module initialization alone is insufficient: kineto may replace them after
+    // torch_fl is imported, which makes HGPTI reject our buffer at flush as
+    // "unknown" and leaves the PrivateUse1 trace empty.
+    CUptiResult res_cb =
+        shim.ActivityRegisterCallbacks(bufferRequested, bufferCompleted);
+
+    // KERNEL and CONCURRENT_KERNEL are mutually exclusive in PPU's CUPTI
+    // compatibility layer: whichever is enabled first succeeds and the second
+    // returns HGPTI_ERROR_NOT_COMPATIBLE. Enable both so NVIDIA gets concurrent
+    // records while PPU accepts the already-armed mode; the parser handles either
+    // record kind.
     CUptiResult res1 = shim.ActivityEnable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL);
+    CUptiResult res_k = shim.ActivityEnable(CUPTI_ACTIVITY_KIND_KERNEL);
     CUptiResult res2 = shim.ActivityEnable(CUPTI_ACTIVITY_KIND_MEMCPY);
     CUptiResult res_ms = shim.ActivityEnable(CUPTI_ACTIVITY_KIND_MEMSET);
     CUptiResult res_rt = shim.ActivityEnable(CUPTI_ACTIVITY_KIND_RUNTIME);
     CUptiResult res_ec =
         shim.ActivityEnable(CUPTI_ACTIVITY_KIND_EXTERNAL_CORRELATION);
-    FLAGOS_CUPTI_LOG("[flagos] ActivityEnable results: KERNEL=" << res1
-              << ", MEMCPY=" << res2 << ", MEMSET=" << res_ms
+    FLAGOS_CUPTI_LOG("[flagos] Activity setup results: CALLBACKS=" << res_cb
+              << ", CONCURRENT_KERNEL=" << res1
+              << ", KERNEL=" << res_k << ", MEMCPY=" << res2
+              << ", MEMSET=" << res_ms
               << ", RUNTIME=" << res_rt
               << ", EXTERNAL_CORRELATION=" << res_ec << "\n");
 
@@ -649,17 +679,21 @@ class CuptiDeviceTracer : public DeviceTracer {
 
     FLAGOS_CUPTI_LOG("[flagos] CuptiDeviceTracer::stop() called\n");
 
+    end_clock_sample_ = sampleClocks(shim);
+
+    // Flush while activities and the active tracer are still live. PPU's HGPTI
+    // backend follows the documented forced-termination ordering and may deliver
+    // the completion callback synchronously from this call.
+    FLAGOS_CUPTI_LOG("[flagos] Flushing CUPTI activities...\n");
+    CUptiResult flush_res = shim.ActivityFlushAll(1);
+    FLAGOS_CUPTI_LOG("[flagos] ActivityFlushAll result: " << flush_res << "\n");
+
     shim.ActivityDisable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL);
     shim.ActivityDisable(CUPTI_ACTIVITY_KIND_KERNEL);
     shim.ActivityDisable(CUPTI_ACTIVITY_KIND_MEMCPY);
     shim.ActivityDisable(CUPTI_ACTIVITY_KIND_MEMSET);
     shim.ActivityDisable(CUPTI_ACTIVITY_KIND_RUNTIME);
     shim.ActivityDisable(CUPTI_ACTIVITY_KIND_EXTERNAL_CORRELATION);
-
-    // Flush all pending activity records - force flag=0 means wait for completion
-    FLAGOS_CUPTI_LOG("[flagos] Flushing CUPTI activities...\n");
-    CUptiResult flush_res = shim.ActivityFlushAll(0);
-    FLAGOS_CUPTI_LOG("[flagos] ActivityFlushAll result: " << flush_res << "\n");
 
     std::lock_guard<std::mutex> lock(g_tracer_mutex);
     g_active_tracer = nullptr;
@@ -677,6 +711,8 @@ class CuptiDeviceTracer : public DeviceTracer {
   std::vector<DeviceEvent> drain() override {
     std::lock_guard<std::mutex> lock(g_tracer_mutex);
     for (auto& ev : events_) {
+      ev.start_ns = toRealtime(ev.start_ns);
+      ev.end_ns = toRealtime(ev.end_ns);
       ev.external_correlation_id = lookupExternalCorrelation(ev.correlation_id);
     }
     return std::move(events_);
@@ -724,9 +760,6 @@ class CuptiDeviceTracer : public DeviceTracer {
     CUpti_Activity* record = nullptr;
     while (true) {
       CUptiResult status = shim.ActivityGetNextRecord(buffer, validSize, &record);
-      if (status == CUPTI_ERROR_MAX_LIMIT_REACHED) {
-        break;  // No more records
-      }
       if (status != CUPTI_SUCCESS || !record) {
         break;
       }
@@ -944,11 +977,63 @@ class CuptiDeviceTracer : public DeviceTracer {
     return static_cast<int32_t>(it->second);
   }
 
+  struct ClockSample {
+    uint64_t vendor_ns = 0;
+    uint64_t realtime_ns = 0;
+    bool valid = false;
+  };
+
+  static ClockSample sampleClocks(CuptiShim& shim) {
+    ClockSample sample;
+    if (!shim.GetTimestamp) {
+      return sample;
+    }
+
+    timespec before{};
+    timespec after{};
+    clock_gettime(CLOCK_REALTIME, &before);
+    CUptiResult result = shim.GetTimestamp(&sample.vendor_ns);
+    clock_gettime(CLOCK_REALTIME, &after);
+    const uint64_t before_ns = static_cast<uint64_t>(before.tv_sec) * 1000000000ULL +
+        static_cast<uint64_t>(before.tv_nsec);
+    const uint64_t after_ns = static_cast<uint64_t>(after.tv_sec) * 1000000000ULL +
+        static_cast<uint64_t>(after.tv_nsec);
+    sample.realtime_ns = before_ns + (after_ns - before_ns) / 2;
+    sample.valid = result == CUPTI_SUCCESS && sample.vendor_ns != 0;
+    FLAGOS_CUPTI_LOG("[flagos] clock sample result=" << result
+                     << " vendor=" << sample.vendor_ns
+                     << " realtime=" << sample.realtime_ns << "\n");
+    return sample;
+  }
+
+  uint64_t toRealtime(uint64_t vendor_ns) const {
+    if (!start_clock_sample_.valid) {
+      return vendor_ns;
+    }
+    if (!end_clock_sample_.valid ||
+        end_clock_sample_.vendor_ns <= start_clock_sample_.vendor_ns) {
+      return start_clock_sample_.realtime_ns +
+          (vendor_ns - start_clock_sample_.vendor_ns);
+    }
+
+    const long double vendor_delta = static_cast<long double>(
+        end_clock_sample_.vendor_ns - start_clock_sample_.vendor_ns);
+    const long double realtime_delta = static_cast<long double>(
+        end_clock_sample_.realtime_ns - start_clock_sample_.realtime_ns);
+    const long double elapsed = static_cast<long double>(vendor_ns) -
+        static_cast<long double>(start_clock_sample_.vendor_ns);
+    return static_cast<uint64_t>(
+        static_cast<long double>(start_clock_sample_.realtime_ns) +
+        elapsed * realtime_delta / vendor_delta);
+  }
+
   std::vector<DeviceEvent> events_;
   // cupti correlationId -> externalId (torch correlation id), populated from
   // EXTERNAL_CORRELATION records. Guarded by g_tracer_mutex (processBuffer
   // writes it; drain reads it after stop()).
   std::unordered_map<uint32_t, uint64_t> external_correlation_;
+  ClockSample start_clock_sample_;
+  ClockSample end_clock_sample_;
 };
 
 namespace {
@@ -1032,11 +1117,14 @@ struct CuptiTracerInit {
     CUptiResult res =
         shim.ActivityRegisterCallbacks(bufferRequested, bufferCompleted);
     FLAGOS_CUPTI_LOG("[flagos] ActivityRegisterCallbacks result: " << res << "\n");
-    CUptiResult en_k = shim.ActivityEnable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL);
+    CUptiResult en_ck =
+        shim.ActivityEnable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL);
+    CUptiResult en_k = shim.ActivityEnable(CUPTI_ACTIVITY_KIND_KERNEL);
     CUptiResult en_m = shim.ActivityEnable(CUPTI_ACTIVITY_KIND_MEMCPY);
     CUptiResult en_s = shim.ActivityEnable(CUPTI_ACTIVITY_KIND_MEMSET);
-    FLAGOS_CUPTI_LOG("[flagos] init ActivityEnable KERNEL=" << en_k
-              << " MEMCPY=" << en_m << " MEMSET=" << en_s
+    FLAGOS_CUPTI_LOG("[flagos] init ActivityEnable CONCURRENT_KERNEL=" << en_ck
+              << " KERNEL=" << en_k << " MEMCPY=" << en_m
+              << " MEMSET=" << en_s
               << " (RUNTIME/EXTERNAL_CORRELATION deferred to start())\n");
   }
 };
