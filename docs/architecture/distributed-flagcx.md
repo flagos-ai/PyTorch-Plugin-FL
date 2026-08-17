@@ -5,9 +5,8 @@ This document describes how `torch_fl.distributed` integrates FlagCX uniformly o
 FlagCX is unavailable. The goal is a single upper-layer API shared by nvidia, metax, and ascend,
 while closing the correctness gaps in communication.
 
-> Status: design plus the first refactoring stage (pure Python; correctness can be verified
-> without a flagcx environment). Native FlagCX registration and the ascend view still need
-> on-hardware verification, pending a machine with flagcx and multiple cards.
+> Status: the native ProcessGroup implementation is active. Enflame GCU integration has been
+> validated on two S60 devices; other vendor paths retain the validation status documented below.
 
 ---
 
@@ -64,20 +63,22 @@ Integrate against this contract; do not guess:
 6. When flagcx is not installed, `_try_build_flagcx` returns False and the code falls back to
    HCCL/NCCL automatically.
 
-### 0.2 GCU integration status (verified 2026-08)
+### 0.2 GCU integration status (verified on two Enflame S60 devices)
 
-- **Profile added**: `"enflame"` → device `"gcu"`, plain FlagCX creator signature.
-- **Device guard**: GCU-scoped guard added to all collective methods; current device is forced to match operand device before dispatch (GCU streams and pointers are device-scoped).
-- **View conversion**: none. The profile sets `direct=True`, so `_resolve_view` returns the identity instead of raising for the absent view. FlagCX's enflame plugin imports `torch_gcu` and lists `"gcu"` in its `replace_prefix` device list, i.e. it addresses the GCU tensor itself. `direct` is opt-in per vendor: ascend/musa/cambricon keep `direct=False` and still fail loudly, since passing them a raw flagos tensor is not verified.
+- **Profile**: `"enflame"` uses device `"flagos"` with the plain FlagCX creator signature when the torch-fl-compatible build is selected.
+- **Backend selection**: `ProcessGroupFlagOS` sets `FLAGCX_TORCH_BACKEND=flagos` before importing FlagCX when `GEMS_VENDOR=enflame`, while preserving an explicit user value.
+- **Torch-fl compatibility mode**: FlagCX can be built with `FLAGCX_TORCH_BACKEND=flagos`; this mode links `libflagos.so` and `libtopsrt.so`, uses raw Tops stream/event calls, and does not import or link `torch_gcu`. The default selector remains available for existing vendor installations.
+- **Stream interoperation**: torch-fl exports its current-stream registry through `flagos.h`. Topsaten, FSDP2, and FlagCX use that process-wide ABI so communication and compute can establish event dependencies without relying on vendor `torch_gcu` objects.
+- **Device guard**: GCU-scoped guards force the current device to match the communicator and operands because GCU streams and pointers are device-scoped. A test that deliberately selects the other device before `all_reduce` passed on both ranks.
+- **View conversion**: none. The profile sets `direct=True`, so `_resolve_view` returns the identity and FlagCX receives the privateuseone tensor directly.
 - **Fallback backend**: No ECCL Python package; FlagCX is the only communication path for GCU.
-- **Unit tests**: Profile selection, plain creator signature, and device guard logic verified in `tests/unit/test_vendor_routing.py`.
-- **Live multi-card testing**: `tests/manual/test_flagos_dist_gcu.py` provided; requires FlagCX built with `USE_ENFLAME=1` and 2+ GCU cards.
+- **Unit tests**: Profile selection, plain creator signature, backend-selector defaulting, explicit-selector preservation, and device guard logic are covered in `tests/unit/test_vendor_routing.py`.
+- **Measured basic coverage**: `tests/manual/test_flagos_dist_gcu.py` passed on two S60 devices for all-reduce, broadcast, list all-gather, all-gather-into-tensor, reduce-scatter-tensor, barrier, DDP forward/backward, gradient synchronization, and the wrong-current-device guard.
+- **Measured FSDP2 coverage**: per-layer `fully_shard`, training, bf16 parameters with fp32 reduction, gradient clipping, and sharded state-dict save/load passed on both ranks. The measured losses were `95.0701` (fp32) and `95.5000` (mixed precision), and the gradient norm was `1451.6295` on both ranks.
 
-### 0.3 Pending on-hardware verification (needs multi-card GCU + FlagCX)
+### 0.3 Remaining GCU validation
 
-- Whether FlagCX Enflame adaptor instantiation via the plain creator signature succeeds on real multi-card hardware.
-- Whether all collectives (all_reduce, broadcast, all_gather, reduce_scatter, DDP) complete without errors.
-- Whether the GCU device guard correctly handles operand device != current device cases.
+The manual suite does not yet exercise point-to-point operations, gather/scatter roots, all-to-all, multi-node rendezvous, process failure recovery, or more than two devices. Those paths remain unvalidated on Enflame hardware.
 
 ---
 
@@ -212,7 +213,7 @@ this is the first thing to verify.
 | nvidia  | works today | nccl (works today) | flagos→cuda (works today) | API coverage only |
 | metax   | should be reusable | "nccl"@maca | flagos→cuda (via maca) | mccl needs measuring |
 | ascend  | **recommended primary path** | hccl (CUSTOM) | **flagos→npu missing** | either the view or native registration |
-| enflame | primary path (2026-08) | none (FlagCX only) | none needed (`direct=True`) | needs live multi-card test |
+| enflame | primary path (2026-08) | none (FlagCX only) | none needed (`direct=True`) | P2P, root-based collectives, and larger deployments remain unvalidated |
 
 ---
 

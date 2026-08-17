@@ -15,6 +15,61 @@
 #include <flagos.h>
 #include <tops_runtime_api.h>
 
+#include <mutex>
+#include <unordered_map>
+
+namespace {
+
+std::mutex stream_mutex;
+std::unordered_map<int, topsStream_t> default_streams;
+thread_local std::unordered_map<int, topsStream_t> current_streams;
+
+topsStream_t get_default_stream(int device) {
+  std::lock_guard<std::mutex> lock(stream_mutex);
+  auto it = default_streams.find(device);
+  if (it != default_streams.end()) {
+    return it->second;
+  }
+
+  int previous_device = 0;
+  if (topsGetDevice(&previous_device) != topsSuccess) {
+    return nullptr;
+  }
+  if (previous_device != device && topsSetDevice(device) != topsSuccess) {
+    return nullptr;
+  }
+
+  topsStream_t stream = nullptr;
+  if (topsStreamCreate(&stream) != topsSuccess) {
+    stream = nullptr;
+  }
+  default_streams.emplace(device, stream);
+
+  if (previous_device != device) {
+    topsSetDevice(previous_device);
+  }
+  return stream;
+}
+
+} // namespace
+
+Stream_t GetDefaultStreamForDevice(int device) {
+  return reinterpret_cast<Stream_t>(get_default_stream(device));
+}
+
+Stream_t GetCurrentStreamForDevice(int device) {
+  auto it = current_streams.find(device);
+  if (it != current_streams.end()) {
+    return reinterpret_cast<Stream_t>(it->second);
+  }
+  return GetDefaultStreamForDevice(device);
+}
+
+Error_t SetCurrentStreamForDevice(int device, Stream_t stream) {
+  current_streams[device] = reinterpret_cast<topsStream_t>(stream);
+  return Success;
+}
+
 Error_t StreamCreateWithPriority(
     Stream_t* stream,
     unsigned int flags,

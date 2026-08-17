@@ -55,6 +55,7 @@ def worker(rank: int, world_size: int):
     os.environ.setdefault("MASTER_PORT", "29532")
 
     dev = torch.device(f"flagos:{rank}")
+    torch.flagos.set_device(rank)
 
     dist.init_process_group(
         backend="flagos",
@@ -122,7 +123,7 @@ def worker(rank: int, world_size: int):
     ).to(dev)
     ddp = DistributedDataParallel(model, device_ids=[dev.index], output_device=dev)
 
-    x = torch.randn(2, 4, device=dev)
+    x = torch.arange(8, dtype=torch.float32, device=dev).reshape(2, 4)
     y = ddp(x).sum()
     y.backward()
 
@@ -146,17 +147,16 @@ def worker(rank: int, world_size: int):
     print(f"[rank {rank}] DDP forward/backward OK")
 
     # --- Device guard test ---
-    # GCU streams and pointers are device-scoped. Deliberately create tensor on
-    # device 0 but set current to device 1 (if world_size > 1), then verify the
+    # GCU streams and pointers are device-scoped. Keep each tensor on its rank's
+    # communicator device but select a different current device, then verify the
     # collective still works (ProcessGroupFlagOS guards it).
     if world_size > 1:
-        guard_dev = torch.device("flagos:0")
-        t_guard = torch.ones(4, device=guard_dev) * (rank + 1)
-        # Set current device to 1 (wrong device)
+        t_guard = torch.ones(4, device=dev) * (rank + 1)
+        # Set current device away from the communicator's device.
         import torch_fl._C as _C
 
-        prev_dev = _C._gcu_getDevice()
-        _C._gcu_setDevice(1)
+        prev_dev = _C._get_device()
+        _C._set_device((rank + 1) % world_size)
         try:
             dist.all_reduce(t_guard, op=dist.ReduceOp.SUM)
             ok_guard = torch.allclose(t_guard.cpu(), torch.full((4,), float(expected)))
@@ -165,7 +165,7 @@ def worker(rank: int, world_size: int):
                 f"{t_guard[0].item()} (expect {expected}) {'OK' if ok_guard else 'FAIL'}"
             )
         finally:
-            _C._gcu_setDevice(prev_dev)
+            _C._set_device(prev_dev)
 
     dist.destroy_process_group()
     print(f"[rank {rank}] ALL BASIC TESTS PASSED")
@@ -177,6 +177,7 @@ def worker_fsdp2(rank: int, world_size: int):
     os.environ.setdefault("MASTER_PORT", "29533")
 
     dev = torch.device(f"flagos:{rank}")
+    torch.flagos.set_device(rank)
 
     dist.init_process_group(
         backend="flagos",
@@ -215,8 +216,7 @@ def worker_fsdp2(rank: int, world_size: int):
 
     # Training step
     opt = torch.optim.SGD(model.parameters(), lr=0.1)
-    torch.manual_seed(1000)
-    x = torch.randn(8, 16, device=dev)
+    x = torch.arange(8 * 16, dtype=torch.float32, device=dev).reshape(8, 16)
     loss = model(x).sum()
     loss.backward()
     opt.step()
@@ -237,8 +237,7 @@ def worker_fsdp2(rank: int, world_size: int):
     fully_shard(model_mp, mesh=mesh, mp_policy=policy)
 
     opt_mp = torch.optim.SGD(model_mp.parameters(), lr=0.1)
-    torch.manual_seed(1000)
-    x = torch.randn(8, 16, device=dev)
+    x = torch.arange(8 * 16, dtype=torch.float32, device=dev).reshape(8, 16)
     loss_mp = model_mp(x).sum()
     loss_mp.backward()
     opt_mp.step()
@@ -255,14 +254,16 @@ def worker_fsdp2(rank: int, world_size: int):
     fully_shard(model_clip, mesh=mesh)
 
     opt_clip = torch.optim.SGD(model_clip.parameters(), lr=0.1)
-    torch.manual_seed(1000)
-    x = torch.randn(8, 16, device=dev)
+    x = torch.arange(8 * 16, dtype=torch.float32, device=dev).reshape(8, 16)
     loss_clip = model_clip(x).sum()
     loss_clip.backward()
 
     # Clip gradients (tests cross-mesh norm reduction)
     total_norm = nn.utils.clip_grad_norm_(model_clip.parameters(), max_norm=1.0)
-    print(f"[rank {rank}] FSDP2 grad clip: total_norm={total_norm:.4f}")
+    total_norm_value = float(
+        total_norm.to_local() if hasattr(total_norm, "to_local") else total_norm
+    )
+    print(f"[rank {rank}] FSDP2 grad clip: total_norm={total_norm_value:.4f}")
 
     opt_clip.step()
     opt_clip.zero_grad()
@@ -282,14 +283,15 @@ def worker_fsdp2(rank: int, world_size: int):
 
     # Train one step to get non-zero grads
     opt_ckpt = torch.optim.SGD(model_ckpt.parameters(), lr=0.1)
-    torch.manual_seed(1000)
-    x = torch.randn(8, 16, device=dev)
+    x = torch.arange(8 * 16, dtype=torch.float32, device=dev).reshape(8, 16)
     model_ckpt(x).sum().backward()
     opt_ckpt.step()
     opt_ckpt.zero_grad()
 
     # Save state dict
-    state_dict, _ = get_state_dict(model_ckpt, options=StateDictOptions())
+    state_dict, _ = get_state_dict(
+        model_ckpt, optimizers=(), options=StateDictOptions()
+    )
 
     # Create new model and load
     torch.manual_seed(999)  # Different init
@@ -300,7 +302,9 @@ def worker_fsdp2(rank: int, world_size: int):
 
     set_state_dict(
         model_load,
+        optimizers=(),
         model_state_dict=state_dict,
+        optim_state_dict={},
         options=StateDictOptions(),
     )
 

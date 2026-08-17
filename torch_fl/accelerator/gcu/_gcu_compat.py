@@ -187,8 +187,8 @@ def patch_triton_gcu_for_flagos() -> bool:
         256, dtype=torch.int, device=torch.device("flagos", flagos.current_device())
     )
 
-    # 4. Give do_bench a usable timing Event (see _WallClockEvent).
-    flagos.Event = _WallClockEvent
+    # 4. torch_fl's native Tops event supports both Triton timing and stream
+    #    ordering, so keep it installed for FSDP and other stream consumers.
     torch.gcu = flagos
 
     # 5. Setting COMPILE_ARCH (below) takes a GCUDriver constructor branch that

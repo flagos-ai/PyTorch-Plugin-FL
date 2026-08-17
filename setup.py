@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import glob
 import multiprocessing
 import os
 import platform
@@ -614,6 +615,21 @@ class BuildExtWithCmake(_build_ext):
 
     def run(self):
         build_deps()
+        # ``build`` runs build_py before build_ext, but CMake installs package
+        # data into torch_fl/ during build_ext. Setuptools caches build_py's file
+        # list, so copy late-generated files explicitly into wheel staging.
+        relative_paths = ["lib/flagos_platform", "include/flagos.h"]
+        for pattern in ("lib/*.so*", "lib/*.dylib*", "lib/*.dll", "lib/*.lib"):
+            relative_paths.extend(
+                os.path.relpath(path, os.path.join(BASE_DIR, "torch_fl"))
+                for path in glob.glob(os.path.join(BASE_DIR, "torch_fl", pattern))
+            )
+        for relative_path in relative_paths:
+            source = os.path.join(BASE_DIR, "torch_fl", relative_path)
+            if os.path.isfile(source):
+                destination = os.path.join(self.build_lib, "torch_fl", relative_path)
+                self.mkpath(os.path.dirname(destination))
+                self.copy_file(source, destination)
         super().run()
 
 
@@ -711,6 +727,7 @@ def _get_setup_kwargs():
             # only match *.so*.
             "lib_dcu/vendor_version.py",
             "lib_ppu/*.so*",
+            "include/*.h",
             # All backend configs, not just the default: runtime op-routing
             # configs selected via FLAGOS_USE_FLAGGEMS (backends_flaggems.conf)
             # and boxing modes via FLAGOS_BACKEND_CONFIG (backends_cuda.conf /
