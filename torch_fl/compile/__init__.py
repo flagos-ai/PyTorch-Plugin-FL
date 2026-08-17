@@ -23,9 +23,9 @@ fusion, with device context patched to target the flagos device. Generated
 Triton kernels dispatch through the existing flagos routing infrastructure
 (kFlagOsPython/kFlagOs/cuda boxing).
 
-Optional FlagTree integration (Phase 2):
-    FLAGOS_USE_FLAGTREE=1 model = torch.compile(model, backend="flagos")
-This replaces OpenAI Triton with FlagTree for multi-backend kernel compilation.
+FlagTree compiles these kernels instead of OpenAI Triton when it is installed,
+which requires no change here: FlagTree replaces the `triton` module at install
+time. FLAGOS_USE_FLAGTREE=1 asserts that it really is the active Triton.
 """
 
 from torch_fl.compile.inductor_backend import flagos_compile_backend

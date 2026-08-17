@@ -127,7 +127,7 @@ def flagos_compile_backend(
         model = torch.compile(model, backend="flagos", mode="max-autotune")
 
     Environment:
-        FLAGOS_USE_FLAGTREE=1 : Use FlagTree instead of OpenAI Triton (Phase 2)
+        FLAGOS_USE_FLAGTREE=1 : Require that the active triton be FlagTree
         FLAGOS_COMPILE_FALLBACK_EAGER=1 : Fall back to eager on compile errors
     """
     # Import inductor lazily (not all torch builds have it)
@@ -143,20 +143,13 @@ def flagos_compile_backend(
 
     config_patches = _resolve_config_patches(mode, options, dynamic)
 
-    # Phase 2 hook: FlagTree integration
-    use_flagtree = os.environ.get("FLAGOS_USE_FLAGTREE", "0") == "1"
-    if use_flagtree:
-        try:
-            from torch_fl.compile.flagtree_shim import patch_inductor_triton
+    # FlagTree substitutes itself for triton at install time, so if it is
+    # installed inductor already compiles with it and there is nothing to switch
+    # on here. This only asserts that, so the flag cannot silently no-op.
+    if os.environ.get("FLAGOS_USE_FLAGTREE", "0") == "1":
+        from torch_fl.compile.flagtree_shim import require_flagtree
 
-            patch_inductor_triton()
-        except ImportError:
-            import warnings
-
-            warnings.warn(
-                "FLAGOS_USE_FLAGTREE=1 but flagtree_shim not available. "
-                "Falling back to OpenAI Triton."
-            )
+        require_flagtree()
 
     # Make inductor treat flagos as a GPU device. Order matters: is_gpu() must
     # answer True and the device interface must be resolvable before the

@@ -21,7 +21,8 @@ output = compiled_model(input)
 - Automatic kernel fusion (no manual optimization needed), cutting per-op dispatch overhead
 - Graph stays on flagos: no cuda round trip, no copy at the graph boundary
 - Compatible with existing flagos dispatch (FlagGems Python/C++, CUDA boxing)
-- Optional FlagTree integration for multi-backend compilation
+- Optional FlagTree compilation for multi-backend kernel generation (drop-in: it
+  replaces `triton` at install time, so no code change is needed)
 
 ## Quick Start
 
@@ -64,20 +65,76 @@ compile. Note that CUDA graphs are always forced off (see Limitations), so
 `mode="reduce-overhead"` -- whose main lever is cudagraphs -- has little effect
 here.
 
-### FlagTree Integration (Phase 2)
+### FlagTree Integration
 
-Use FlagTree for multi-backend kernel compilation:
+[FlagTree](https://github.com/flagos-ai/FlagTree) is a Triton fork whose kernel
+compiler targets many vendor backends. It integrates by **substitution at install
+time**, which is the whole thing to understand about it:
+
+- Its wheel is named `flagtree`, but the module it installs is **`triton`**.
+- Installing it **uninstalls the official `triton`** and takes its place.
+- So `import flagtree` never works, and inductor's own `import triton` already
+  resolves to FlagTree once installed. Nothing in `torch_fl` patches `sys.modules`.
+
+There is no `flagtree` package on PyPI; build it from source. On a machine whose
+`triton` is in use by FlagGems, build into a separate virtualenv, since the
+install removes the existing `triton`:
 
 ```bash
-# Install FlagTree
-pip install flagtree
+# System deps (nlohmann-json must match cmake/json-version.txt)
+apt install zlib1g-dev libxml2-dev nlohmann-json3-dev
 
-# Enable FlagTree backend
-export FLAGOS_USE_FLAGTREE=1
-python your_script.py
+git clone https://github.com/flagos-ai/FlagTree.git
+cd FlagTree
+pip install -r python/requirements.txt
+
+# Pick the vendor backend. Do NOT set this for nvidia or amd.
+# export FLAGTREE_BACKEND=metax
+
+# Repo root for Triton 3.4+ (branch main); use `cd python` first on 3.1-3.3.
+MAX_JOBS=64 pip install . --no-build-isolation -v
 ```
 
-FlagTree replaces OpenAI Triton with a multi-backend compiler supporting NVIDIA, Ascend, Cambricon, and MetaX hardware.
+LLVM arrives as a prebuilt tarball (~4.5 GB unpacked), so this does not build
+LLVM from source. Verify, from any directory other than `FlagTree/python`:
+
+```bash
+pip show flagtree                                  # wheel name
+python -c 'import triton; print(triton.__path__)'  # module name
+```
+
+Branch selects the Triton base version, which must match what your torch
+expects: `main` is Triton 3.6 (correct for torch 2.10), `triton_v3.5.x` is 3.5
+and carries the Ascend backend.
+
+#### Using a FlagTree build without replacing your triton
+
+Since FlagTree's install removes the existing `triton`, the cheapest way to test
+against it is to build into a separate virtualenv and shadow `triton` by path,
+keeping torch and `torch_fl` from your main environment. Triton does not link
+against torch, so the two mix freely as long as the Python versions match:
+
+```bash
+PYTHONPATH=/path/to/flagtree-venv/lib/python3.12/site-packages \
+  FLAGOS_USE_FLAGTREE=1 pytest tests/integration/test_compile.py
+```
+
+This avoids rebuilding `torch_fl` inside the FlagTree venv, and leaves the
+FlagGems-facing `triton` in the main environment untouched.
+
+Once built, compilation goes through FlagTree with no further configuration.
+Setting `FLAGOS_USE_FLAGTREE=1` **asserts** that the active `triton` is FlagTree
+and errors out if it is stock Triton — it cannot switch FlagTree on, because that
+was decided when the environment was built:
+
+```bash
+FLAGOS_USE_FLAGTREE=1 python your_script.py
+```
+
+Detection uses the FlagTree-only module `triton._flagtree_spec`. Note that
+`triton._flagtree_backend.FLAGTREE_BACKEND` is *not* a usable signal: it is the
+empty string on nvidia/amd builds, since upstream directs you not to set
+`FLAGTREE_BACKEND` for those.
 
 ## Architecture
 
@@ -126,15 +183,19 @@ device type equals the accelerator, so a cuda-rewritten graph produces
 stream-less autograd nodes and AOT autograd's backward trace trips
 `opt_ready_stream && opt_parent_stream` (engine.cpp:1085).
 
-### Phase 2: FlagTree Integration
+### FlagTree Compilation
 
 **Components**:
-1. **Triton import patcher** (`torch_fl/compile/flagtree_shim.py`)
-   - Replaces `import triton` with `import flagtree`
-   - Activated via `FLAGOS_USE_FLAGTREE=1`
+1. **Detection only** (`torch_fl/compile/flagtree_shim.py`)
+   - No import patching: FlagTree *is* the `triton` module once installed, so
+     inductor picks it up with no interception
+   - `is_flagtree_active()` tests for the FlagTree-only `triton._flagtree_spec`
+   - `FLAGOS_USE_FLAGTREE=1` calls `require_flagtree()`, which errors if the
+     active Triton is stock
 
 2. **Backend selection**
-   - FlagTree backend configured via `GEMS_VENDOR` env var
+   - Chosen at FlagTree build time via `FLAGTREE_BACKEND` (unset for nvidia/amd),
+     not at runtime
    - Same Triton kernel code, different backend compiler
 
 **Benefits**:
@@ -166,7 +227,7 @@ FLAGOS_USE_FLAGTREE=1 python tests/perf/bench_compile.py
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FLAGOS_USE_FLAGTREE` | `0` | Use FlagTree instead of OpenAI Triton |
+| `FLAGOS_USE_FLAGTREE` | `0` | Require the active triton to be FlagTree (assert, not switch) |
 | `FLAGOS_COMPILE_FALLBACK_EAGER` | `0` | Fall back to eager on compile errors |
 
 Existing dispatch variables (`FLAGOS_USE_FLAGGEMS`, `FLAGOS_BACKEND_CONFIG`) still apply to compiled kernels.
@@ -193,14 +254,22 @@ Existing dispatch variables (`FLAGOS_USE_FLAGGEMS`, `FLAGOS_BACKEND_CONFIG`) sti
 
 **Debug**: Run with `TORCH_LOGS="+inductor"` to see fusion decisions.
 
-### FlagTree Not Loading
+### FlagTree Not Active
 
-**Symptom**: `FLAGOS_USE_FLAGTREE=1` but warning says "falling back to OpenAI Triton".
+**Symptom**: `FLAGOS_USE_FLAGTREE=1` raises "the active 'triton' module is stock
+Triton, not FlagTree".
 
-**Solutions**:
-1. Install FlagTree: `pip install flagtree`
-2. Verify import works: `python -c "import flagtree"`
-3. Check FlagTree supports your hardware (`GEMS_VENDOR` setting)
+The env's `triton` is the official one. FlagTree is selected when the environment
+is built, so this cannot be fixed at runtime — build FlagTree per the section
+above, into this interpreter. Check what you have with:
+
+```bash
+python -c 'import triton; print(triton.__path__)'
+python -c 'import importlib.util as u; print(u.find_spec("triton._flagtree_spec") is not None)'
+```
+
+Do not reach for `import flagtree` when debugging this; that module does not
+exist at any point, whether or not FlagTree is installed.
 
 ## Testing
 
@@ -216,8 +285,8 @@ pytest tests/integration/test_compile.py::test_compile_backward
 pytest tests/integration/test_compile.py -k fake_tensor
 pytest tests/integration/ops/test_clamp_dispatch.py -v
 
-# Test FlagTree integration (requires flagtree installed)
-FLAGOS_USE_FLAGTREE=1 pytest tests/integration/test_compile.py::test_flagtree_integration
+# Test FlagTree compilation (requires a FlagTree-built env)
+FLAGOS_USE_FLAGTREE=1 pytest tests/integration/test_compile.py::test_flagtree_compiles_correct_results
 ```
 
 ### Codegen fixes this integration required
@@ -249,7 +318,12 @@ tests live alongside it:
 ## Roadmap
 
 - [x] Phase 1: Inductor integration (flagos as a first-class GPU device)
-- [ ] Phase 2: FlagTree integration — shim exists, not yet exercised end-to-end
+- [x] Phase 2: FlagTree integration — needs no shim; FlagTree substitutes for
+      triton at install time, so inductor picks it up unaided. Built from source
+      on H800 (`flagtree-0.6.0`, Triton 3.6, nvidia backend).
+- [x] `torch.compile(backend="flagos")` end-to-end on FlagTree — forward and
+      backward compile and match eager, with inductor's fused kernels built to
+      PTX/cubin by FlagTree. Full `test_compile.py` passes 15/15 there.
 - [ ] Benchmark fusion gains vs. stock inductor+triton on cuda
 - [ ] Phase 3: FlagGems-aware fusion (recognize pre-optimized patterns)
 - [ ] Phase 4: Custom fusion patterns for flagos-specific ops

@@ -82,16 +82,19 @@ Event/Stream shims that inductor's autotuner needs.
 
 ## Environment Variables
 
-- `FLAGOS_USE_FLAGTREE=1` - Reserved for FlagTree integration (Phase 2)
+- `FLAGOS_USE_FLAGTREE=1` - Assert that the active `triton` is FlagTree, erroring
+  out if it is stock Triton. FlagTree replaces `triton` at install time, so this
+  can only check; it cannot switch anything on. See
+  [`docs/architecture/torch-compile-integration.md`](../../docs/architecture/torch-compile-integration.md).
 - `FLAGOS_COMPILE_FALLBACK_EAGER=1` - Fall back to eager mode on compile errors
 
 ## Limitations
 
 1. Single device - multi-GPU compilation not yet exercised
-2. FlagTree integration is a stub (Phase 2)
+2. FlagTree verified on nvidia/sm90 only; other vendor backends untested here
 
 ## Future Work
 
-- [ ] FlagTree integration to replace OpenAI Triton
+- [ ] Exercise `torch.compile(backend="flagos")` on a FlagTree-built env
 - [ ] Benchmark fusion gains against stock inductor+triton on cuda
 - [ ] Multi-GPU compilation support
