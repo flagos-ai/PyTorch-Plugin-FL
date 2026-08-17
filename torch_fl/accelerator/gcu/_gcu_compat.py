@@ -48,6 +48,115 @@ import os
 import time
 
 
+_gcu_generators = {}
+
+
+class _GcuPhiloxGenerator:
+    """Minimal generator implementing FlagGems' seed/offset protocol."""
+
+    def __init__(self, seed):
+        self._seed = int(seed)
+        self._offset = 0
+
+    def get_state(self):
+        import torch
+
+        # 16 bytes of seed+offset, the same layout a CUDA generator exposes.
+        return torch.tensor(
+            [self._seed, self._offset], dtype=torch.int64, device="cpu"
+        ).view(torch.uint8)
+
+    def set_state(self, state):
+        import torch
+
+        values = state.reshape(-1)
+        if values.dtype != torch.int64:
+            values = values.view(torch.int64)
+        if values.numel() != 2:
+            raise ValueError("GCU philox state must contain seed and offset")
+        self._seed, self._offset = (
+            int(values[0].item()),
+            int(values[1].item()),
+        )
+
+    def manual_seed(self, seed):
+        self._seed = int(seed)
+        self._offset = 0
+        return self
+
+    def initial_seed(self):
+        return self._seed
+
+
+def _get_gcu_generator(index):
+    import torch
+
+    generator = _gcu_generators.get(index)
+    if generator is None:
+        generator = _GcuPhiloxGenerator(torch.initial_seed())
+        _gcu_generators[index] = generator
+    return generator
+
+
+class _GcuDefaultGenerators:
+    """List-like per-device philox generators shared by GCU RNG paths."""
+
+    def __iter__(self):
+        return (self[i] for i in range(len(self)))
+
+    def __getitem__(self, index):
+        n = len(self)
+        if isinstance(index, slice):
+            return tuple(self[i] for i in range(*index.indices(n)))
+        index = int(index)
+        if index < 0:
+            index += n
+        if not 0 <= index < n:
+            raise IndexError(f"device index {index} out of range for {n} device(s)")
+        return _get_gcu_generator(index)
+
+    def __len__(self):
+        from torch_fl import flagos
+
+        return max(flagos.device_count(), 1)
+
+
+def install_gcu_rng_generators():
+    """Expose one philox-shaped generator set to FlagGems and native GCU.
+
+    The native PrivateUse1 generators use CPU MT19937 state and are not a
+    valid source for FlagGems' ``seed, offset`` unpacking. These lightweight
+    philox state objects are intentionally separate and are shared through both
+    ``torch.cuda`` (the C++ bridge) and ``torch.flagos`` (FlagGems' runtime).
+    """
+    import torch
+
+    from torch_fl import flagos
+
+    generators = _GcuDefaultGenerators()
+    torch.cuda.default_generators = generators
+    flagos.default_generators = generators
+    native_manual_seed = flagos.manual_seed
+    native_manual_seed_all = flagos.manual_seed_all
+
+    def manual_seed(seed):
+        native_manual_seed(seed)
+        _get_gcu_generator(flagos.current_device()).manual_seed(seed)
+
+    def manual_seed_all(seed):
+        native_manual_seed_all(seed)
+        for index in range(len(generators)):
+            _get_gcu_generator(index).manual_seed(seed)
+
+    torch.cuda.manual_seed = manual_seed
+    torch.cuda.manual_seed_all = manual_seed_all
+
+    # Direct calls through torch.flagos.manual_seed are also part of the
+    # public backend API and must reset the shared philox stream.
+    flagos.manual_seed = manual_seed
+    flagos.manual_seed_all = manual_seed_all
+
+
 def is_triton_gcu_available() -> bool:
     """True when both halves of the vendor Triton stack are installed.
 

@@ -632,8 +632,12 @@ def _patch_flaggems_codegen_config():
     # either is missing, patch_triton_gcu_for_flagos() returns False and we leave
     # GEMS_VENDOR unset so the topsaten kernels and cpu_fallback stay in charge.
     if _build_accelerator() == "gcu" and os.environ.get("GEMS_VENDOR") != "ascend":
-        from torch_fl.accelerator.gcu._gcu_compat import patch_triton_gcu_for_flagos
+        from torch_fl.accelerator.gcu._gcu_compat import (
+            install_gcu_rng_generators,
+            patch_triton_gcu_for_flagos,
+        )
 
+        install_gcu_rng_generators()
         if patch_triton_gcu_for_flagos():
             os.environ.setdefault("GEMS_VENDOR", "enflame")
         return
@@ -1216,58 +1220,37 @@ def _register_flaggems_operators():
         # flag_gems not installed, will use cpu_fallback
         return 0
 
-    # Enflame GCU has no C++ FlagGems path (FLAGGEMS_KERNEL is off -- there is no
-    # liboperators.so for the tops stack), so the Python registration is the only
-    # way its Triton kernels get used. Everything not registered here stays on
-    # the topsaten kernels or reaches cpu_fallback, as before.
+    # GCU FlagGems uses the C++ dispatcher path. Its generated kernels are
+    # compiled when FLAGGEMS_PYTHON=ON and selected per overload by
+    # FLAGOS_BACKEND_CONFIG. Calling flag_gems.enable() here would register a
+    # competing PrivateUse1 implementation and bypass the shared dispatcher.
     if _build_accelerator() == "gcu":
         from torch_fl.accelerator.gcu._gcu_compat import is_triton_gcu_available
 
         if not is_triton_gcu_available():
+            _registered_ops = []
             return 0
         try:
             import flag_gems
 
             from torch_fl.accelerator.gcu._gcu_compat import (
                 bind_vendor_ops_in_generic_modules,
-                device_guarded_config,
                 patch_flaggems_device_name,
             )
 
             patch_flaggems_device_name()
             bind_vendor_ops_in_generic_modules(flag_gems)
-            excluded = _flaggems_exclusion_names(
-                flag_gems, _EXCLUDED_OPS | _GCU_EXCLUDED_OPS
-            )
-            _flaggems_lib = torch.library.Library("aten", "IMPL")
-            # enable() reads _FULL_CONFIG off the module, so the guarded table
-            # is swapped in for the call and restored right after -- anything
-            # else reading _FULL_CONFIG later sees the unwrapped functions.
-            original_config = flag_gems._FULL_CONFIG
-            flag_gems._FULL_CONFIG = device_guarded_config(flag_gems)
-            try:
-                flag_gems.enable(lib=_flaggems_lib, unused=excluded)
-            finally:
-                flag_gems._FULL_CONFIG = original_config
-            # What FlagGems actually took over, i.e. the same filter enable()
-            # applied: the aten names whose implementing function survived it.
-            skip = set(excluded)
-            _registered_ops = sorted(
-                entry[0]
-                for entry in flag_gems._FULL_CONFIG
-                if getattr(entry[1], "__name__", None) not in skip
-            )
-            return 1
+            _registered_ops = []
+            return 0
         except Exception as exc:
-            # A broken vendor Triton must not take down `import torch_fl`: the
-            # topsaten kernels and cpu_fallback are a complete, correct path.
             import warnings
 
             warnings.warn(
-                f"FlagGems registration for GCU failed ({type(exc).__name__}: "
-                f"{exc}); falling back to the topsaten kernels.",
+                f"FlagGems runtime preparation for GCU failed ({type(exc).__name__}: "
+                f"{exc}); flagos_python routes may be unavailable.",
                 stacklevel=2,
             )
+            _registered_ops = []
             return 0
 
     _flaggems_lib = torch.library.Library("aten", "IMPL")

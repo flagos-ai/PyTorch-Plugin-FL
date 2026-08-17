@@ -63,9 +63,9 @@ _PLATFORM_SKIP_MARKERS: dict[str, tuple[str, ...]] = {
     # MUSA builds compile no CUDA boxing kernels (no cudart on the platform), so
     # `-> cuda` routing assertions cannot hold; nor is FlagGems built.
     "musa": ("cuda", "metax", "ascend", "flaggems_python"),
-    # GCU is in the same position as MUSA: the tops stack ships no CUDA runtime,
-    # so no boxing kernels are compiled and FlagGems is not built either.
-    "gcu": ("cuda", "metax", "ascend", "musa", "flaggems_python"),
+    # GCU has no CUDA boxing runtime, but it does compile the FlagGems Python
+    # dispatcher alongside topsaten and selects between them per overload.
+    "gcu": ("cuda", "metax", "ascend", "musa"),
     "default": ("metax", "ascend", "musa"),
 }
 

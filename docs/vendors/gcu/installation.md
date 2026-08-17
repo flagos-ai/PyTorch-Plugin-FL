@@ -34,7 +34,7 @@ Build flags:
 - `ACCELERATOR=gcu`: selects the GCU build path and enables `GCU_KERNEL=ON`
 - `GCU_KERNEL=ON`: compiles generated `topsaten` operator kernels (automatic when `ACCELERATOR=gcu`)
 - `CUDA_KERNEL=OFF`: automatically disabled (no CUDA runtime exists on GCU)
-- `FLAGGEMS_PYTHON=OFF`: automatically disabled (GCU uses its own backend config routing)
+- `FLAGGEMS_PYTHON=ON`: compiled into the same PrivateUse1 wrapper set as native GCU kernels; runtime routing selects native or FlagGems implementations without duplicate registration
 - `--no-build-isolation`: ensures the build uses your installed CPU torch
 
 The build runs `scripts/codegen_gcu.py` to generate kernels. Each op is validated against the demangled `topsaten::topsatenXxx` symbols actually present in `libtopsaten.so`; ops missing from the SDK are skipped with a warning.
@@ -107,11 +107,11 @@ Unlike `mudnn` (MUSA), `topsaten` does not honor strides on non-contiguous input
 
 ## Optional: FlagGems via Triton-GCU
 
-FlagGems can provide Triton-compiled kernels as an experimental alternative path if the Enflame `triton_gcu` plugin and `/opt/triton_gcu` toolchain are installed. This path is **not built by default** and is **experimental**.
+FlagGems can provide Triton-compiled kernels when the Enflame `triton_gcu` plugin and `/opt/triton_gcu` toolchain are installed. GCU builds compile the FlagGems Python caller alongside native topsaten wrappers, while the backend configuration selects which implementation runs for each exact ATen overload.
 
-When both the plugin and toolchain are present, `torch_fl/accelerator/gcu/_gcu_compat.py` registers FlagGems operators directly onto `PrivateUse1` via `flag_gems.enable()`. When either is missing, registration is skipped and all ops stay on `topsaten`.
+The GCU compatibility layer prepares the Triton-GCU runtime but does not call `flag_gems.enable()` to register a competing PrivateUse1 implementation. This keeps one wrapper per overload and allows native and FlagGems RNG paths to share the same per-device seed/offset stream.
 
-**Note**: Unlike Ascend, FlagGems on GCU does not require a fork or special build flags. The standard FlagGems package can be used if the Triton-GCU toolchain is available. However, this path is not exercised in testing and should be considered experimental.
+The FlagGems path remains experimental and requires validation on the target S60 software stack.
 
 ## Limitations
 

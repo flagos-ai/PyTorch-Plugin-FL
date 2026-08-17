@@ -424,11 +424,11 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   // ============================================================
   // Generated m.impl registrations for the generated operators
   // ============================================================
-  // GCU registers only its own coverage set. Claiming an op on PrivateUse1
+  // GCU registers only its topsaten coverage set. Claiming an op on PrivateUse1
   // without a kernel behind it turns into the dispatcher's "backend not
   // registered" error, whereas leaving it unregistered reaches the cpu_fallback
-  // below -- and on GCU neither the CUDA boxing kernels (no CUDA runtime) nor
-  // FlagGems are built, so the full list would break every uncovered op.
+  // below. FlagGems Python kernels are compiled alongside GCU, but only wrappers
+  // in this coverage set may select their kFlagOsPython dispatcher slot.
   //
   // MUSA is the same story: musa_register.inc lists exactly the ops with a mudnn
   // kernel behind them, and no CUDA boxing kernels are compiled in

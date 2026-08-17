@@ -32,8 +32,9 @@ Generates:
       the m.impl() subset for register.cc. GCU registers PrivateUse1 ONLY for
       ops it has a kernel for; everything else stays unregistered and reaches
       the cpu_fallback (registering all 2033 ops would instead hit the
-      dispatcher's "backend not registered" check, since neither the CUDA
-      boxing kernels nor FlagGems are built here).
+      dispatcher's "backend not registered" check). FlagGems Python kernels are
+      compiled alongside GCU, but only overloads in this coverage set own a
+      PrivateUse1 wrapper and may select that dispatcher slot.
   - appends `<op> = gcu` to torch_fl/configs/backends_gcu.conf
 
 Validation:
@@ -53,7 +54,7 @@ from pathlib import Path
 # REGISTER_IMPL_TO_DISPATCHER(FnType, dispatcher, ...) matches the
 # DECLARE_DISPATCHER in generated/ops.h exactly (else the build won't link).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from codegen_ops import schema_to_cpp_name  # noqa: E402
+from codegen_ops import schema_to_cpp_name
 
 REPO = Path(__file__).resolve().parent.parent
 OUT_CC = REPO / "csrc/aten/backends/gcu/generated/gcu_kernels.cc"
@@ -206,6 +207,27 @@ OPS = {
 # Ops handwritten elsewhere for GCU would double-register the kGcu slot (which
 # crashes at import), so they must be excluded here. None yet.
 SKIP: set = set()
+
+# Handwritten kernels live in a separate translation unit when the vendor API
+# does not fit one of the category templates. They still belong in the generated
+# PrivateUse1 coverage include, so list their ATen overloads here.
+HANDWRITTEN_OPS = {
+    "bernoulli",
+    "bernoulli_.float",
+    "exponential",
+    "exponential_",
+    "multinomial",
+    "poisson",
+    "randn",
+    "randn.generator",
+    "randn_like.generator",
+    "randn_like.generator_out",
+    "randint.generator",
+    "randint.low_generator",
+    "randperm.generator",
+    "random_",
+    "random_.to",
+}
 
 # The int64 CPU-fallback path in each kernel calls back into at::<name>. That is
 # the op base name except where the base is not a real at:: function.
@@ -1460,7 +1482,10 @@ def symbols(lib: Path):
         print(f"[warn] {lib} not found; skipping symbol validation", file=sys.stderr)
         return None
     out = subprocess.run(
-        ["nm", "-DC", "--defined-only", str(lib)], capture_output=True, text=True
+        ["nm", "-DC", "--defined-only", str(lib)],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     return set(re.findall(r"topsaten::(topsaten\w+)", out.stdout))
 
@@ -1471,7 +1496,13 @@ def wrapper_map():
     if not REGISTER_INC.exists():
         return {}
     text = REGISTER_INC.read_text()
-    return dict(re.findall(r'^\s*m\.impl\("([^"]+)",\s*(\w+)\);', text, flags=re.M))
+    return dict(
+        re.findall(
+            r'^\s*m\.impl\("([^"]+)",\s*(\w+)\);',
+            text,
+            flags=re.MULTILINE,
+        )
+    )
 
 
 def main():
@@ -1502,6 +1533,12 @@ def main():
         if op in SKIP:
             skipped.append((op, "handwritten"))
             continue
+        if op in HANDWRITTEN_OPS:
+            if op not in wrappers:
+                skipped.append((op, "no wrapper in generated/register.inc"))
+                continue
+            covered.append((op, "handwritten", "handwritten"))
+            continue
         base = op.split(".")[0]
         tops = topsaten_name(base, override)
         if syms is not None and tops not in syms:
@@ -1523,6 +1560,10 @@ def main():
             )
         )
         covered.append((op, tops, cat))
+
+    for op in sorted(HANDWRITTEN_OPS):
+        if op in wrappers and not any(item[0] == op for item in covered):
+            covered.append((op, "handwritten", "handwritten"))
 
     OUT_CC.parent.mkdir(parents=True, exist_ok=True)
     OUT_CC.write_text(FILE_HEADER + "\n".join(bodies) + FILE_FOOTER)
