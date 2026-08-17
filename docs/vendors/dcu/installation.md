@@ -64,6 +64,33 @@ print(f'mm matches .cuda(): {torch.allclose(result.cpu(), torch.mm(x.cpu().cuda(
 
 Expected output shows `torch.version.hip: 6.3.x`, `flagos devices: N`, and `mm matches .cuda(): True`.
 
+### Automatic Mixed Precision
+
+DCU supports PyTorch's device-generic autocast and gradient scaling APIs with FP16 and BF16:
+
+```python
+import torch
+import torch_fl  # noqa: F401
+
+model = torch.nn.Linear(8, 4).to("flagos")
+optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+scaler = torch.amp.GradScaler("flagos")
+x = torch.randn(2, 8, device="flagos")
+
+with torch.autocast("flagos", dtype=torch.float16):
+    loss = model(x).square().mean()
+
+scaler.scale(loss).backward()
+scaler.step(optimizer)
+scaler.update()
+```
+
+Run the DCU AMP coverage, including both autocast dtypes and finite/non-finite GradScaler paths:
+
+```bash
+pytest tests/integration/test_amp.py -v
+```
+
 ### Operator Tests (Vendor Backend)
 
 Run the main operator suite against the DCU boxing backend:

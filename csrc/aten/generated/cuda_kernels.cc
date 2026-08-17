@@ -957,6 +957,7 @@ void PrivAmpForeachNonFiniteCheckAndUnscaleInplaceKernelCuda(at::TensorList self
   TensorListBoxingGuard guard;
   guard.box(self_vec);
   guard.box({inv_scale});
+  guard.box({found_inf});
   at::_amp_foreach_non_finite_check_and_unscale_(self_vec, found_inf, inv_scale);
 }
 

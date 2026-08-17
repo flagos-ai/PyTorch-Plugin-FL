@@ -1696,6 +1696,14 @@ def gen_foreach(op, fn_type, ret_type, args, func=None):
     # unbounded self-recursion ending in SIGSEGV.
     box_lines += _scalar_tensor_box_lines(args)
 
+    # _amp_foreach_non_finite_check_and_unscale_ mutates found_inf in place,
+    # even though it is not a TensorList output. It must be boxed alongside
+    # self_vec or the vendor CUDA kernel receives a mixed PrivateUse1/CUDA
+    # argument set and can crash while dispatching.
+    for t, n in args:
+        if "at::Tensor &" in t and "const" not in t:
+            box_lines += f"  guard.box({{{n}}});\n"
+
     if ret_type == "void":
         body = f"  {api}({call_args_str});"
         return f"""{ret_type} {kn}({args_decl(args)}) {{
