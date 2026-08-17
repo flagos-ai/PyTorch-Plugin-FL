@@ -90,6 +90,11 @@ def _explicit_generator(seed):
     rejected outright ("Expected a 'cpu' device type for generator"), because the
     aclnn kernels seed themselves from the default *CPU* generator.
 
+    A `flagos` generator is not a portable fallback: it carries an mt19937
+    state, while CUDA boxing needs a philox generator and aclnn consumes seeds
+    from a CPU generator. Passing the incompatible device type must raise, just
+    like native CPU/CUDA generator mismatches (and is covered below).
+
     So try CUDA first and fall back to CPU. What the two tests below assert --
     that an explicit generator is honoured and stays isolated from
     `torch.manual_seed` -- is a property of the injection logic, not of the
@@ -289,6 +294,40 @@ class TestRngSeedSource:
             warnings.simplefilter("always")
             torch.manual_seed(SEED)
         assert not [w for w in caught if "does not take effect" in str(w.message)]
+
+    @pytest.mark.anyplatform
+    @pytest.mark.main_ops
+    def test_flagos_generator_device_mismatch_raises(self):
+        # A Generator contributes its dispatch key to operator selection. After
+        # the boxed kernel changed its tensor to CUDA, a flagos generator used
+        # to select the same flagos kernel again: infinite redispatch ending in
+        # SIGSEGV. Like native device mismatches, this unsupported generator
+        # combination must fail cleanly instead.
+        gen = torch.Generator(device="flagos")
+        with pytest.raises(RuntimeError, match="device type for generator"):
+            _empty(8).normal_(generator=gen)
+
+    @pytest.mark.anyplatform
+    @pytest.mark.main_ops
+    def test_flagos_generator_factory_mismatch_raises(self):
+        # Factory RNG has no Tensor key to override the generator's PrivateUse1
+        # key, so it is a distinct recursion entry point. Only CUDA-shaped
+        # boxing backends expose this overload; aclnn uses its own factory path.
+        if len(torch.cuda.default_generators) == 0:
+            pytest.skip("factory generator overload requires CUDA boxing")
+        gen = torch.Generator(device="flagos")
+        with pytest.raises(RuntimeError, match="device type for generator"):
+            torch.rand(8, device=DEVICE, generator=gen)
+
+    @pytest.mark.anyplatform
+    @pytest.mark.main_ops
+    def test_flagos_generator_does_not_reroute_cpu_op(self):
+        # The tensor is CPU, so a PrivateUse1 redispatch here can only have come
+        # from the generator. This covers the dispatch-key root cause directly,
+        # independently of CUDA boxing.
+        gen = torch.Generator(device="flagos")
+        with pytest.raises(RuntimeError, match="device type for generator"):
+            torch.empty(8).normal_(generator=gen)
 
     @pytest.mark.anyplatform
     @pytest.mark.main_ops

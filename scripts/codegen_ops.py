@@ -1310,16 +1310,25 @@ def optional_tensor_names(args: List[Tuple[str, str]]) -> List[str]:
 
 
 def _generator_inject_line(args, device_expr):
-    """If this op's schema carries a trailing `Generator?`, emit a line that
-    fills an absent generator with the flagos shared CUDA generator (the one
-    FlagGems reads), so torch.manual_seed unifies native + flaggems RNG.
-    Returns '' for non-RNG ops. `device_expr` is a C++ expr yielding int64
-    device index in the kernel body scope."""
+    """Emit the CUDA-boxing prelude for a schema carrying `Generator?`.
+
+    Reject a caller-supplied flagos generator before the inner ATen redispatch:
+    its PrivateUse1 key otherwise routes back to this same kernel after every
+    tensor has been boxed to CUDA, recursing until stack overflow. Its mt19937
+    state is not convertible to CUDA's philox state, so failing cleanly matches
+    native PyTorch's handling of incompatible generator devices. If no generator
+    was supplied, inject the shared CUDA generator so torch.manual_seed unifies
+    native and FlagGems RNG.
+
+    Returns '' for non-RNG ops. `device_expr` is a C++ expression yielding the
+    device index in the kernel body scope.
+    """
     has_gen = any("Generator" in t for t, _ in args)
     if not has_gen:
         return ""
     # The generator parameter is always named `generator` in the faithful sig.
     return (
+        "  ValidateGeneratorForCudaBoxing(generator);\n"
         f"  if (!generator.has_value()) generator = "
         f"at::native::flagos::GetFlagosDefaultCudaGenerator({device_expr});\n"
     )
@@ -2168,6 +2177,15 @@ def main():
         "",
         "namespace at::native::flagos {",
         "namespace {",
+        "",
+        "void ValidateGeneratorForCudaBoxing(",
+        "    const ::std::optional<at::Generator>& generator) {",
+        "  TORCH_CHECK(",
+        "      !generator.has_value() || !generator->defined() ||",
+        "          generator->device().type() != c10::DeviceType::PrivateUse1,",
+        "      \"Expected a 'cuda' device type for generator but found '\",",
+        '      generator->device().type(), "\'");',
+        "}",
         "",
     ]
     for op in sorted(op_info):
