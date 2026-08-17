@@ -139,6 +139,10 @@ at::Tensor CallPythonOp_LikeFactory(const char* func_name,
 at::Tensor CallPythonOp_RandomInplace(const char* func_name,
                                       const std::vector<c10::IValue>& args);
 
+// Fetch the vendor compat shim's per-device CUDA generator for CUDA-compatible
+// kernels. The returned handle is cached while manual_seed mutates it in place.
+at::Generator GetFlagosDefaultCudaGenerator(int64_t device_index);
+
 // Fetch the vendor compat shim's per-device philox generator state. This is
 // the SAME object FlagGems reads via philox_backend_seed_offset, so native GCU
 // kernels and FlagGems advance one seed/offset stream under torch.manual_seed.

@@ -598,6 +598,31 @@ std::vector<at::Tensor> CallPythonOp_GenericTuple(
   return out;
 }
 
+at::Generator GetFlagosDefaultCudaGenerator(int64_t device_index) {
+  static std::mutex cache_mu;
+  static std::unordered_map<int64_t, at::Generator> gen_cache;
+  {
+    std::lock_guard<std::mutex> lk(cache_mu);
+    auto it = gen_cache.find(device_index);
+    if (it != gen_cache.end()) {
+      return it->second;
+    }
+  }
+  py::gil_scoped_acquire gil;
+  py::module_ torch_cuda = py::module_::import("torch.cuda");
+  if (py::len(torch_cuda.attr("default_generators")) == 0) {
+    torch_cuda.attr("init")();
+  }
+  py::object generators = torch_cuda.attr("default_generators");
+  at::Generator generator =
+      generators[py::cast(device_index)].cast<at::Generator>();
+  {
+    std::lock_guard<std::mutex> lk(cache_mu);
+    gen_cache[device_index] = generator;
+  }
+  return generator;
+}
+
 std::pair<uint64_t, uint64_t> GetFlagosPhiloxState(
     int64_t device_index, uint64_t increment) {
   py::gil_scoped_acquire gil;
