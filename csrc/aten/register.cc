@@ -476,6 +476,10 @@ TORCH_LIBRARY_IMPL(_, PrivateUse1, m) {
       torch::CppFunction::makeFromBoxedFunction<&at::native::flagos::cpu_fallback>());
 }
 
+// The AutocastPrivateUse1 policies and fallback live in aten/autocast.cc.
+// A dispatch key accepts only one backend fallback, so they must not be
+// registered here as well.
+
 // Register AutogradPrivateUse1 fallback to dispatch to PrivateUse1
 // This ensures operators like where.ScalarSelf work correctly through autograd dispatch
 TORCH_LIBRARY_IMPL(_, AutogradPrivateUse1, m) {
