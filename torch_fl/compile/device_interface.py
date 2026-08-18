@@ -174,9 +174,7 @@ class FlagOSDeviceInterface(DeviceInterface):
 
         _, triton_backend = _triton_backend()
         if triton_backend not in triton.backends.backends:
-            raise RuntimeError(
-                f"triton not built with the '{triton_backend}' backend"
-            )
+            raise RuntimeError(f"triton not built with the '{triton_backend}' backend")
 
 
 def _register_gpu_type() -> None:
