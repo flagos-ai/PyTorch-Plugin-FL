@@ -16,21 +16,48 @@ import pytest
 import torch
 import torch.nn.functional as F
 import torch_fl  # noqa: F401
-from torch_fl._build_config import ACCELERATOR
 
 
-pytestmark = pytest.mark.skipif(ACCELERATOR != "dcu", reason="DCU-specific AMP tests")
 DEVICE = "flagos:0"
 AMP_DTYPES = (torch.float16, torch.bfloat16)
 
 
+def test_amp_device_contract():
+    assert torch.amp.is_autocast_available("flagos")
+    assert torch.flagos.get_amp_supported_dtype() == list(AMP_DTYPES)
+    assert torch.get_autocast_dtype("flagos") == torch.float16
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_autocast_disables_unsupported_dtype(dtype):
+    with pytest.warns(UserWarning, match="target dtype is not supported"):
+        with torch.autocast("flagos", dtype=dtype):
+            assert not torch.is_autocast_enabled("flagos")
+
+
 def test_float64_copy_preserves_dtype():
     cpu = torch.tensor([1.25, -2.5], dtype=torch.float64)
-
     device = cpu.to(DEVICE)
 
     assert device.dtype == torch.float64
     torch.testing.assert_close(device.cpu(), cpu, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        torch.float16,
+        torch.bfloat16,
+        torch.float32,
+        torch.float64,
+        torch.int64,
+        torch.bool,
+    ],
+)
+def test_eager_dtype_preservation(dtype):
+    values = torch.ones(4, device=DEVICE, dtype=dtype)
+    result = values + values
+    assert result.dtype == dtype
 
 
 @pytest.mark.parametrize("dtype", AMP_DTYPES)
@@ -86,13 +113,17 @@ def test_autocast_nested_state():
     assert not torch.is_autocast_enabled("flagos")
 
 
-def test_binary_cross_entropy_is_banned_under_autocast():
-    pred = torch.rand(32, device=DEVICE)
-    target = torch.rand(32, device=DEVICE)
+def test_binary_cross_entropy_uses_backend_fallthrough():
+    pred = torch.rand(32, device=DEVICE, dtype=torch.float16)
+    target = torch.rand(32, device=DEVICE, dtype=torch.float16)
 
     with torch.autocast("flagos", dtype=torch.float16):
-        with pytest.raises(RuntimeError, match="unsafe to autocast"):
-            F.binary_cross_entropy(pred, target)
+        loss = F.binary_cross_entropy(pred, target)
+
+    # PrivateUse1 follows the standard policy lists. BCE is not in those lists,
+    # so it remains usable through the backend fallthrough and preserves the
+    # backend's native result dtype.
+    assert loss.dtype == torch.float16
 
 
 def test_amp_unscale_detects_non_finite_values():

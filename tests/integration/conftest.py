@@ -75,6 +75,7 @@ def pytest_configure(config):
         "main_ops: representative test in the CI smoke subset "
         "(select with -m main_ops)",
     )
+    config.addinivalue_line("markers", "ascend: requires Ascend NPU hardware")
 
     import torch_fl  # noqa: F401
 

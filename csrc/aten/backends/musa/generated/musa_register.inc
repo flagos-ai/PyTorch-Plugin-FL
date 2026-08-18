@@ -134,3 +134,32 @@
   m.impl("var.correction", WrapperVarCorrection);
   m.impl("where.self", WrapperWhereSelf);
   m.impl("zero_", WrapperZeroInplace);
+
+  // Native muRAND/mudnn RNG kernels. Unsupported RNG schemas stay unregistered
+  // and continue through cpu_fallback.
+  m.impl("native_dropout", WrapperNativeDropout);
+  m.impl("native_dropout_backward", WrapperNativeDropoutBackward);
+  m.impl("normal_", WrapperNormalInplace);
+  m.impl("rand", WrapperRand);
+  m.impl("rand.generator", WrapperRandGenerator);
+  m.impl("rand.names_out", WrapperRandNamesOut);
+  m.impl("rand.out", WrapperRandOut);
+  m.impl("rand_like", WrapperRandLike);
+  m.impl("rand_like.generator", WrapperRandLikeGenerator);
+  m.impl("rand_like.out", WrapperRandLikeOut);
+  m.impl("randint", WrapperRandint);
+  m.impl("randint.generator", WrapperRandintGenerator);
+  m.impl("randint.low", WrapperRandintLow);
+  m.impl("randint.low_generator", WrapperRandintLowGenerator);
+  m.impl("randint.low_out", WrapperRandintLowOut);
+  m.impl("randint.out", WrapperRandintOut);
+  m.impl("randn", WrapperRandn);
+  m.impl("randn.generator", WrapperRandnGenerator);
+  m.impl("randn.names_out", WrapperRandnNamesOut);
+  m.impl("randn_like", WrapperRandnLike);
+  m.impl("randn_like.generator", WrapperRandnLikeGenerator);
+  m.impl("randn_like.out", WrapperRandnLikeOut);
+  m.impl("random_", WrapperRandomInplace);
+  m.impl("random_.from", WrapperRandomInplaceFrom);
+  m.impl("random_.to", WrapperRandomInplaceTo);
+  m.impl("uniform_", WrapperUniformInplace);

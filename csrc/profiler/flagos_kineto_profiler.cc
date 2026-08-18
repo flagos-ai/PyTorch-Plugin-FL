@@ -529,6 +529,13 @@ void registerFlagosKinetoProfiler() {
 namespace {
 struct KinetoProfilerRegistrar {
   KinetoProfilerRegistrar() {
+#if defined(FLAGOS_HAVE_MSPTI)
+    // Do not construct the CANN tracer during shared-library initialization.
+    // Its MSPTI handle is intentionally session-scoped and ordinary Ascend
+    // operator processes must not touch the vendor profiler at import time.
+    registerFlagosKinetoProfiler();
+    FLAGOS_KINETO_LOG("[flagos] FlagosKinetoProfiler registered with kineto\n");
+#else
     auto tracer = profiler::MakeDeviceTracer();
     if (tracer && tracer->available()) {
       registerFlagosKinetoProfiler();
@@ -537,6 +544,7 @@ struct KinetoProfilerRegistrar {
       FLAGOS_KINETO_LOG("[flagos] no device tracer available, "
                        "FlagosKinetoProfiler not registered\n");
     }
+#endif
   }
 };
 static KinetoProfilerRegistrar g_registrar;

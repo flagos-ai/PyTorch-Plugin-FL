@@ -80,6 +80,41 @@ backend compensates:
 See `torch_fl/accelerator/cuda/_cuda_compat.py` for the memory-stats and
 Event/Stream shims that inductor's autotuner needs.
 
+## AMP and Dtype Support
+
+The flagos device implements PyTorch's standard `AutocastPrivateUse1` policies.
+Autocast supports `torch.float16` and `torch.bfloat16` targets:
+
+```python
+model = torch.nn.Linear(512, 512, device="flagos:0")
+optimizer = torch.optim.SGD(model.parameters(), lr=1e-3)
+scaler = torch.amp.GradScaler("flagos")
+
+inputs = torch.randn(8, 512, device="flagos:0")
+target = torch.randn(8, 512, device="flagos:0")
+with torch.autocast("flagos", dtype=torch.bfloat16):
+    output = model(inputs)
+    loss = torch.nn.functional.mse_loss(output, target)
+
+scaler.scale(loss).backward()
+scaler.step(optimizer)
+scaler.update()
+```
+
+Matrix operations such as `mm`, `linear`, and `addmm` use the selected
+lower-precision dtype. Numerically sensitive operations covered by the standard
+policy list, such as `softmax`, normalization, and `mse_loss`, run in float32.
+Operations outside that list, such as binary cross entropy, use backend
+fallthrough. Explicit `dtype=` arguments
+remain authoritative for policy wrappers. Unsupported autocast targets such as
+float32 and float64 are disabled by PyTorch with its standard warning.
+
+Outside autocast, the backend preserves the dtypes exercised by the current
+contract: float16, bfloat16, float32, float64, int64, and bool. Complex and
+float8 behavior is not part of this tested contract. AMP and dtype behavior was
+validated on NVIDIA H800/sm90; other vendor backends require their own
+validation.
+
 ## Environment Variables
 
 - `FLAGOS_USE_FLAGTREE=1` - Assert that the active `triton` is FlagTree, erroring
@@ -91,10 +126,12 @@ Event/Stream shims that inductor's autotuner needs.
 ## Limitations
 
 1. Single device - multi-GPU compilation not yet exercised
-2. FlagTree verified on nvidia/sm90 only; other vendor backends untested here
+2. FlagTree is validated on NVIDIA `sm90` and Hygon `gfx936` with the HCU
+   backend; other vendor backends remain untested here
 
 ## Future Work
 
-- [ ] Exercise `torch.compile(backend="flagos")` on a FlagTree-built env
+- [x] Exercise `torch.compile(backend="flagos")` on FlagTree-built NVIDIA and
+      Hygon HCU environments
 - [ ] Benchmark fusion gains against stock inductor+triton on cuda
 - [ ] Multi-GPU compilation support

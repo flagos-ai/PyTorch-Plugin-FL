@@ -311,6 +311,33 @@ SKIP: set = set()
 HANDWRITTEN_REGISTRATIONS = [
     "convolution_overrideable",
     "convolution_backward_overrideable",
+    # Native muRAND/mudnn RNG kernels live in backends/musa/rng.cc.
+    "rand",
+    "rand.generator",
+    "rand.out",
+    "rand.names_out",
+    "rand_like",
+    "rand_like.generator",
+    "rand_like.out",
+    "randn",
+    "randn.generator",
+    "randn.names_out",
+    "randn_like",
+    "randn_like.generator",
+    "randn_like.out",
+    "randint",
+    "randint.generator",
+    "randint.low",
+    "randint.low_generator",
+    "randint.out",
+    "randint.low_out",
+    "normal_",
+    "uniform_",
+    "random_",
+    "random_.from",
+    "random_.to",
+    "native_dropout",
+    "native_dropout_backward",
 ]
 
 # The CPU-fallback path in each kernel calls back into at::<name>. That is the

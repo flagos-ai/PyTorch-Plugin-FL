@@ -90,7 +90,9 @@ elseif(ACCELERATOR STREQUAL "musa")
   # Moore Threads MUSA takes the native operator route (like Ascend/GCU), not
   # CUDA boxing: the MUSA toolkit ships no CUDA runtime, so there is no vendor
   # dispatch key to box into. The generated kernels call mudnn -- the vendor's
-  # torch-independent kernel library -- directly.
+  # torch-independent kernel library -- directly. FLAGGEMS_PYTHON remains a
+  # caller-controlled option so the same build can include the optional hybrid
+  # dispatchers without requiring the FlagGems C++ runtime.
   set(MUSA_KERNEL ON CACHE BOOL "Build MUSA kernel implementations" FORCE)
   set(CUDA_KERNEL OFF CACHE BOOL "Build CUDA kernel implementations" FORCE)
   set(FLAGGEMS_KERNEL OFF CACHE BOOL "Build FlagGems kernel implementations" FORCE)
@@ -383,6 +385,17 @@ elseif(ACCELERATOR STREQUAL "musa")
           "(no ${MUSA_HOME}/include/mudnncxx/mudnn.h).")
     endif()
     message(STATUS "mudnn op library: ${MUDNN_LIB}")
+    find_library(MURAND_LIB murand PATHS "${MUSA_HOME}/lib" NO_DEFAULT_PATH)
+    if(NOT MURAND_LIB)
+      message(FATAL_ERROR
+          "MUSA_KERNEL=ON but libmurand.so was not found under ${MUSA_HOME}/lib. "
+          "Install the murand component of the MUSA toolkit.")
+    endif()
+    if(NOT EXISTS "${MUSA_HOME}/include/murand.h")
+      message(FATAL_ERROR
+          "MUSA_KERNEL=ON but murand.h was not found under ${MUSA_HOME}/include.")
+    endif()
+    message(STATUS "murand RNG library: ${MURAND_LIB}")
   endif()
 
   add_library(torch::cudart INTERFACE IMPORTED)

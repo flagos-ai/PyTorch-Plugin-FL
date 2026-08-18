@@ -23,9 +23,23 @@ add_library(${LIBRARY_NAME} SHARED ${SOURCE_FILES})
 if(ACCELERATOR STREQUAL "metax")
   # maca torch headers are gated on USE_MACA (see csrc/CMakeLists.txt).
   target_compile_definitions(${LIBRARY_NAME} PRIVATE USE_MACA=1)
+elseif(ACCELERATOR STREQUAL "musa")
+  target_compile_definitions(${LIBRARY_NAME} PRIVATE USE_MUSA=1)
+  if(NOT MUSA_HOME)
+    set(MUSA_HOME "$ENV{MUSA_HOME}")
+  endif()
+  if(NOT MUSA_HOME)
+    set(MUSA_HOME "/usr/local/musa")
+  endif()
+  target_include_directories(${LIBRARY_NAME} PRIVATE "${MUSA_HOME}/include")
+  target_link_directories(${LIBRARY_NAME} PRIVATE "${MUSA_HOME}/lib")
 endif()
 
 target_link_libraries(${LIBRARY_NAME} PRIVATE torch_python_library torch_fl)
+
+if(ACCELERATOR STREQUAL "musa")
+  target_link_libraries(${LIBRARY_NAME} PRIVATE musart)
+endif()
 
 if(WIN32)
     find_package(Python3 COMPONENTS Interpreter Development REQUIRED)

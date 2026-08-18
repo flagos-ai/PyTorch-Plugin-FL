@@ -15,28 +15,8 @@
 #include <ATen/autocast_mode.h>
 #include <torch/library.h>
 
-#if defined(USE_DCU)
-
 namespace at::flagos {
 namespace {
-
-at::Tensor binary_cross_entropy_banned(
-    const at::Tensor&,
-    const at::Tensor&,
-    const std::optional<at::Tensor>&,
-    int64_t) {
-  TORCH_CHECK(
-      false,
-      "torch.nn.functional.binary_cross_entropy and torch.nn.BCELoss are "
-      "unsafe to autocast.\n"
-      "Many models use a sigmoid layer right before the binary cross entropy "
-      "layer.\n"
-      "In this case, combine the two layers using "
-      "torch.nn.functional.binary_cross_entropy_with_logits\n"
-      "or torch.nn.BCEWithLogitsLoss.  binary_cross_entropy_with_logits and "
-      "BCEWithLogits are\n"
-      "safe to autocast.");
-}
 
 TORCH_LIBRARY_IMPL(_, AutocastPrivateUse1, m) {
   m.fallback(torch::CppFunction::makeFallthrough());
@@ -64,12 +44,7 @@ TORCH_LIBRARY_IMPL(aten, AutocastPrivateUse1, m) {
   AT_FORALL_PROMOTE(FLAGOS_AUTOCAST_PROMOTE)
 #undef FLAGOS_AUTOCAST_PROMOTE
 
-  m.impl(
-      TORCH_SELECTIVE_NAME("aten::binary_cross_entropy"),
-      TORCH_FN(binary_cross_entropy_banned));
 }
 
 }  // namespace
 }  // namespace at::flagos
-
-#endif  // USE_DCU

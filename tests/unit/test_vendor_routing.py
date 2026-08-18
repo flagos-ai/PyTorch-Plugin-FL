@@ -223,6 +223,12 @@ def test_no_backend_raises(monkeypatch):
         obj._build_inner(None, 0, 1, None)
 
 
+def test_mthreads_aliases_musa_profile():
+    assert pg._get_profile("mthreads") is pg._VENDOR_PROFILES["mthreads"]
+    assert pg._VENDOR_PROFILES["mthreads"].flagcx_dev == "musa"
+    assert pg._VENDOR_PROFILES["mthreads"].native == "_try_build_mccl"
+
+
 def test_musa_flagcx_identity_view(monkeypatch):
     """MUSA uses _flagos_identity_view: FlagCX's MUSA adaptor receives
     privateuseone tensors as-is, no storage conversion needed."""

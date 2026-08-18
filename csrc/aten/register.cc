@@ -26,6 +26,11 @@
 #include "runtime/allocator/caching_device_allocator.h"
 #include <c10/core/impl/LocalDispatchKeySet.h>
 
+#include <algorithm>
+#include <cctype>
+#include <cstdlib>
+#include <string>
+
 // Forward declarations for the Ascend matmul kernels (csrc/aten/backends/ascend/matmul.cc).
 // That file is only compiled when USE_ASCEND is on, so BOTH declarations must be
 // guarded the same way: a .so links fine with an undefined symbol and only fails
@@ -365,6 +370,31 @@ static std::tuple<at::Tensor, at::Tensor> WrapperMatmulBackward(
 }
 #endif
 
+#if defined(USE_MUSA) && defined(FLAGOS_FLAGGEMS_PYTHON)
+bool MusaFlagGemsEnabled() {
+  const char* value = std::getenv("FLAGOS_USE_FLAGGEMS");
+  if (value != nullptr) {
+    std::string normalized(value);
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    if (normalized != "" && normalized != "0" && normalized != "off" &&
+        normalized != "false") {
+      return true;
+    }
+  }
+
+  // FLAGOS_BACKEND_CONFIG is an advanced override that wins over the convenience
+  // switch in Python. Register the narrow hybrid schema set when that config is
+  // selected explicitly too, otherwise its flagos_python routes have no kernel.
+  const char* config = std::getenv("FLAGOS_BACKEND_CONFIG");
+  if (config == nullptr) return false;
+  std::string path(config);
+  auto slash = path.find_last_of("/\\");
+  auto filename = slash == std::string::npos ? path : path.substr(slash + 1);
+  return filename == "backends_musa_flagos_py.conf";
+}
+#endif
+
 bool HasCompatibleShallowCopyType(
     const at::Tensor& self, const at::Tensor& from) {
   const auto self_keys = self.key_set();
@@ -444,6 +474,11 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
     #if defined(FLAGOS_MUSA_KERNEL)
     #include "backends/musa/generated/musa_register.inc"
     #endif
+    #if defined(FLAGOS_FLAGGEMS_PYTHON)
+    if (MusaFlagGemsEnabled()) {
+    #include "backends/musa/generated/musa_flaggems_register.inc"
+    }
+    #endif
   #elif defined(USE_BPU)
     // BPU registers no compute ops. The BPU's unit of execution is a whole
     // compiled graph (a .hbm produced by hbdk4), so there is no per-operator
@@ -475,6 +510,10 @@ TORCH_LIBRARY_IMPL(_, PrivateUse1, m) {
   m.fallback(
       torch::CppFunction::makeFromBoxedFunction<&at::native::flagos::cpu_fallback>());
 }
+
+// The AutocastPrivateUse1 policies and fallback live in aten/autocast.cc.
+// A dispatch key accepts only one backend fallback, so they must not be
+// registered here as well.
 
 // Register AutogradPrivateUse1 fallback to dispatch to PrivateUse1
 // This ensures operators like where.ScalarSelf work correctly through autograd dispatch

@@ -140,6 +140,8 @@ _VENDOR_PROFILES = {
     # MUSA: FlagCX preferred (identity view lets FlagCX's MUSA adaptor receive
     # privateuseone tensors directly), with MCCL native fallback.
     "musa": _VendorProfile("musa", "_flagos_identity_view", "_try_build_mccl"),
+    # FlagGems 5.x calls the same Moore Threads vendor "mthreads".
+    "mthreads": _VendorProfile("musa", "_flagos_identity_view", "_try_build_mccl"),
     # Cambricon: FlagCX only (no cuda alias, no native fallback wired).
     "cambricon": _VendorProfile("mlu", None, None),
 }
