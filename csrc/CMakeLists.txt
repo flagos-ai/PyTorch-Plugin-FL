@@ -32,14 +32,39 @@ list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/runtime/accelerator/.*")
 # stream_api is built as a separate shared lib
 list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/runtime/accelerator/ascend/stream_api\\.cc")
 
-# Profiler device tracer selection: exclude the wrong tracer based on ACCELERATOR.
-# CUPTI tracer is for CUDA/NVIDIA; ROCtracer is for DCU/AMD; everything else gets
-# the stub (neither). Both tracer files implement the same MakeDeviceTracer() factory,
-# so only one can be in the build.
+# Profiler device tracer selection: exactly one vendor implementation may define
+# MakeDeviceTracer(). CUDA-compatible builds use CUPTI, DCU uses ROCtracer, and
+# Ascend uses the public CANN MSPTI activity API. Unsupported native platforms
+# compile the unavailable stub.
 if(ACCELERATOR STREQUAL "dcu")
   list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/profiler/cupti_device_tracer\\.cc$")
+  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/profiler/cann_device_tracer\\.cc$")
+elseif(ACCELERATOR STREQUAL "ascend")
+  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/profiler/cupti_device_tracer\\.cc$")
+  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/profiler/roctracer_device_tracer\\.cc$")
 else()
   list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/profiler/roctracer_device_tracer\\.cc$")
+  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/profiler/cann_device_tracer\\.cc$")
+endif()
+
+# CANN's public MSPTI headers are optional. The tracer is still compiled with a
+# small unavailable implementation when a CPU-only build has no toolkit, while
+# the Python import path likewise treats libmspti.so as optional.
+if(ACCELERATOR STREQUAL "ascend")
+  find_path(MSPTI_INCLUDE_DIR
+    NAMES mspti.h
+    PATHS
+      "$ENV{ASCEND_HOME}/tools/mspti/include"
+      "$ENV{ASCEND_HOME_PATH}/tools/mspti/include"
+      /usr/local/Ascend/ascend-toolkit/latest/tools/mspti/include
+      /usr/local/Ascend/cann-9.0.0/tools/mspti/include)
+  if(MSPTI_INCLUDE_DIR)
+    include_directories(${MSPTI_INCLUDE_DIR})
+    add_compile_definitions(FLAGOS_HAVE_MSPTI=1)
+    message(STATUS "mspti.h found: ${MSPTI_INCLUDE_DIR}")
+  else()
+    message(STATUS "mspti.h NOT found; Ascend profiler will be unavailable")
+  endif()
 endif()
 
 # Exclude backend kernel directories based on options

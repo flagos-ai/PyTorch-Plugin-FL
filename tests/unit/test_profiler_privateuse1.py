@@ -30,7 +30,10 @@ import pytest
 import torch
 from torch.profiler import ProfilerActivity, profile
 
-import torch_fl  # noqa: F401
+import torch_fl
+
+
+_CUPTI_BUILD = torch_fl._build_accelerator() in ("", "cuda")
 
 
 def test_guard_stream_is_real_not_synthetic():
@@ -96,8 +99,12 @@ def test_stage_a_privateuse1_device_time():
     )
 
 
+@pytest.mark.skipif(
+    not _CUPTI_BUILD,
+    reason="CUPTI tests require a CUDA-compatible torch-fl build",
+)
 def test_cupti_library_locatable():
-    """确认运行环境能 dlopen 到 libcupti(Stage B 前提)。"""
+    """Confirm that the runtime can dlopen CUPTI (Stage B prerequisite)."""
     candidates = ["libcupti.so.13", "libcupti.so.12", "libcupti.so"]
     candidates += glob.glob("/usr/local/cuda-13.0/targets/*/lib/libcupti.so*")
     candidates += glob.glob(
@@ -116,6 +123,10 @@ def test_cupti_library_locatable():
     assert loaded is not None, f"cannot dlopen libcupti from {candidates}"
 
 
+@pytest.mark.skipif(
+    not _CUPTI_BUILD,
+    reason="CUPTI tests require a CUDA-compatible torch-fl build",
+)
 def test_stage_b_chrome_trace_has_gpu_kernels():
     """Stage B: kineto Chrome trace must contain GPU kernel events with real
     CUPTI-decoded names and non-zero durations. This is the core Stage B goal --
