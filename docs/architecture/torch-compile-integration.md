@@ -313,7 +313,8 @@ tests live alongside it:
 3. **Dynamic shapes**: Some models with dynamic shapes may not compile
 4. **CUDA graphs off**: `torch.cuda.CUDAGraph` is a dummy class in the CPU torch
    wheel, so `triton.cudagraphs` is forced off even under `mode="max-autotune"`
-5. **FlagTree maturity**: Backend support varies by hardware (NVIDIA most mature)
+5. **FlagTree maturity**: Backend support varies by hardware; Hygon HCU is
+   validated on `gfx936`, while other vendor backends remain untested here
 
 ## Roadmap
 

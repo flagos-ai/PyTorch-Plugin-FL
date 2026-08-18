@@ -91,6 +91,41 @@ Run the DCU AMP coverage, including both autocast dtypes and finite/non-finite G
 pytest tests/integration/test_amp.py -v
 ```
 
+### `torch.compile` with FlagTree
+
+DCU `torch.compile` is validated with FlagTree's HCU backend on the Hygon
+`gfx936` target. FlagTree replaces the active `triton` module at installation
+time, so build it in a separate environment or install location rather than
+trying to import a `flagtree` module at runtime:
+
+```bash
+git clone https://github.com/flagos-ai/FlagTree.git
+cd FlagTree
+export FLAGTREE_BACKEND=hcu
+MAX_JOBS=16 python -m pip install . --no-build-isolation -v
+```
+
+Use the resulting FlagTree environment together with the PyTorch 2.10 and
+torch-fl installation. These variables select the HCU backend and assert that
+the active Triton is FlagTree:
+
+```bash
+export FLAGTREE_BACKEND=hcu
+export FLAGOS_USE_FLAGTREE=1
+export TRITON_BACKENDS_IN_TREE=1
+export GEMS_VENDOR=hygon
+
+python -c 'import triton; from triton._flagtree_backend import FLAGTREE_BACKEND; print(triton.__version__, FLAGTREE_BACKEND)'
+pytest tests/integration/test_compile.py -v
+```
+
+The measured Hygon run used FlagTree 0.6.0, PyTorch 2.10.0, and produced
+`GPUTarget(backend='hip', arch='gfx936', warp_size=64)`. All 15 compile tests
+passed. Compiled outputs and backward gradients remained on `flagos`; eager
+and compiled results matched. The DCU CI manifest does not include this check
+because its pinned image currently supplies DTK Triton rather than a FlagTree
+HCU build.
+
 ### Operator Tests (Vendor Backend)
 
 Run the main operator suite against the DCU boxing backend:

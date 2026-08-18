@@ -91,10 +91,12 @@ Event/Stream shims that inductor's autotuner needs.
 ## Limitations
 
 1. Single device - multi-GPU compilation not yet exercised
-2. FlagTree verified on nvidia/sm90 only; other vendor backends untested here
+2. FlagTree is validated on NVIDIA `sm90` and Hygon `gfx936` with the HCU
+   backend; other vendor backends remain untested here
 
 ## Future Work
 
-- [ ] Exercise `torch.compile(backend="flagos")` on a FlagTree-built env
+- [x] Exercise `torch.compile(backend="flagos")` on FlagTree-built NVIDIA and
+      Hygon HCU environments
 - [ ] Benchmark fusion gains against stock inductor+triton on cuda
 - [ ] Multi-GPU compilation support
