@@ -341,11 +341,13 @@ class _DefaultStreamHandle:
     ``synchronize``/``wait_stream`` have nothing to do here.
     """
 
-    __slots__ = ("cuda_stream", "gcu_stream", "device_index")
+    __slots__ = ("cuda_stream", "gcu_stream", "musa_stream", "device_index")
 
     def __init__(self, device_index: int = 0):
         self.cuda_stream = 0
         self.gcu_stream = 0
+        get_musa_stream = getattr(_C, "_get_musa_current_raw_stream", None)
+        self.musa_stream = get_musa_stream(device_index) if get_musa_stream else 0
         self.device_index = device_index
 
     def __int__(self) -> int:
@@ -383,6 +385,8 @@ def _real_current_stream(device=None):
     off the result, and those backends submit to their default stream.
     """
     idx = current_device() if device is None else int(device)
+    if hasattr(_C, "_get_musa_current_raw_stream"):
+        return _DefaultStreamHandle(idx)
     if not hasattr(torch._C, "_cuda_getCurrentStream"):
         from torch_fl.accelerator.ascend.acl_stream import current_acl_stream
 
@@ -573,28 +577,24 @@ def get_amp_supported_dtype():
 
 
 class _DeviceProperties:
-    """Minimal device properties object for FlagGems compatibility.
-
-    FlagGems queries ``multi_processor_count`` to size its grid launch. The
-    Ascend analogue is the AICore count, which triton-ascend already reads off
-    the device (``NPUUtils.get_aicore_num``, via ``rtGetDeviceInfo``), so take it
-    from there rather than hardcoding: it is 24 on this 910, and a wrong constant
-    silently mis-sizes every gems grid.
-
-    Falls back to 32 only if triton is unavailable or the query raises, which
-    keeps a FlagGems-less build importable.
-
-    ``major``/``minor`` have no Ascend meaning -- there is no CUDA compute
-    capability here -- but torch's ``cuda_extra_check`` (torch/utils/_triton.py)
-    reads ``.major`` unconditionally and raises AttributeError without it. Report
-    8.0, the same sentinel the MetaX shim uses, so the probe answers
-    "triton-capable" instead of crashing dynamo.
-    """
+    """Minimal device properties object for compiler/runtime compatibility."""
 
     def __init__(self, device_id):
+        get_musa_properties = getattr(_C, "_get_musa_device_properties", None)
+        if get_musa_properties is not None:
+            props = get_musa_properties(device_id)
+            self.name = props["name"]
+            self.multi_processor_count = props["multi_processor_count"]
+            self.total_memory = props["total_memory"]
+            self.major = props["major"]
+            self.minor = props["minor"]
+            return
+
+        # Ascend analogue: use the AICore count reported by triton-ascend.
         self.name = f"Ascend NPU {device_id}"
         self.multi_processor_count = _aicore_count()
         self.total_memory = _C._memory_reserved(device_id)
+        # CUDA-style sentinels required by torch.utils._triton probes.
         self.major = 8
         self.minor = 0
 

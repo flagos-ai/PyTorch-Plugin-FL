@@ -439,17 +439,16 @@ def build_deps():
         )
     elif ACCELERATOR == "musa":
         # Moore Threads MUSA has no CUDA runtime: the musa* API provides the
-        # device layer, and mudnn provides the operators (MUSA_KERNEL). With no
-        # CUDA runtime there is no vendor key for the CUDA boxing kernels to
-        # reach, so they stay off. FLAGGEMS_KERNEL needs liboperators.so
-        # (not built for MUSA);
-        # FLAGGEMS_PYTHON needs a MUSA triton (the mtgpu backend ships with the
-        # toolkit) -- opt in explicitly via the env overrides below.
+        # device layer, and mudnn provides the native operators (MUSA_KERNEL).
+        # Compile the FlagGems Python callers into the same wheel so
+        # FLAGOS_USE_FLAGGEMS can select the hybrid routing at runtime. Kernel
+        # execution still requires a compatible MUSA Triton backend; without
+        # one, native routing remains the default and unaffected.
         cmake_args.extend(
             [
                 "-DCUDA_KERNEL=OFF",
                 "-DFLAGGEMS_KERNEL=OFF",
-                "-DFLAGGEMS_PYTHON=OFF",
+                "-DFLAGGEMS_PYTHON=ON",
                 "-DMETAX_KERNEL=OFF",
                 "-DASCEND_KERNEL=OFF",
                 "-DMUSA_KERNEL=ON",

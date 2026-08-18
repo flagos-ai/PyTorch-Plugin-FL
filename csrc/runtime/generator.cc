@@ -8,6 +8,8 @@
 
 #include "generator.h"
 
+#include <mutex>
+
 // Default, global generators, one per device.
 static std::vector<at::Generator> default_generators;
 
@@ -31,6 +33,31 @@ const at::Generator& GetDefaultGenerator(c10::DeviceIndex device_index) {
     TORCH_CHECK(idx >= 0 && idx < DeviceCount());
   }
   return default_generators[idx];
+}
+
+uint64_t ReserveSeed(
+    const std::optional<at::Generator>& generator,
+    c10::DeviceIndex device_index) {
+  at::Generator gen = generator.has_value() && generator->defined()
+      ? *generator
+      : GetDefaultGenerator(device_index);
+  TORCH_CHECK(
+      gen.device().type() == c10::DeviceType::PrivateUse1,
+      "Expected a flagos generator, but found ",
+      gen.device());
+  if (device_index >= 0 && gen.device().has_index()) {
+    TORCH_CHECK(
+        gen.device().index() == device_index,
+        "Expected a generator for flagos:",
+        device_index,
+        ", but found ",
+        gen.device());
+  }
+
+  // A device-less flagos Generator follows the current device, matching
+  // torch.Generator(device="flagos") semantics.
+  std::lock_guard<std::mutex> lock(gen.mutex());
+  return gen.get<at::CPUGeneratorImpl>()->random64();
 }
 
 } // namespace c10::flagos

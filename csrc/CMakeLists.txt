@@ -354,7 +354,7 @@ elseif(ACCELERATOR STREQUAL "musa")
     # torch_musa tree, and so none of the header-shadowing hazards it brought
     # (it re-shipped ~1341 of torch's own ATen/ops/*_ops.h frozen at the
     # vendor's torch version).
-    target_link_libraries(${LIBRARY_NAME} PRIVATE ${MUDNN_LIB})
+    target_link_libraries(${LIBRARY_NAME} PRIVATE ${MUDNN_LIB} ${MURAND_LIB})
   endif()
 elseif(ACCELERATOR STREQUAL "bpu")
   # Selects backends/bpu_memory.h and, like tsingmicro, skips the generated

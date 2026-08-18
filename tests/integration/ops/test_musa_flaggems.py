@@ -1,0 +1,119 @@
+"""Real MTT S5000 coverage for the MThreads FlagGems hybrid path."""
+
+import importlib
+import os
+
+import pytest
+import torch
+import torch_fl
+
+
+pytestmark = pytest.mark.musa
+DEVICE = torch.device("flagos:0")
+
+
+def _require_flaggems_mthreads():
+    if torch_fl.flagos.device_count() < 1:
+        pytest.skip("MUSA device is unavailable")
+    if os.environ.get("FLAGOS_USE_FLAGGEMS", "0") not in ("1", "true", "TRUE"):
+        pytest.skip("set FLAGOS_USE_FLAGGEMS=1 to validate the hybrid path")
+    try:
+        import triton
+        import flag_gems
+    except Exception as exc:
+        pytest.skip(f"FlagGems MThreads runtime is unavailable: {exc}")
+    if "mthreads" not in triton.backends.backends:
+        pytest.skip("the installed Triton does not provide the MThreads backend")
+    flag_gems.enable()
+
+
+def test_selected_flaggems_routes_execute_on_s5000(monkeypatch):
+    _require_flaggems_mthreads()
+    calls = []
+
+    def track(module_name, function_name):
+        module = importlib.import_module(module_name)
+        original = getattr(module, function_name)
+
+        def wrapper(*args, **kwargs):
+            calls.append(function_name)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(module, function_name, wrapper)
+
+    track("flag_gems.ops.all", "all")
+    track("flag_gems.ops.all", "all_dims")
+    track("flag_gems.ops.any", "any")
+    track("flag_gems.ops.any", "any_dims")
+    track("flag_gems.ops.repeat_interleave", "repeat_interleave_tensor")
+    track("flag_gems.ops.index_add", "index_add")
+    track("flag_gems.ops.index_add", "index_add_")
+
+    values = torch.tensor([[1, 0, 1], [1, 1, 1]], device=DEVICE)
+    assert torch.equal(torch.all(values).cpu(), torch.all(values.cpu()))
+    assert torch.equal(
+        torch.all(values, dim=(1,)).cpu(), torch.all(values.cpu(), dim=(1,))
+    )
+    assert torch.equal(torch.any(values).cpu(), torch.any(values.cpu()))
+    assert torch.equal(
+        torch.any(values, dim=(1,)).cpu(), torch.any(values.cpu(), dim=(1,))
+    )
+
+    repeats = torch.tensor([1, 2, 1], device=DEVICE)
+    assert torch.equal(
+        torch.repeat_interleave(repeats).cpu(),
+        torch.repeat_interleave(repeats.cpu()),
+    )
+
+    base = torch.zeros(4, 3, device=DEVICE)
+    index = torch.tensor([1, 1, 3], device=DEVICE)
+    source = torch.ones(3, 3, device=DEVICE)
+    expected = torch.index_add(base.cpu(), 0, index.cpu(), source.cpu())
+    assert torch.equal(torch.index_add(base, 0, index, source).cpu(), expected)
+
+    inplace = torch.zeros(4, 3, device=DEVICE)
+    inplace.index_add_(0, index, source)
+    assert torch.equal(inplace.cpu(), expected)
+    assert calls == [
+        "all",
+        "all_dims",
+        "any",
+        "any_dims",
+        "repeat_interleave_tensor",
+        "index_add",
+        "index_add_",
+    ]
+
+
+def test_flaggems_randn_shares_native_generator_reservations():
+    _require_flaggems_mthreads()
+    from flag_gems.ops.randn import randn as flaggems_randn
+
+    def run(seed):
+        torch.flagos.manual_seed(seed)
+        native_before = torch.rand(64, device=DEVICE)
+        flaggems = flaggems_randn((64,), device=DEVICE)
+        assert flaggems.device == DEVICE
+        native_after = torch.rand(64, device=DEVICE)
+        torch.flagos.synchronize()
+        return native_before.cpu(), flaggems.cpu(), native_after.cpu()
+
+    first = run(20260817)
+    second = run(20260817)
+    assert torch.equal(first[0], second[0])
+    assert torch.equal(first[1], second[1])
+    assert torch.equal(first[2], second[2])
+    assert torch.isfinite(first[1]).all()
+    assert first[1].device.type == "cpu"
+
+    torch.flagos.manual_seed(20260817)
+    initial_state = torch.flagos.get_rng_state()
+    torch.rand(64, device=DEVICE)
+    flaggems_randn((64,), device=DEVICE)
+    mixed_state = torch.flagos.get_rng_state()
+
+    torch.flagos.set_rng_state(initial_state)
+    torch_fl._C._reserve_rng_seed(0)
+    torch_fl._C._reserve_rng_seed(0)
+    expected_state = torch.flagos.get_rng_state()
+    assert torch.equal(mixed_state, expected_state)

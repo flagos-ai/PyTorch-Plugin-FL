@@ -12,16 +12,16 @@
 
 #include <c10/core/Device.h>
 
+#include <cstdint>
+#include <optional>
+
 #include "functions.h"
 
 namespace c10::flagos {
 
-// NOTE: this PrivateUse1 generator serves native ATen generator semantics
-// (torch_fl.flagos.get_rng_state / manual_seed, _C._get_default_generator). It
-// is NOT on the flaggems RNG hot path: native cuda-boxed rng ops box `self` to
-// CUDA and use ATen's default CUDA generator, and flaggems rng reads seed+offset
-// from the vendor torch_device_fn.default_generators (per-device CUDA
-// generators the compat shim installs) -- neither consults this generator.
+// This PrivateUse1 generator is the authoritative RNG state for native MUSA
+// kernels and the FlagGems Python path. Both paths reserve a seed from this
+// generator, so manual_seed/get_rng_state/set_rng_state cover mixed workloads.
 class GeneratorImpl : public at::CPUGeneratorImpl {
  public:
   GeneratorImpl(c10::DeviceIndex device_index) {
@@ -32,6 +32,13 @@ class GeneratorImpl : public at::CPUGeneratorImpl {
 };
 
 const at::Generator& GetDefaultGenerator(
+    c10::DeviceIndex device_index = -1);
+
+// Reserve one independent stochastic operation from the selected generator.
+// The returned seed is suitable for initializing a device-side Philox engine;
+// callers must not maintain a second persistent generator state.
+FLAGOS_EXPORT uint64_t ReserveSeed(
+    const std::optional<at::Generator>& generator,
     c10::DeviceIndex device_index = -1);
 
 } // namespace c10::flagos

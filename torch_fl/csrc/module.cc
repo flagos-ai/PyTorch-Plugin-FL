@@ -23,14 +23,21 @@
 
 #include <memory>
 
+#ifdef USE_MUSA
+#include <musa_runtime.h>
+#include <runtime/accelerator/musa/musa_stream.h>
+#endif
+
 #include <torch/csrc/Exceptions.h>
 #include <torch/csrc/utils.h>
 #include <torch/csrc/utils/device_lazy_init.h>
 #include <torch/csrc/utils/object_ptr.h>
 #include <torch/csrc/utils/python_numbers.h>
 #include <torch/csrc/autograd/python_variable.h>
+#include <torch/csrc/Generator.h>
 
 #include <runtime/functions.h>
+#include <runtime/generator.h>
 #include <macros.h>
 #include <runtime/allocator/caching_device_allocator.h>
 
@@ -202,6 +209,90 @@ static PyObject* _getDefaultGenerator(PyObject* self, PyObject* arg) {
   END_HANDLE_TH_ERRORS
 }
 
+static PyObject* _reserveRngSeed(PyObject* self, PyObject* args) {
+  HANDLE_TH_ERRORS
+  int device_index;
+  PyObject* generator_obj = Py_None;
+  if (!PyArg_ParseTuple(args, "i|O", &device_index, &generator_obj)) {
+    return nullptr;
+  }
+
+  std::optional<at::Generator> generator;
+  if (generator_obj != Py_None) {
+    TORCH_CHECK(
+        THPGenerator_Check(generator_obj),
+        "_reserve_rng_seed expects a torch.Generator or None, but got ",
+        THPUtils_typename(generator_obj));
+    generator = THPGenerator_Unwrap(generator_obj);
+  }
+  auto seed = c10::flagos::ReserveSeed(generator, device_index);
+  return PyLong_FromUnsignedLongLong(seed);
+  END_HANDLE_TH_ERRORS
+}
+
+static PyObject* _getMusaDeviceProperties(PyObject* self, PyObject* arg) {
+  HANDLE_TH_ERRORS
+#ifdef USE_MUSA
+  TORCH_CHECK(
+      THPUtils_checkLong(arg),
+      "_get_musa_device_properties expects an int, but got ",
+      THPUtils_typename(arg));
+  auto idx = static_cast<int>(THPUtils_unpackLong(arg));
+  TORCH_CHECK(
+      idx >= 0 && idx < c10::flagos::DeviceCount(),
+      "MUSA device index ", idx, " is out of range");
+
+  musaDeviceProp prop{};
+  auto err = musaGetDeviceProperties(&prop, idx);
+  TORCH_CHECK(
+      err == musaSuccess,
+      "musaGetDeviceProperties failed for device ",
+      idx,
+      ": ",
+      musaGetErrorString(err));
+
+  return Py_BuildValue(
+      "{s:s,s:K,s:i,s:i,s:i}",
+      "name",
+      prop.name,
+      "total_memory",
+      static_cast<unsigned long long>(prop.totalGlobalMem),
+      "multi_processor_count",
+      prop.multiProcessorCount,
+      "major",
+      prop.major,
+      "minor",
+      prop.minor);
+#else
+  TORCH_CHECK(false, "MUSA device properties are unavailable in this build");
+#endif
+  END_HANDLE_TH_ERRORS
+}
+
+static PyObject* _getMusaCurrentRawStream(PyObject* self, PyObject* arg) {
+  HANDLE_TH_ERRORS
+#ifdef USE_MUSA
+  TORCH_CHECK(
+      THPUtils_checkLong(arg),
+      "_get_musa_current_raw_stream expects an int, but got ",
+      THPUtils_typename(arg));
+  auto idx = static_cast<int>(THPUtils_unpackLong(arg));
+  auto current_device = c10::flagos::CurrentDevice();
+  TORCH_CHECK(
+      idx == current_device,
+      "MUSA stream requested for device ",
+      idx,
+      ", but the current device is ",
+      current_device);
+  auto stream = at::native::flagos::musa::GetDefaultMusaStream();
+  return PyLong_FromUnsignedLongLong(
+      reinterpret_cast<unsigned long long>(stream));
+#else
+  TORCH_CHECK(false, "MUSA streams are unavailable in this build");
+#endif
+  END_HANDLE_TH_ERRORS
+}
+
 PyObject* _setDevice(PyObject* self, PyObject* arg) {
   HANDLE_TH_ERRORS
   TORCH_CHECK(THPUtils_checkLong(arg), "invalid argument to setDevice");
@@ -364,6 +455,11 @@ PyObject* _reset_peak_memory_stats(PyObject* self, PyObject* arg) {
 static PyMethodDef methods[] = {
     {"_init", _initExtension, METH_NOARGS, nullptr},
     {"_get_default_generator", _getDefaultGenerator, METH_O, nullptr},
+    {"_reserve_rng_seed", _reserveRngSeed, METH_VARARGS, nullptr},
+#ifdef USE_MUSA
+    {"_get_musa_device_properties", _getMusaDeviceProperties, METH_O, nullptr},
+    {"_get_musa_current_raw_stream", _getMusaCurrentRawStream, METH_O, nullptr},
+#endif
     {"_get_device", _getDevice, METH_NOARGS, nullptr},
     {"_set_device", _setDevice, METH_O, nullptr},
     {"_exchangeDevice", _exchangeDevice, METH_O, nullptr},
