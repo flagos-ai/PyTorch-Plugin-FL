@@ -24,6 +24,8 @@ elseif(ACCELERATOR STREQUAL "bpu")
   project(FLAGOS_RUNTIME CXX C)
 elseif(ACCELERATOR STREQUAL "dcu")
   project(FLAGOS_RUNTIME CXX C)
+elseif(ACCELERATOR STREQUAL "kunlun")
+  project(FLAGOS_RUNTIME CXX C)
 elseif(ACCELERATOR STREQUAL "gcu")
   project(FLAGOS_RUNTIME CXX C)
 elseif(ACCELERATOR STREQUAL "musa")
@@ -87,6 +89,15 @@ elseif(ACCELERATOR STREQUAL "dcu")
   # DTK's CUDA compatibility toolkit provides cuda_runtime.h and a libcudart
   # shim over libgalaxyhip, so the CUDA runtime sources build unchanged --
   # no separate dcu/ directory, and no nvcc (plain host g++).
+  file(GLOB SOURCE_FILES "${CMAKE_CURRENT_SOURCE_DIR}/cuda/*.cc")
+
+  add_library(${LIBRARY_NAME} SHARED ${SOURCE_FILES})
+
+  target_include_directories(${LIBRARY_NAME} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR})
+  target_link_libraries(${LIBRARY_NAME} PRIVATE ${CUDA_RUNTIME_LIB})
+elseif(ACCELERATOR STREQUAL "kunlun")
+  # Kunlun's CUDA-shaped runtime uses the same host-side API as CUDA and
+  # supplies libcudart.so.12 through the XPU compatibility toolkit.
   file(GLOB SOURCE_FILES "${CMAKE_CURRENT_SOURCE_DIR}/cuda/*.cc")
 
   add_library(${LIBRARY_NAME} SHARED ${SOURCE_FILES})

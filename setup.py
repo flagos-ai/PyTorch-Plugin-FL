@@ -32,7 +32,7 @@ IS_DARWIN = platform.system() == "Darwin"
 IS_WINDOWS = platform.system() == "Windows"
 
 # Accelerator platform: "cuda" (default), "metax", "ascend", "tsingmicro",
-# "dcu", "gcu", "musa", or "bpu"
+# "dcu", "kunlun", "gcu", "musa", or "bpu"
 ACCELERATOR = os.environ.get("ACCELERATOR", "cuda").lower()
 
 # Directory inside the wheel holding a bundled forked libtorch, for the backends
@@ -303,6 +303,35 @@ def _dtk_root() -> str:
     return default
 
 
+def _kunlun_roots() -> tuple[str, str]:
+    """Return validated Kunlun XPU SDK and CUDA-compatibility runtime roots."""
+    xpu_root = os.path.realpath(os.environ.get("XPU_ROOT", "/usr/local/xpu"))
+    xcudart_root = os.path.realpath(
+        os.environ.get("XCUDART_ROOT", "/usr/local/xcudart")
+    )
+    if not os.path.isfile(os.path.join(xpu_root, "include", "cuda_runtime.h")):
+        raise RuntimeError(
+            "ACCELERATOR=kunlun selected, but cuda_runtime.h was not found under "
+            f"{xpu_root}/include. Set XPU_ROOT to the Kunlun XPU SDK root."
+        )
+    if not os.path.isfile(os.path.join(xcudart_root, "lib", "libcudart.so.12")):
+        raise RuntimeError(
+            "ACCELERATOR=kunlun selected, but libcudart.so.12 was not found under "
+            f"{xcudart_root}/lib. Set XCUDART_ROOT to the XPU CUDA runtime root."
+        )
+    return xpu_root, xcudart_root
+
+
+def _setup_kunlun_build_env(env: dict) -> tuple[str, str]:
+    xpu_root, xcudart_root = _kunlun_roots()
+    env.setdefault("XPU_ROOT", xpu_root)
+    env.setdefault("XCUDART_ROOT", xcudart_root)
+    _prepend_env_path(env, "CPATH", os.path.join(xpu_root, "include"))
+    _prepend_env_path(env, "LIBRARY_PATH", os.path.join(xcudart_root, "lib"))
+    _prepend_env_path(env, "LD_LIBRARY_PATH", os.path.join(xcudart_root, "lib"))
+    return xpu_root, xcudart_root
+
+
 def _cmake_build_jobs() -> int:
     """Parallel compile jobs for cmake/ninja. Set FLAGOS_BUILD_JOBS=1 for serial logs."""
     for key in ("FLAGOS_BUILD_JOBS", "MAX_JOBS", "CMAKE_BUILD_PARALLEL_LEVEL"):
@@ -392,6 +421,20 @@ def build_deps():
             [
                 "-DCUDA_KERNEL=OFF",
                 "-DFLAGGEMS_KERNEL=OFF",
+                "-DMETAX_KERNEL=OFF",
+                "-DASCEND_KERNEL=OFF",
+            ]
+        )
+    elif ACCELERATOR == "kunlun":
+        # Kunlun's vendor torch provides CUDA-key registrations backed by the
+        # XPU CUDA compatibility runtime. Build the generated CUDA boxing path
+        # with the host compiler and keep FlagGems disabled until it is measured
+        # against the target's vendor Triton stack.
+        cmake_args.extend(
+            [
+                "-DCUDA_KERNEL=ON",
+                "-DFLAGGEMS_KERNEL=OFF",
+                "-DFLAGGEMS_PYTHON=OFF",
                 "-DMETAX_KERNEL=OFF",
                 "-DASCEND_KERNEL=OFF",
             ]
@@ -497,6 +540,14 @@ def build_deps():
             cmake_args.append(f"-DFLAGGEMS_DIR={flaggems_dir}")
     elif ACCELERATOR == "dcu":
         cmake_args.append(f"-DDTK_ROOT={_dtk_root()}")
+    elif ACCELERATOR == "kunlun":
+        xpu_root, xcudart_root = _setup_kunlun_build_env(build_env)
+        cmake_args.extend(
+            [
+                f"-DXPU_ROOT={xpu_root}",
+                f"-DXCUDART_ROOT={xcudart_root}",
+            ]
+        )
 
     subprocess.check_call([cmake, BASE_DIR] + cmake_args, cwd=build_dir, env=build_env)
 
@@ -805,6 +856,10 @@ def _vendor_supplies_triton() -> bool:
     NVIDIA-targeted wheel must not be pulled in as a dependency.
 
     - ACCELERATOR=dcu: DTK ships its own Triton (and builds pure-boxing).
+    - ACCELERATOR=kunlun: the XPU vendor environment owns the CUDA-shaped
+      runtime and Triton stack; the initial P800 build disables FlagGems until
+      its overload survey is measured, so installing NVIDIA-targeted Triton is
+      not useful.
     - ACCELERATOR=ascend: `triton` is provided by triton-ascend, installed out
       of band (it has no PyPI release satisfying `triton>=3.5.1`). Declaring the
       dep makes pip install stock triton over triton-ascend, after which any
@@ -815,7 +870,7 @@ def _vendor_supplies_triton() -> bool:
       always build. Install it manually, then `pip install --no-deps` this
       package. See "Build from Source (PPU Platform)" in the README.
     """
-    if ACCELERATOR in ("dcu", "ascend"):
+    if ACCELERATOR in ("dcu", "kunlun", "ascend"):
         return True
     return bool(os.environ.get("PPU_SDK") or os.environ.get("PPU_HOME"))
 

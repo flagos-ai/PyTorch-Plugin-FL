@@ -345,6 +345,10 @@ elseif(ACCELERATOR STREQUAL "dcu")
   if(ROCTRACER_LIBRARY)
     target_link_libraries(${LIBRARY_NAME} PRIVATE ${ROCTRACER_LIBRARY})
   endif()
+elseif(ACCELERATOR STREQUAL "kunlun")
+  # Kunlun's vendor torch exposes CUDA registrations and uses the CUDA-shaped
+  # runtime, so the standard allocator and generated CUDA boxing path apply.
+  target_link_libraries(${LIBRARY_NAME} PRIVATE ${_torch_fl_link_libs})
 elseif(ACCELERATOR STREQUAL "musa")
   target_compile_definitions(${LIBRARY_NAME} PRIVATE USE_MUSA=1)
   target_link_libraries(${LIBRARY_NAME} PRIVATE ${_torch_fl_link_libs})

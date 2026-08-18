@@ -14,7 +14,7 @@
 
 cmake_minimum_required(VERSION 3.18 FATAL_ERROR)
 
-set(ACCELERATOR "cuda" CACHE STRING "Accelerator platform: cuda, metax, ascend, tsingmicro, dcu, gcu, musa, or bpu")
+set(ACCELERATOR "cuda" CACHE STRING "Accelerator platform: cuda, metax, ascend, tsingmicro, dcu, kunlun, gcu, musa, or bpu")
 
 # Directory inside the wheel holding a bundled forked libtorch, when the backend
 # ships one (see scripts/bundle_*_libtorch.sh). "lib" means "no separate bundle
@@ -84,6 +84,14 @@ elseif(ACCELERATOR STREQUAL "dcu")
   # scripts/bundle_dcu_libtorch.sh. The DTK driver itself stays on the target.
   set(FLAGOS_BUNDLE_LIBDIR "lib_dcu")
   project(TORCH_FLAGOS CXX C)
+elseif(ACCELERATOR STREQUAL "kunlun")
+  # Kunlun P800's XPU SDK exposes a CUDA-shaped API through libcudart.so.12.
+  # The vendor torch registers XPU kernels under the CUDA dispatch key, so the
+  # generated PrivateUse1 -> CUDA boxing kernels can be reused unchanged.
+  # The SDK is host-compiler compatible and does not require nvcc.
+  set(CUDA_KERNEL ON CACHE BOOL "Build CUDA kernel implementations" FORCE)
+  set(FLAGGEMS_KERNEL OFF CACHE BOOL "Build FlagGems kernel implementations" FORCE)
+  project(TORCH_FLAGOS CXX C)
 elseif(ACCELERATOR STREQUAL "gcu")
   project(TORCH_FLAGOS CXX C)
 elseif(ACCELERATOR STREQUAL "musa")
@@ -141,6 +149,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 if(NOT ACCELERATOR STREQUAL "metax" AND NOT ACCELERATOR STREQUAL "ascend"
    AND NOT ACCELERATOR STREQUAL "tsingmicro" AND NOT ACCELERATOR STREQUAL "dcu"
+   AND NOT ACCELERATOR STREQUAL "kunlun"
    AND NOT ACCELERATOR STREQUAL "gcu" AND NOT ACCELERATOR STREQUAL "musa"
    AND NOT ACCELERATOR STREQUAL "bpu")
   set(CMAKE_CUDA_STANDARD 17)
@@ -210,6 +219,49 @@ elseif(ACCELERATOR STREQUAL "tsingmicro")
   # Embed Kuiper library path in RPATH so LD_LIBRARY_PATH is not needed at runtime.
   list(APPEND CMAKE_INSTALL_RPATH "${KUIPER_ROOT}/lib")
 
+  add_library(torch::cudart INTERFACE IMPORTED)
+  if(NOT TARGET CUDA::nvToolsExt)
+    add_library(CUDA::nvToolsExt INTERFACE IMPORTED)
+  endif()
+elseif(ACCELERATOR STREQUAL "kunlun")
+  # Kunlun XPU SDK. The CUDA-shaped headers and libcudart shim are supplied by
+  # the target driver installation and are never copied into the wheel.
+  if(NOT XPU_ROOT)
+    set(XPU_ROOT "$ENV{XPU_ROOT}")
+  endif()
+  if(NOT XPU_ROOT)
+    set(XPU_ROOT "/usr/local/xpu")
+  endif()
+  if(NOT XCUDART_ROOT)
+    set(XCUDART_ROOT "$ENV{XCUDART_ROOT}")
+  endif()
+  if(NOT XCUDART_ROOT)
+    set(XCUDART_ROOT "/usr/local/xcudart")
+  endif()
+  if(NOT EXISTS "${XPU_ROOT}/include/cuda_runtime.h")
+    message(FATAL_ERROR
+      "ACCELERATOR=kunlun selected, but ${XPU_ROOT}/include/cuda_runtime.h was "
+      "not found. Set XPU_ROOT to the Kunlun SDK root.")
+  endif()
+  if(NOT EXISTS "${XCUDART_ROOT}/lib/libcudart.so.12")
+    message(FATAL_ERROR
+      "ACCELERATOR=kunlun selected, but ${XCUDART_ROOT}/lib/libcudart.so.12 was "
+      "not found. Set XCUDART_ROOT to the XPU CUDA compatibility runtime root.")
+  endif()
+  message(STATUS "Kunlun XPU SDK path: ${XPU_ROOT}")
+  message(STATUS "Kunlun CUDA runtime path: ${XCUDART_ROOT}")
+
+  add_library(cuda_runtime_compat INTERFACE IMPORTED)
+  set_target_properties(cuda_runtime_compat PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "${XPU_ROOT}/include")
+  target_link_directories(cuda_runtime_compat INTERFACE "${XCUDART_ROOT}/lib")
+  target_link_libraries(cuda_runtime_compat INTERFACE cudart)
+  set(CUDA_RUNTIME_LIB cuda_runtime_compat)
+  list(APPEND CMAKE_INSTALL_RPATH "${XCUDART_ROOT}/lib")
+  set(FLAGOS_VENDOR_RPATH_DIRS "${XCUDART_ROOT}/lib")
+
+  # Pre-create these targets so PyTorch's CUDA CMake modules do not probe for
+  # an NVIDIA toolkit while compiling the host-only boxing/runtime sources.
   add_library(torch::cudart INTERFACE IMPORTED)
   if(NOT TARGET CUDA::nvToolsExt)
     add_library(CUDA::nvToolsExt INTERFACE IMPORTED)

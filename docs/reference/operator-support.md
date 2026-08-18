@@ -72,8 +72,13 @@ decimal place.
 | MetaX mc550 | 546 | 260 | 33 | 155 | 98 | 293 | 53.7% | 47.6% |
 | PPU 810e | 546 | 347 | 54 | 47 | 98 | 401 | 73.4% | 63.6% |
 | Hygon DCU bw1000 | 546 | 321 | 53 | 74 | 98 | 374 | 68.5% | 58.8% |
+| Kunlun P800 | 546 | — | — | — | — | — | — | — |
 
-For every row, `STRICT + BASIC_ONLY + FAILED + UNTESTED = Total`, and
+The Kunlun P800 row is **not revalidated**. The initial port measured the CUDA-boxing
+runtime and a targeted `mm` smoke test, but did not run the FlagGems overload survey;
+dashes are therefore not zeroes and must not be used in cohort-rate arithmetic.
+
+For every measured row, `STRICT + BASIC_ONLY + FAILED + UNTESTED = Total`, and
 `Basic executable = STRICT + BASIC_ONLY`.
 
 ## Raw Case Evidence
@@ -195,5 +200,6 @@ evidence is the targeted FSDP2/DDP/collective workload described above.
 | Date | Hardware | Cohort | Change | Evidence |
 |---|---|---|---|---|
 | 2026-08-17 | Enflame S60 | Native GCU RNG routes | Added 16 topsaten RNG routes; generic FlagGems cohort not revalidated. | Targeted mixed native/FlagGems probe verified shared seed/offset progression and replay; `tests/integration/ops/test_rng_dispatch.py`: `104 passed, 2 skipped, 1 xpassed`. |
+| 2026-08-18 | Kunlun P800 | Generic FlagGems cohort | Added Kunlun CUDA-boxing support; overload cohort **not revalidated**. | P800 runtime smoke measured 8 devices, allocation, H2D/D2H, stream creation, synchronization, cache release, and float32 `mm` against CPU reference. The build disables FlagGems pending a dedicated survey. |
 | 2026-08-14 | Ascend 910 (2 devices) | Native Ascend FSDP2 routes | Added `_chunk_cat`, `_chunk_cat.out`, `_foreach_copy_`, `cat.out`, `split.Tensor`, `split_with_sizes`, and `split_with_sizes_copy.out`; generic FlagGems cohort not revalidated because it is unchanged. | Manual FlagCX collective, DDP, and FSDP2 tests on CANN 9.0; standard FlagGems harness is not applicable to native routes. |
 | 2026-08-13 | A100, mc550, 810e, bw1000 | torch-fl `fe2272b5`, FlagGems `7fb49bad`, harness v4 | Established the verified 546-overload four-platform baseline. | Manual survey JSON; aggregate and raw counts recorded above. |
