@@ -1418,6 +1418,26 @@ def _register_compile_backend():
         from torch_fl.compile.inductor_backend import register_backend
 
         register_backend()
+
+        # Also wire flagos into inductor *eagerly*, so the default
+        # `torch.compile` backend (`backend="inductor"`) works on flagos too.
+        # transformers' `CompileConfig` compiles with `backend="inductor"`
+        # rather than our `"flagos"` backend; without this, `backend="inductor"`
+        # lowers e.g. RMSNorm (`aten.mean.dim`) and trips
+        # `get_backend_features("flagos") -> assert scheduling_ctor`
+        # (torch/_inductor/codegen/common.py:460) because flagos was never
+        # registered in inductor's codegen table. The three functions are
+        # idempotent and mirror what `flagos_compile_backend` runs before every
+        # compile_fx.
+        from torch_fl.compile.device_interface import register_flagos_device_interface
+        from torch_fl.compile.inductor_codegen import (
+            publish_codegen_on_device_module,
+            register_flagos_codegen,
+        )
+
+        register_flagos_device_interface()
+        publish_codegen_on_device_module()
+        register_flagos_codegen()
     except (ImportError, AttributeError):
         # torch._dynamo not available (torch < 2.0) or inductor missing
         pass

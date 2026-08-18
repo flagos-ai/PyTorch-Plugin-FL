@@ -48,6 +48,23 @@ from torch._dynamo.device_interface import (
 DEVICE_TYPE = "flagos"
 
 
+def _triton_backend() -> tuple[str, str]:
+    """Return ``(device_type, triton_backend)`` to report to the Triton layer.
+
+    flagos has no triton backend of its own, so inductor must report the
+    backend of the *underlying hardware* when it asks triton to compile a
+    kernel: triton selects its backend from ``DeviceProperties.type`` (which
+    becomes ``GPUTarget.backend``). On MetaX the toolchain is triton-metax
+    (``MACABackend.supports_target == 'maca'``), on the CUDA build it is stock
+    triton's ``nvidia`` backend (``supports_target == 'cuda'``).
+    """
+    from torch_fl._build_config import ACCELERATOR
+
+    if ACCELERATOR == "metax":
+        return "maca", "metax"
+    return "cuda", "nvidia"
+
+
 def _device_index(device: Any) -> Optional[int]:
     """Normalize str / torch.device / int into a plain device index."""
     if device is None:
@@ -155,8 +172,11 @@ class FlagOSDeviceInterface(DeviceInterface):
 
         import triton.backends
 
-        if "nvidia" not in triton.backends.backends:
-            raise RuntimeError("triton not built with the 'nvidia' backend")
+        _, triton_backend = _triton_backend()
+        if triton_backend not in triton.backends.backends:
+            raise RuntimeError(
+                f"triton not built with the '{triton_backend}' backend"
+            )
 
 
 def _register_gpu_type() -> None:
@@ -190,19 +210,18 @@ def _register_gpu_type() -> None:
 
 
 def _patch_device_properties() -> None:
-    """Report flagos devices to the Triton layer as cuda.
+    """Report flagos devices to the Triton layer under the hardware's backend.
 
-    `DeviceProperties.type` is what inductor forwards to Triton as
-    `GPUTarget.backend` (hints.py -> triton_heuristics.py:718 -> triton's
-    make_backend). Triton's NVIDIA backend hard-checks `target.backend == "cuda"`,
-    so a literal "flagos" finds zero compatible backends. The same read also
-    drives cubin vs hsaco selection and the launcher's interface lookup -- all of
-    which we want to be the CUDA ones, because that is the hardware.
+    ``DeviceProperties.type`` is what inductor forwards to Triton as
+    ``GPUTarget.backend`` (hints.py -> triton_heuristics.py:718 -> triton's
+    make_backend). flagos has no triton backend of its own, so we rewrite the
+    type to the underlying hardware's name: ``maca`` on MetaX (triton-metax),
+    ``cuda`` elsewhere (triton's NVIDIA backend). The interface lookup and every
+    other property stay on torch.cuda -- flagos shares the same physical GPU.
 
-    Rewriting the device type at this boundary is what inductor already does for
-    ROCm in the opposite direction (`hints.py:149`, cuda -> hip). We wrap
-    `create` rather than editing the read sites so the functools cache, and every
-    other field, keep working unchanged.
+    We wrap ``create`` and rewrite the ``type`` of the result (rather than only
+    editing the read sites) so the functools cache and every other field keep
+    working unchanged.
     """
     from torch._inductor.runtime.hints import DeviceProperties
 
@@ -210,11 +229,18 @@ def _patch_device_properties() -> None:
         return
 
     original = DeviceProperties.create
+    device_type, _ = _triton_backend()
 
     def create(device: Any) -> Any:
-        if device is not None and getattr(device, "type", None) == DEVICE_TYPE:
+        is_flagos = device is not None and getattr(device, "type", None) == DEVICE_TYPE
+        if is_flagos:
+            # Interface/property lookup goes through torch.cuda (same GPU); only
+            # the type reported onward becomes `maca`/`cuda`.
             device = torch.device("cuda", device.index or 0)
-        return original(device)
+        result = original(device)
+        if is_flagos:
+            result = result._replace(type=device_type)
+        return result
 
     create._flagos_patched = True  # type: ignore[attr-defined]
     DeviceProperties.create = create  # type: ignore[method-assign, assignment]
@@ -255,3 +281,9 @@ def register_flagos_device_interface() -> None:
     _patch_device_properties()
     _repair_cuda_interface_raw_stream()
     register_interface_for_device(DEVICE_TYPE, FlagOSDeviceInterface)
+    # The triton-reported device type ("maca" on MetaX) is what the runtime
+    # launcher resolves via `triton_heuristics.get_device_interface`, so that
+    # name needs an interface too. It proxies the same hardware as flagos.
+    device_type, _ = _triton_backend()
+    if device_type != "cuda":  # "cuda" is already registered by inductor
+        register_interface_for_device(device_type, FlagOSDeviceInterface)
