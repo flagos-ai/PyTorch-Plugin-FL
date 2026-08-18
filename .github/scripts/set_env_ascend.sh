@@ -141,13 +141,19 @@ if [[ -z "$VENDOR_PYTHON" || ! -x "$VENDOR_PYTHON" ]]; then
   exit 1
 fi
 
-VENV_ROOT="${TORCH_FL_VENV_ROOT:-${RUNNER_TEMP:-$REPO_ROOT/.ci}/torch-fl-ascend-${CI_STAGE}}"
-if ! "$VENDOR_PYTHON" -m venv --clear "$VENV_ROOT"; then
-  echo "::warning::Build Python cannot create a venv; trying uv"
-  if ! command -v uv >/dev/null 2>&1; then
-    "$VENDOR_PYTHON" -m pip install --upgrade uv
+PREBUILT_VENV="${TORCH_FL_PREBUILT_ASCEND_VENV:-/opt/torch-fl-ascend-venv}"
+if [[ -z "${TORCH_FL_VENV_ROOT:-}" && -x "$PREBUILT_VENV/bin/python" ]]; then
+  VENV_ROOT="$PREBUILT_VENV"
+  echo "Using prebuilt Ascend venv: $VENV_ROOT"
+else
+  VENV_ROOT="${TORCH_FL_VENV_ROOT:-${RUNNER_TEMP:-$REPO_ROOT/.ci}/torch-fl-ascend-${CI_STAGE}}"
+  if ! "$VENDOR_PYTHON" -m venv --clear "$VENV_ROOT"; then
+    echo "::warning::Build Python cannot create a venv; trying uv"
+    if ! command -v uv >/dev/null 2>&1; then
+      "$VENDOR_PYTHON" -m pip install --upgrade uv
+    fi
+    uv venv --clear --seed --python "$VENDOR_PYTHON" "$VENV_ROOT"
   fi
-  uv venv --clear --seed --python "$VENDOR_PYTHON" "$VENV_ROOT"
 fi
 VENV_PYTHON="$VENV_ROOT/bin/python"
 if [[ ! -x "$VENV_PYTHON" ]]; then
@@ -155,15 +161,17 @@ if [[ ! -x "$VENV_PYTHON" ]]; then
   exit 1
 fi
 
-"$VENV_PYTHON" -m pip install --upgrade pip setuptools wheel cmake
-"$VENV_PYTHON" -m pip install --index-url "${TORCH_FL_CPU_TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}" \
-  "torch==${TORCH_FL_CPU_TORCH_VERSION:-2.10.0}"
-if [[ "$CI_STAGE" == "integration" ]]; then
-  # pytest is also installed by the common workflow; mirrored here so the
-  # venv is self-contained for local runs. transformers is NOT installed:
-  # the first-version ascend acceptance has no model-mounted test (Qwen3 is
-  # deferred), so pulling it would only widen the CI failure surface.
-  "$VENV_PYTHON" -m pip install pytest
+if [[ "$VENV_ROOT" != "$PREBUILT_VENV" ]]; then
+  "$VENV_PYTHON" -m pip install --upgrade pip setuptools wheel cmake
+  "$VENV_PYTHON" -m pip install --index-url "${TORCH_FL_CPU_TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}" \
+    "torch==${TORCH_FL_CPU_TORCH_VERSION:-2.10.0}"
+  if [[ "$CI_STAGE" == "integration" ]]; then
+    # pytest is also installed by the common workflow; mirrored here so the
+    # venv is self-contained for local runs. transformers is NOT installed:
+    # the first-version ascend acceptance has no model-mounted test (Qwen3 is
+    # deferred), so pulling it would only widen the CI failure surface.
+    "$VENV_PYTHON" -m pip install pytest
+  fi
 fi
 
 export VIRTUAL_ENV="$VENV_ROOT"

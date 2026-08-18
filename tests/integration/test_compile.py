@@ -15,7 +15,7 @@
 """
 Integration tests for torch.compile on flagos device.
 
-Tests basic compilation, fusion gains, and FlagTree integration (Phase 2).
+Tests basic compilation, fusion gains, and FlagTree detection.
 """
 
 import os
@@ -264,34 +264,56 @@ def test_fake_tensor_linear(device):
         assert out.device.type == x.device.type
 
 
+def test_flagtree_requires_flagtree_install():
+    """FLAGOS_USE_FLAGTREE=1 must not silently no-op on a stock-Triton env.
+
+    FlagTree replaces triton at install time, so the flag can only assert; it
+    cannot switch anything on. Whichever Triton this env has, exactly one of the
+    two branches below is the correct behaviour.
+    """
+    from torch_fl.compile.flagtree_shim import is_flagtree_active, require_flagtree
+
+    if is_flagtree_active():
+        require_flagtree()  # must not raise
+    else:
+        with pytest.raises(RuntimeError, match="not FlagTree"):
+            require_flagtree()
+
+
+def test_flagtree_is_never_importable_as_flagtree():
+    """Guard the packaging trap: the wheel is 'flagtree', the module is 'triton'.
+
+    A future contributor reaching for `import flagtree` would write code that can
+    only ever raise, which is exactly the bug this test pins down.
+    """
+    import importlib.util
+
+    assert importlib.util.find_spec("flagtree") is None
+
+
 @pytest.mark.skipif(
     os.environ.get("FLAGOS_USE_FLAGTREE", "0") != "1",
-    reason="FlagTree integration not enabled (set FLAGOS_USE_FLAGTREE=1)",
+    reason="FlagTree compilation not requested (set FLAGOS_USE_FLAGTREE=1)",
 )
-def test_flagtree_integration(device):
-    """
-    Test FlagTree integration (Phase 2).
+def test_flagtree_compiles_correct_results(device):
+    """Compiling through FlagTree must match eager.
 
-    Requires: pip install flagtree + FLAGOS_USE_FLAGTREE=1
+    Requires a FlagTree-built env; see docs/architecture/torch-compile-integration.md.
     """
+    from torch_fl.compile.flagtree_shim import is_flagtree_active
+
+    if not is_flagtree_active():
+        pytest.skip("active triton is stock Triton, not FlagTree")
+
     model = SimpleModel().to(device)
     x = torch.randn(32, 128, device=device)
 
-    # Compile should use FlagTree instead of OpenAI Triton
+    eager_output = model(x)
     compiled_model = torch.compile(model, backend="flagos")
     output = compiled_model(x)
 
-    eager_output = model(x)
+    assert_on_flagos(output)
     torch.testing.assert_close(output, eager_output, rtol=1e-4, atol=1e-4)
-
-    # Verify FlagTree was actually used (check sys.modules)
-    import sys
-
-    if "flagtree" in sys.modules:
-        # FlagTree loaded successfully
-        pass
-    else:
-        pytest.skip("FlagTree not loaded (may have fallen back to OpenAI Triton)")
 
 
 def test_compile_fallback_eager():

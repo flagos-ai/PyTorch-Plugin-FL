@@ -79,7 +79,7 @@ Capability availability and validation status vary by platform. A feature existi
 | MetaX | CUDA boxing via cu-bridge, or native MetaX kernels | Eager, autograd | **Stable** | [MetaX](docs/vendors/metax/installation.md) |
 | Ascend | Native ACLNN backend, optional FlagGems via triton-ascend | Eager, autograd, RNG suite | **Beta** | [Ascend](docs/vendors/ascend/installation.md) |
 | PPU | CUDA boxing against PPU's CUDA-13-compatible SDK | Eager, autograd | **Experimental** | [PPU](docs/vendors/ppu/installation.md) |
-| Hygon DCU | CUDA boxing over hipified DTK torch | Eager, autograd, profiler | **Beta** | [DCU](docs/vendors/dcu/installation.md) |
+| Hygon DCU | CUDA boxing over hipified DTK torch | Eager, autograd, FP16/BF16 AMP, profiler | **Beta** | [DCU](docs/vendors/dcu/installation.md) |
 | Enflame GCU | Native topsaten backend, CPU fallback for unrouted/int64 ops | Eager | **Experimental** | [GCU](docs/vendors/gcu/installation.md) |
 | Moore Threads MUSA | Native mudnn backend, CPU fallback for unrouted ops | Eager | **Experimental** | [MUSA](docs/vendors/musa/installation.md) |
 | D-Robotics BPU | No eager kernels; `torch.compile` graph path via hbdk4 | Graph compilation only | **Runtime only** | [BPU](docs/vendors/bpu/installation.md) |

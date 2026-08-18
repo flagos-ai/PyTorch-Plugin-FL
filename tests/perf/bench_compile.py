@@ -21,7 +21,7 @@ parity with inductor+triton performance gains.
 Usage:
     python tests/perf/bench_compile.py
     python tests/perf/bench_compile.py --model=mlp --batch-size=128
-    FLAGOS_USE_FLAGTREE=1 python tests/perf/bench_compile.py  # Phase 2
+    FLAGOS_USE_FLAGTREE=1 python tests/perf/bench_compile.py  # require FlagTree
 """
 
 import argparse

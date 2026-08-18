@@ -11,6 +11,8 @@
 #include <c10/util/Optional.h>
 #include <c10/util/ArrayRef.h>
 
+#include <utility>
+
 namespace at::native::flagos {
 
 // Call a FlagGems Python op by function name.
@@ -137,13 +139,15 @@ at::Tensor CallPythonOp_LikeFactory(const char* func_name,
 at::Tensor CallPythonOp_RandomInplace(const char* func_name,
                                       const std::vector<c10::IValue>& args);
 
-// Fetch the vendor compat shim's per-device CUDA generator
-// (torch.cuda.default_generators[device_index]) as an at::Generator. This is
-// the SAME object FlagGems reads via philox_backend_seed_offset, so injecting
-// it into native RNG kernels unifies both RNG worlds under torch.manual_seed.
-// Cached per device index (the shim object is stable; torch.cuda.manual_seed
-// mutates it in place, so a cached handle stays valid).
+// Fetch the vendor compat shim's per-device CUDA generator for CUDA-compatible
+// kernels. The returned handle is cached while manual_seed mutates it in place.
 at::Generator GetFlagosDefaultCudaGenerator(int64_t device_index);
+
+// Fetch the vendor compat shim's per-device philox generator state. This is
+// the SAME object FlagGems reads via philox_backend_seed_offset, so native GCU
+// kernels and FlagGems advance one seed/offset stream under torch.manual_seed.
+std::pair<uint64_t, uint64_t> GetFlagosPhiloxState(
+    int64_t device_index, uint64_t increment);
 
 // Like CallPythonOp_Generic, but the Python op returns a tuple/list of N tensors
 // (e.g. sort -> (values, indices), var_mean -> (var, mean)). Returns the N

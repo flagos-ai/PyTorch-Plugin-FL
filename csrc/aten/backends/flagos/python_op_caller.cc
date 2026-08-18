@@ -610,24 +610,37 @@ at::Generator GetFlagosDefaultCudaGenerator(int64_t device_index) {
   }
   py::gil_scoped_acquire gil;
   py::module_ torch_cuda = py::module_::import("torch.cuda");
-  // torch.cuda.default_generators is populated by CUDA lazy-init, not at import.
-  // A self-contained wheel front-ends a stock torch+cpu whose CUDA state nothing
-  // else touches, so the tuple is still empty here and indexing it would raise
-  // IndexError -- which surfaces as a failure of every device-side RNG op
-  // (randn/rand/normal_) while plain factories (empty/zeros/ones) work fine.
-  // Force lazy-init first; it is idempotent and cheap once initialized.
   if (py::len(torch_cuda.attr("default_generators")) == 0) {
     torch_cuda.attr("init")();
   }
-  py::object gens = torch_cuda.attr("default_generators");
-  py::object py_gen = gens[py::cast(device_index)];
-  // torch.Generator -> at::Generator via THPGenerator unpack.
-  at::Generator gen = py_gen.cast<at::Generator>();
+  py::object generators = torch_cuda.attr("default_generators");
+  at::Generator generator =
+      generators[py::cast(device_index)].cast<at::Generator>();
   {
     std::lock_guard<std::mutex> lk(cache_mu);
-    gen_cache[device_index] = gen;
+    gen_cache[device_index] = generator;
   }
-  return gen;
+  return generator;
+}
+
+std::pair<uint64_t, uint64_t> GetFlagosPhiloxState(
+    int64_t device_index, uint64_t increment) {
+  py::gil_scoped_acquire gil;
+  py::module_ torch_cuda = py::module_::import("torch.cuda");
+  py::object generators = torch_cuda.attr("default_generators");
+  py::object generator = generators[py::cast(device_index)];
+  py::object state = generator.attr("get_state")();
+  auto values = state.cast<at::Tensor>().contiguous().view(at::kLong);
+  TORCH_CHECK(values.numel() == 2,
+              "GCU philox generator state must contain seed and offset");
+  auto seed = static_cast<uint64_t>(values[0].item<int64_t>());
+  auto offset = static_cast<uint64_t>(values[1].item<int64_t>());
+  // FlagGems rounds each philox draw up to a multiple of 4; matching that keeps
+  // native and FlagGems draws on non-overlapping segments of one stream.
+  increment = (increment + 3) / 4 * 4;
+  values[1] = static_cast<int64_t>(offset + increment);
+  generator.attr("set_state")(values.view(at::kByte));
+  return {seed, offset};
 }
 
 } // namespace at::native::flagos

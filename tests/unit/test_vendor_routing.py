@@ -337,14 +337,31 @@ def test_ascend_uses_hccl_native(monkeypatch):
 
 
 def test_enflame_profile():
-    """Enflame GCU uses device 'gcu' and is direct=True (FlagCX's enflame adaptor
-    reads the privateuseone tensor itself, so no view is needed *and none is
-    missing*), with no native fallback -- ECCL is only reachable via FlagCX."""
+    """Enflame's torch-fl FlagCX build registers device 'flagos' and consumes
+    privateuseone tensors directly, with no native fallback."""
     prof = pg._get_profile("enflame")
-    assert prof.flagcx_dev == "gcu"
+    assert prof.flagcx_dev == "flagos"
     assert prof.view is None
     assert prof.native is None
     assert prof.direct is True
+
+
+def test_enflame_flagcx_selects_flagos_backend(monkeypatch):
+    """Enflame defaults to the torch-fl FlagCX mode before importing flagcx."""
+    monkeypatch.setenv("GEMS_VENDOR", "enflame")
+    monkeypatch.delenv("FLAGCX_TORCH_BACKEND", raising=False)
+
+    pg._configure_flagcx_torch_backend("enflame")
+    assert pg.os.environ["FLAGCX_TORCH_BACKEND"] == "flagos"
+
+
+def test_enflame_flagcx_preserves_explicit_backend(monkeypatch):
+    """An explicit FlagCX backend selection remains authoritative."""
+    monkeypatch.setenv("GEMS_VENDOR", "enflame")
+    monkeypatch.setenv("FLAGCX_TORCH_BACKEND", "torch_gcu")
+
+    pg._configure_flagcx_torch_backend("enflame")
+    assert pg.os.environ["FLAGCX_TORCH_BACKEND"] == "torch_gcu"
 
 
 def test_direct_is_opt_in_per_vendor():

@@ -67,6 +67,9 @@ These variables control asset loading, bundled libtorch behavior, and import-tim
 | `FLAGOS_DCU_HIP_VERSION` | Runtime | No default | Override HIP version detection for DCU runtime |
 | `FLAGOS_SKIP_CUDA_ASSETS` | Build | `0` (off) | Skip bundling external `libtorch_cuda.so` into the wheel (for in-tree builds) |
 | `FLAGOS_WHEEL_LOCAL` | Build | `0` (off) | Build a wheel with machine-local paths (non-portable; for dev testing only) |
+| `FLAGCX_TORCH_BACKEND` | Build & Runtime | `torch_gcu` for Enflame FlagCX builds; torch-fl sets `flagos` by default | Select the Enflame FlagCX torch integration. `flagos` links `libflagos.so` and avoids the vendor `torch-gcu` package; an explicit value is preserved. |
+| `FLAGOS_INSTALL_PATH` | Build | No default | FlagCX torch-fl compatibility install prefix containing `include/flagos.h` and `lib/libflagos.so` |
+| `FLAGOS_INCLUDE_DIR` / `FLAGOS_LIBRARY_DIR` | Build | Derived from `FLAGOS_INSTALL_PATH` or `torch_fl` | Override the FlagOS C ABI header and library directories when building FlagCX |
 | `TORCH_DEVICE_BACKEND_AUTOLOAD` | Runtime | Set by torch_fl on MUSA builds | Stop vendor plugins (e.g., `torch_musa`) from claiming `PrivateUse1` during `import torch` |
 
 ## Compiler and Feature Backends

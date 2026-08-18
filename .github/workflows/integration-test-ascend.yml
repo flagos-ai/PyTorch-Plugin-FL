@@ -32,10 +32,57 @@ on:
 
 jobs:
   integration-tests:
-    uses: ./.github/workflows/all-tests-common.yml
-    with:
-      platform: ascend
-      run_build: true
-      run_integration_tests: true
-      upload_artifact: true
-      timeout_minutes: ${{ inputs['timeout-minutes'] }}
+    name: Build and test (Ascend)
+    runs-on:
+      - flagcicd-910c
+    timeout-minutes: ${{ inputs['timeout-minutes'] }}
+    container:
+      image: harbor.baai.ac.cn/flagos-dev/pytorch-plugin-fl:manual-20260816-ascend-ci
+      options: >-
+        --privileged
+        --ipc=host
+        --shm-size=512g
+        --ulimit memlock=-1
+        --cap-add=SYS_PTRACE
+        --device=/dev/davinci_manager
+        --device=/dev/davinci0
+        --device=/dev/davinci1
+        --device=/dev/davinci2
+        --device=/dev/davinci3
+        --device=/dev/davinci4
+        --device=/dev/davinci5
+        --device=/dev/davinci6
+        --device=/dev/davinci7
+        --device=/dev/devmm_svm
+        --device=/dev/hisi_hdc
+        -v /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare Ascend build environment
+        env:
+          CI_STAGE: build
+        run: bash .github/scripts/set_env_ascend.sh
+
+      - name: Build wheel
+        run: python -m build --wheel --no-isolation
+
+      - name: Install wheel and test dependencies
+        run: python -m pip install --force-reinstall --no-deps dist/*.whl
+
+      - name: Prepare wheel-only test workspace
+        run: |
+          TEST_ROOT=$(mktemp -d "${RUNNER_TEMP:-/tmp}/torch-fl-ascend.XXXXXX")
+          cp -a tests pyproject.toml "$TEST_ROOT/"
+          printf 'INTEGRATION_WORKDIR=%s\n' "$TEST_ROOT" >> "$GITHUB_ENV"
+
+      - name: Run Ascend integration tests
+        env:
+          INTEGRATION_ENVIRONMENT: "{}"
+          INTEGRATION_TESTS: >-
+            [{"name":"Check device availability","command":"python - <<'PY'\nfrom pathlib import Path\n\nimport torch_fl\nimport torch\n\ntorch_path = Path(torch.__file__).resolve()\npackage_lib = Path(torch_fl.__file__).resolve().parent / \"lib\"\n\nassert torch.__version__.startswith(\"2.10.0+cpu\"), torch.__version__\nassert torch.version.cuda is None, torch.version.cuda\nassert \"/opt/conda/\" not in str(torch_path), torch_path\nassert not (package_lib / \"libtorch_cuda.so\").is_file(), package_lib\nassert torch_fl.flagos.is_available(), \"flagos device is unavailable\"\nn = torch_fl.flagos.device_count()\nassert n >= 8, f\"expected at least 8 Ascend logical devices, got {n}\"\nprint(f\"CPU PyTorch: {torch.__version__}\")\nprint(f\"torch path: {torch_path}\")\nprint(f\"flagos logical devices: {n}\")\nPY"},{"name":"Run Ascend backend operator tests","command":"python -m pytest tests/integration/ops/ -m \"ascend\" -v -s --tb=short"},{"name":"Run Ascend RNG tests","command":"python -m pytest tests/integration/ops/test_rng_dispatch.py -m \"main_ops\" -v -s --tb=short"},{"name":"Run general factory ops","command":"python -m pytest tests/integration/test_factory_ops.py -v -s --tb=short"}]
+        run: python .github/scripts/run_integration_tests.py

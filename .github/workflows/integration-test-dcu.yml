@@ -32,10 +32,47 @@ on:
 
 jobs:
   integration-tests:
-    uses: ./.github/workflows/all-tests-common.yml
-    with:
-      platform: dcu
-      run_build: false
-      run_integration_tests: true
-      upload_artifact: false
-      timeout_minutes: ${{ inputs['timeout-minutes'] }}
+    name: Build and test (DCU)
+    runs-on:
+      - hg-8g-cicd-pytorch
+    timeout-minutes: ${{ inputs['timeout-minutes'] }}
+    container:
+      image: harbor.baai.ac.cn/flagos-dev/pytorch-plugin-fl:manual-20260816-dcu-ci
+      volumes:
+        - /usr/local/hyhal:/usr/local/hyhal:ro
+      options: >-
+        --privileged
+        --ipc=host
+        --shm-size=512g
+        --ulimit memlock=-1
+        --cap-add=SYS_PTRACE
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare DCU build environment
+        env:
+          CI_STAGE: integration
+        run: bash .github/scripts/set_env_dcu.sh
+
+      - name: Build wheel
+        run: python -m build --wheel --no-isolation
+
+      - name: Install wheel
+        run: python -m pip install --force-reinstall --no-deps dist/*.whl
+
+      - name: Prepare wheel-only test workspace
+        run: |
+          TEST_ROOT=$(mktemp -d "${RUNNER_TEMP:-/tmp}/torch-fl-dcu.XXXXXX")
+          cp -a tests pyproject.toml "$TEST_ROOT/"
+          printf 'INTEGRATION_WORKDIR=%s\n' "$TEST_ROOT" >> "$GITHUB_ENV"
+
+      - name: Run DCU integration tests
+        env:
+          INTEGRATION_ENVIRONMENT: "{}"
+          INTEGRATION_TESTS: >-
+            [{"name":"Check device availability","command":"python - <<'PY'\nfrom pathlib import Path\n\nimport torch_fl\nimport torch\n\ntorch_path = Path(torch.__file__).resolve()\npackage_lib = Path(torch_fl.__file__).resolve().parent / \"lib\"\n\nassert torch.version.cuda is None, torch.version.cuda\nassert \"/opt/conda/\" not in str(torch_path), torch_path\nassert (package_lib / \"libtorch_fl.so\").is_file(), package_lib\nassert torch_fl.flagos.is_available(), \"flagos device is unavailable\"\nassert torch_fl.flagos.device_count() > 0, torch_fl.flagos.device_count()\nprint(f\"CPU PyTorch: {torch.__version__}\")\nprint(f\"torch path: {torch_path}\")\nprint(f\"DCU assets: {package_lib}\")\nprint(f\"flagos devices: {torch_fl.flagos.device_count()}\")\nPY\n"},{"name":"Run operator tests (vendor backend, main ops)","command":"python -m pytest tests/integration/ops/ -m \"main_ops and not flaggems_python and not flaggems_cpp\" -v -s --tb=short"},{"name":"Run operator tests (FlagGems runtime path, main ops)","command":"FLAGOS_USE_FLAGGEMS=1 python -m pytest tests/integration/ops/ -m \"flaggems and main_ops\" -v -s --tb=short"},{"name":"Run general tests","command":"python -m pytest tests/integration/test_factory_ops.py -v -s --tb=short"},{"name":"Run AMP tests","command":"python -m pytest tests/integration/test_amp.py -v --tb=short"},{"name":"Profiler parity test","command":"python -m pytest tests/integration/test_profiler_parity.py -v -m main_ops --tb=short"}]
+        run: python .github/scripts/run_integration_tests.py

@@ -98,6 +98,9 @@ FLAGOS_EXPORT Error_t StreamCreateWithPriority(
     int priority);
 FLAGOS_EXPORT Error_t StreamCreate(Stream_t* stream);
 FLAGOS_EXPORT Error_t StreamGetPriority(Stream_t stream, int* priority);
+FLAGOS_EXPORT Stream_t GetDefaultStreamForDevice(int device);
+FLAGOS_EXPORT Stream_t GetCurrentStreamForDevice(int device);
+FLAGOS_EXPORT Error_t SetCurrentStreamForDevice(int device, Stream_t stream);
 FLAGOS_EXPORT Error_t StreamDestroy(Stream_t stream);
 FLAGOS_EXPORT Error_t StreamQuery(Stream_t stream);
 FLAGOS_EXPORT Error_t StreamSynchronize(Stream_t stream);

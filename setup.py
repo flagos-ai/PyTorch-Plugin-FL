@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import glob
 import multiprocessing
 import os
 import platform
@@ -413,25 +414,21 @@ def build_deps():
         )
     elif ACCELERATOR == "gcu":
         # Enflame GCU has no CUDA runtime: the tops runtime provides the device
-        # layer and libtopsaten the operators, so every CUDA/vendor kernel set
-        # stays off and GCU_KERNEL (topsaten) provides the compute ops. Ops
+        # layer and libtopsaten the operators, so CUDA/vendor kernel sets stay
+        # off and GCU_KERNEL (topsaten) provides the native compute ops. Ops
         # without a topsaten kernel fall back to CPU.
         #
-        # FLAGGEMS_PYTHON is off because the C++ dispatch path it builds
-        # (python_op_caller.cc + generated/flaggems_python_kernels.cc) routes
-        # per-op through backends_*.conf, and gcu has its own conf naming the
-        # topsaten kernels. FlagGems still reaches the GCU here -- just through
-        # the Python layer instead, where torch_fl calls flag_gems.enable()
-        # directly onto PrivateUse1 (see torch_fl/accelerator/gcu/_gcu_compat.py
-        # and _register_flaggems_operators). That needs Enflame's triton_gcu
-        # plugin plus the /opt/triton_gcu toolchain; when either is missing the
-        # registration is skipped and everything stays on topsaten, so this
-        # build works with or without them.
+        # Keep the FlagGems Python kernels in the same C++ dispatcher as the
+        # topsaten kernels. This mirrors the CUDA unified-RNG design: one
+        # PrivateUse1 wrapper owns an exact ATen overload, while the backend
+        # config chooses kGcu or kFlagOsPython at runtime. GCU initialization
+        # prepares triton_gcu but does not call flag_gems.enable(), so the
+        # Python layer cannot register a second PrivateUse1 implementation.
         cmake_args.extend(
             [
                 "-DCUDA_KERNEL=OFF",
                 "-DFLAGGEMS_KERNEL=OFF",
-                "-DFLAGGEMS_PYTHON=OFF",
+                "-DFLAGGEMS_PYTHON=ON",
                 "-DMETAX_KERNEL=OFF",
                 "-DASCEND_KERNEL=OFF",
                 "-DGCU_KERNEL=ON",
@@ -613,6 +610,21 @@ class BuildExtWithCmake(_build_ext):
 
     def run(self):
         build_deps()
+        # ``build`` runs build_py before build_ext, but CMake installs package
+        # data into torch_fl/ during build_ext. Setuptools caches build_py's file
+        # list, so copy late-generated files explicitly into wheel staging.
+        relative_paths = ["lib/flagos_platform", "include/flagos.h"]
+        for pattern in ("lib/*.so*", "lib/*.dylib*", "lib/*.dll", "lib/*.lib"):
+            relative_paths.extend(
+                os.path.relpath(path, os.path.join(BASE_DIR, "torch_fl"))
+                for path in glob.glob(os.path.join(BASE_DIR, "torch_fl", pattern))
+            )
+        for relative_path in relative_paths:
+            source = os.path.join(BASE_DIR, "torch_fl", relative_path)
+            if os.path.isfile(source):
+                destination = os.path.join(self.build_lib, "torch_fl", relative_path)
+                self.mkpath(os.path.dirname(destination))
+                self.copy_file(source, destination)
         super().run()
 
 
@@ -710,6 +722,7 @@ def _get_setup_kwargs():
             # only match *.so*.
             "lib_dcu/vendor_version.py",
             "lib_ppu/*.so*",
+            "include/*.h",
             # All backend configs, not just the default: runtime op-routing
             # configs selected via FLAGOS_USE_FLAGGEMS (backends_flaggems.conf)
             # and boxing modes via FLAGOS_BACKEND_CONFIG (backends_cuda.conf /

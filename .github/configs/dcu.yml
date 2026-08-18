@@ -17,10 +17,10 @@ display_name: Hygon DCU
 # Platform-specific preparation is implemented outside the common workflows.
 setup_script: .github/scripts/set_env_dcu.sh
 
-# Pinned CI image: the base flagos image plus python3.10-venv and patchelf
-# (set_env_dcu.sh needs both; the base image ships neither). Built locally on
-# a DCU host from Dockerfile.dcu-fix and pushed to harbor as manual-<date>-dcu.
-ci_image: harbor.baai.ac.cn/flagos-dev/pytorch-plugin-fl:manual-20260810-dcu-dev
+# Pinned CI image: DTK base plus the /opt/torch-fl-dcu-venv Python environment
+# used by set_env_dcu.sh. The script still falls back to creating a fresh venv
+# when the prebuilt one is absent, but the CI image should avoid network installs.
+ci_image: harbor.baai.ac.cn/flagos-dev/pytorch-plugin-fl:manual-20260816-dcu-ci
 
 runner_labels:
   - hg-8g-cicd-pytorch
@@ -93,6 +93,8 @@ integration_tests:
       -m "flaggems and main_ops" -v -s --tb=short
   - name: Run general tests
     command: python -m pytest tests/integration/test_factory_ops.py -v -s --tb=short
+  - name: Run AMP tests
+    command: python -m pytest tests/integration/test_amp.py -v --tb=short
   - name: Profiler parity test
     command: >-
       python -m pytest tests/integration/test_profiler_parity.py

@@ -128,8 +128,37 @@ record.
 ## Native Backend Route Changes
 
 The generic FlagGems survey above does not exercise vendor-native routes such as
-`ascend`. Native route changes are tracked here separately so they are not
-misrepresented as part of the 546-overload FlagGems cohort.
+`ascend` or `gcu`. Native route changes are tracked here separately so they are
+not misrepresented as part of the 546-overload FlagGems cohort.
+
+### Enflame GCU S60 RNG routes (2026-08-17)
+
+The GCU backend added native topsaten routes for the following RNG overloads:
+
+- `bernoulli`, `bernoulli_.float`
+- `exponential`, `exponential_`
+- `multinomial`
+- `poisson`
+- `randn`, `randn.generator`
+- `randn_like.generator`, `randn_like.generator_out`
+- `randint.generator`, `randint.low_generator`
+- `randperm.generator`
+- `random_`, `random_.to`
+
+Generator-less calls on these routes consume the same explicit topsaten
+`{seed, offset}` stream used by FlagGems; explicit generators remain isolated.
+Unsupported dtypes continue through the CPU fallback.
+
+Targeted validation ran on an Enflame S60 with the installed TopsRider SDK:
+
+- `tests/integration/ops/test_rng_dispatch.py`: `104 passed, 2 skipped, 1 xpassed`.
+- Mixed route probe with `randn -> flagos_python` and `exponential_ -> gcu`:
+  shared state advanced `(1234, 0) -> (1234, 8) -> (1234, 40)`; same-seed
+  replay, different-seed sensitivity, and mixed-state replay all passed.
+
+The standard `flaggems_overload_survey.py` harness is not applicable to these
+native routes because it selects only `flagos_python` overloads. This targeted
+RNG evidence does not revalidate the separate generic FlagGems support cohort.
 
 ### Ascend FSDP2 routes (2026-08-14)
 
@@ -138,6 +167,7 @@ The Ascend backend added or enabled the following FSDP2 paths:
 - `_chunk_cat`
 - `_chunk_cat.out`
 - `_foreach_copy_`
+- `cat.out`
 - `split.Tensor`
 - `split_with_sizes`
 - `split_with_sizes_copy.out`
@@ -179,5 +209,6 @@ The MUSA hybrid config adds seven non-overlapping FlagGems Python routes (`all`,
 | Date | Hardware | Cohort | Change | Evidence |
 |---|---|---|---|---|
 | 2026-08-17 | MTT S5000 (8 devices) | Native MUSA RNG and MThreads FlagGems hybrid | Added shared per-device RNG reservations, muRAND/mudnn native RNG, shared stream compatibility, and seven non-overlapping FlagGems routes. | Native RNG: 7 passed; MUSA dispatch: 89 passed; routing/bridge units: 24 passed; real hybrid FlagGems: 2 passed, including selected reductions, duplicate-index `index_add`, and FlagGems `randn` mixed with native RNG. Vendor FlagTree wheel required; generic Triton 3.7.1 is not evidence. |
-| 2026-08-14 | Ascend 910 (2 devices) | Native Ascend FSDP2 routes | Added `_chunk_cat`, `_chunk_cat.out`, `_foreach_copy_`, `split.Tensor`, `split_with_sizes`, and `split_with_sizes_copy.out`; generic FlagGems cohort not revalidated because it is unchanged. | Manual FlagCX collective, DDP, and FSDP2 tests on CANN 9.0; standard FlagGems harness is not applicable to native routes. |
+| 2026-08-17 | Enflame S60 | Native GCU RNG routes | Added 16 topsaten RNG routes; generic FlagGems cohort not revalidated. | Targeted mixed native/FlagGems probe verified shared seed/offset progression and replay; `tests/integration/ops/test_rng_dispatch.py`: `104 passed, 2 skipped, 1 xpassed`. |
+| 2026-08-14 | Ascend 910 (2 devices) | Native Ascend FSDP2 routes | Added `_chunk_cat`, `_chunk_cat.out`, `_foreach_copy_`, `cat.out`, `split.Tensor`, `split_with_sizes`, and `split_with_sizes_copy.out`; generic FlagGems cohort not revalidated because it is unchanged. | Manual FlagCX collective, DDP, and FSDP2 tests on CANN 9.0; standard FlagGems harness is not applicable to native routes. |
 | 2026-08-13 | A100, mc550, 810e, bw1000 | torch-fl `fe2272b5`, FlagGems `7fb49bad`, harness v4 | Established the verified 546-overload four-platform baseline. | Manual survey JSON; aggregate and raw counts recorded above. |

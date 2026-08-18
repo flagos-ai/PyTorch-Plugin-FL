@@ -174,7 +174,7 @@ if [[ ! -x "$VENV_PYTHON" ]]; then
   exit 1
 fi
 
-"$VENV_PYTHON" -m pip install --upgrade pip setuptools wheel cmake
+"$VENV_PYTHON" -m pip install --upgrade pip setuptools wheel cmake build
 "$VENV_PYTHON" -m pip install \
   --index-url "$CPU_TORCH_INDEX_URL" \
   "torch==$CPU_TORCH_VERSION"

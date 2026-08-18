@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import contextlib
+import os
 import time
 
 import torch
@@ -23,6 +24,15 @@ from . import meta  # noqa: F401
 
 
 _initialized = False
+
+
+def _platform() -> str:
+    marker = os.path.join(os.path.dirname(__file__), "..", "lib", "flagos_platform")
+    try:
+        with open(marker) as stream:
+            return stream.read().strip()
+    except OSError:
+        return ""
 
 
 class device:
@@ -283,9 +293,14 @@ class Stream(torch.cuda.Stream):
         # On Ascend with no CUDA, __new__ returns object.__new__(cls) and we need
         # a full native implementation. Import ACL late to avoid crashing on CUDA.
         if not hasattr(torch._C, "_cuda_getCurrentStream"):
-            from torch_fl.accelerator.ascend.acl_stream import AclStream
+            if _platform() == "gcu":
+                from torch_fl.accelerator.gcu.tops_stream import TopsStream
 
-            self._stream = AclStream(device, priority)
+                self._stream = TopsStream(device, priority)
+            else:
+                from torch_fl.accelerator.ascend.acl_stream import AclStream
+
+                self._stream = AclStream(device, priority)
             # Set device attribute for __repr__ compatibility with torch.cuda.Stream
             self.device = self._stream.device
         else:
@@ -294,7 +309,7 @@ class Stream(torch.cuda.Stream):
 
     def __repr__(self):
         if hasattr(self, "_stream"):
-            return f"<torch_fl.flagos.Stream device={self.device} acl_stream={self._stream.handle:#x}>"
+            return f"<torch_fl.flagos.Stream device={self.device} native_stream={self._stream.handle:#x}>"
         return super().__repr__()
 
     def wait_stream(self, other):
@@ -327,6 +342,12 @@ class Stream(torch.cuda.Stream):
         if hasattr(self, "_stream"):
             return self._stream.handle
         return super().cuda_stream
+
+    @property
+    def gcu_stream(self):
+        if hasattr(self, "_stream"):
+            return self._stream.handle
+        return self.cuda_stream
 
 
 class _DefaultStreamHandle:
@@ -388,6 +409,10 @@ def _real_current_stream(device=None):
     if hasattr(_C, "_get_musa_current_raw_stream"):
         return _DefaultStreamHandle(idx)
     if not hasattr(torch._C, "_cuda_getCurrentStream"):
+        if _platform() == "gcu":
+            from torch_fl.accelerator.gcu.tops_stream import current_tops_stream
+
+            return current_tops_stream(idx)
         from torch_fl.accelerator.ascend.acl_stream import current_acl_stream
 
         try:
@@ -451,13 +476,23 @@ class Event(torch.cuda.Event):
         if not hasattr(torch._C, "_cuda_getCurrentStream"):
             try:
                 obj = object.__new__(cls)
-                from torch_fl.accelerator.ascend.acl_stream import AclEvent
+                if _platform() == "gcu":
+                    from torch_fl.accelerator.gcu.tops_stream import TopsEvent
 
-                obj._event = AclEvent(
-                    enable_timing=enable_timing,
-                    blocking=blocking,
-                    external=external,
-                )
+                    obj._event = TopsEvent(
+                        enable_timing=enable_timing,
+                        blocking=blocking,
+                        interprocess=interprocess,
+                        external=external,
+                    )
+                else:
+                    from torch_fl.accelerator.ascend.acl_stream import AclEvent
+
+                    obj._event = AclEvent(
+                        enable_timing=enable_timing,
+                        blocking=blocking,
+                        external=external,
+                    )
                 return obj
             except RuntimeError:
                 return _HostTimedEvent(
@@ -535,12 +570,18 @@ def stream(s):
         yield
         return
 
-    # On Ascend with no CUDA, switch the thread-local ACL stream registry.
+    # On native runtimes with no CUDA, switch the thread-local stream registry.
     if not hasattr(torch._C, "_cuda_setStream"):
-        from torch_fl.accelerator.ascend.acl_stream import AclStream
-
         native = getattr(s, "_stream", s)
-        if isinstance(native, AclStream):
+        if _platform() == "gcu":
+            from torch_fl.accelerator.gcu.tops_stream import TopsStream
+
+            native_type = TopsStream
+        else:
+            from torch_fl.accelerator.ascend.acl_stream import AclStream
+
+            native_type = AclStream
+        if isinstance(native, native_type):
             previous = _real_current_stream(native.device_index)
             native.set_current()
             try:

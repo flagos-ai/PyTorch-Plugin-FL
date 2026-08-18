@@ -131,14 +131,12 @@ _VENDOR_PROFILES = {
     # memory here is plain aclrtMalloc device memory) -- measured working for
     # allreduce/broadcast/all_gather/reduce_scatter/barrier on 2x910.
     "ascend": _VendorProfile("cann", None, "_try_build_hccl", flagcx_native=True),
-    # Enflame GCU: FlagCX registers for device "gcu" (USE_ENFLAME_ADAPTOR in
-    # FlagCX backend_flagcx.hpp), and its torch plugin imports torch_gcu and
-    # lists "gcu" in replace_prefix's device_list -- i.e. it addresses the GCU
-    # tensor directly, so direct=True (no view, and none missing). There is no
-    # native fallback: ECCL is reached only through FlagCX, with no separate
+    # Enflame GCU: the torch-fl-compatible FlagCX build registers for device
+    # "flagos" and consumes privateuseone tensors directly. There is no native
+    # fallback: ECCL is reached only through FlagCX, with no separate
     # ProcessGroup. Needs the device guard below (GCU streams/pointers are
     # device-scoped).
-    "enflame": _VendorProfile("gcu", None, None, direct=True),
+    "enflame": _VendorProfile("flagos", None, None, direct=True),
     # MUSA: FlagCX preferred (identity view lets FlagCX's MUSA adaptor receive
     # privateuseone tensors directly), with MCCL native fallback.
     "musa": _VendorProfile("musa", "_flagos_identity_view", "_try_build_mccl"),
@@ -161,6 +159,14 @@ def _get_profile(vendor: str) -> "_VendorProfile":
         )
         prof = _VENDOR_PROFILES[_DEFAULT_VENDOR]
     return prof
+
+
+def _configure_flagcx_torch_backend(vendor: str) -> None:
+    """Select torch-fl's FlagCX integration before importing the plugin."""
+    if vendor == "enflame":
+        # The torch-fl-compatible FlagCX build uses its C ABI and does not
+        # import or link torch_gcu. Preserve an explicit user selection.
+        os.environ.setdefault("FLAGCX_TORCH_BACKEND", "flagos")
 
 
 # ---------------------------------------------------------------------------
@@ -211,7 +217,9 @@ def _gcu_device_guard(func):
         if vendor != "enflame":
             return func(self, *args, **kwargs)
 
-        # Extract device index from first tensor argument
+        # Extract device index from the first tensor argument. Tensor-less
+        # operations such as barrier reuse the device established by an earlier
+        # tensor collective, then fall back to BarrierOptions.device_ids/device.
         device_id = None
         for arg in args:
             if isinstance(arg, torch.Tensor):
@@ -226,17 +234,34 @@ def _gcu_device_guard(func):
                     device_id = arg[0][0].device.index
                     break
 
-        if device_id is not None:
+        if device_id is None:
+            device_id = getattr(self, "_gcu_device_id", None)
+        if device_id is None:
+            for arg in args:
+                option_device = getattr(arg, "device", None)
+                option_index = getattr(option_device, "index", None)
+                if option_index is not None:
+                    device_id = option_index
+                    break
+                option_devices = getattr(arg, "device_ids", None)
+                if option_devices:
+                    device_id = int(option_devices[0])
+                    break
+        if device_id is None:
             import torch_fl._C as _C
 
-            prev = _C._gcu_getDevice()
-            _C._gcu_setDevice(device_id)
-            try:
-                return func(self, *args, **kwargs)
-            finally:
-                _C._gcu_setDevice(prev)
+            device_id = _C._get_device()
         else:
+            self._gcu_device_id = device_id
+
+        import torch_fl._C as _C
+
+        prev = _C._get_device()
+        _C._set_device(device_id)
+        try:
             return func(self, *args, **kwargs)
+        finally:
+            _C._set_device(prev)
 
     return wrapper
 
@@ -466,6 +491,9 @@ class ProcessGroupFlagOS(dist.ProcessGroup):
         We try extended first and fall back to plain, otherwise those adaptors
         raise "incompatible function arguments" and silently degrade to NCCL.
         """
+        vendor = os.environ.get("GEMS_VENDOR", _DEFAULT_VENDOR)
+        _configure_flagcx_torch_backend(vendor)
+
         try:
             import flagcx  # noqa: F401 — self-registers "flagcx" backend
         except ImportError:

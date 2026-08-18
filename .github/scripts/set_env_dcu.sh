@@ -177,13 +177,19 @@ echo "CPU torch target: $CPU_TORCH_VERSION+cpu"
 # Isolated venv with the matching CPU-only torch wheel. Unlike CUDA, DCU does
 # not stage libtorch_cuda.so into .libtorch_cuda_assets; the DTK forked libtorch
 # .so are bundled into torch_fl/lib_dcu by bundle_dcu_libtorch.sh below.
-VENV_ROOT="${TORCH_FL_VENV_ROOT:-${RUNNER_TEMP:-$REPO_ROOT/.ci}/torch-fl-dcu-${CI_STAGE}}"
-if ! "$VENDOR_PYTHON" -m venv --clear "$VENV_ROOT"; then
-  echo "::warning::Vendor Python cannot create a venv; trying uv"
-  if ! command -v uv >/dev/null 2>&1; then
-    "$VENDOR_PYTHON" -m pip install --upgrade uv
+PREBUILT_VENV="${TORCH_FL_PREBUILT_DCU_VENV:-/opt/torch-fl-dcu-venv}"
+if [[ -z "${TORCH_FL_VENV_ROOT:-}" && -x "$PREBUILT_VENV/bin/python" ]]; then
+  VENV_ROOT="$PREBUILT_VENV"
+  echo "Using prebuilt DCU venv: $VENV_ROOT"
+else
+  VENV_ROOT="${TORCH_FL_VENV_ROOT:-${RUNNER_TEMP:-$REPO_ROOT/.ci}/torch-fl-dcu-${CI_STAGE}}"
+  if ! "$VENDOR_PYTHON" -m venv --clear "$VENV_ROOT"; then
+    echo "::warning::Vendor Python cannot create a venv; trying uv"
+    if ! command -v uv >/dev/null 2>&1; then
+      "$VENDOR_PYTHON" -m pip install --upgrade uv
+    fi
+    uv venv --clear --seed --python "$VENDOR_PYTHON" "$VENV_ROOT"
   fi
-  uv venv --clear --seed --python "$VENDOR_PYTHON" "$VENV_ROOT"
 fi
 VENV_PYTHON="$VENV_ROOT/bin/python"
 if [[ ! -x "$VENV_PYTHON" ]]; then
@@ -191,18 +197,20 @@ if [[ ! -x "$VENV_PYTHON" ]]; then
   exit 1
 fi
 
-# patchelf is required by setup.py (rewrites _C.so RPATH to $ORIGIN/lib and
-# $ORIGIN/lib_dcu after copy) and by bundle_dcu_libtorch.sh (sets RPATH on the
-# bundled DTK .so). The pinned CI image ships it at /usr/bin/patchelf; the pip
-# install here is a redundant fallback in case the image lacks it.
-"$VENV_PYTHON" -m pip install --upgrade pip setuptools wheel cmake patchelf
-"$VENV_PYTHON" -m pip install \
-  --index-url "$CPU_TORCH_INDEX_URL" \
-  "torch==$CPU_TORCH_VERSION"
-if [[ "$CI_STAGE" == "integration" ]]; then
-  # Pin numpy<2: the CPU torch wheel is built against the NumPy 1.x ABI, and
-  # transformers pulls numpy 2.x which breaks torch's C extensions at import.
-  "$VENV_PYTHON" -m pip install pytest transformers "numpy<2"
+if [[ "$VENV_ROOT" != "$PREBUILT_VENV" ]]; then
+  # patchelf is required by setup.py (rewrites _C.so RPATH to $ORIGIN/lib and
+  # $ORIGIN/lib_dcu after copy) and by bundle_dcu_libtorch.sh (sets RPATH on the
+  # bundled DTK .so). The pinned CI image ships it at /usr/bin/patchelf; the pip
+  # install here is a redundant fallback in case the image lacks it.
+  "$VENV_PYTHON" -m pip install --upgrade pip setuptools wheel cmake build patchelf
+  "$VENV_PYTHON" -m pip install \
+    --index-url "$CPU_TORCH_INDEX_URL" \
+    "torch==$CPU_TORCH_VERSION"
+  if [[ "$CI_STAGE" == "integration" ]]; then
+    # Pin numpy<2: the CPU torch wheel is built against the NumPy 1.x ABI, and
+    # transformers pulls numpy 2.x which breaks torch's C extensions at import.
+    "$VENV_PYTHON" -m pip install pytest transformers "numpy<2"
+  fi
 fi
 
 # Carry the vendor FlagGems/FlagCX Python packages into the venv so the DTK

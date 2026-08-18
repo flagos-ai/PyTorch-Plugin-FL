@@ -292,7 +292,7 @@ inline at::Scalar DtypeHighest(at::ScalarType type) {
     at::native::flagos::gcu::EnsureTopsatenInit();                            \
     at::native::flagos::gcu::TopsDeviceGuard _tops_guard((guard_tensor));     \
     topsStream_t _tops_stream =                                               \
-        at::native::flagos::gcu::GetDefaultTopsStream();                      \
+        at::native::flagos::gcu::GetCurrentTopsStream();                      \
     topsatenStatus_t _tops_status = topsaten::op(__VA_ARGS__, _tops_stream);   \
     TORCH_CHECK(                                                              \
         _tops_status == TOPSATEN_STATUS_SUCCESS,                              \

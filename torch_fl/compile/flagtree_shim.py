@@ -13,74 +13,71 @@
 # limitations under the License.
 
 """
-FlagTree integration for torch.compile (Phase 2).
+FlagTree detection for torch.compile.
 
-Patches inductor's Triton imports to use FlagTree instead of OpenAI Triton,
-enabling multi-backend kernel compilation (NVIDIA/Ascend/Cambricon/MetaX).
+FlagTree is a Triton fork that substitutes itself for Triton *at install time*:
+its wheel is named ``flagtree``, but the module it installs is ``triton``, and
+installing it uninstalls the official ``triton``. So inductor's own
+``import triton`` already resolves to FlagTree once it is installed, and nothing
+here needs to patch ``sys.modules`` -- there is no ``flagtree`` module to import.
 
-Activated via FLAGOS_USE_FLAGTREE=1 environment variable.
+This module therefore only *reports* which Triton is active, so that
+FLAGOS_USE_FLAGTREE=1 can assert FlagTree is really in use instead of silently
+compiling with stock Triton.
 """
 
-import sys
+import importlib.util
+from typing import Optional
 
 
-_original_triton = None
-_patched = False
+# FlagTree-only module. Present regardless of which vendor backend was built,
+# unlike triton._flagtree_backend.FLAGTREE_BACKEND, which is the empty string on
+# nvidia/amd because upstream tells you not to set FLAGTREE_BACKEND for those.
+_FLAGTREE_MARKER = "triton._flagtree_spec"
 
 
-def patch_inductor_triton():
-    """
-    Replace inductor's triton imports with flagtree.
-
-    FlagTree is API-compatible with OpenAI Triton (it's a fork), so this is
-    a drop-in replacement. Inductor generates Triton kernel code; we just
-    swap which compiler JITs it.
-
-    This must be called before inductor imports triton (i.e., before the
-    first torch.compile call that uses inductor).
-    """
-    global _patched, _original_triton
-
-    if _patched:
-        return
-
+def is_flagtree_active() -> bool:
+    """Whether the importable ``triton`` is FlagTree rather than stock Triton."""
     try:
-        import flagtree as triton
+        return importlib.util.find_spec(_FLAGTREE_MARKER) is not None
+    except (ImportError, ValueError):
+        # No triton at all, or a triton too broken to introspect.
+        return False
+
+
+def flagtree_backend() -> Optional[str]:
+    """The vendor backend FlagTree was built for, if it recorded one.
+
+    Empty on nvidia/amd (upstream builds those without FLAGTREE_BACKEND set), so
+    an empty result means "FlagTree, vendor unrecorded", not "not FlagTree".
+    Returns None when FlagTree is not active.
+    """
+    if not is_flagtree_active():
+        return None
+    try:
+        from triton._flagtree_backend import FLAGTREE_BACKEND
+
+        return FLAGTREE_BACKEND
     except ImportError:
-        raise ImportError(
-            "FLAGOS_USE_FLAGTREE=1 but 'flagtree' package not installed. "
-            "Install with: pip install flagtree"
-        )
-
-    # Save original triton if already imported
-    if "triton" in sys.modules:
-        _original_triton = sys.modules["triton"]
-
-    # Replace triton in sys.modules with flagtree
-    sys.modules["triton"] = triton
-
-    # Also replace triton.language (inductor imports this)
-    if hasattr(triton, "language"):
-        sys.modules["triton.language"] = triton.language
-
-    _patched = True
+        return ""
 
 
-def unpatch_inductor_triton():
+def require_flagtree() -> None:
+    """Fail unless the active Triton is FlagTree.
+
+    Called for FLAGOS_USE_FLAGTREE=1. FlagTree cannot be enabled from here -- it
+    is chosen when the environment is built -- so the only useful thing this can
+    do is refuse to pretend.
     """
-    Restore original OpenAI Triton (for testing/cleanup).
-    """
-    global _patched, _original_triton
-
-    if not _patched:
+    if is_flagtree_active():
         return
 
-    if _original_triton is not None:
-        sys.modules["triton"] = _original_triton
-        if hasattr(_original_triton, "language"):
-            sys.modules["triton.language"] = _original_triton.language
-    else:
-        sys.modules.pop("triton", None)
-        sys.modules.pop("triton.language", None)
-
-    _patched = False
+    raise RuntimeError(
+        "FLAGOS_USE_FLAGTREE=1 but the active 'triton' module is stock Triton, "
+        "not FlagTree. FlagTree replaces triton at install time; it is not "
+        "something this process can switch on. Build it from source "
+        "(https://github.com/flagos-ai/FlagTree) -- there is no 'flagtree' "
+        "package on PyPI, and 'import flagtree' never works because the module "
+        "it installs is named 'triton'. Unset FLAGOS_USE_FLAGTREE to compile "
+        "with stock Triton instead."
+    )

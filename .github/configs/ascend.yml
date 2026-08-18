@@ -21,7 +21,7 @@ setup_script: .github/scripts/set_env_ascend.sh
 # set_env_ascend.sh is self-contained: it installs standard CPU torch + build
 # deps into a fresh venv, so the image only needs python3.12 + CANN + a compiler
 # -- no vendor torch is baked in (torch_npu is explicitly forbidden).
-ci_image: harbor.baai.ac.cn/flagos-dev/pytorch-plugin-fl:manual-20260807-ascend-dev
+ci_image: harbor.baai.ac.cn/flagos-dev/pytorch-plugin-fl:manual-20260816-ascend-ci
 
 # Self-hosted Huawei (Ascend) runner registered by the teacher. The job is
 # dispatched only to a runner carrying this label.
@@ -39,6 +39,14 @@ container_options: >-
   --ulimit memlock=-1
   --cap-add=SYS_PTRACE
   --device=/dev/davinci_manager
+  --device=/dev/davinci0
+  --device=/dev/davinci1
+  --device=/dev/davinci2
+  --device=/dev/davinci3
+  --device=/dev/davinci4
+  --device=/dev/davinci5
+  --device=/dev/davinci6
+  --device=/dev/davinci7
   --device=/dev/devmm_svm
   --device=/dev/hisi_hdc
   -v /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro
@@ -67,9 +75,11 @@ integration_tests:
       # Ascend has no CUDA assets; the CUDA dispatcher library must NOT ship.
       assert not (package_lib / "libtorch_cuda.so").is_file(), package_lib
       assert torch_fl.flagos.is_available(), "flagos device is unavailable"
+      n = torch_fl.flagos.device_count()
+      assert n >= 8, f"expected at least 8 Ascend logical devices, got {n}"
       print(f"CPU PyTorch: {torch.__version__}")
       print(f"torch path: {torch_path}")
-      print(f"flagos devices: {torch_fl.flagos.device_count()}")
+      print(f"flagos logical devices: {n}")
       PY
 
   # Exercise the tests authored for the pure ACLNN backend (marked `ascend`),
