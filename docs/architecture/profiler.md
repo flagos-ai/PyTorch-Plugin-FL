@@ -1,9 +1,14 @@
 # torch_fl profiler architecture: parity with torch-cuda
 
 > Completed: 2026-08-04
-> Measured on: A100-SXM4-40GB; torch 2.11.0+cpu + external libtorch_cuda.so (cu128)
+> NVIDIA measurement: A100-SXM4-40GB; torch 2.11.0+cpu + external libtorch_cuda.so (cu128)
+> MetaX measurement: C550; torch 2.10.0 MetaX wheel + MACA 3.8.0 MCPTI, boxing mode
 > Reference baseline: torch 2.10.0+cu128, see `tests/data/profiler_cuda_baseline.json`
 > Tests: `tests/integration/test_profiler_parity.py`, 7 structural assertions
+
+The MetaX measurement passed all seven parity assertions. It is a local hardware
+validation rather than a CI result; the compatibility matrix therefore records MetaX
+profiler support as experimental until a vendor runner is available.
 
 The Chrome trace that `torch.profiler.profile(activities=[CPU, PrivateUse1])` produces for
 flagos devices is **structurally** equivalent to torch+cuda's:
@@ -29,11 +34,13 @@ The entire Task 2–4 refactor had one goal: **adding a vendor should mean writi
 ```
 csrc/profiler/
   device_tracer.h              ← vendor-agnostic interface (DeviceTracer / DeviceEvent / EventKind)
-  cupti_device_tracer.cc       ← NVIDIA implementation; all CUPTI types live only here
+  cupti_device_tracer.cc       ← CUPTI/MCPTI implementation; vendor activity types live here
   cann_device_tracer.cc        ← Ascend implementation using public MSPTI activities
   musa_mupti_device_tracer.cc  ← MUSA implementation using MUPTI activities
+  roctracer_device_tracer.cc   ← ROCtracer implementation for DCU
+  unavailable_device_tracer.cc ← explicit no-device-activity fallback
   flagos_kineto_profiler.{h,cc}← generic kineto adaptor; zero vendor coupling
-  cupti_shim.h                 ← symbol binding for dlopen'd system libcupti (NVIDIA-only)
+  cupti_shim.h                 ← dlopen binding for CUPTI-compatible activity libraries
   mupti_shim.h                 ← optional runtime binding for MUSA libmupti
 ```
 
@@ -77,8 +84,8 @@ time to the wrong operator.
 
 ### 1.2 NVIDIA implementation — `cupti_device_tracer.cc`
 
-Every CUPTI type, the cbid table, and the activity-record layout mirrors appear only in this
-file:
+Every CUPTI/MCPTI type, callback-ID table, and activity-record layout mirror appears only in
+this file:
 
 - `CuptiTracerInit` (file-level static) — arms CUPTI at module load; see §3.1
 - `bufferRequested` / `bufferCompleted` — CUPTI activity buffer callbacks
@@ -115,15 +122,11 @@ type. It does exactly two things — translate `DeviceEvent` into
 
 1. Write `csrc/profiler/{vendor}_device_tracer.cc`, implement `DeviceTracer`, and define
    `MakeDeviceTracer()` in it.
-2. Make CMake compile only your tracer for that `ACCELERATOR`. **Note the current state**:
-   `csrc/CMakeLists.txt` uses `GLOB_RECURSE` over all of `csrc/`, so today the mere presence
-   of two `*_device_tracer.cc` files would produce two conflicting `MakeDeviceTracer()`
-   definitions at link time. **The second vendor to land therefore also needs to do the
-   per-vendor source selection** (either list sources explicitly under
-   `if(ACCELERATOR STREQUAL ...)`, or add `#ifdef` guards inside each tracer). This is the
-   one part of the vendor split that is designed but not yet exercised, recorded here
-   honestly.
-3. Done. The kineto adaptor needs no changes.
+2. Add the tracer to the per-accelerator source selection in `csrc/CMakeLists.txt`. The
+   build uses `GLOB_RECURSE`, so exactly one tracer factory must be compiled for every
+   accelerator: CUPTI/MCPTI for CUDA, MetaX, and PPU; ROCtracer for DCU; and the
+   unavailable tracer for platforms without a supported activity API.
+3. Done. The kineto adaptor needs no vendor-specific changes.
 
 ---
 
@@ -345,7 +348,27 @@ measure the cost of profiling itself rather than the user's workload, so their a
 not affect any measurement of that workload. Recorded together with the reason under
 `categories_known_gap` in the baseline JSON, rather than quietly omitted.
 
-### 6.2 The flow-pairing assertion is stricter than torch-cuda itself
+### 6.2 MetaX MCPTI compatibility
+
+The MetaX implementation uses the CUDA-compatible MCPTI activity API exposed by
+MACA 3.8.0. MCPTI's runtime callback IDs are not NVIDIA CUPTI IDs, so the tracer
+uses the MetaX callback namespace and defers `mcptiActivityGetApiName` calls until
+after activity flushing. Calling that resolver from the MCPTI buffer callback can
+deadlock the profiler.
+
+MCPTI 3.8.0 can also return a stale iterator pointer after external-correlation
+records. The MetaX path therefore scans the aligned vendor records independently,
+advancing by the complete MCPTI record sizes and resynchronizing on malformed
+candidates. Records with `start == end == 0` are skipped because MCPTI documents
+that pair as the "timing unavailable" sentinel.
+
+The validated workload passed all seven parity assertions on a C550 with the
+MetaX 3.8.0 SDK. The test covered kernel, memcpy, memset, and runtime records,
+flow pairing, external-correlation device-time attribution, kernel metadata,
+callback-ID names, and capture-window filtering. The scanner has not yet been
+validated across multiple MetaX SDK versions, devices, or non-default streams.
+
+### 6.3 The flow-pairing assertion is stricter than torch-cuda itself
 
 Parity assertion 2 requires **every** flow arrow to be paired. **torch-cuda does not satisfy
 that** — same workload, 3 consecutive runs, fully reproducible:

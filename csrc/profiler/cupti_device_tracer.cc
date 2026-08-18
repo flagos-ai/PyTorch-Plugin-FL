@@ -24,7 +24,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <cinttypes>
 #include <climits>
 #include <cmath>
 #include <cstdint>
@@ -179,6 +178,14 @@ struct CUpti_ActivityExternalCorrelation_Compat {
 };
 #pragma pack(pop)
 
+// MetaX's versioned records are aligned to 8 bytes and include fields after the
+// prefixes above. The parser only reads the common prefix, but the scanner must
+// advance by the complete vendor record size or it will land in the middle of
+// the next record.
+constexpr size_t kMcptiKernel8RecordSize = 200;
+constexpr size_t kMcptiMemcpy5RecordSize = 88;
+constexpr size_t kMcptiMemset4RecordSize = 88;
+
 namespace c10 {
 namespace flagos {
 namespace profiler {
@@ -240,11 +247,36 @@ void reportLayoutMismatch(const char* what) {
 }
 
 // True when a decoded (start, end) pair is self-consistent.
+//
+// NVIDIA CUPTI timestamps are boot-relative and normally start > 0. MetaX MCPTI
+// timestamps are vendor-domain (hardware counter) and can legitimately be small
+// values. Requiring start > 0 would reject all MCPTI records as layout mismatches.
+// The core layout check is end >= start and reasonable duration; those properties
+// hold in any timestamp domain.
 bool timestampsPlausible(uint64_t start, uint64_t end) {
-  if (start == 0 || end < start) {
+  if (end < start) {
     return false;
   }
   return (end - start) <= kMaxPlausibleDurationNs;
+}
+
+// True when a record actually carries timing, as opposed to declaring that it
+// has none.
+//
+// Both CUPTI and MCPTI document `start == end == 0` as "timestamp information
+// could not be collected for this activity" -- it is a sentinel, not a
+// zero-length event at the origin of the clock. Such a record must be dropped
+// before timestamp conversion rather than reported as a layout mismatch: the
+// layout is fine, the vendor simply had nothing to put in those fields.
+//
+// Passing the sentinel through is not harmless. toRealtime() maps the vendor
+// clock onto CLOCK_REALTIME by interpolating from a session start sample, so a
+// 0 input becomes a large negative offset from the session start and lands
+// nowhere near the capture window. Observed on MetaX as kernels timestamped
+// 350743133379 against a window of ~1787048584694419530, which silently dropped
+// every device event from the trace.
+bool timestampsCollected(uint64_t start, uint64_t end) {
+  return !(start == 0 && end == 0);
 }
 
 // CUPTI's documented "this timestamp was never captured" sentinel.
@@ -328,8 +360,13 @@ struct DeviceOccupancyProps {
 // does not create a context.
 int queryDeviceAttribute(int attr, int device, bool* ok) {
   using GetAttrFn = int (*)(int*, int, int);
+#if defined(FLAGOS_METAX_MCPTI)
+  static const GetAttrFn fn = reinterpret_cast<GetAttrFn>(
+      dlsym(RTLD_DEFAULT, "wcudaDeviceGetAttribute"));
+#else
   static const GetAttrFn fn = reinterpret_cast<GetAttrFn>(
       dlsym(RTLD_DEFAULT, "cudaDeviceGetAttribute"));
+#endif
   int value = 0;
   if (fn == nullptr || fn(&value, attr, device) != 0) {
     *ok = false;
@@ -698,7 +735,6 @@ class CuptiDeviceTracer : public DeviceTracer {
     std::lock_guard<std::mutex> lock(g_tracer_mutex);
     g_active_tracer = nullptr;
 
-    FLAGOS_CUPTI_LOG("[flagos] Captured " << events_.size() << " GPU activities\n");
   }
 
   // Resolution of external correlations happens HERE, not at parse time: CUPTI
@@ -710,12 +746,32 @@ class CuptiDeviceTracer : public DeviceTracer {
   // stop()'s blocking flush, so by then every record has been seen.
   std::vector<DeviceEvent> drain() override {
     std::lock_guard<std::mutex> lock(g_tracer_mutex);
+#if defined(FLAGOS_METAX_MCPTI)
+    auto& shim = CuptiShim::get();
+#endif
     for (auto& ev : events_) {
       ev.start_ns = toRealtime(ev.start_ns);
       ev.end_ns = toRealtime(ev.end_ns);
       ev.external_correlation_id = lookupExternalCorrelation(ev.correlation_id);
+#if defined(FLAGOS_METAX_MCPTI)
+      // mcptiActivityGetApiName is not reentrant from bufferCompleted, so resolve
+      // runtime names only after stop() has flushed and disabled all activities.
+      if (ev.kind == EventKind::Runtime && shim.ActivityGetApiName) {
+        auto cbid = ev.metadata.find("cbid");
+        if (cbid != ev.metadata.end()) {
+          const char* api_name = nullptr;
+          const auto value = static_cast<uint32_t>(std::stoul(cbid->second));
+          if (shim.ActivityGetApiName(
+                  CUPTI_ACTIVITY_KIND_RUNTIME, value, &api_name) == CUPTI_SUCCESS &&
+              api_name != nullptr && api_name[0] != '\0') {
+            ev.name = api_name;
+          }
+        }
+      }
+#endif
     }
-    return std::move(events_);
+    auto result = std::move(events_);
+    return result;
   }
 
   void pushCorrelation(uint64_t id) override {
@@ -758,11 +814,93 @@ class CuptiDeviceTracer : public DeviceTracer {
     auto& shim = CuptiShim::get();
 
     CUpti_Activity* record = nullptr;
-    while (true) {
-      CUptiResult status = shim.ActivityGetNextRecord(buffer, validSize, &record);
-      if (status != CUPTI_SUCCESS || !record) {
+    CUpti_Activity* prev_record = nullptr;
+    size_t record_count = 0;
+    constexpr size_t kMaxRecordsPerBuffer = 100000;
+#if defined(FLAGOS_METAX_MCPTI)
+    size_t scan_offset = 0;
+#endif
+    while (record_count < kMaxRecordsPerBuffer) {
+      CUptiResult status = CUPTI_SUCCESS;
+#if defined(FLAGOS_METAX_MCPTI)
+      record = nullptr;
+      // MCPTI 3.8 returns a stale pointer after some external-correlation
+      // records, so its iterator can stop in the middle of a valid buffer. Walk
+      // the documented 8-byte-aligned record layouts ourselves and resync on
+      // the next plausible activity header when a vendor record is malformed.
+      size_t record_size = 0;
+      while (scan_offset + sizeof(uint32_t) <= validSize) {
+        auto* candidate = buffer + scan_offset;
+        const auto kind = *reinterpret_cast<const uint32_t*>(candidate);
+        if (kind == CUPTI_ACTIVITY_KIND_EXTERNAL_CORRELATION &&
+            scan_offset + sizeof(CUpti_ActivityExternalCorrelation_Compat) <=
+                validSize) {
+          auto* ext = reinterpret_cast<
+              CUpti_ActivityExternalCorrelation_Compat*>(candidate);
+          if (ext->externalKind >= 1 && ext->externalKind <= 5 &&
+              ext->correlationId != 0) {
+            record_size = sizeof(CUpti_ActivityExternalCorrelation_Compat);
+          }
+        } else if (kind == CUPTI_ACTIVITY_KIND_RUNTIME &&
+                   scan_offset + sizeof(CUpti_ActivityAPI_Compat) <= validSize) {
+          auto* rt = reinterpret_cast<CUpti_ActivityAPI_Compat*>(candidate);
+          if (rt->cbid < 1000 && rt->correlationId != 0 &&
+              timestampsCollected(rt->start, rt->end) &&
+              timestampsPlausible(rt->start, rt->end)) {
+            record_size = sizeof(CUpti_ActivityAPI_Compat);
+          }
+        } else if ((kind == CUPTI_ACTIVITY_KIND_KERNEL ||
+                    kind == CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL) &&
+                   scan_offset + kMcptiKernel8RecordSize <= validSize) {
+          auto* kernel = reinterpret_cast<CUpti_ActivityKernel9_Compat*>(candidate);
+          const bool geometry_plausible =
+              kernel->gridX > 0 && kernel->gridX < (1 << 20) &&
+              kernel->gridY > 0 && kernel->gridY < (1 << 20) &&
+              kernel->gridZ > 0 && kernel->gridZ < (1 << 20) &&
+              kernel->blockX > 0 && kernel->blockX < (1 << 20) &&
+              kernel->blockY > 0 && kernel->blockY < (1 << 20) &&
+              kernel->blockZ > 0 && kernel->blockZ < (1 << 20) &&
+              kernel->correlationId != 0;
+          if (geometry_plausible &&
+              ((kernel->start == 0 && kernel->end == 0) ||
+               (timestampsCollected(kernel->start, kernel->end) &&
+                timestampsPlausible(kernel->start, kernel->end)))) {
+            record_size = kMcptiKernel8RecordSize;
+          }
+        } else if ((kind == CUPTI_ACTIVITY_KIND_MEMCPY ||
+                    kind == CUPTI_ACTIVITY_KIND_MEMSET) &&
+                   scan_offset + kMcptiMemcpy5RecordSize <= validSize) {
+          auto* copy = reinterpret_cast<CUpti_ActivityMemcpy_Compat*>(candidate);
+          if (copy->bytes != 0 && copy->correlationId != 0 &&
+              timestampsCollected(copy->start, copy->end) &&
+              timestampsPlausible(copy->start, copy->end)) {
+            record_size = (kind == CUPTI_ACTIVITY_KIND_MEMCPY)
+                ? kMcptiMemcpy5RecordSize
+                : kMcptiMemset4RecordSize;
+          }
+        }
+        if (record_size != 0) {
+          record = reinterpret_cast<CUpti_Activity*>(candidate);
+          scan_offset += record_size;
+          break;
+        }
+        scan_offset += 8;
+      }
+      if (record == nullptr || scan_offset > validSize) {
         break;
       }
+#else
+      status = shim.ActivityGetNextRecord(buffer, validSize, &record);
+      // NVIDIA CUPTI: iteration ends when status != SUCCESS or record == null.
+      if (status != CUPTI_SUCCESS || !record || record == prev_record) {
+        break;
+      }
+#endif
+      if (status != CUPTI_SUCCESS || !record || record == prev_record) {
+        break;
+      }
+      prev_record = record;
+      ++record_count;
 
       if (record->kind == CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL ||
           record->kind == CUPTI_ACTIVITY_KIND_KERNEL) {
@@ -771,6 +909,12 @@ class CuptiDeviceTracer : public DeviceTracer {
         // Validate before trusting the mirrored layout (see the self-check notes
         // above). Emitting a record that failed these checks would put garbage
         // timestamps into the trace, which is worse than omitting it.
+        if (!timestampsCollected(kernel->start, kernel->end)) {
+          // Vendor reported "no timing available" for this kernel; not a layout
+          // problem, so drop it quietly rather than burning the mismatch flag.
+          FLAGOS_CUPTI_LOG("[flagos] skipping kernel record with no timing\n");
+          continue;
+        }
         if (!timestampsPlausible(kernel->start, kernel->end)) {
           reportLayoutMismatch("kernel timestamps implausible");
           continue;
@@ -848,6 +992,10 @@ class CuptiDeviceTracer : public DeviceTracer {
       } else if (record->kind == CUPTI_ACTIVITY_KIND_MEMCPY) {
         auto* memcpy_rec = reinterpret_cast<CUpti_ActivityMemcpy_Compat*>(record);
 
+        if (!timestampsCollected(memcpy_rec->start, memcpy_rec->end)) {
+          FLAGOS_CUPTI_LOG("[flagos] skipping memcpy record with no timing\n");
+          continue;
+        }
         if (!timestampsPlausible(memcpy_rec->start, memcpy_rec->end)) {
           reportLayoutMismatch("memcpy timestamps implausible");
           continue;
@@ -878,6 +1026,10 @@ class CuptiDeviceTracer : public DeviceTracer {
       } else if (record->kind == CUPTI_ACTIVITY_KIND_MEMSET) {
         auto* memset_rec = reinterpret_cast<CUpti_ActivityMemset_Compat*>(record);
 
+        if (!timestampsCollected(memset_rec->start, memset_rec->end)) {
+          FLAGOS_CUPTI_LOG("[flagos] skipping memset record with no timing\n");
+          continue;
+        }
         if (!timestampsPlausible(memset_rec->start, memset_rec->end)) {
           reportLayoutMismatch("memset timestamps implausible");
           continue;
@@ -910,6 +1062,10 @@ class CuptiDeviceTracer : public DeviceTracer {
         // lets kineto link a CPU op to the device kernel it launched.
         auto* rt = reinterpret_cast<CUpti_ActivityAPI_Compat*>(record);
 
+        if (!timestampsCollected(rt->start, rt->end)) {
+          FLAGOS_CUPTI_LOG("[flagos] skipping runtime record with no timing\n");
+          continue;
+        }
         if (!timestampsPlausible(rt->start, rt->end)) {
           reportLayoutMismatch("runtime timestamps implausible");
           continue;
@@ -925,7 +1081,16 @@ class CuptiDeviceTracer : public DeviceTracer {
         // earlier revision did) mislabels every non-launch entry point -- most
         // visibly a 21ms blocking cudaStreamSynchronize showing up as a launch,
         // which reads as a pathological kernel-launch cost rather than a sync.
+        //
+        // MetaX upgrades this name in drain() using MCPTI's own resolver; the
+        // static table below is the value that survives if that call is
+        // unavailable. Resolving here would mean calling back into the profiler
+        // library from inside its own bufferCompleted callback, which deadlocks.
+#if defined(FLAGOS_METAX_MCPTI)
+        ev.name = mcptiRuntimeCbidToName(rt->cbid);
+#else
         ev.name = cuptiRuntimeCbidToName(rt->cbid);
+#endif
         // torch-cuda's cuda_runtime args are exactly {External id, cbid,
         // correlation}; kineto supplies External id itself. The raw numeric cbid
         // is kept even though ev.name already carries its human spelling --
@@ -955,6 +1120,11 @@ class CuptiDeviceTracer : public DeviceTracer {
 
         external_correlation_[ext->correlationId] = ext->externalId;
       }
+    }
+    if (record_count >= kMaxRecordsPerBuffer) {
+      std::cerr << "[flagos] processBuffer exceeded max record count ("
+                << kMaxRecordsPerBuffer << ") for buffer size " << validSize
+                << " bytes; possible ActivityGetNextRecord infinite loop\n";
     }
   }
 

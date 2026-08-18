@@ -24,8 +24,14 @@
 // This keeps CUPTI include paths out of the main build and prevents
 // header pollution. Function pointers are dlopen'd at runtime.
 
-// Opaque CUDA types
+// Opaque CUDA types. MetaX's compatibility runtime uses MCcontext in its
+// callback ABI; keep the callback typedef exact so -Werror builds do not need
+// an unsafe function-pointer cast.
+#if defined(FLAGOS_METAX_MCPTI)
+typedef struct MCctx_st* CUcontext;
+#else
 typedef struct CUctx_st* CUcontext;
+#endif
 
 // CUPTI result type (matches cupti_result.h)
 typedef enum {
@@ -60,27 +66,15 @@ typedef enum {
   CUPTI_EXTERNAL_CORRELATION_KIND_CUSTOM0 = 3
 } CUpti_ExternalCorrelationKind;
 
-// Runtime API callback id -> human name, for naming CUPTI_ACTIVITY_KIND_RUNTIME
-// records. Values are CUPTI_RUNTIME_TRACE_CBID_* from cupti_runtime_cbid.h,
-// cross-checked three ways: the pip cu12 header (nvidia/cuda_cupti/include), the
-// system CUDA-13.0 header, and cuptiGetCallbackName(CUPTI_CB_DOMAIN_RUNTIME_API,
-// cbid) queried against the live library -- all 22 entries agree. These ids are
-// append-only across CUPTI major versions, so a hardcoded subset is safe.
+// Runtime API callback id -> human name fallback for naming
+// CUPTI_ACTIVITY_KIND_RUNTIME records. NVIDIA and MetaX use different callback
+// id spaces, so this table is only used for the vendor selected at build time.
+// MetaX normally resolves names through mcptiActivityGetApiName; the fallback
+// below is retained for old MCPTI builds that do not export that helper.
 //
-// Getting one of these wrong is invisible at runtime: you get a plausible but
-// wrong label rather than an error. Before this mapping existed, EVERY runtime
-// record was hardcoded to "cudaLaunchKernel", which reported a 21.9ms blocking
-// synchronize as a kernel launch.
-//
-// This is deliberately a static table rather than a cuptiGetCallbackName() call:
-// that symbol is not in the shim's dlsym set, it returns the versioned spelling
-// (`cudaLaunchKernel_v7000`) rather than the name torch-cuda's trace uses, and
-// resolving it per record would put a library call on the hot parse path.
-//
-// The `_ptsz` ("per-thread default stream") forms are distinct cbids for the
-// same API and MUST map to the same name -- a build compiled with
-// --default-stream per-thread emits only those, and would otherwise fall
-// through to the generic default.
+// Getting one of these wrong is invisible at runtime: a plausible but wrong
+// label is emitted rather than an error. Keep the static table deliberately
+// small and use a generic label for ids that are not known.
 inline const char* cuptiRuntimeCbidToName(uint32_t cbid) {
   switch (cbid) {
     // --- launches ---
@@ -115,6 +109,37 @@ inline const char* cuptiRuntimeCbidToName(uint32_t cbid) {
     default:  return "cudaRuntime";
   }
 }
+
+#if defined(FLAGOS_METAX_MCPTI)
+inline const char* mcptiRuntimeCbidToName(uint32_t cbid) {
+  switch (cbid) {
+    // --- device and synchronization ---
+    case 18: return "mcDeviceSynchronize";
+    case 19: return "mcGetDevice";
+    case 20: return "mcGetDeviceCount";
+    case 22: return "mcGetDeviceProperties";
+    case 23: return "mcSetDevice";
+    case 46: return "mcStreamSynchronize";
+    case 47: return "mcStreamWaitEvent";
+    // --- launches ---
+    case 56: return "mcLaunchKernel";
+    case 60: return "mcModuleLaunchKernel";
+    case 62: return "mcLaunchKernelExC";
+    // --- events ---
+    case 74: return "mcEventRecord";
+    case 76: return "mcEventSynchronize";
+    // --- allocation ---
+    case 107: return "mcMalloc";
+    case 108: return "mcFree";
+    // --- transfers ---
+    case 118: return "mcMemcpy";
+    case 119: return "mcMemcpyAsync";
+    case 146: return "mcMemset";
+    case 147: return "mcMemsetAsync";
+    default: return "mcRuntime";
+  }
+}
+#endif
 
 // Opaque activity record base
 struct CUpti_Activity;
@@ -160,6 +185,12 @@ struct CuptiShim {
       CUpti_ExternalCorrelationKind, uint64_t) = nullptr;
   CUptiResult (*ActivityPopExternalCorrelationId)(
       CUpti_ExternalCorrelationKind, uint64_t*) = nullptr;
+#if defined(FLAGOS_METAX_MCPTI)
+  // MCPTI's native resolver avoids applying NVIDIA cbid meanings to MetaX
+  // runtime records. It is optional for compatibility with older SDKs.
+  CUptiResult (*ActivityGetApiName)(
+      CUpti_ActivityKind, uint32_t, const char**) = nullptr;
+#endif
   CUptiResult (*GetTimestamp)(uint64_t*) = nullptr;
   // Optional: only used for diagnostics, so a failure to resolve it is not fatal.
   CUptiResult (*GetVersion)(uint32_t*) = nullptr;
@@ -180,20 +211,12 @@ struct CuptiShim {
 
  private:
   CuptiShim() {
-    // CRITICAL (see memory: cupti-must-arm-before-cuda-context): CUPTI must be
-    // the copy that matches the CUDA *runtime* actually running in this process.
-    // Our architecture is CPU-torch + external libtorch_cuda.so built against
-    // cu12.8 (NEEDED libcudart.so.12); _preload_cuda_assets() has already
-    // dlopen'd the pip nvidia-cuda-cupti-cu12 `libcupti.so.12` into the process.
-    // If we instead dlopen a *different* libcupti (e.g. the system CUDA-13.0
-    // one), we arm an instance that is not wired to the running cu12.8 runtime,
-    // and the buffer callbacks never fire (0 activities captured).
-    //
-    // So the ONLY version-independent rule is: bind whatever libcupti is
-    // already loaded in this process (RTLD_DEFAULT via dlopen(NULL)), because
-    // that copy is by construction the one the running CUDA runtime pulled in.
-    // Naming a specific soname or an absolute /usr/local/cuda-<ver> path would
-    // just re-create the original bug on any other CUDA version.
+    // CRITICAL (see memory: cupti-must-arm-before-cuda-context): bind the
+    // profiler library that belongs to the runtime actually running in this
+    // process. If a different major-version library is selected, activity
+    // callbacks may register successfully while capturing no records.
+    // Prefer the copy already loaded in this process because it is the one the
+    // runtime selected.
     // Escape hatch, checked FIRST so that an explicit path always wins. It has
     // to outrank the already-loaded copy below, because the situation that
     // motivates setting it -- a preloaded CUPTI whose record layout we cannot
@@ -221,16 +244,23 @@ struct CuptiShim {
     }
 
     if (!handle) {
+#if defined(FLAGOS_METAX_MCPTI)
+      // MetaX's compatibility library has a different soname from NVIDIA's
+      // CUPTI. Keep this branch build-specific so a CUDA build never binds an
+      // unrelated MCPTI installation.
+      const char* candidates[] = {
+          "libmcpti.so",
+      };
+#else
       // Nothing preloaded: try sonames from newest to oldest, then the
-      // unversioned name (a devel symlink). This list is a *fallback ordering*,
-      // not a supported-version list -- an soname absent from it still works via
-      // FLAGOS_CUPTI_LIBRARY or by being preloaded, and the ordering only
-      // matters when several are installed but none is loaded.
+      // unversioned name (a devel symlink). This list is a fallback ordering,
+      // not a supported-version list.
       const char* candidates[] = {
           "libcupti.so.13",
           "libcupti.so.12",
           "libcupti.so",
       };
+#endif
       for (const char* name : candidates) {
         if (handle) {
           break;
@@ -257,6 +287,9 @@ struct CuptiShim {
              "cuptiActivityPushExternalCorrelationId");
     LOAD_SYM(ActivityPopExternalCorrelationId,
              "cuptiActivityPopExternalCorrelationId");
+#if defined(FLAGOS_METAX_MCPTI)
+    LOAD_SYM(ActivityGetApiName, "mcptiActivityGetApiName");
+#endif
     LOAD_SYM(GetTimestamp, "cuptiGetTimestamp");
     LOAD_SYM(GetVersion, "cuptiGetVersion");
 

@@ -33,12 +33,11 @@ from torch.profiler import ProfilerActivity, profile
 import torch_fl
 
 
-_CUPTI_BUILD = torch_fl._build_accelerator() in ("", "cuda")
+_CUPTI_BUILD = torch_fl._build_accelerator() in ("", "cuda", "metax")
 
 
 def test_guard_stream_is_real_not_synthetic():
-    """guard 返回的 current stream id 应是真实 CUDA stream id，而不是恒为 0
-    的合成流。
+    """The current stream id must be real, not a synthetic constant zero.
 
     NOTE (deviation from the plan's literal snippet): the plan's draft used
     ``torch.flagos.current_stream()`` / ``torch.flagos.Stream()`` /
@@ -61,7 +60,7 @@ def test_guard_stream_is_real_not_synthetic():
     """
     dev = torch.device("flagos", 0)
     s0 = torch.accelerator.current_stream(dev)
-    # 合成流恒为 0；用两条不同流断言 id 不同来证明不是写死的 0
+    # A pair of distinct streams proves the id is not hardcoded to zero.
     s1 = torch.Stream(device=dev)
     s2 = torch.Stream(device=dev)
     assert s1.stream_id != s2.stream_id
@@ -92,7 +91,7 @@ def test_stage_a_privateuse1_device_time():
             x @ x
         torch.flagos.synchronize()
     ka = prof.key_averages()
-    # 至少一个条目有非零 device self-time
+    # At least one entry must report non-zero device self-time.
     dev_times = [getattr(e, "self_device_time_total", 0) for e in ka]
     assert any(t > 0 for t in dev_times), (
         f"no device time recorded: max={max(dev_times, default=0)}"
@@ -104,15 +103,22 @@ def test_stage_a_privateuse1_device_time():
     reason="CUPTI tests require a CUDA-compatible torch-fl build",
 )
 def test_cupti_library_locatable():
-    """Confirm that the runtime can dlopen CUPTI (Stage B prerequisite)."""
-    candidates = ["libcupti.so.13", "libcupti.so.12", "libcupti.so"]
-    candidates += glob.glob("/usr/local/cuda-13.0/targets/*/lib/libcupti.so*")
-    candidates += glob.glob(
-        os.path.join(
-            os.path.dirname(os.__file__),
-            "../site-packages/nvidia/cuda_cupti/lib/libcupti.so*",
+    """Confirm the profiler library for the selected accelerator is loadable."""
+    accelerator = os.environ.get("ACCELERATOR", "cuda").lower()
+    if accelerator == "metax":
+        candidates = ["libmcpti.so"]
+        metax_path = os.environ.get("METAX_PATH", "/opt/maca")
+        candidates += glob.glob(os.path.join(metax_path, "lib", "libmcpti.so*"))
+        candidates += glob.glob(os.path.join(metax_path, "lib64", "libmcpti.so*"))
+    else:
+        candidates = ["libcupti.so.13", "libcupti.so.12", "libcupti.so"]
+        candidates += glob.glob("/usr/local/cuda-13.0/targets/*/lib/libcupti.so*")
+        candidates += glob.glob(
+            os.path.join(
+                os.path.dirname(os.__file__),
+                "../site-packages/nvidia/cuda_cupti/lib/libcupti.so*",
+            )
         )
-    )
     loaded = None
     for c in candidates:
         try:
@@ -120,7 +126,7 @@ def test_cupti_library_locatable():
             break
         except OSError:
             continue
-    assert loaded is not None, f"cannot dlopen libcupti from {candidates}"
+    assert loaded is not None, f"cannot load profiler library from {candidates}"
 
 
 @pytest.mark.skipif(
@@ -245,7 +251,7 @@ def test_stage_b_correlation_or_degrade():
         if isinstance(e, dict) and "kernel" in str(e.get("name", "")).lower()
     ]
 
-    # 达标: 有 flow 事件连接 op↔kernel；降级: push/pop 被调用即可
+    # Full success has op-to-kernel flow events; degraded mode only requires push/pop.
     if flows:
         print(f"correlation OK: {len(flows)} flow events")
     elif len(kernels) > 0:
