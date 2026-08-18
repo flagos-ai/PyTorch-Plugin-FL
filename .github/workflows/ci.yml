@@ -16,7 +16,7 @@ name: CI
 
 on:
   push:
-    branches: [main, dev, devops, dev-hygon]
+    branches: [main, dev, devops, dev-hygon, "2.9"]
     paths:
       - "cmake/**"
       - "csrc/**"
@@ -31,7 +31,7 @@ on:
       - ".github/scripts/**"
       - ".github/workflows/**"
   pull_request:
-    branches: [main, dev, devops, dev-hygon]
+    branches: [main, dev, devops, dev-hygon, "2.9"]
     paths:
       - "cmake/**"
       - "csrc/**"
@@ -106,7 +106,7 @@ jobs:
   ascend-pipeline:
     name: Platform pipeline (ascend)
     needs: discover-platforms
-    if: needs.discover-platforms.outputs.has_ascend == 'true'
+    if: needs.discover-platforms.outputs.has_ascend == 'true' && github.ref_name != '2.9' && github.base_ref != '2.9'
     uses: ./.github/workflows/integration-test-ascend.yml
 
   cuda-pipeline:
@@ -118,11 +118,11 @@ jobs:
   dcu-pipeline:
     name: Platform pipeline (dcu)
     needs: discover-platforms
-    if: needs.discover-platforms.outputs.has_dcu == 'true'
+    if: needs.discover-platforms.outputs.has_dcu == 'true' && github.ref_name != '2.9' && github.base_ref != '2.9'
     uses: ./.github/workflows/integration-test-dcu.yml
 
   metax-pipeline:
     name: Platform pipeline (metax)
     needs: discover-platforms
-    if: needs.discover-platforms.outputs.has_metax == 'true'
+    if: needs.discover-platforms.outputs.has_metax == 'true' && github.ref_name != '2.9' && github.base_ref != '2.9'
     uses: ./.github/workflows/integration-test-metax.yml
