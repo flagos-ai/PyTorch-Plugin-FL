@@ -13,9 +13,9 @@
 // limitations under the License.
 //
 // Ascend device tracer. CANN's public MSPTI activity API is used instead of
-// torch_npu or the file-oriented msprof pipeline. The Python entry point loads
-// libmspti before libtorch_fl loads the Ascend runtime, which is required for
-// MSPTI's memcpy and memset interceptors.
+// torch_npu or the file-oriented msprof pipeline. Memcpy and memset
+// interception requires the caller to preload libmspti before the Ascend
+// runtime; ordinary torch_fl imports do not install that interposer.
 
 #include "device_tracer.h"
 
@@ -193,16 +193,18 @@ void buffer_completed(uint8_t* buffer, size_t size, size_t valid_size);
 
 class CannDeviceTracer final : public DeviceTracer {
  public:
-  CannDeviceTracer() : available_(api_.load()) {}
+  // Availability is a build-time capability here. Resolve libmspti lazily in
+  // start() so importing torch_fl does not install the CANN interposer in
+  // ordinary, non-profiler processes.
+  CannDeviceTracer() : available_(true) {}
 
   ~CannDeviceTracer() override {
     if (active_) {
       stop();
     }
-    if (api_.handle) {
-      dlclose(api_.handle);
-      api_.handle = nullptr;
-    }
+    // Do not dlclose libmspti. CANN may retain interposed ACL function
+    // pointers after a session, and unloading the library during Python
+    // interpreter teardown can crash otherwise unrelated Ascend work.
   }
 
   bool available() const override { return available_; }
@@ -221,6 +223,14 @@ class CannDeviceTracer final : public DeviceTracer {
     correlation_ids_.clear();
     next_correlation_id_ = 1;
     session_failed_ = false;
+
+    // libmspti is resolved here, not at construction: an Ascend process that
+    // never profiles must not load CANN's interposer at all.
+    if (!api_.load()) {
+      session_failed_ = true;
+      FLAGOS_MSPTI_LOG("[flagos] libmspti is unavailable\n");
+      return;
+    }
 
     msptiSubscriberHandle subscriber = nullptr;
     msptiResult result = api_.subscribe(&subscriber, nullptr, nullptr);

@@ -235,55 +235,6 @@ def _relink_vendor_libtorch() -> None:
 _relink_vendor_libtorch()
 
 
-_ascend_mspti_handle = None
-
-
-def _preload_ascend_mspti() -> None:
-    """Preload CANN's MSPTI interposer before the Ascend runtime.
-
-    MSPTI reports ``MSPTI_ERROR_WITHOUT_LD_PRELOAD`` for memcpy and memset
-    activity when its interposition library is loaded after the runtime. The
-    profiler remains optional: machines without CANN simply continue without
-    an MSPTI library, and the C++ tracer reports itself unavailable.
-    """
-    if _build_accelerator() != "ascend":
-        return
-    import ctypes
-    import glob
-
-    roots = []
-    for key in ("ASCEND_HOME", "ASCEND_HOME_PATH"):
-        root = os.environ.get(key)
-        if root:
-            roots.append(root)
-    roots.extend(
-        [
-            "/usr/local/Ascend/ascend-toolkit/latest",
-            "/usr/local/Ascend/cann-9.0.0",
-        ]
-    )
-    candidates = []
-    for root in roots:
-        candidates.extend(
-            [
-                os.path.join(root, "tools", "mspti", "lib64", "libmspti.so"),
-                os.path.join(root, "lib64", "libmspti.so"),
-            ]
-        )
-        candidates.extend(
-            glob.glob(os.path.join(root, "tools", "mspti", "lib64", "libmspti.so.*"))
-        )
-    global _ascend_mspti_handle
-    for path in candidates:
-        if not os.path.exists(path):
-            continue
-        try:
-            _ascend_mspti_handle = ctypes.CDLL(path, mode=ctypes.RTLD_GLOBAL)
-            return
-        except OSError:
-            continue
-
-
 def _preload_cuda_assets() -> None:
     """Load the bundled CUDA .so into this process BEFORE `import torch`.
 
@@ -423,7 +374,6 @@ def _check_privateuse1_unclaimed() -> None:
     )
 
 
-_preload_ascend_mspti()
 _preload_cuda_assets()
 _disable_vendor_backend_autoload()
 
