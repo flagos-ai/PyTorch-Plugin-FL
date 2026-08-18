@@ -77,18 +77,39 @@ Emitted into `csrc/aten/generated/`: `ops.h` (typedefs + `DECLARE_DISPATCHER`),
 
 Two things to check on the output, both cheap and both catching real problems:
 
-```bash
-# 1. No dropped operators. Any "SKIP <op>" on stderr means an op the previous
-#    version generated is now failing to generate -- investigate, do not accept.
-FLAGOS_CODEGEN_ALL=1 python scripts/codegen_ops.py 2>&1 | grep -E 'SKIP|WARN'
+Run codegen through the same isolated environment used for the build. For a CUDA
+boxing validation, preload only the CUDA-specific libraries from the matching
+CUDA torch wheel; keep the active pip torch CPU-only. Do not inherit vendor-box
+`PYTHONPATH` or `LD_LIBRARY_PATH` entries, because they can import a second torch
+or vendor shim and produce false registration failures.
 
-# 2. Idempotency. A second run must produce no diff.
-FLAGOS_CODEGEN_ALL=1 python scripts/codegen_ops.py
-git diff --quiet csrc/aten/generated/ && echo idempotent || echo "NOT idempotent"
+```bash
+FLAGOS_CODEGEN_ALL=1 bash scripts/with_cuda_libtorch.sh python scripts/codegen_ops.py \
+  2>&1 | tee /tmp/torch-codegen.log
+
+# 1. No dropped operators. Any "SKIP <op>" or "WARN" means an op failed to
+#    generate and must be investigated.
+! grep -E 'SKIP|WARN' /tmp/torch-codegen.log
+
+# A failed FlagGems import is also a hard failure. It must not be accepted as a
+# successful run: otherwise the generator writes an empty Python-kernel file and
+# removes the FlagGems routes from every generated config.
+! grep -F '[flaggems] import failed' /tmp/torch-codegen.log
+
+# 2. Idempotency. Compare two complete generated patches, not the working tree
+#    against HEAD (a valid version port is expected to differ from HEAD).
+git diff --binary > /tmp/codegen-1.patch
+FLAGOS_CODEGEN_ALL=1 bash scripts/with_cuda_libtorch.sh python scripts/codegen_ops.py \
+  > /tmp/torch-codegen-second.log 2>&1
+git diff --binary > /tmp/codegen-2.patch
+cmp -s /tmp/codegen-1.patch /tmp/codegen-2.patch && echo idempotent
 ```
 
 A non-idempotent generator (dict ordering, absolute paths, timestamps) makes
-every future rebase a conflict, so fix it here rather than downstream.
+every future rebase a conflict, so fix it here rather than downstream. Record
+the discovered FlagGems count and the exact FlagGems/Triton versions used for
+the regeneration; a different FlagGems release is a different generated input,
+not merely a runtime dependency refresh.
 
 ## Step 3 — the signature reconciliation, which is the actual work
 
@@ -150,10 +171,15 @@ Build with the CUDA operator path on, since that is what codegen produces:
 FLAGGEMS_KERNEL=OFF FLAGGEMS_PYTHON=OFF CUDA_KERNEL=ON pip install -e . --no-build-isolation
 ```
 
-The build must use **g++ only, no nvcc**, and link only `torch_cpu_library`.
-CUDA symbols resolve at runtime from the preloaded external library. If cmake
-starts looking for nvcc, the version port has picked up a CUDA-torch dependency
-it should not have.
+The generated C++ sources link against the CPU torch libraries, while CUDA
+symbols resolve at runtime from the matching external CUDA assets. On this
+repository's CUDA path, the top-level CMake project still enables the CUDA
+language and may run nvcc compiler identification during configuration; that
+is expected for the existing build system and does not mean a CUDA torch was
+installed. The important invariant is that the active Python torch remains
+CPU-only and no second core libtorch is preloaded. If a CUDA torch is installed
+in the environment, stop and recreate the environment before attributing any
+error to codegen.
 
 Then, through the preload wrapper:
 

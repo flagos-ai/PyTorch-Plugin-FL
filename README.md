@@ -2,7 +2,7 @@
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.8%2B-blue.svg)](https://www.python.org/downloads/)
-[![PyTorch](https://img.shields.io/badge/PyTorch-2.10.x-orange.svg)](https://pytorch.org/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.9.x-orange.svg)](https://pytorch.org/)
 [![CI](https://github.com/flagos-ai/PyTorch-Plugin-FL/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/flagos-ai/PyTorch-Plugin-FL/actions/workflows/ci.yml?query=branch%3Amain)
 
 [Documentation](docs/) · [Installation](docs/getting-started/installation.md) · [Quick Start](docs/getting-started/quickstart.md) · [Compatibility](docs/reference/compatibility.md)
@@ -99,15 +99,15 @@ Detailed capability breakdowns (eager execution, training, compile, distributed,
 | Component | Supported range | Notes |
 |---|---|---|
 | Python | 3.8 or later | Platform SDKs and available wheels may impose a narrower range. |
-| PyTorch | 2.10.x (`>=2.10,<2.11`) | Generated ATen bindings are tied to this minor line. |
+| PyTorch | 2.9.x (`>=2.9,<2.10`) | Generated ATen bindings are tied to this minor line. |
 | FlagGems | Platform dependent | Installed from PyPI or a vendor-compatible build only where the platform route uses it. |
 | Triton/compiler | Platform dependent | Use the compiler distribution required by the selected accelerator. |
 
 ### ATen Minor-Line Pinning
 
-torch-fl generates native bindings to PyTorch's internal ATen operator registry. These bindings are sensitive to C++ ABI and operator schema changes, so the project pins to a PyTorch minor line. The current pinned line is **2.10.x**.
+torch-fl generates native bindings to PyTorch's internal ATen operator registry. These bindings are sensitive to C++ ABI and operator schema changes, so the project pins to a PyTorch minor line. The current pinned line is **2.9.x**.
 
-Using a different PyTorch minor version (e.g., 2.11.x) will result in build or runtime failures. Patch versions within the same minor line (e.g., 2.10.0 to 2.10.1) are compatible.
+Using a different PyTorch minor version (e.g., 2.10.x) will result in build or runtime failures. Patch versions within the same minor line (e.g., 2.9.0 to 2.9.1) are compatible.
 
 Vendor SDK versions, CUDA toolkit versions, and other platform-specific requirements are documented in each platform's installation guide.
 

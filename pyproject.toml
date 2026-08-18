@@ -13,10 +13,10 @@
 # limitations under the License.
 
 [build-system]
-# torch is pinned to 2.10 to match the checked-in generated ATen bindings; the
+# torch is pinned to 2.9 to match the checked-in generated ATen bindings; the
 # same pin is applied to install_requires via TORCH_PIN in setup.py, where the
 # reasoning is spelled out.
-requires = ["setuptools>=45", "wheel", "cmake>=3.18", "torch>=2.10,<2.11"]
+requires = ["setuptools>=45", "wheel", "cmake>=3.18", "torch>=2.9,<2.10"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -46,7 +46,7 @@ classifiers = [
 # kernels are routed via backends_*.conf and are on by default, so it is a hard
 # runtime dependency (pure Python + Triton, installs cleanly from PyPI). It is
 # NOT vendored into the wheel — flag_gems iterates fast and pinning a copy would
-# only make upgrades harder. Versions match the validated 2.10 env.
+# only make upgrades harder. Versions match the validated 2.9 env.
 #
 # Declared dynamic so setup.py can drop flag_gems/triton on platforms built in
 # pure-boxing mode (ACCELERATOR=dcu), where PyPI's NVIDIA-targeted triton wheel

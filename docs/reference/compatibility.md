@@ -14,7 +14,7 @@
 | Component | Supported range | Notes |
 |---|---|---|
 | Python | 3.8 or later | From package metadata. Platform SDKs and available wheels may impose a narrower range. |
-| PyTorch | 2.10.x (`>=2.10,<2.11`) | Generated ATen bindings are tied to this minor line. |
+| PyTorch | 2.9.x (`>=2.9,<2.10`) | Generated ATen bindings are tied to this minor line. |
 | FlagGems | Platform dependent | Installed from PyPI or a vendor-compatible build only where the platform route uses it. |
 | Triton/compiler | Platform dependent | Use the compiler distribution required by the selected accelerator. |
 

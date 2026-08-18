@@ -821,13 +821,13 @@ def _vendor_supplies_triton() -> bool:
 
 
 # The checked-in csrc/aten/generated/* bindings are generated against a
-# specific ATen surface, so torch is pinned to the 2.10 series rather than left
-# open. Newer torch drifts from those bindings, and a mismatch shows up as a
-# wall of compile errors at build time rather than a clean resolver failure --
-# the pin is what turns that into an install-time message. Moving to a newer
-# torch is a deliberate act: re-run scripts/codegen_ops.py, do not hand-edit
+# specific ATen surface, so torch is pinned to the 2.9 series rather than left
+# open. Other torch minors drift from those bindings, and a mismatch shows up as
+# a wall of compile errors at build time rather than a clean resolver failure --
+# the pin is what turns that into an install-time message. Moving to another
+# torch minor is a deliberate act: re-run scripts/codegen_ops.py, do not hand-edit
 # the generated files.
-TORCH_PIN = "torch>=2.10,<2.11"
+TORCH_PIN = "torch>=2.9,<2.10"
 
 
 def _install_requires():

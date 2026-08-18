@@ -665,7 +665,17 @@ def discover_flaggems_ops(codegen_ops, funcs):
     for item in flag_gems._FULL_CONFIG:
         if len(item) < 2:
             continue
-        op, fn = item[0], item[1]
+        gems_op, fn = item[0], item[1]
+        # FlagGems names some out variants with ``_out`` while torchgen uses
+        # the dispatcher schema spelling ``.out`` (for example
+        # ``special_i1_out`` versus ``special_i1.out``). Normalize only for
+        # schema lookup and generated routing; keep the original name for the
+        # FlagGems function itself.
+        op = (
+            gems_op[:-4] + ".out"
+            if gems_op.endswith("_out") and gems_op[:-4] + ".out" in funcs
+            else gems_op
+        )
         if op in FLAGGEMS_PYTHON_SKIP:
             continue
         if op not in codegen_ops or op not in funcs:
@@ -1344,9 +1354,32 @@ def _generator_inject_line(args, device_expr):
 #   factory      -> right after the size/n/high value args (before dtype)
 #   *_like       -> right before dtype
 #   out-variant  -> before the first of names / memory_format / out
-_GEN_FACTORY_BASES = {"randint", "randperm", "rand", "randn"}
-_GEN_LIKE_BASES = {"randint_like", "rand_like", "randn_like"}
-_GEN_OUT_BASES = _GEN_FACTORY_BASES | _GEN_LIKE_BASES
+_GEN_FACTORY_CANDIDATES = {"randint", "randperm", "rand", "randn"}
+_GEN_LIKE_CANDIDATES = {"randint_like", "rand_like", "randn_like"}
+_GEN_FACTORY_BASES = set()
+_GEN_LIKE_BASES = set()
+_GEN_OUT_BASES = set()
+
+
+def configure_generator_overloads(funcs):
+    """Derive RNG families with Generator overloads from this torchgen schema.
+
+    PyTorch 2.10 added Generator siblings for the ``*_like`` families; 2.9 has
+    none. Keeping this as a hard-coded version list makes a 2.9 regeneration
+    emit calls to C++ APIs that do not exist. The packaged native_functions.yaml
+    is the authoritative source for each minor line, just like it is for every
+    generated dispatcher signature.
+    """
+    global _GEN_FACTORY_BASES, _GEN_LIKE_BASES, _GEN_OUT_BASES
+
+    generator_bases = {
+        name.split(".", 1)[0]
+        for name, func in funcs.items()
+        if "Generator" in str(func.func)
+    }
+    _GEN_FACTORY_BASES = _GEN_FACTORY_CANDIDATES & generator_bases
+    _GEN_LIKE_BASES = _GEN_LIKE_CANDIDATES & generator_bases
+    _GEN_OUT_BASES = _GEN_FACTORY_BASES | _GEN_LIKE_BASES
 
 
 # Pure view/alias ops whose generated kernel MUST call at::native:: directly
@@ -2022,6 +2055,7 @@ def main():
         str(root / "packaged/ATen/native/tags.yaml"),
     )
     funcs = {str(f.func.name): f for f in nf.native_functions}
+    configure_generator_overloads(funcs)
 
     # Ops the templates cannot compile yet; skipped -> fall through to cpu_fallback.
     # Grown empirically during the compile/import fix loop.
@@ -2399,7 +2433,6 @@ def main():
             "im2col",
             "smooth_l1_loss",
             "smooth_l1_loss_backward",
-            "special_i1.out",
             "_upsample_bilinear2d_aa",
             "_upsample_nearest_exact2d_backward",
             "upsample_trilinear3d",

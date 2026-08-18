@@ -192,9 +192,7 @@
 #include <ATen/ops/_scaled_dot_product_flash_attention_backward.h>
 #include <ATen/ops/_scaled_dot_product_fused_attention_overrideable_backward.h>
 #include <ATen/ops/_scaled_grouped_mm.h>
-#include <ATen/ops/_scaled_grouped_mm_v2.h>
 #include <ATen/ops/_scaled_mm.h>
-#include <ATen/ops/_scaled_mm_v2.h>
 #include <ATen/ops/_segment_reduce_backward.h>
 #include <ATen/ops/_slow_conv2d_backward.h>
 #include <ATen/ops/_slow_conv2d_forward.h>
@@ -832,15 +830,6 @@
 namespace at::native::flagos {
 namespace {
 
-void ValidateGeneratorForCudaBoxing(
-    const ::std::optional<at::Generator>& generator) {
-  TORCH_CHECK(
-      !generator.has_value() || !generator->defined() ||
-          generator->device().type() != c10::DeviceType::PrivateUse1,
-      "Expected a 'cuda' device type for generator but found '",
-      generator->device().type(), "'");
-}
-
 at::Tensor PrivAdaptiveAvgPool2dKernelCuda(const at::Tensor & self, at::IntArrayRef output_size) {
   DeviceBoxingGuard guard(self);
   auto result = at::_adaptive_avg_pool2d(self, output_size);
@@ -966,7 +955,6 @@ void PrivAmpForeachNonFiniteCheckAndUnscaleInplaceKernelCuda(at::TensorList self
   TensorListBoxingGuard guard;
   guard.box(self_vec);
   guard.box({inv_scale});
-  guard.box({found_inf});
   at::_amp_foreach_non_finite_check_and_unscale_(self_vec, found_inf, inv_scale);
 }
 
@@ -3949,7 +3937,6 @@ void PrivFusedAdamwInplaceTensorLrKernelCuda(at::TensorList self, at::TensorList
 
 ::std::tuple<at::Tensor,at::Tensor> PrivFusedDropoutKernelCuda(const at::Tensor & self, double p, ::std::optional<at::Generator> generator) {
   DeviceBoxingGuard guard(self);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
   auto result = at::_fused_dropout(self, p, generator);
   UnboxToFlagos(std::get<0>(result));
@@ -3959,7 +3946,6 @@ void PrivFusedAdamwInplaceTensorLrKernelCuda(at::TensorList self, at::TensorList
 
 ::std::tuple<at::Tensor &,at::Tensor &> PrivFusedDropoutOutKernelCuda(const at::Tensor & self, double p, ::std::optional<at::Generator> generator, at::Tensor & out0, at::Tensor & out1) {
   DeviceBoxingGuard guard(self, out0, out1);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(out0.get_device());
   auto _ret = at::_fused_dropout_outf(self, p, generator, out0, out1);
   UnboxToFlagos(out0);
@@ -4787,7 +4773,6 @@ at::Tensor PrivSafeSoftmaxKernelCuda(const at::Tensor & self, int64_t dim, ::std
 
 at::Tensor PrivSampleDirichletKernelCuda(const at::Tensor & self, ::std::optional<at::Generator> generator) {
   DeviceBoxingGuard guard(self);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
   auto result = at::_sample_dirichlet(self, generator);
   UnboxToFlagos(result);
@@ -4796,7 +4781,6 @@ at::Tensor PrivSampleDirichletKernelCuda(const at::Tensor & self, ::std::optiona
 
 at::Tensor & PrivSampleDirichletOutKernelCuda(const at::Tensor & self, ::std::optional<at::Generator> generator, at::Tensor & out) {
   DeviceBoxingGuard guard(self, out);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
   at::_sample_dirichlet_outf(self, generator, out);
   UnboxToFlagos(out);
@@ -4862,21 +4846,6 @@ at::Tensor PrivScaledGroupedMmKernelCuda(const at::Tensor & self, const at::Tens
   return result;
 }
 
-at::Tensor PrivScaledGroupedMmV2KernelCuda(const at::Tensor & self, const at::Tensor & mat2, at::TensorList scale_a, at::IntArrayRef recipe_a, at::IntArrayRef swizzle_a, at::TensorList scale_b, at::IntArrayRef recipe_b, at::IntArrayRef swizzle_b, const ::std::optional<at::Tensor> & offs, const ::std::optional<at::Tensor> & bias, ::std::optional<at::ScalarType> out_dtype, at::IntArrayRef contraction_dim, bool use_fast_accum) {
-  auto scale_a_vec = MaterializeToTensorVec(scale_a);
-  auto scale_b_vec = MaterializeToTensorVec(scale_b);
-  TensorListBoxingGuard guard;
-  guard.box(scale_a_vec);
-  guard.box(scale_b_vec);
-  guard.box({self});
-  guard.box({mat2});
-  if (offs.has_value()) guard.box({*offs});
-  if (bias.has_value()) guard.box({*bias});
-  auto result = at::_scaled_grouped_mm_v2(self, mat2, scale_a_vec, recipe_a, swizzle_a, scale_b_vec, recipe_b, swizzle_b, offs, bias, out_dtype, contraction_dim, use_fast_accum);
-  UnboxToFlagos(result);
-  return result;
-}
-
 at::Tensor PrivScaledMmKernelCuda(const at::Tensor & self, const at::Tensor & mat2, const at::Tensor & scale_a, const at::Tensor & scale_b, const ::std::optional<at::Tensor> & bias, const ::std::optional<at::Tensor> & scale_result, ::std::optional<at::ScalarType> out_dtype, bool use_fast_accum) {
   at::Tensor bias_t = bias.has_value() ? *bias : at::Tensor();
   at::Tensor scale_result_t = scale_result.has_value() ? *scale_result : at::Tensor();
@@ -4893,20 +4862,6 @@ at::Tensor & PrivScaledMmOutKernelCuda(const at::Tensor & self, const at::Tensor
   at::_scaled_mm_outf(self, mat2, scale_a, scale_b, bias, scale_result, out_dtype, use_fast_accum, out);
   UnboxToFlagos(out);
   return out;
-}
-
-at::Tensor PrivScaledMmV2KernelCuda(const at::Tensor & self, const at::Tensor & mat2, at::TensorList scale_a, at::IntArrayRef recipe_a, at::IntArrayRef swizzle_a, at::TensorList scale_b, at::IntArrayRef recipe_b, at::IntArrayRef swizzle_b, const ::std::optional<at::Tensor> & bias, ::std::optional<at::ScalarType> out_dtype, at::IntArrayRef contraction_dim, bool use_fast_accum) {
-  auto scale_a_vec = MaterializeToTensorVec(scale_a);
-  auto scale_b_vec = MaterializeToTensorVec(scale_b);
-  TensorListBoxingGuard guard;
-  guard.box(scale_a_vec);
-  guard.box(scale_b_vec);
-  guard.box({self});
-  guard.box({mat2});
-  if (bias.has_value()) guard.box({*bias});
-  auto result = at::_scaled_mm_v2(self, mat2, scale_a_vec, recipe_a, swizzle_a, scale_b_vec, recipe_b, swizzle_b, bias, out_dtype, contraction_dim, use_fast_accum);
-  UnboxToFlagos(result);
-  return result;
 }
 
 at::Tensor PrivSegmentReduceBackwardKernelCuda(const at::Tensor & grad, const at::Tensor & output, const at::Tensor & data, c10::string_view reduce, const ::std::optional<at::Tensor> & lengths, const ::std::optional<at::Tensor> & offsets, int64_t axis, const ::std::optional<at::Scalar> & initial) {
@@ -5199,7 +5154,6 @@ at::Tensor & PrivStackOutKernelCuda(at::TensorList tensors, int64_t dim, at::Ten
 
 at::Tensor PrivStandardGammaKernelCuda(const at::Tensor & self, ::std::optional<at::Generator> generator) {
   DeviceBoxingGuard guard(self);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
   auto result = at::_standard_gamma(self, generator);
   UnboxToFlagos(result);
@@ -5208,7 +5162,6 @@ at::Tensor PrivStandardGammaKernelCuda(const at::Tensor & self, ::std::optional<
 
 at::Tensor & PrivStandardGammaOutKernelCuda(const at::Tensor & self, ::std::optional<at::Generator> generator, at::Tensor & out) {
   DeviceBoxingGuard guard(self, out);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
   at::_standard_gamma_outf(self, generator, out);
   UnboxToFlagos(out);
@@ -6758,7 +6711,6 @@ at::Tensor & BatchNormElemtOutKernelCuda(const at::Tensor & input, const ::std::
 
 at::Tensor BernoulliKernelCuda(const at::Tensor & self, ::std::optional<at::Generator> generator) {
   DeviceBoxingGuard guard(self);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
   auto result = at::bernoulli(self, generator);
   UnboxToFlagos(result);
@@ -6767,7 +6719,6 @@ at::Tensor BernoulliKernelCuda(const at::Tensor & self, ::std::optional<at::Gene
 
 at::Tensor BernoulliTensorKernelCuda(const at::Tensor & self, const at::Tensor & p, ::std::optional<at::Generator> generator) {
   DeviceBoxingGuard guard(self, p);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
   auto result = at::bernoulli(self, p, generator);
   UnboxToFlagos(result);
@@ -6776,7 +6727,6 @@ at::Tensor BernoulliTensorKernelCuda(const at::Tensor & self, const at::Tensor &
 
 at::Tensor & BernoulliTensorOutKernelCuda(const at::Tensor & self, const at::Tensor & p, ::std::optional<at::Generator> generator, at::Tensor & out) {
   DeviceBoxingGuard guard(self, p, out);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
   at::bernoulli_outf(self, p, generator, out);
   UnboxToFlagos(out);
@@ -6785,7 +6735,6 @@ at::Tensor & BernoulliTensorOutKernelCuda(const at::Tensor & self, const at::Ten
 
 at::Tensor & BernoulliFloatOutKernelCuda(const at::Tensor & self, double p, ::std::optional<at::Generator> generator, at::Tensor & out) {
   DeviceBoxingGuard guard(self, out);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
   at::bernoulli_outf(self, p, generator, out);
   UnboxToFlagos(out);
@@ -6794,7 +6743,6 @@ at::Tensor & BernoulliFloatOutKernelCuda(const at::Tensor & self, double p, ::st
 
 at::Tensor & BernoulliOutKernelCuda(const at::Tensor & self, ::std::optional<at::Generator> generator, at::Tensor & out) {
   DeviceBoxingGuard guard(self, out);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
   at::bernoulli_outf(self, generator, out);
   UnboxToFlagos(out);
@@ -6803,7 +6751,6 @@ at::Tensor & BernoulliOutKernelCuda(const at::Tensor & self, ::std::optional<at:
 
 at::Tensor & BernoulliInplaceTensorKernelCuda(at::Tensor & self, const at::Tensor & p, ::std::optional<at::Generator> generator) {
   DeviceBoxingGuard guard(self, p);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
   self.bernoulli_(p, generator);
   return self;
@@ -6811,7 +6758,6 @@ at::Tensor & BernoulliInplaceTensorKernelCuda(at::Tensor & self, const at::Tenso
 
 at::Tensor & BernoulliInplaceFloatKernelCuda(at::Tensor & self, double p, ::std::optional<at::Generator> generator) {
   DeviceBoxingGuard guard(self);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
   self.bernoulli_(p, generator);
   return self;
@@ -6885,7 +6831,6 @@ at::Tensor & BincountOutKernelCuda(const at::Tensor & self, const ::std::optiona
 
 at::Tensor BinomialKernelCuda(const at::Tensor & count, const at::Tensor & prob, ::std::optional<at::Generator> generator) {
   DeviceBoxingGuard guard(count, prob);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(count.get_device());
   auto result = at::binomial(count, prob, generator);
   UnboxToFlagos(result);
@@ -6894,7 +6839,6 @@ at::Tensor BinomialKernelCuda(const at::Tensor & count, const at::Tensor & prob,
 
 at::Tensor & BinomialOutKernelCuda(const at::Tensor & count, const at::Tensor & prob, ::std::optional<at::Generator> generator, at::Tensor & out) {
   DeviceBoxingGuard guard(count, prob, out);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
   at::binomial_outf(count, prob, generator, out);
   UnboxToFlagos(out);
@@ -7327,7 +7271,6 @@ at::Tensor & CatOutKernelCuda(const at::ITensorListRef & tensors, int64_t dim, a
 
 at::Tensor CauchyKernelCuda(const at::Tensor & self, double median, double sigma, ::std::optional<at::Generator> generator) {
   DeviceBoxingGuard guard(self);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
   auto result = at::cauchy(self, median, sigma, generator);
   UnboxToFlagos(result);
@@ -7336,7 +7279,6 @@ at::Tensor CauchyKernelCuda(const at::Tensor & self, double median, double sigma
 
 at::Tensor & CauchyOutKernelCuda(const at::Tensor & self, double median, double sigma, ::std::optional<at::Generator> generator, at::Tensor & out) {
   DeviceBoxingGuard guard(self, out);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
   at::cauchy_outf(self, median, sigma, generator, out);
   UnboxToFlagos(out);
@@ -7345,7 +7287,6 @@ at::Tensor & CauchyOutKernelCuda(const at::Tensor & self, double median, double 
 
 at::Tensor & CauchyInplaceKernelCuda(at::Tensor & self, double median, double sigma, ::std::optional<at::Generator> generator) {
   DeviceBoxingGuard guard(self);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
   self.cauchy_(median, sigma, generator);
   return self;
@@ -8667,7 +8608,6 @@ at::Tensor & Expm1InplaceKernelCuda(at::Tensor & self) {
 
 at::Tensor ExponentialKernelCuda(const at::Tensor & self, double lambd, ::std::optional<at::Generator> generator) {
   DeviceBoxingGuard guard(self);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
   auto result = at::exponential(self, lambd, generator);
   UnboxToFlagos(result);
@@ -8676,7 +8616,6 @@ at::Tensor ExponentialKernelCuda(const at::Tensor & self, double lambd, ::std::o
 
 at::Tensor & ExponentialOutKernelCuda(const at::Tensor & self, double lambd, ::std::optional<at::Generator> generator, at::Tensor & out) {
   DeviceBoxingGuard guard(self, out);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
   at::exponential_outf(self, lambd, generator, out);
   UnboxToFlagos(out);
@@ -8685,7 +8624,6 @@ at::Tensor & ExponentialOutKernelCuda(const at::Tensor & self, double lambd, ::s
 
 at::Tensor & ExponentialInplaceKernelCuda(at::Tensor & self, double lambd, ::std::optional<at::Generator> generator) {
   DeviceBoxingGuard guard(self);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
   self.exponential_(lambd, generator);
   return self;
@@ -9252,7 +9190,6 @@ at::Tensor & GeluBackwardGradInputKernelCuda(const at::Tensor & grad_output, con
 
 at::Tensor GeometricKernelCuda(const at::Tensor & self, double p, ::std::optional<at::Generator> generator) {
   DeviceBoxingGuard guard(self);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
   auto result = at::geometric(self, p, generator);
   UnboxToFlagos(result);
@@ -9261,7 +9198,6 @@ at::Tensor GeometricKernelCuda(const at::Tensor & self, double p, ::std::optiona
 
 at::Tensor & GeometricOutKernelCuda(const at::Tensor & self, double p, ::std::optional<at::Generator> generator, at::Tensor & out) {
   DeviceBoxingGuard guard(self, out);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
   at::geometric_outf(self, p, generator, out);
   UnboxToFlagos(out);
@@ -9270,7 +9206,6 @@ at::Tensor & GeometricOutKernelCuda(const at::Tensor & self, double p, ::std::op
 
 at::Tensor & GeometricInplaceKernelCuda(at::Tensor & self, double p, ::std::optional<at::Generator> generator) {
   DeviceBoxingGuard guard(self);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
   self.geometric_(p, generator);
   return self;
@@ -10789,7 +10724,6 @@ at::Tensor & LogInplaceKernelCuda(at::Tensor & self) {
 
 at::Tensor LogNormalKernelCuda(const at::Tensor & self, double mean, double std, ::std::optional<at::Generator> generator) {
   DeviceBoxingGuard guard(self);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
   auto result = at::log_normal(self, mean, std, generator);
   UnboxToFlagos(result);
@@ -10798,7 +10732,6 @@ at::Tensor LogNormalKernelCuda(const at::Tensor & self, double mean, double std,
 
 at::Tensor & LogNormalOutKernelCuda(const at::Tensor & self, double mean, double std, ::std::optional<at::Generator> generator, at::Tensor & out) {
   DeviceBoxingGuard guard(self, out);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
   at::log_normal_outf(self, mean, std, generator, out);
   UnboxToFlagos(out);
@@ -10807,7 +10740,6 @@ at::Tensor & LogNormalOutKernelCuda(const at::Tensor & self, double mean, double
 
 at::Tensor & LogNormalInplaceKernelCuda(at::Tensor & self, double mean, double std, ::std::optional<at::Generator> generator) {
   DeviceBoxingGuard guard(self);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
   self.log_normal_(mean, std, generator);
   return self;
@@ -11957,7 +11889,6 @@ at::Tensor & MultilabelMarginLossBackwardGradInputKernelCuda(const at::Tensor & 
 
 at::Tensor MultinomialKernelCuda(const at::Tensor & self, int64_t num_samples, bool replacement, ::std::optional<at::Generator> generator) {
   DeviceBoxingGuard guard(self);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
   auto result = at::multinomial(self, num_samples, replacement, generator);
   UnboxToFlagos(result);
@@ -11966,7 +11897,6 @@ at::Tensor MultinomialKernelCuda(const at::Tensor & self, int64_t num_samples, b
 
 at::Tensor & MultinomialOutKernelCuda(const at::Tensor & self, int64_t num_samples, bool replacement, ::std::optional<at::Generator> generator, at::Tensor & out) {
   DeviceBoxingGuard guard(self, out);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
   at::multinomial_outf(self, num_samples, replacement, generator, out);
   UnboxToFlagos(out);
@@ -12501,7 +12431,6 @@ at::Tensor & NormOutKernelCuda(const at::Tensor & self, const ::std::optional<at
 
 at::Tensor NormalTensorTensorKernelCuda(const at::Tensor & mean, const at::Tensor & std, ::std::optional<at::Generator> generator) {
   DeviceBoxingGuard guard(mean, std);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(mean.get_device());
   auto result = at::normal(mean, std, generator);
   UnboxToFlagos(result);
@@ -12510,7 +12439,6 @@ at::Tensor NormalTensorTensorKernelCuda(const at::Tensor & mean, const at::Tenso
 
 at::Tensor & NormalTensorTensorOutKernelCuda(const at::Tensor & mean, const at::Tensor & std, ::std::optional<at::Generator> generator, at::Tensor & out) {
   DeviceBoxingGuard guard(mean, std, out);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
   at::normal_outf(mean, std, generator, out);
   UnboxToFlagos(out);
@@ -12519,7 +12447,6 @@ at::Tensor & NormalTensorTensorOutKernelCuda(const at::Tensor & mean, const at::
 
 at::Tensor NormalTensorFloatKernelCuda(const at::Tensor & mean, double std, ::std::optional<at::Generator> generator) {
   DeviceBoxingGuard guard(mean);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(mean.get_device());
   auto result = at::normal(mean, std, generator);
   UnboxToFlagos(result);
@@ -12528,7 +12455,6 @@ at::Tensor NormalTensorFloatKernelCuda(const at::Tensor & mean, double std, ::st
 
 at::Tensor & NormalTensorFloatOutKernelCuda(const at::Tensor & mean, double std, ::std::optional<at::Generator> generator, at::Tensor & out) {
   DeviceBoxingGuard guard(mean, out);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
   at::normal_outf(mean, std, generator, out);
   UnboxToFlagos(out);
@@ -12537,7 +12463,6 @@ at::Tensor & NormalTensorFloatOutKernelCuda(const at::Tensor & mean, double std,
 
 at::Tensor NormalFloatTensorKernelCuda(double mean, const at::Tensor & std, ::std::optional<at::Generator> generator) {
   DeviceBoxingGuard guard(std);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(std.get_device());
   auto result = at::normal(mean, std, generator);
   UnboxToFlagos(result);
@@ -12546,7 +12471,6 @@ at::Tensor NormalFloatTensorKernelCuda(double mean, const at::Tensor & std, ::st
 
 at::Tensor & NormalFloatTensorOutKernelCuda(double mean, const at::Tensor & std, ::std::optional<at::Generator> generator, at::Tensor & out) {
   DeviceBoxingGuard guard(std, out);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
   at::normal_outf(mean, std, generator, out);
   UnboxToFlagos(out);
@@ -12562,7 +12486,6 @@ at::Tensor NormalFloatFloatKernelCuda(double mean, double std, at::IntArrayRef s
   at::Device _req_dev = device.has_value() ? *device : at::Device(at::kPrivateUse1, 0);
   at::Device _cuda_dev = _req_dev.type() == at::kPrivateUse1
       ? at::Device(at::kCUDA, _req_dev.index()) : _req_dev;
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(_cuda_dev.index());
   auto result = at::normal(mean, std, size, generator, dtype, layout, ::std::optional<at::Device>(_cuda_dev), pin_memory);
   if (result.device().type() == at::kCUDA) UnboxToFlagos(result);
@@ -12571,7 +12494,6 @@ at::Tensor NormalFloatFloatKernelCuda(double mean, double std, at::IntArrayRef s
 
 at::Tensor & NormalFloatFloatOutKernelCuda(double mean, double std, at::IntArrayRef size, ::std::optional<at::Generator> generator, at::Tensor & out) {
   DeviceBoxingGuard guard(out);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
   at::normal_outf(mean, std, size, generator, out);
   UnboxToFlagos(out);
@@ -12580,7 +12502,6 @@ at::Tensor & NormalFloatFloatOutKernelCuda(double mean, double std, at::IntArray
 
 at::Tensor & NormalOutKernelCuda(const at::Tensor & self, double mean, double std, ::std::optional<at::Generator> generator, at::Tensor & out) {
   DeviceBoxingGuard guard(self, out);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
   at::normal_outf(self, mean, std, generator, out);
   UnboxToFlagos(out);
@@ -12589,7 +12510,6 @@ at::Tensor & NormalOutKernelCuda(const at::Tensor & self, double mean, double st
 
 at::Tensor & NormalInplaceKernelCuda(at::Tensor & self, double mean, double std, ::std::optional<at::Generator> generator) {
   DeviceBoxingGuard guard(self);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
   self.normal_(mean, std, generator);
   return self;
@@ -12597,7 +12517,6 @@ at::Tensor & NormalInplaceKernelCuda(at::Tensor & self, double mean, double std,
 
 at::Tensor NormalFunctionalKernelCuda(const at::Tensor & self, double mean, double std, ::std::optional<at::Generator> generator) {
   DeviceBoxingGuard guard(self);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
   auto result = at::normal_functional(self, mean, std, generator);
   UnboxToFlagos(result);
@@ -12698,7 +12617,6 @@ at::Tensor & PixelUnshuffleOutKernelCuda(const at::Tensor & self, int64_t downsc
 
 at::Tensor PoissonKernelCuda(const at::Tensor & self, ::std::optional<at::Generator> generator) {
   DeviceBoxingGuard guard(self);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
   auto result = at::poisson(self, generator);
   UnboxToFlagos(result);
@@ -12707,7 +12625,6 @@ at::Tensor PoissonKernelCuda(const at::Tensor & self, ::std::optional<at::Genera
 
 at::Tensor & PoissonOutKernelCuda(const at::Tensor & self, ::std::optional<at::Generator> generator, at::Tensor & out) {
   DeviceBoxingGuard guard(self, out);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
   at::poisson_outf(self, generator, out);
   UnboxToFlagos(out);
@@ -12994,7 +12911,6 @@ at::Tensor RandGeneratorKernelCuda(at::IntArrayRef size, ::std::optional<at::Gen
   at::Device _req_dev = device.has_value() ? *device : at::Device(at::kPrivateUse1, 0);
   at::Device _cuda_dev = _req_dev.type() == at::kPrivateUse1
       ? at::Device(at::kCUDA, _req_dev.index()) : _req_dev;
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(_cuda_dev.index());
   auto result = at::rand(size, generator, dtype, layout, ::std::optional<at::Device>(_cuda_dev), pin_memory);
   if (result.device().type() == at::kCUDA) UnboxToFlagos(result);
@@ -13010,7 +12926,6 @@ at::Tensor RandGeneratorWithNamesKernelCuda(at::IntArrayRef size, ::std::optiona
   at::Device _req_dev = device.has_value() ? *device : at::Device(at::kPrivateUse1, 0);
   at::Device _cuda_dev = _req_dev.type() == at::kPrivateUse1
       ? at::Device(at::kCUDA, _req_dev.index()) : _req_dev;
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(_cuda_dev.index());
   auto result = at::rand(size, generator, names, dtype, layout, ::std::optional<at::Device>(_cuda_dev), pin_memory);
   if (result.device().type() == at::kCUDA) UnboxToFlagos(result);
@@ -13019,7 +12934,6 @@ at::Tensor RandGeneratorWithNamesKernelCuda(at::IntArrayRef size, ::std::optiona
 
 at::Tensor & RandGeneratorWithNamesOutKernelCuda(at::IntArrayRef size, ::std::optional<at::Generator> generator, ::std::optional<at::DimnameList> names, at::Tensor & out) {
   DeviceBoxingGuard guard(out);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
   at::rand_outf(size, generator, names, out);
   UnboxToFlagos(out);
@@ -13059,34 +12973,14 @@ at::Tensor & RandOutKernelCuda(at::IntArrayRef size, at::Tensor & out) {
 
 at::Tensor RandLikeKernelCuda(const at::Tensor & self, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory, ::std::optional<at::MemoryFormat> memory_format) {
   DeviceBoxingGuard guard(self);
-  ::std::optional<at::Generator> _flagos_gen = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
-  auto result = at::rand_like(self, _flagos_gen, dtype, layout, device, pin_memory, memory_format);
+  auto result = at::rand_like(self, dtype, layout, device, pin_memory, memory_format);
   UnboxToFlagos(result);
   return result;
-}
-
-at::Tensor RandLikeGeneratorKernelCuda(const at::Tensor & self, ::std::optional<at::Generator> generator, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory, ::std::optional<at::MemoryFormat> memory_format) {
-  DeviceBoxingGuard guard(self);
-  ValidateGeneratorForCudaBoxing(generator);
-  if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
-  auto result = at::rand_like(self, generator, dtype, layout, device, pin_memory, memory_format);
-  UnboxToFlagos(result);
-  return result;
-}
-
-at::Tensor & RandLikeGeneratorOutKernelCuda(const at::Tensor & self, ::std::optional<at::Generator> generator, ::std::optional<at::MemoryFormat> memory_format, at::Tensor & out) {
-  DeviceBoxingGuard guard(self, out);
-  ValidateGeneratorForCudaBoxing(generator);
-  if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
-  at::rand_like_outf(self, generator, memory_format, out);
-  UnboxToFlagos(out);
-  return out;
 }
 
 at::Tensor & RandLikeOutKernelCuda(const at::Tensor & self, ::std::optional<at::MemoryFormat> memory_format, at::Tensor & out) {
   DeviceBoxingGuard guard(self, out);
-  ::std::optional<at::Generator> _flagos_gen = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
-  at::rand_like_outf(self, _flagos_gen, memory_format, out);
+  at::rand_like_outf(self, memory_format, out);
   UnboxToFlagos(out);
   return out;
 }
@@ -13115,7 +13009,6 @@ at::Tensor RandintGeneratorKernelCuda(int64_t high, at::IntArrayRef size, ::std:
   at::Device _req_dev = device.has_value() ? *device : at::Device(at::kPrivateUse1, 0);
   at::Device _cuda_dev = _req_dev.type() == at::kPrivateUse1
       ? at::Device(at::kCUDA, _req_dev.index()) : _req_dev;
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(_cuda_dev.index());
   auto result = at::randint(high, size, generator, dtype, layout, ::std::optional<at::Device>(_cuda_dev), pin_memory);
   if (result.device().type() == at::kCUDA) UnboxToFlagos(result);
@@ -13124,7 +13017,6 @@ at::Tensor RandintGeneratorKernelCuda(int64_t high, at::IntArrayRef size, ::std:
 
 at::Tensor & RandintGeneratorOutKernelCuda(int64_t high, at::IntArrayRef size, ::std::optional<at::Generator> generator, at::Tensor & out) {
   DeviceBoxingGuard guard(out);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
   at::randint_outf(high, size, generator, out);
   UnboxToFlagos(out);
@@ -13155,7 +13047,6 @@ at::Tensor RandintLowGeneratorKernelCuda(int64_t low, int64_t high, at::IntArray
   at::Device _req_dev = device.has_value() ? *device : at::Device(at::kPrivateUse1, 0);
   at::Device _cuda_dev = _req_dev.type() == at::kPrivateUse1
       ? at::Device(at::kCUDA, _req_dev.index()) : _req_dev;
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(_cuda_dev.index());
   auto result = at::randint(low, high, size, generator, dtype, layout, ::std::optional<at::Device>(_cuda_dev), pin_memory);
   if (result.device().type() == at::kCUDA) UnboxToFlagos(result);
@@ -13164,7 +13055,6 @@ at::Tensor RandintLowGeneratorKernelCuda(int64_t low, int64_t high, at::IntArray
 
 at::Tensor & RandintLowGeneratorOutKernelCuda(int64_t low, int64_t high, at::IntArrayRef size, ::std::optional<at::Generator> generator, at::Tensor & out) {
   DeviceBoxingGuard guard(out);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
   at::randint_outf(low, high, size, generator, out);
   UnboxToFlagos(out);
@@ -13189,102 +13079,42 @@ at::Tensor & RandintOutKernelCuda(int64_t high, at::IntArrayRef size, at::Tensor
 
 at::Tensor RandintLikeKernelCuda(const at::Tensor & self, int64_t high, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory, ::std::optional<at::MemoryFormat> memory_format) {
   DeviceBoxingGuard guard(self);
-  ::std::optional<at::Generator> _flagos_gen = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
-  auto result = at::randint_like(self, high, _flagos_gen, dtype, layout, device, pin_memory, memory_format);
+  auto result = at::randint_like(self, high, dtype, layout, device, pin_memory, memory_format);
   UnboxToFlagos(result);
   return result;
 }
 
 at::Tensor RandintLikeTensorKernelCuda(const at::Tensor & self, const at::Tensor & high, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory, ::std::optional<at::MemoryFormat> memory_format) {
   DeviceBoxingGuard guard(self, high);
-  ::std::optional<at::Generator> _flagos_gen = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
-  auto result = at::randint_like(self, high, _flagos_gen, dtype, layout, device, pin_memory, memory_format);
+  auto result = at::randint_like(self, high, dtype, layout, device, pin_memory, memory_format);
   UnboxToFlagos(result);
   return result;
-}
-
-at::Tensor RandintLikeTensorGeneratorKernelCuda(const at::Tensor & self, const at::Tensor & high, ::std::optional<at::Generator> generator, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory, ::std::optional<at::MemoryFormat> memory_format) {
-  DeviceBoxingGuard guard(self, high);
-  ValidateGeneratorForCudaBoxing(generator);
-  if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
-  auto result = at::randint_like(self, high, generator, dtype, layout, device, pin_memory, memory_format);
-  UnboxToFlagos(result);
-  return result;
-}
-
-at::Tensor & RandintLikeTensorGeneratorOutKernelCuda(const at::Tensor & self, const at::Tensor & high, ::std::optional<at::Generator> generator, ::std::optional<at::MemoryFormat> memory_format, at::Tensor & out) {
-  DeviceBoxingGuard guard(self, high, out);
-  ValidateGeneratorForCudaBoxing(generator);
-  if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
-  at::randint_like_outf(self, high, generator, memory_format, out);
-  UnboxToFlagos(out);
-  return out;
 }
 
 at::Tensor & RandintLikeTensorOutKernelCuda(const at::Tensor & self, const at::Tensor & high, ::std::optional<at::MemoryFormat> memory_format, at::Tensor & out) {
   DeviceBoxingGuard guard(self, high, out);
-  ::std::optional<at::Generator> _flagos_gen = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
-  at::randint_like_outf(self, high, _flagos_gen, memory_format, out);
-  UnboxToFlagos(out);
-  return out;
-}
-
-at::Tensor RandintLikeGeneratorKernelCuda(const at::Tensor & self, int64_t high, ::std::optional<at::Generator> generator, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory, ::std::optional<at::MemoryFormat> memory_format) {
-  DeviceBoxingGuard guard(self);
-  ValidateGeneratorForCudaBoxing(generator);
-  if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
-  auto result = at::randint_like(self, high, generator, dtype, layout, device, pin_memory, memory_format);
-  UnboxToFlagos(result);
-  return result;
-}
-
-at::Tensor & RandintLikeGeneratorOutKernelCuda(const at::Tensor & self, int64_t high, ::std::optional<at::Generator> generator, ::std::optional<at::MemoryFormat> memory_format, at::Tensor & out) {
-  DeviceBoxingGuard guard(self, out);
-  ValidateGeneratorForCudaBoxing(generator);
-  if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
-  at::randint_like_outf(self, high, generator, memory_format, out);
+  at::randint_like_outf(self, high, memory_format, out);
   UnboxToFlagos(out);
   return out;
 }
 
 at::Tensor RandintLikeLowDtypeKernelCuda(const at::Tensor & self, int64_t low, int64_t high, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory, ::std::optional<at::MemoryFormat> memory_format) {
   DeviceBoxingGuard guard(self);
-  ::std::optional<at::Generator> _flagos_gen = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
-  auto result = at::randint_like(self, low, high, _flagos_gen, dtype, layout, device, pin_memory, memory_format);
+  auto result = at::randint_like(self, low, high, dtype, layout, device, pin_memory, memory_format);
   UnboxToFlagos(result);
   return result;
 }
 
 at::Tensor & RandintLikeLowDtypeOutKernelCuda(const at::Tensor & self, int64_t low, int64_t high, ::std::optional<at::MemoryFormat> memory_format, at::Tensor & out) {
   DeviceBoxingGuard guard(self, out);
-  ::std::optional<at::Generator> _flagos_gen = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
-  at::randint_like_outf(self, low, high, _flagos_gen, memory_format, out);
-  UnboxToFlagos(out);
-  return out;
-}
-
-at::Tensor RandintLikeLowGeneratorDtypeKernelCuda(const at::Tensor & self, int64_t low, int64_t high, ::std::optional<at::Generator> generator, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory, ::std::optional<at::MemoryFormat> memory_format) {
-  DeviceBoxingGuard guard(self);
-  ValidateGeneratorForCudaBoxing(generator);
-  if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
-  auto result = at::randint_like(self, low, high, generator, dtype, layout, device, pin_memory, memory_format);
-  UnboxToFlagos(result);
-  return result;
-}
-
-at::Tensor & RandintLikeLowGeneratorDtypeOutKernelCuda(const at::Tensor & self, int64_t low, int64_t high, ::std::optional<at::Generator> generator, ::std::optional<at::MemoryFormat> memory_format, at::Tensor & out) {
-  DeviceBoxingGuard guard(self, out);
-  ValidateGeneratorForCudaBoxing(generator);
-  if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
-  at::randint_like_outf(self, low, high, generator, memory_format, out);
+  at::randint_like_outf(self, low, high, memory_format, out);
   UnboxToFlagos(out);
   return out;
 }
 
 at::Tensor & RandintLikeOutKernelCuda(const at::Tensor & self, int64_t high, ::std::optional<at::MemoryFormat> memory_format, at::Tensor & out) {
   DeviceBoxingGuard guard(self, out);
-  ::std::optional<at::Generator> _flagos_gen = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
-  at::randint_like_outf(self, high, _flagos_gen, memory_format, out);
+  at::randint_like_outf(self, high, memory_format, out);
   UnboxToFlagos(out);
   return out;
 }
@@ -13313,7 +13143,6 @@ at::Tensor RandnGeneratorKernelCuda(at::IntArrayRef size, ::std::optional<at::Ge
   at::Device _req_dev = device.has_value() ? *device : at::Device(at::kPrivateUse1, 0);
   at::Device _cuda_dev = _req_dev.type() == at::kPrivateUse1
       ? at::Device(at::kCUDA, _req_dev.index()) : _req_dev;
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(_cuda_dev.index());
   auto result = at::randn(size, generator, dtype, layout, ::std::optional<at::Device>(_cuda_dev), pin_memory);
   if (result.device().type() == at::kCUDA) UnboxToFlagos(result);
@@ -13329,7 +13158,6 @@ at::Tensor RandnGeneratorWithNamesKernelCuda(at::IntArrayRef size, ::std::option
   at::Device _req_dev = device.has_value() ? *device : at::Device(at::kPrivateUse1, 0);
   at::Device _cuda_dev = _req_dev.type() == at::kPrivateUse1
       ? at::Device(at::kCUDA, _req_dev.index()) : _req_dev;
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(_cuda_dev.index());
   auto result = at::randn(size, generator, names, dtype, layout, ::std::optional<at::Device>(_cuda_dev), pin_memory);
   if (result.device().type() == at::kCUDA) UnboxToFlagos(result);
@@ -13338,7 +13166,6 @@ at::Tensor RandnGeneratorWithNamesKernelCuda(at::IntArrayRef size, ::std::option
 
 at::Tensor & RandnGeneratorWithNamesOutKernelCuda(at::IntArrayRef size, ::std::optional<at::Generator> generator, ::std::optional<at::DimnameList> names, at::Tensor & out) {
   DeviceBoxingGuard guard(out);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
   at::randn_outf(size, generator, names, out);
   UnboxToFlagos(out);
@@ -13370,41 +13197,20 @@ at::Tensor & RandnNamesOutKernelCuda(at::IntArrayRef size, ::std::optional<at::D
 
 at::Tensor RandnLikeKernelCuda(const at::Tensor & self, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory, ::std::optional<at::MemoryFormat> memory_format) {
   DeviceBoxingGuard guard(self);
-  ::std::optional<at::Generator> _flagos_gen = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
-  auto result = at::randn_like(self, _flagos_gen, dtype, layout, device, pin_memory, memory_format);
+  auto result = at::randn_like(self, dtype, layout, device, pin_memory, memory_format);
   UnboxToFlagos(result);
   return result;
-}
-
-at::Tensor RandnLikeGeneratorKernelCuda(const at::Tensor & self, ::std::optional<at::Generator> generator, ::std::optional<at::ScalarType> dtype, ::std::optional<at::Layout> layout, ::std::optional<at::Device> device, ::std::optional<bool> pin_memory, ::std::optional<at::MemoryFormat> memory_format) {
-  DeviceBoxingGuard guard(self);
-  ValidateGeneratorForCudaBoxing(generator);
-  if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
-  auto result = at::randn_like(self, generator, dtype, layout, device, pin_memory, memory_format);
-  UnboxToFlagos(result);
-  return result;
-}
-
-at::Tensor & RandnLikeGeneratorOutKernelCuda(const at::Tensor & self, ::std::optional<at::Generator> generator, ::std::optional<at::MemoryFormat> memory_format, at::Tensor & out) {
-  DeviceBoxingGuard guard(self, out);
-  ValidateGeneratorForCudaBoxing(generator);
-  if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
-  at::randn_like_outf(self, generator, memory_format, out);
-  UnboxToFlagos(out);
-  return out;
 }
 
 at::Tensor & RandnLikeOutKernelCuda(const at::Tensor & self, ::std::optional<at::MemoryFormat> memory_format, at::Tensor & out) {
   DeviceBoxingGuard guard(self, out);
-  ::std::optional<at::Generator> _flagos_gen = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
-  at::randn_like_outf(self, _flagos_gen, memory_format, out);
+  at::randn_like_outf(self, memory_format, out);
   UnboxToFlagos(out);
   return out;
 }
 
 at::Tensor RandomKernelCuda(const at::Tensor & self, ::std::optional<at::Generator> generator) {
   DeviceBoxingGuard guard(self);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
   auto result = at::random(self, generator);
   UnboxToFlagos(result);
@@ -13413,7 +13219,6 @@ at::Tensor RandomKernelCuda(const at::Tensor & self, ::std::optional<at::Generat
 
 at::Tensor RandomFromKernelCuda(const at::Tensor & self, int64_t from, ::std::optional<int64_t> to, ::std::optional<at::Generator> generator) {
   DeviceBoxingGuard guard(self);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
   auto result = at::random(self, from, to, generator);
   UnboxToFlagos(result);
@@ -13422,7 +13227,6 @@ at::Tensor RandomFromKernelCuda(const at::Tensor & self, int64_t from, ::std::op
 
 at::Tensor & RandomFromOutKernelCuda(const at::Tensor & self, int64_t from, ::std::optional<int64_t> to, ::std::optional<at::Generator> generator, at::Tensor & out) {
   DeviceBoxingGuard guard(self, out);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
   at::random_outf(self, from, to, generator, out);
   UnboxToFlagos(out);
@@ -13431,7 +13235,6 @@ at::Tensor & RandomFromOutKernelCuda(const at::Tensor & self, int64_t from, ::st
 
 at::Tensor & RandomOutKernelCuda(const at::Tensor & self, ::std::optional<at::Generator> generator, at::Tensor & out) {
   DeviceBoxingGuard guard(self, out);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
   at::random_outf(self, generator, out);
   UnboxToFlagos(out);
@@ -13440,7 +13243,6 @@ at::Tensor & RandomOutKernelCuda(const at::Tensor & self, ::std::optional<at::Ge
 
 at::Tensor RandomToKernelCuda(const at::Tensor & self, int64_t to, ::std::optional<at::Generator> generator) {
   DeviceBoxingGuard guard(self);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
   auto result = at::random(self, to, generator);
   UnboxToFlagos(result);
@@ -13449,7 +13251,6 @@ at::Tensor RandomToKernelCuda(const at::Tensor & self, int64_t to, ::std::option
 
 at::Tensor & RandomToOutKernelCuda(const at::Tensor & self, int64_t to, ::std::optional<at::Generator> generator, at::Tensor & out) {
   DeviceBoxingGuard guard(self, out);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
   at::random_outf(self, to, generator, out);
   UnboxToFlagos(out);
@@ -13458,7 +13259,6 @@ at::Tensor & RandomToOutKernelCuda(const at::Tensor & self, int64_t to, ::std::o
 
 at::Tensor & RandomInplaceKernelCuda(at::Tensor & self, ::std::optional<at::Generator> generator) {
   DeviceBoxingGuard guard(self);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
   self.random_(generator);
   return self;
@@ -13466,7 +13266,6 @@ at::Tensor & RandomInplaceKernelCuda(at::Tensor & self, ::std::optional<at::Gene
 
 at::Tensor & RandomInplaceFromKernelCuda(at::Tensor & self, int64_t from, ::std::optional<int64_t> to, ::std::optional<at::Generator> generator) {
   DeviceBoxingGuard guard(self);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
   self.random_(from, to, generator);
   return self;
@@ -13474,7 +13273,6 @@ at::Tensor & RandomInplaceFromKernelCuda(at::Tensor & self, int64_t from, ::std:
 
 at::Tensor & RandomInplaceToKernelCuda(at::Tensor & self, int64_t to, ::std::optional<at::Generator> generator) {
   DeviceBoxingGuard guard(self);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
   self.random_(to, generator);
   return self;
@@ -13504,7 +13302,6 @@ at::Tensor RandpermGeneratorKernelCuda(int64_t n, ::std::optional<at::Generator>
   at::Device _req_dev = device.has_value() ? *device : at::Device(at::kPrivateUse1, 0);
   at::Device _cuda_dev = _req_dev.type() == at::kPrivateUse1
       ? at::Device(at::kCUDA, _req_dev.index()) : _req_dev;
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(_cuda_dev.index());
   auto result = at::randperm(n, generator, dtype, layout, ::std::optional<at::Device>(_cuda_dev), pin_memory);
   if (result.device().type() == at::kCUDA) UnboxToFlagos(result);
@@ -13513,7 +13310,6 @@ at::Tensor RandpermGeneratorKernelCuda(int64_t n, ::std::optional<at::Generator>
 
 at::Tensor & RandpermGeneratorOutKernelCuda(int64_t n, ::std::optional<at::Generator> generator, at::Tensor & out) {
   DeviceBoxingGuard guard(out);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
   at::randperm_outf(n, generator, out);
   UnboxToFlagos(out);
@@ -13970,7 +13766,6 @@ at::Tensor & RowIndicesCopyOutKernelCuda(const at::Tensor & self, at::Tensor & o
 
 at::Tensor RreluWithNoiseKernelCuda(const at::Tensor & self, at::Tensor & noise, const at::Scalar & lower, const at::Scalar & upper, bool training, ::std::optional<at::Generator> generator) {
   DeviceBoxingGuard guard(self, noise);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
   auto result = at::rrelu_with_noise(self, noise, lower, upper, training, generator);
   UnboxToFlagos(result);
@@ -13979,7 +13774,6 @@ at::Tensor RreluWithNoiseKernelCuda(const at::Tensor & self, at::Tensor & noise,
 
 at::Tensor & RreluWithNoiseOutKernelCuda(const at::Tensor & self, at::Tensor & noise, const at::Scalar & lower, const at::Scalar & upper, bool training, ::std::optional<at::Generator> generator, at::Tensor & out) {
   DeviceBoxingGuard guard(self, noise, out);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(noise.get_device());
   at::rrelu_with_noise_outf(self, noise, lower, upper, training, generator, out);
   UnboxToFlagos(noise);
@@ -13989,7 +13783,6 @@ at::Tensor & RreluWithNoiseOutKernelCuda(const at::Tensor & self, at::Tensor & n
 
 at::Tensor & RreluWithNoiseInplaceKernelCuda(at::Tensor & self, at::Tensor & noise, const at::Scalar & lower, const at::Scalar & upper, bool training, ::std::optional<at::Generator> generator) {
   DeviceBoxingGuard guard(self, noise);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
   at::rrelu_with_noise_(self, noise, lower, upper, training, generator);
   return self;
@@ -14011,7 +13804,6 @@ at::Tensor & RreluWithNoiseBackwardOutKernelCuda(const at::Tensor & grad_output,
 
 ::std::tuple<at::Tensor,at::Tensor> RreluWithNoiseFunctionalKernelCuda(const at::Tensor & self, const at::Tensor & noise, const at::Scalar & lower, const at::Scalar & upper, bool training, ::std::optional<at::Generator> generator) {
   DeviceBoxingGuard guard(self, noise);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
   auto result = at::rrelu_with_noise_functional(self, noise, lower, upper, training, generator);
   UnboxToFlagos(std::get<0>(result));
@@ -16257,7 +16049,6 @@ at::Tensor & UnfoldCopyOutKernelCuda(const at::Tensor & self, int64_t dimension,
 
 at::Tensor UniformKernelCuda(const at::Tensor & self, double from, double to, ::std::optional<at::Generator> generator) {
   DeviceBoxingGuard guard(self);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
   auto result = at::uniform(self, from, to, generator);
   UnboxToFlagos(result);
@@ -16266,7 +16057,6 @@ at::Tensor UniformKernelCuda(const at::Tensor & self, double from, double to, ::
 
 at::Tensor & UniformOutKernelCuda(const at::Tensor & self, double from, double to, ::std::optional<at::Generator> generator, at::Tensor & out) {
   DeviceBoxingGuard guard(self, out);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(out.get_device());
   at::uniform_outf(self, from, to, generator, out);
   UnboxToFlagos(out);
@@ -16275,7 +16065,6 @@ at::Tensor & UniformOutKernelCuda(const at::Tensor & self, double from, double t
 
 at::Tensor & UniformInplaceKernelCuda(at::Tensor & self, double from, double to, ::std::optional<at::Generator> generator) {
   DeviceBoxingGuard guard(self);
-  ValidateGeneratorForCudaBoxing(generator);
   if (!generator.has_value()) generator = at::native::flagos::GetFlagosDefaultCudaGenerator(self.get_device());
   self.uniform_(from, to, generator);
   return self;
@@ -17274,10 +17063,8 @@ REGISTER_IMPL_TO_DISPATCHER(PrivScaledDotProductEfficientAttentionBackwardFn, pr
 REGISTER_IMPL_TO_DISPATCHER(PrivScaledDotProductFlashAttentionBackwardFn, priv_scaled_dot_product_flash_attention_backward_dispatcher, Backend::kCuda, PrivScaledDotProductFlashAttentionBackwardKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivScaledDotProductFusedAttentionOverrideableBackwardFn, priv_scaled_dot_product_fused_attention_overrideable_backward_dispatcher, Backend::kCuda, PrivScaledDotProductFusedAttentionOverrideableBackwardKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivScaledGroupedMmFn, priv_scaled_grouped_mm_dispatcher, Backend::kCuda, PrivScaledGroupedMmKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(PrivScaledGroupedMmV2Fn, priv_scaled_grouped_mm_v2_dispatcher, Backend::kCuda, PrivScaledGroupedMmV2KernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivScaledMmFn, priv_scaled_mm_dispatcher, Backend::kCuda, PrivScaledMmKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivScaledMmOutFn, priv_scaled_mm_out_dispatcher, Backend::kCuda, PrivScaledMmOutKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(PrivScaledMmV2Fn, priv_scaled_mm_v2_dispatcher, Backend::kCuda, PrivScaledMmV2KernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivSegmentReduceBackwardFn, priv_segment_reduce_backward_dispatcher, Backend::kCuda, PrivSegmentReduceBackwardKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivSegmentReduceBackwardOutFn, priv_segment_reduce_backward_out_dispatcher, Backend::kCuda, PrivSegmentReduceBackwardOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(PrivSlowConv2dBackwardGradInputFn, priv_slow_conv2d_backward_grad_input_dispatcher, Backend::kCuda, PrivSlowConv2dBackwardGradInputKernelCuda)
@@ -18355,8 +18142,6 @@ REGISTER_IMPL_TO_DISPATCHER(RandNamesFn, rand_names_dispatcher, Backend::kCuda, 
 REGISTER_IMPL_TO_DISPATCHER(RandNamesOutFn, rand_names_out_dispatcher, Backend::kCuda, RandNamesOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(RandOutFn, rand_out_dispatcher, Backend::kCuda, RandOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(RandLikeFn, rand_like_dispatcher, Backend::kCuda, RandLikeKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(RandLikeGeneratorFn, rand_like_generator_dispatcher, Backend::kCuda, RandLikeGeneratorKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(RandLikeGeneratorOutFn, rand_like_generator_out_dispatcher, Backend::kCuda, RandLikeGeneratorOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(RandLikeOutFn, rand_like_out_dispatcher, Backend::kCuda, RandLikeOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(RandintFn, randint_dispatcher, Backend::kCuda, RandintKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(RandintGeneratorFn, randint_generator_dispatcher, Backend::kCuda, RandintGeneratorKernelCuda)
@@ -18368,15 +18153,9 @@ REGISTER_IMPL_TO_DISPATCHER(RandintLowOutFn, randint_low_out_dispatcher, Backend
 REGISTER_IMPL_TO_DISPATCHER(RandintOutFn, randint_out_dispatcher, Backend::kCuda, RandintOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(RandintLikeFn, randint_like_dispatcher, Backend::kCuda, RandintLikeKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(RandintLikeTensorFn, randint_like_tensor_dispatcher, Backend::kCuda, RandintLikeTensorKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(RandintLikeTensorGeneratorFn, randint_like_tensor_generator_dispatcher, Backend::kCuda, RandintLikeTensorGeneratorKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(RandintLikeTensorGeneratorOutFn, randint_like_tensor_generator_out_dispatcher, Backend::kCuda, RandintLikeTensorGeneratorOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(RandintLikeTensorOutFn, randint_like_tensor_out_dispatcher, Backend::kCuda, RandintLikeTensorOutKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(RandintLikeGeneratorFn, randint_like_generator_dispatcher, Backend::kCuda, RandintLikeGeneratorKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(RandintLikeGeneratorOutFn, randint_like_generator_out_dispatcher, Backend::kCuda, RandintLikeGeneratorOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(RandintLikeLowDtypeFn, randint_like_low_dtype_dispatcher, Backend::kCuda, RandintLikeLowDtypeKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(RandintLikeLowDtypeOutFn, randint_like_low_dtype_out_dispatcher, Backend::kCuda, RandintLikeLowDtypeOutKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(RandintLikeLowGeneratorDtypeFn, randint_like_low_generator_dtype_dispatcher, Backend::kCuda, RandintLikeLowGeneratorDtypeKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(RandintLikeLowGeneratorDtypeOutFn, randint_like_low_generator_dtype_out_dispatcher, Backend::kCuda, RandintLikeLowGeneratorDtypeOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(RandintLikeOutFn, randint_like_out_dispatcher, Backend::kCuda, RandintLikeOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(RandnFn, randn_dispatcher, Backend::kCuda, RandnKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(RandnGeneratorFn, randn_generator_dispatcher, Backend::kCuda, RandnGeneratorKernelCuda)
@@ -18385,8 +18164,6 @@ REGISTER_IMPL_TO_DISPATCHER(RandnGeneratorWithNamesOutFn, randn_generator_with_n
 REGISTER_IMPL_TO_DISPATCHER(RandnNamesFn, randn_names_dispatcher, Backend::kCuda, RandnNamesKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(RandnNamesOutFn, randn_names_out_dispatcher, Backend::kCuda, RandnNamesOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(RandnLikeFn, randn_like_dispatcher, Backend::kCuda, RandnLikeKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(RandnLikeGeneratorFn, randn_like_generator_dispatcher, Backend::kCuda, RandnLikeGeneratorKernelCuda)
-REGISTER_IMPL_TO_DISPATCHER(RandnLikeGeneratorOutFn, randn_like_generator_out_dispatcher, Backend::kCuda, RandnLikeGeneratorOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(RandnLikeOutFn, randn_like_out_dispatcher, Backend::kCuda, RandnLikeOutKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(RandomFn, random_dispatcher, Backend::kCuda, RandomKernelCuda)
 REGISTER_IMPL_TO_DISPATCHER(RandomFromFn, random_from_dispatcher, Backend::kCuda, RandomFromKernelCuda)

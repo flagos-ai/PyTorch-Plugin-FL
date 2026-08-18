@@ -1346,17 +1346,11 @@ DECLARE_DISPATCHER(PrivScaledDotProductFusedAttentionOverrideableBackwardFn, pri
 using PrivScaledGroupedMmFn = at::Tensor (*)(const at::Tensor &, const at::Tensor &, const at::Tensor &, const at::Tensor &, const ::std::optional<at::Tensor> &, const ::std::optional<at::Tensor> &, const ::std::optional<at::Tensor> &, ::std::optional<at::ScalarType>, bool);
 DECLARE_DISPATCHER(PrivScaledGroupedMmFn, priv_scaled_grouped_mm_dispatcher)
 
-using PrivScaledGroupedMmV2Fn = at::Tensor (*)(const at::Tensor &, const at::Tensor &, at::TensorList, at::IntArrayRef, at::IntArrayRef, at::TensorList, at::IntArrayRef, at::IntArrayRef, const ::std::optional<at::Tensor> &, const ::std::optional<at::Tensor> &, ::std::optional<at::ScalarType>, at::IntArrayRef, bool);
-DECLARE_DISPATCHER(PrivScaledGroupedMmV2Fn, priv_scaled_grouped_mm_v2_dispatcher)
-
 using PrivScaledMmFn = at::Tensor (*)(const at::Tensor &, const at::Tensor &, const at::Tensor &, const at::Tensor &, const ::std::optional<at::Tensor> &, const ::std::optional<at::Tensor> &, ::std::optional<at::ScalarType>, bool);
 DECLARE_DISPATCHER(PrivScaledMmFn, priv_scaled_mm_dispatcher)
 
 using PrivScaledMmOutFn = at::Tensor & (*)(const at::Tensor &, const at::Tensor &, const at::Tensor &, const at::Tensor &, const ::std::optional<at::Tensor> &, const ::std::optional<at::Tensor> &, ::std::optional<at::ScalarType>, bool, at::Tensor &);
 DECLARE_DISPATCHER(PrivScaledMmOutFn, priv_scaled_mm_out_dispatcher)
-
-using PrivScaledMmV2Fn = at::Tensor (*)(const at::Tensor &, const at::Tensor &, at::TensorList, at::IntArrayRef, at::IntArrayRef, at::TensorList, at::IntArrayRef, at::IntArrayRef, const ::std::optional<at::Tensor> &, ::std::optional<at::ScalarType>, at::IntArrayRef, bool);
-DECLARE_DISPATCHER(PrivScaledMmV2Fn, priv_scaled_mm_v2_dispatcher)
 
 using PrivSegmentReduceBackwardFn = at::Tensor (*)(const at::Tensor &, const at::Tensor &, const at::Tensor &, c10::string_view, const ::std::optional<at::Tensor> &, const ::std::optional<at::Tensor> &, int64_t, const ::std::optional<at::Scalar> &);
 DECLARE_DISPATCHER(PrivSegmentReduceBackwardFn, priv_segment_reduce_backward_dispatcher)
@@ -4589,12 +4583,6 @@ DECLARE_DISPATCHER(RandOutFn, rand_out_dispatcher)
 using RandLikeFn = at::Tensor (*)(const at::Tensor &, ::std::optional<at::ScalarType>, ::std::optional<at::Layout>, ::std::optional<at::Device>, ::std::optional<bool>, ::std::optional<at::MemoryFormat>);
 DECLARE_DISPATCHER(RandLikeFn, rand_like_dispatcher)
 
-using RandLikeGeneratorFn = at::Tensor (*)(const at::Tensor &, ::std::optional<at::Generator>, ::std::optional<at::ScalarType>, ::std::optional<at::Layout>, ::std::optional<at::Device>, ::std::optional<bool>, ::std::optional<at::MemoryFormat>);
-DECLARE_DISPATCHER(RandLikeGeneratorFn, rand_like_generator_dispatcher)
-
-using RandLikeGeneratorOutFn = at::Tensor & (*)(const at::Tensor &, ::std::optional<at::Generator>, ::std::optional<at::MemoryFormat>, at::Tensor &);
-DECLARE_DISPATCHER(RandLikeGeneratorOutFn, rand_like_generator_out_dispatcher)
-
 using RandLikeOutFn = at::Tensor & (*)(const at::Tensor &, ::std::optional<at::MemoryFormat>, at::Tensor &);
 DECLARE_DISPATCHER(RandLikeOutFn, rand_like_out_dispatcher)
 
@@ -4628,32 +4616,14 @@ DECLARE_DISPATCHER(RandintLikeFn, randint_like_dispatcher)
 using RandintLikeTensorFn = at::Tensor (*)(const at::Tensor &, const at::Tensor &, ::std::optional<at::ScalarType>, ::std::optional<at::Layout>, ::std::optional<at::Device>, ::std::optional<bool>, ::std::optional<at::MemoryFormat>);
 DECLARE_DISPATCHER(RandintLikeTensorFn, randint_like_tensor_dispatcher)
 
-using RandintLikeTensorGeneratorFn = at::Tensor (*)(const at::Tensor &, const at::Tensor &, ::std::optional<at::Generator>, ::std::optional<at::ScalarType>, ::std::optional<at::Layout>, ::std::optional<at::Device>, ::std::optional<bool>, ::std::optional<at::MemoryFormat>);
-DECLARE_DISPATCHER(RandintLikeTensorGeneratorFn, randint_like_tensor_generator_dispatcher)
-
-using RandintLikeTensorGeneratorOutFn = at::Tensor & (*)(const at::Tensor &, const at::Tensor &, ::std::optional<at::Generator>, ::std::optional<at::MemoryFormat>, at::Tensor &);
-DECLARE_DISPATCHER(RandintLikeTensorGeneratorOutFn, randint_like_tensor_generator_out_dispatcher)
-
 using RandintLikeTensorOutFn = at::Tensor & (*)(const at::Tensor &, const at::Tensor &, ::std::optional<at::MemoryFormat>, at::Tensor &);
 DECLARE_DISPATCHER(RandintLikeTensorOutFn, randint_like_tensor_out_dispatcher)
-
-using RandintLikeGeneratorFn = at::Tensor (*)(const at::Tensor &, int64_t, ::std::optional<at::Generator>, ::std::optional<at::ScalarType>, ::std::optional<at::Layout>, ::std::optional<at::Device>, ::std::optional<bool>, ::std::optional<at::MemoryFormat>);
-DECLARE_DISPATCHER(RandintLikeGeneratorFn, randint_like_generator_dispatcher)
-
-using RandintLikeGeneratorOutFn = at::Tensor & (*)(const at::Tensor &, int64_t, ::std::optional<at::Generator>, ::std::optional<at::MemoryFormat>, at::Tensor &);
-DECLARE_DISPATCHER(RandintLikeGeneratorOutFn, randint_like_generator_out_dispatcher)
 
 using RandintLikeLowDtypeFn = at::Tensor (*)(const at::Tensor &, int64_t, int64_t, ::std::optional<at::ScalarType>, ::std::optional<at::Layout>, ::std::optional<at::Device>, ::std::optional<bool>, ::std::optional<at::MemoryFormat>);
 DECLARE_DISPATCHER(RandintLikeLowDtypeFn, randint_like_low_dtype_dispatcher)
 
 using RandintLikeLowDtypeOutFn = at::Tensor & (*)(const at::Tensor &, int64_t, int64_t, ::std::optional<at::MemoryFormat>, at::Tensor &);
 DECLARE_DISPATCHER(RandintLikeLowDtypeOutFn, randint_like_low_dtype_out_dispatcher)
-
-using RandintLikeLowGeneratorDtypeFn = at::Tensor (*)(const at::Tensor &, int64_t, int64_t, ::std::optional<at::Generator>, ::std::optional<at::ScalarType>, ::std::optional<at::Layout>, ::std::optional<at::Device>, ::std::optional<bool>, ::std::optional<at::MemoryFormat>);
-DECLARE_DISPATCHER(RandintLikeLowGeneratorDtypeFn, randint_like_low_generator_dtype_dispatcher)
-
-using RandintLikeLowGeneratorDtypeOutFn = at::Tensor & (*)(const at::Tensor &, int64_t, int64_t, ::std::optional<at::Generator>, ::std::optional<at::MemoryFormat>, at::Tensor &);
-DECLARE_DISPATCHER(RandintLikeLowGeneratorDtypeOutFn, randint_like_low_generator_dtype_out_dispatcher)
 
 using RandintLikeOutFn = at::Tensor & (*)(const at::Tensor &, int64_t, ::std::optional<at::MemoryFormat>, at::Tensor &);
 DECLARE_DISPATCHER(RandintLikeOutFn, randint_like_out_dispatcher)
@@ -4678,12 +4648,6 @@ DECLARE_DISPATCHER(RandnNamesOutFn, randn_names_out_dispatcher)
 
 using RandnLikeFn = at::Tensor (*)(const at::Tensor &, ::std::optional<at::ScalarType>, ::std::optional<at::Layout>, ::std::optional<at::Device>, ::std::optional<bool>, ::std::optional<at::MemoryFormat>);
 DECLARE_DISPATCHER(RandnLikeFn, randn_like_dispatcher)
-
-using RandnLikeGeneratorFn = at::Tensor (*)(const at::Tensor &, ::std::optional<at::Generator>, ::std::optional<at::ScalarType>, ::std::optional<at::Layout>, ::std::optional<at::Device>, ::std::optional<bool>, ::std::optional<at::MemoryFormat>);
-DECLARE_DISPATCHER(RandnLikeGeneratorFn, randn_like_generator_dispatcher)
-
-using RandnLikeGeneratorOutFn = at::Tensor & (*)(const at::Tensor &, ::std::optional<at::Generator>, ::std::optional<at::MemoryFormat>, at::Tensor &);
-DECLARE_DISPATCHER(RandnLikeGeneratorOutFn, randn_like_generator_out_dispatcher)
 
 using RandnLikeOutFn = at::Tensor & (*)(const at::Tensor &, ::std::optional<at::MemoryFormat>, at::Tensor &);
 DECLARE_DISPATCHER(RandnLikeOutFn, randn_like_out_dispatcher)
