@@ -12,16 +12,57 @@
 #include <ATen/Dispatch.h>
 #include <ATen/ExpandUtils.h>
 #include <ATen/ops/empty.h>
+#include <ATen/ops/_amp_foreach_non_finite_check_and_unscale.h>
+#include <ATen/ops/abs.h>
+#include <ATen/ops/acos.h>
+#include <ATen/ops/asin.h>
+#include <ATen/ops/atan.h>
+#include <ATen/ops/bitwise_not.h>
+#include <ATen/ops/ceil.h>
+#include <ATen/ops/cos.h>
+#include <ATen/ops/cosh.h>
+#include <ATen/ops/erf.h>
+#include <ATen/ops/erfc.h>
+#include <ATen/ops/exp.h>
+#include <ATen/ops/expm1.h>
+#include <ATen/ops/floor.h>
+#include <ATen/ops/frac.h>
+#include <ATen/ops/log.h>
+#include <ATen/ops/log10.h>
+#include <ATen/ops/log1p.h>
+#include <ATen/ops/log2.h>
+#include <ATen/ops/logical_not.h>
+#include <ATen/ops/mm.h>
+#include <ATen/ops/bmm.h>
+#include <ATen/ops/neg.h>
+#include <ATen/ops/reciprocal.h>
+#include <ATen/ops/relu.h>
+#include <ATen/ops/round.h>
+#include <ATen/ops/rsqrt.h>
+#include <ATen/ops/sign.h>
+#include <ATen/ops/sigmoid.h>
+#include <ATen/ops/silu.h>
+#include <ATen/ops/sin.h>
+#include <ATen/ops/sinh.h>
+#include <ATen/ops/sqrt.h>
+#include <ATen/ops/tan.h>
+#include <ATen/ops/tanh.h>
+#include <ATen/ops/trunc.h>
 #include <c10/core/Scalar.h>
 #include <algorithm>
 #include <vector>
 #include "../op_preparation.h"
 #include "../op_api_common.h"
+#include "../dtype_support.h"
 
 namespace at::native::flagos {
 
 at::Tensor SqrtKernelAscend(const at::Tensor& self) {
   namespace ascend = at::native::flagos::ascend;
+  if (!ascend::IsUnaryDtypeSupported(self.scalar_type())) {
+    auto cpu_result = at::sqrt(self.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       self.sizes(), self.options());
 
@@ -42,6 +83,10 @@ REGISTER_IMPL_TO_DISPATCHER(SqrtFn, sqrt_dispatcher, Backend::kAscend, SqrtKerne
 
 at::Tensor ExpKernelAscend(const at::Tensor& self) {
   namespace ascend = at::native::flagos::ascend;
+  if (!ascend::IsUnaryDtypeSupported(self.scalar_type())) {
+    auto cpu_result = at::exp(self.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       self.sizes(), self.options());
 
@@ -62,6 +107,10 @@ REGISTER_IMPL_TO_DISPATCHER(ExpFn, exp_dispatcher, Backend::kAscend, ExpKernelAs
 
 at::Tensor TanhKernelAscend(const at::Tensor& self) {
   namespace ascend = at::native::flagos::ascend;
+  if (!ascend::IsUnaryDtypeSupported(self.scalar_type())) {
+    auto cpu_result = at::tanh(self.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       self.sizes(), self.options());
 
@@ -82,6 +131,10 @@ REGISTER_IMPL_TO_DISPATCHER(TanhFn, tanh_dispatcher, Backend::kAscend, TanhKerne
 
 at::Tensor SigmoidKernelAscend(const at::Tensor& self) {
   namespace ascend = at::native::flagos::ascend;
+  if (!ascend::IsUnaryDtypeSupported(self.scalar_type())) {
+    auto cpu_result = at::sigmoid(self.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       self.sizes(), self.options());
 
@@ -102,6 +155,10 @@ REGISTER_IMPL_TO_DISPATCHER(SigmoidFn, sigmoid_dispatcher, Backend::kAscend, Sig
 
 at::Tensor ReciprocalKernelAscend(const at::Tensor& self) {
   namespace ascend = at::native::flagos::ascend;
+  if (!ascend::IsUnaryDtypeSupported(self.scalar_type())) {
+    auto cpu_result = at::reciprocal(self.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       self.sizes(), self.options());
 
@@ -122,6 +179,10 @@ REGISTER_IMPL_TO_DISPATCHER(ReciprocalFn, reciprocal_dispatcher, Backend::kAscen
 
 at::Tensor LogKernelAscend(const at::Tensor& self) {
   namespace ascend = at::native::flagos::ascend;
+  if (!ascend::IsUnaryDtypeSupported(self.scalar_type())) {
+    auto cpu_result = at::log(self.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       self.sizes(), self.options());
 
@@ -142,6 +203,10 @@ REGISTER_IMPL_TO_DISPATCHER(LogFn, log_dispatcher, Backend::kAscend, LogKernelAs
 
 at::Tensor FloorKernelAscend(const at::Tensor& self) {
   namespace ascend = at::native::flagos::ascend;
+  if (!ascend::IsUnaryDtypeSupported(self.scalar_type())) {
+    auto cpu_result = at::floor(self.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       self.sizes(), self.options());
 
@@ -162,6 +227,10 @@ REGISTER_IMPL_TO_DISPATCHER(FloorFn, floor_dispatcher, Backend::kAscend, FloorKe
 
 at::Tensor CeilKernelAscend(const at::Tensor& self) {
   namespace ascend = at::native::flagos::ascend;
+  if (!ascend::IsUnaryDtypeSupported(self.scalar_type())) {
+    auto cpu_result = at::ceil(self.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       self.sizes(), self.options());
 
@@ -182,6 +251,10 @@ REGISTER_IMPL_TO_DISPATCHER(CeilFn, ceil_dispatcher, Backend::kAscend, CeilKerne
 
 at::Tensor ErfKernelAscend(const at::Tensor& self) {
   namespace ascend = at::native::flagos::ascend;
+  if (!ascend::IsUnaryDtypeSupported(self.scalar_type())) {
+    auto cpu_result = at::erf(self.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       self.sizes(), self.options());
 
@@ -202,6 +275,10 @@ REGISTER_IMPL_TO_DISPATCHER(ErfFn, erf_dispatcher, Backend::kAscend, ErfKernelAs
 
 at::Tensor ErfcKernelAscend(const at::Tensor& self) {
   namespace ascend = at::native::flagos::ascend;
+  if (!ascend::IsUnaryDtypeSupported(self.scalar_type())) {
+    auto cpu_result = at::erfc(self.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       self.sizes(), self.options());
 
@@ -222,6 +299,10 @@ REGISTER_IMPL_TO_DISPATCHER(ErfcFn, erfc_dispatcher, Backend::kAscend, ErfcKerne
 
 at::Tensor Expm1KernelAscend(const at::Tensor& self) {
   namespace ascend = at::native::flagos::ascend;
+  if (!ascend::IsUnaryDtypeSupported(self.scalar_type())) {
+    auto cpu_result = at::expm1(self.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       self.sizes(), self.options());
 
@@ -242,6 +323,10 @@ REGISTER_IMPL_TO_DISPATCHER(Expm1Fn, expm1_dispatcher, Backend::kAscend, Expm1Ke
 
 at::Tensor Log2KernelAscend(const at::Tensor& self) {
   namespace ascend = at::native::flagos::ascend;
+  if (!ascend::IsUnaryDtypeSupported(self.scalar_type())) {
+    auto cpu_result = at::log2(self.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       self.sizes(), self.options());
 
@@ -262,6 +347,10 @@ REGISTER_IMPL_TO_DISPATCHER(Log2Fn, log2_dispatcher, Backend::kAscend, Log2Kerne
 
 at::Tensor Log10KernelAscend(const at::Tensor& self) {
   namespace ascend = at::native::flagos::ascend;
+  if (!ascend::IsUnaryDtypeSupported(self.scalar_type())) {
+    auto cpu_result = at::log10(self.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       self.sizes(), self.options());
 
@@ -282,6 +371,10 @@ REGISTER_IMPL_TO_DISPATCHER(Log10Fn, log10_dispatcher, Backend::kAscend, Log10Ke
 
 at::Tensor Log1pKernelAscend(const at::Tensor& self) {
   namespace ascend = at::native::flagos::ascend;
+  if (!ascend::IsUnaryDtypeSupported(self.scalar_type())) {
+    auto cpu_result = at::log1p(self.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       self.sizes(), self.options());
 
@@ -302,6 +395,10 @@ REGISTER_IMPL_TO_DISPATCHER(Log1pFn, log1p_dispatcher, Backend::kAscend, Log1pKe
 
 at::Tensor RoundKernelAscend(const at::Tensor& self) {
   namespace ascend = at::native::flagos::ascend;
+  if (!ascend::IsUnaryDtypeSupported(self.scalar_type())) {
+    auto cpu_result = at::round(self.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       self.sizes(), self.options());
 
@@ -322,6 +419,10 @@ REGISTER_IMPL_TO_DISPATCHER(RoundFn, round_dispatcher, Backend::kAscend, RoundKe
 
 at::Tensor TruncKernelAscend(const at::Tensor& self) {
   namespace ascend = at::native::flagos::ascend;
+  if (!ascend::IsUnaryDtypeSupported(self.scalar_type())) {
+    auto cpu_result = at::trunc(self.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       self.sizes(), self.options());
 
@@ -342,6 +443,10 @@ REGISTER_IMPL_TO_DISPATCHER(TruncFn, trunc_dispatcher, Backend::kAscend, TruncKe
 
 at::Tensor FracKernelAscend(const at::Tensor& self) {
   namespace ascend = at::native::flagos::ascend;
+  if (!ascend::IsUnaryDtypeSupported(self.scalar_type())) {
+    auto cpu_result = at::frac(self.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       self.sizes(), self.options());
 
@@ -362,6 +467,10 @@ REGISTER_IMPL_TO_DISPATCHER(FracFn, frac_dispatcher, Backend::kAscend, FracKerne
 
 at::Tensor SignKernelAscend(const at::Tensor& self) {
   namespace ascend = at::native::flagos::ascend;
+  if (!ascend::IsUnaryDtypeSupported(self.scalar_type())) {
+    auto cpu_result = at::sign(self.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       self.sizes(), self.options());
 
@@ -382,6 +491,10 @@ REGISTER_IMPL_TO_DISPATCHER(SignFn, sign_dispatcher, Backend::kAscend, SignKerne
 
 at::Tensor ReluKernelAscend(const at::Tensor& self) {
   namespace ascend = at::native::flagos::ascend;
+  if (!ascend::IsUnaryDtypeSupported(self.scalar_type())) {
+    auto cpu_result = at::relu(self.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       self.sizes(), self.options());
 
@@ -402,6 +515,10 @@ REGISTER_IMPL_TO_DISPATCHER(ReluFn, relu_dispatcher, Backend::kAscend, ReluKerne
 
 at::Tensor CoshKernelAscend(const at::Tensor& self) {
   namespace ascend = at::native::flagos::ascend;
+  if (!ascend::IsUnaryDtypeSupported(self.scalar_type())) {
+    auto cpu_result = at::cosh(self.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       self.sizes(), self.options());
 
@@ -422,6 +539,10 @@ REGISTER_IMPL_TO_DISPATCHER(CoshFn, cosh_dispatcher, Backend::kAscend, CoshKerne
 
 at::Tensor SinhKernelAscend(const at::Tensor& self) {
   namespace ascend = at::native::flagos::ascend;
+  if (!ascend::IsUnaryDtypeSupported(self.scalar_type())) {
+    auto cpu_result = at::sinh(self.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       self.sizes(), self.options());
 
@@ -442,6 +563,10 @@ REGISTER_IMPL_TO_DISPATCHER(SinhFn, sinh_dispatcher, Backend::kAscend, SinhKerne
 
 at::Tensor AsinKernelAscend(const at::Tensor& self) {
   namespace ascend = at::native::flagos::ascend;
+  if (!ascend::IsUnaryDtypeSupported(self.scalar_type())) {
+    auto cpu_result = at::asin(self.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       self.sizes(), self.options());
 
@@ -462,6 +587,10 @@ REGISTER_IMPL_TO_DISPATCHER(AsinFn, asin_dispatcher, Backend::kAscend, AsinKerne
 
 at::Tensor AtanKernelAscend(const at::Tensor& self) {
   namespace ascend = at::native::flagos::ascend;
+  if (!ascend::IsUnaryDtypeSupported(self.scalar_type())) {
+    auto cpu_result = at::atan(self.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       self.sizes(), self.options());
 
@@ -482,6 +611,10 @@ REGISTER_IMPL_TO_DISPATCHER(AtanFn, atan_dispatcher, Backend::kAscend, AtanKerne
 
 at::Tensor TanKernelAscend(const at::Tensor& self) {
   namespace ascend = at::native::flagos::ascend;
+  if (!ascend::IsUnaryDtypeSupported(self.scalar_type())) {
+    auto cpu_result = at::tan(self.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       self.sizes(), self.options());
 
@@ -502,6 +635,10 @@ REGISTER_IMPL_TO_DISPATCHER(TanFn, tan_dispatcher, Backend::kAscend, TanKernelAs
 
 at::Tensor AsinhKernelAscend(const at::Tensor& self) {
   namespace ascend = at::native::flagos::ascend;
+  if (!ascend::IsUnaryDtypeSupported(self.scalar_type())) {
+    auto cpu_result = at::asinh(self.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       self.sizes(), self.options());
 
@@ -522,6 +659,10 @@ REGISTER_IMPL_TO_DISPATCHER(AsinhFn, asinh_dispatcher, Backend::kAscend, AsinhKe
 
 at::Tensor AcoshKernelAscend(const at::Tensor& self) {
   namespace ascend = at::native::flagos::ascend;
+  if (!ascend::IsUnaryDtypeSupported(self.scalar_type())) {
+    auto cpu_result = at::acosh(self.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       self.sizes(), self.options());
 
@@ -542,6 +683,10 @@ REGISTER_IMPL_TO_DISPATCHER(AcoshFn, acosh_dispatcher, Backend::kAscend, AcoshKe
 
 at::Tensor AtanhKernelAscend(const at::Tensor& self) {
   namespace ascend = at::native::flagos::ascend;
+  if (!ascend::IsUnaryDtypeSupported(self.scalar_type())) {
+    auto cpu_result = at::atanh(self.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       self.sizes(), self.options());
 
@@ -562,6 +707,10 @@ REGISTER_IMPL_TO_DISPATCHER(AtanhFn, atanh_dispatcher, Backend::kAscend, AtanhKe
 
 at::Tensor LogicalNotKernelAscend(const at::Tensor& self) {
   namespace ascend = at::native::flagos::ascend;
+  if (!ascend::IsUnaryDtypeSupported(self.scalar_type())) {
+    auto cpu_result = at::logical_not(self.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       self.sizes(), self.options());
 
@@ -582,6 +731,10 @@ REGISTER_IMPL_TO_DISPATCHER(LogicalNotFn, logical_not_dispatcher, Backend::kAsce
 
 at::Tensor BitwiseNotKernelAscend(const at::Tensor& self) {
   namespace ascend = at::native::flagos::ascend;
+  if (!ascend::IsUnaryDtypeSupported(self.scalar_type())) {
+    auto cpu_result = at::bitwise_not(self.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       self.sizes(), self.options());
 
@@ -602,6 +755,10 @@ REGISTER_IMPL_TO_DISPATCHER(BitwiseNotFn, bitwise_not_dispatcher, Backend::kAsce
 
 at::Tensor AbsKernelAscend(const at::Tensor& self) {
   namespace ascend = at::native::flagos::ascend;
+  if (!ascend::IsUnaryDtypeSupported(self.scalar_type())) {
+    auto cpu_result = at::abs(self.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       self.sizes(), self.options());
 
@@ -622,6 +779,10 @@ REGISTER_IMPL_TO_DISPATCHER(AbsFn, abs_dispatcher, Backend::kAscend, AbsKernelAs
 
 at::Tensor AcosKernelAscend(const at::Tensor& self) {
   namespace ascend = at::native::flagos::ascend;
+  if (!ascend::IsUnaryDtypeSupported(self.scalar_type())) {
+    auto cpu_result = at::acos(self.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       self.sizes(), self.options());
 
@@ -642,6 +803,10 @@ REGISTER_IMPL_TO_DISPATCHER(AcosFn, acos_dispatcher, Backend::kAscend, AcosKerne
 
 at::Tensor CosKernelAscend(const at::Tensor& self) {
   namespace ascend = at::native::flagos::ascend;
+  if (!ascend::IsUnaryDtypeSupported(self.scalar_type())) {
+    auto cpu_result = at::cos(self.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       self.sizes(), self.options());
 
@@ -662,6 +827,10 @@ REGISTER_IMPL_TO_DISPATCHER(CosFn, cos_dispatcher, Backend::kAscend, CosKernelAs
 
 at::Tensor SinKernelAscend(const at::Tensor& self) {
   namespace ascend = at::native::flagos::ascend;
+  if (!ascend::IsUnaryDtypeSupported(self.scalar_type())) {
+    auto cpu_result = at::sin(self.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       self.sizes(), self.options());
 
@@ -682,6 +851,10 @@ REGISTER_IMPL_TO_DISPATCHER(SinFn, sin_dispatcher, Backend::kAscend, SinKernelAs
 
 at::Tensor NegKernelAscend(const at::Tensor& self) {
   namespace ascend = at::native::flagos::ascend;
+  if (!ascend::IsUnaryDtypeSupported(self.scalar_type())) {
+    auto cpu_result = at::neg(self.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       self.sizes(), self.options());
 
@@ -702,6 +875,10 @@ REGISTER_IMPL_TO_DISPATCHER(NegFn, neg_dispatcher, Backend::kAscend, NegKernelAs
 
 at::Tensor RsqrtKernelAscend(const at::Tensor& self) {
   namespace ascend = at::native::flagos::ascend;
+  if (!ascend::IsUnaryDtypeSupported(self.scalar_type())) {
+    auto cpu_result = at::rsqrt(self.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       self.sizes(), self.options());
 
@@ -722,6 +899,10 @@ REGISTER_IMPL_TO_DISPATCHER(RsqrtFn, rsqrt_dispatcher, Backend::kAscend, RsqrtKe
 
 at::Tensor SiluKernelAscend(const at::Tensor& self) {
   namespace ascend = at::native::flagos::ascend;
+  if (!ascend::IsUnaryDtypeSupported(self.scalar_type())) {
+    auto cpu_result = at::silu(self.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       self.sizes(), self.options());
 
@@ -759,11 +940,15 @@ at::Tensor DivTensorKernelAscend(const at::Tensor& self, const at::Tensor& other
         });
     return out;
   }
-  auto result_dtype = self.scalar_type();
+  auto result_dtype = ascend::BinaryResultType("aclnnDiv", self, other);
+  auto self_c = self.scalar_type() == result_dtype
+      ? self
+      : self.to(self.options().dtype(result_dtype));
   auto other_c = other.is_privateuseone()
       ? (other.scalar_type() == result_dtype ? other : other.to(result_dtype))
-      : other.to(self.options());
-  auto out_shape = at::infer_size(self.sizes(), other_c.sizes());
+      : other.to(self.options().dtype(result_dtype));
+  auto out_shape = at::infer_size(self_c.sizes(), other_c.sizes());
+  auto result_options = self.options().dtype(result_dtype);
   // aclnn binary ops broadcast and honor strides internally (verified), so we
   // pass self/other_c straight through instead of expand().contiguous(). This
   // avoids up to two device strided-copies + host view construction per op on
@@ -771,10 +956,10 @@ at::Tensor DivTensorKernelAscend(const at::Tensor& self, const at::Tensor& other
   // tensor is genuinely non-contiguous AND the aclnn path would otherwise need
   // it — measured unnecessary for the common same-shape/contiguous case, which
   // is the overwhelming majority in Qwen3.
-  const at::Tensor& self_b = self;
+  const at::Tensor& self_b = self_c;
   const at::Tensor& other_b = other_c;
   auto out = ascend::OpPreparation::apply_tensor_without_format(
-      out_shape, self.options());
+      out_shape, result_options);
 
   static void* opApiFuncAddr = nullptr;
   static void* getWsFuncAddr = nullptr;
@@ -810,11 +995,15 @@ at::Tensor MulTensorKernelAscend(const at::Tensor& self, const at::Tensor& other
         });
     return out;
   }
-  auto result_dtype = self.scalar_type();
+  auto result_dtype = ascend::BinaryResultType("aclnnMul", self, other);
+  auto self_c = self.scalar_type() == result_dtype
+      ? self
+      : self.to(self.options().dtype(result_dtype));
   auto other_c = other.is_privateuseone()
       ? (other.scalar_type() == result_dtype ? other : other.to(result_dtype))
-      : other.to(self.options());
-  auto out_shape = at::infer_size(self.sizes(), other_c.sizes());
+      : other.to(self.options().dtype(result_dtype));
+  auto out_shape = at::infer_size(self_c.sizes(), other_c.sizes());
+  auto result_options = self.options().dtype(result_dtype);
   // aclnn binary ops broadcast and honor strides internally (verified), so we
   // pass self/other_c straight through instead of expand().contiguous(). This
   // avoids up to two device strided-copies + host view construction per op on
@@ -822,10 +1011,10 @@ at::Tensor MulTensorKernelAscend(const at::Tensor& self, const at::Tensor& other
   // tensor is genuinely non-contiguous AND the aclnn path would otherwise need
   // it — measured unnecessary for the common same-shape/contiguous case, which
   // is the overwhelming majority in Qwen3.
-  const at::Tensor& self_b = self;
+  const at::Tensor& self_b = self_c;
   const at::Tensor& other_b = other_c;
   auto out = ascend::OpPreparation::apply_tensor_without_format(
-      out_shape, self.options());
+      out_shape, result_options);
 
   static void* opApiFuncAddr = nullptr;
   static void* getWsFuncAddr = nullptr;
@@ -844,11 +1033,15 @@ REGISTER_IMPL_TO_DISPATCHER(MulTensorFn, mul_tensor_dispatcher, Backend::kAscend
 
 at::Tensor BitwiseAndTensorKernelAscend(const at::Tensor& self, const at::Tensor& other) {
   namespace ascend = at::native::flagos::ascend;
-  auto result_dtype = self.scalar_type();
+  auto result_dtype = ascend::BinaryResultType("aclnnBitwiseAndTensor", self, other);
+  auto self_c = self.scalar_type() == result_dtype
+      ? self
+      : self.to(self.options().dtype(result_dtype));
   auto other_c = other.is_privateuseone()
       ? (other.scalar_type() == result_dtype ? other : other.to(result_dtype))
-      : other.to(self.options());
-  auto out_shape = at::infer_size(self.sizes(), other_c.sizes());
+      : other.to(self.options().dtype(result_dtype));
+  auto out_shape = at::infer_size(self_c.sizes(), other_c.sizes());
+  auto result_options = self.options().dtype(result_dtype);
   // aclnn binary ops broadcast and honor strides internally (verified), so we
   // pass self/other_c straight through instead of expand().contiguous(). This
   // avoids up to two device strided-copies + host view construction per op on
@@ -856,10 +1049,10 @@ at::Tensor BitwiseAndTensorKernelAscend(const at::Tensor& self, const at::Tensor
   // tensor is genuinely non-contiguous AND the aclnn path would otherwise need
   // it — measured unnecessary for the common same-shape/contiguous case, which
   // is the overwhelming majority in Qwen3.
-  const at::Tensor& self_b = self;
+  const at::Tensor& self_b = self_c;
   const at::Tensor& other_b = other_c;
   auto out = ascend::OpPreparation::apply_tensor_without_format(
-      out_shape, self.options());
+      out_shape, result_options);
 
   static void* opApiFuncAddr = nullptr;
   static void* getWsFuncAddr = nullptr;
@@ -878,11 +1071,15 @@ REGISTER_IMPL_TO_DISPATCHER(BitwiseAndTensorFn, bitwise_and_tensor_dispatcher, B
 
 at::Tensor PowTensorTensorKernelAscend(const at::Tensor& self, const at::Tensor& other) {
   namespace ascend = at::native::flagos::ascend;
-  auto result_dtype = self.scalar_type();
+  auto result_dtype = ascend::BinaryResultType("aclnnPowTensorTensor", self, other);
+  auto self_c = self.scalar_type() == result_dtype
+      ? self
+      : self.to(self.options().dtype(result_dtype));
   auto other_c = other.is_privateuseone()
       ? (other.scalar_type() == result_dtype ? other : other.to(result_dtype))
-      : other.to(self.options());
-  auto out_shape = at::infer_size(self.sizes(), other_c.sizes());
+      : other.to(self.options().dtype(result_dtype));
+  auto out_shape = at::infer_size(self_c.sizes(), other_c.sizes());
+  auto result_options = self.options().dtype(result_dtype);
   // aclnn binary ops broadcast and honor strides internally (verified), so we
   // pass self/other_c straight through instead of expand().contiguous(). This
   // avoids up to two device strided-copies + host view construction per op on
@@ -890,10 +1087,10 @@ at::Tensor PowTensorTensorKernelAscend(const at::Tensor& self, const at::Tensor&
   // tensor is genuinely non-contiguous AND the aclnn path would otherwise need
   // it — measured unnecessary for the common same-shape/contiguous case, which
   // is the overwhelming majority in Qwen3.
-  const at::Tensor& self_b = self;
+  const at::Tensor& self_b = self_c;
   const at::Tensor& other_b = other_c;
   auto out = ascend::OpPreparation::apply_tensor_without_format(
-      out_shape, self.options());
+      out_shape, result_options);
 
   static void* opApiFuncAddr = nullptr;
   static void* getWsFuncAddr = nullptr;
@@ -912,11 +1109,15 @@ REGISTER_IMPL_TO_DISPATCHER(PowTensorTensorFn, pow_tensor_tensor_dispatcher, Bac
 
 at::Tensor Atan2KernelAscend(const at::Tensor& self, const at::Tensor& other) {
   namespace ascend = at::native::flagos::ascend;
-  auto result_dtype = self.scalar_type();
+  auto result_dtype = ascend::BinaryResultType("aclnnAtan2", self, other);
+  auto self_c = self.scalar_type() == result_dtype
+      ? self
+      : self.to(self.options().dtype(result_dtype));
   auto other_c = other.is_privateuseone()
       ? (other.scalar_type() == result_dtype ? other : other.to(result_dtype))
-      : other.to(self.options());
-  auto out_shape = at::infer_size(self.sizes(), other_c.sizes());
+      : other.to(self.options().dtype(result_dtype));
+  auto out_shape = at::infer_size(self_c.sizes(), other_c.sizes());
+  auto result_options = self.options().dtype(result_dtype);
   // aclnn binary ops broadcast and honor strides internally (verified), so we
   // pass self/other_c straight through instead of expand().contiguous(). This
   // avoids up to two device strided-copies + host view construction per op on
@@ -924,10 +1125,10 @@ at::Tensor Atan2KernelAscend(const at::Tensor& self, const at::Tensor& other) {
   // tensor is genuinely non-contiguous AND the aclnn path would otherwise need
   // it — measured unnecessary for the common same-shape/contiguous case, which
   // is the overwhelming majority in Qwen3.
-  const at::Tensor& self_b = self;
+  const at::Tensor& self_b = self_c;
   const at::Tensor& other_b = other_c;
   auto out = ascend::OpPreparation::apply_tensor_without_format(
-      out_shape, self.options());
+      out_shape, result_options);
 
   static void* opApiFuncAddr = nullptr;
   static void* getWsFuncAddr = nullptr;
@@ -946,11 +1147,15 @@ REGISTER_IMPL_TO_DISPATCHER(Atan2Fn, atan2_dispatcher, Backend::kAscend, Atan2Ke
 
 at::Tensor MaximumKernelAscend(const at::Tensor& self, const at::Tensor& other) {
   namespace ascend = at::native::flagos::ascend;
-  auto result_dtype = self.scalar_type();
+  auto result_dtype = ascend::BinaryResultType("aclnnMaximum", self, other);
+  auto self_c = self.scalar_type() == result_dtype
+      ? self
+      : self.to(self.options().dtype(result_dtype));
   auto other_c = other.is_privateuseone()
       ? (other.scalar_type() == result_dtype ? other : other.to(result_dtype))
-      : other.to(self.options());
-  auto out_shape = at::infer_size(self.sizes(), other_c.sizes());
+      : other.to(self.options().dtype(result_dtype));
+  auto out_shape = at::infer_size(self_c.sizes(), other_c.sizes());
+  auto result_options = self.options().dtype(result_dtype);
   // aclnn binary ops broadcast and honor strides internally (verified), so we
   // pass self/other_c straight through instead of expand().contiguous(). This
   // avoids up to two device strided-copies + host view construction per op on
@@ -958,10 +1163,10 @@ at::Tensor MaximumKernelAscend(const at::Tensor& self, const at::Tensor& other) 
   // tensor is genuinely non-contiguous AND the aclnn path would otherwise need
   // it — measured unnecessary for the common same-shape/contiguous case, which
   // is the overwhelming majority in Qwen3.
-  const at::Tensor& self_b = self;
+  const at::Tensor& self_b = self_c;
   const at::Tensor& other_b = other_c;
   auto out = ascend::OpPreparation::apply_tensor_without_format(
-      out_shape, self.options());
+      out_shape, result_options);
 
   static void* opApiFuncAddr = nullptr;
   static void* getWsFuncAddr = nullptr;
@@ -980,11 +1185,15 @@ REGISTER_IMPL_TO_DISPATCHER(MaximumFn, maximum_dispatcher, Backend::kAscend, Max
 
 at::Tensor MinimumKernelAscend(const at::Tensor& self, const at::Tensor& other) {
   namespace ascend = at::native::flagos::ascend;
-  auto result_dtype = self.scalar_type();
+  auto result_dtype = ascend::BinaryResultType("aclnnMinimum", self, other);
+  auto self_c = self.scalar_type() == result_dtype
+      ? self
+      : self.to(self.options().dtype(result_dtype));
   auto other_c = other.is_privateuseone()
       ? (other.scalar_type() == result_dtype ? other : other.to(result_dtype))
-      : other.to(self.options());
-  auto out_shape = at::infer_size(self.sizes(), other_c.sizes());
+      : other.to(self.options().dtype(result_dtype));
+  auto out_shape = at::infer_size(self_c.sizes(), other_c.sizes());
+  auto result_options = self.options().dtype(result_dtype);
   // aclnn binary ops broadcast and honor strides internally (verified), so we
   // pass self/other_c straight through instead of expand().contiguous(). This
   // avoids up to two device strided-copies + host view construction per op on
@@ -992,10 +1201,10 @@ at::Tensor MinimumKernelAscend(const at::Tensor& self, const at::Tensor& other) 
   // tensor is genuinely non-contiguous AND the aclnn path would otherwise need
   // it — measured unnecessary for the common same-shape/contiguous case, which
   // is the overwhelming majority in Qwen3.
-  const at::Tensor& self_b = self;
+  const at::Tensor& self_b = self_c;
   const at::Tensor& other_b = other_c;
   auto out = ascend::OpPreparation::apply_tensor_without_format(
-      out_shape, self.options());
+      out_shape, result_options);
 
   static void* opApiFuncAddr = nullptr;
   static void* getWsFuncAddr = nullptr;
@@ -1014,11 +1223,15 @@ REGISTER_IMPL_TO_DISPATCHER(MinimumFn, minimum_dispatcher, Backend::kAscend, Min
 
 at::Tensor BitwiseOrTensorKernelAscend(const at::Tensor& self, const at::Tensor& other) {
   namespace ascend = at::native::flagos::ascend;
-  auto result_dtype = self.scalar_type();
+  auto result_dtype = ascend::BinaryResultType("aclnnBitwiseOrTensor", self, other);
+  auto self_c = self.scalar_type() == result_dtype
+      ? self
+      : self.to(self.options().dtype(result_dtype));
   auto other_c = other.is_privateuseone()
       ? (other.scalar_type() == result_dtype ? other : other.to(result_dtype))
-      : other.to(self.options());
-  auto out_shape = at::infer_size(self.sizes(), other_c.sizes());
+      : other.to(self.options().dtype(result_dtype));
+  auto out_shape = at::infer_size(self_c.sizes(), other_c.sizes());
+  auto result_options = self.options().dtype(result_dtype);
   // aclnn binary ops broadcast and honor strides internally (verified), so we
   // pass self/other_c straight through instead of expand().contiguous(). This
   // avoids up to two device strided-copies + host view construction per op on
@@ -1026,10 +1239,10 @@ at::Tensor BitwiseOrTensorKernelAscend(const at::Tensor& self, const at::Tensor&
   // tensor is genuinely non-contiguous AND the aclnn path would otherwise need
   // it — measured unnecessary for the common same-shape/contiguous case, which
   // is the overwhelming majority in Qwen3.
-  const at::Tensor& self_b = self;
+  const at::Tensor& self_b = self_c;
   const at::Tensor& other_b = other_c;
   auto out = ascend::OpPreparation::apply_tensor_without_format(
-      out_shape, self.options());
+      out_shape, result_options);
 
   static void* opApiFuncAddr = nullptr;
   static void* getWsFuncAddr = nullptr;
@@ -1048,11 +1261,15 @@ REGISTER_IMPL_TO_DISPATCHER(BitwiseOrTensorFn, bitwise_or_tensor_dispatcher, Bac
 
 at::Tensor BitwiseXorTensorKernelAscend(const at::Tensor& self, const at::Tensor& other) {
   namespace ascend = at::native::flagos::ascend;
-  auto result_dtype = self.scalar_type();
+  auto result_dtype = ascend::BinaryResultType("aclnnBitwiseXorTensor", self, other);
+  auto self_c = self.scalar_type() == result_dtype
+      ? self
+      : self.to(self.options().dtype(result_dtype));
   auto other_c = other.is_privateuseone()
       ? (other.scalar_type() == result_dtype ? other : other.to(result_dtype))
-      : other.to(self.options());
-  auto out_shape = at::infer_size(self.sizes(), other_c.sizes());
+      : other.to(self.options().dtype(result_dtype));
+  auto out_shape = at::infer_size(self_c.sizes(), other_c.sizes());
+  auto result_options = self.options().dtype(result_dtype);
   // aclnn binary ops broadcast and honor strides internally (verified), so we
   // pass self/other_c straight through instead of expand().contiguous(). This
   // avoids up to two device strided-copies + host view construction per op on
@@ -1060,10 +1277,10 @@ at::Tensor BitwiseXorTensorKernelAscend(const at::Tensor& self, const at::Tensor
   // tensor is genuinely non-contiguous AND the aclnn path would otherwise need
   // it — measured unnecessary for the common same-shape/contiguous case, which
   // is the overwhelming majority in Qwen3.
-  const at::Tensor& self_b = self;
+  const at::Tensor& self_b = self_c;
   const at::Tensor& other_b = other_c;
   auto out = ascend::OpPreparation::apply_tensor_without_format(
-      out_shape, self.options());
+      out_shape, result_options);
 
   static void* opApiFuncAddr = nullptr;
   static void* getWsFuncAddr = nullptr;
@@ -1100,11 +1317,15 @@ at::Tensor SubTensorKernelAscend(const at::Tensor& self, const at::Tensor& other
         });
     return out;
   }
-  auto result_dtype = self.scalar_type();
+  auto result_dtype = ascend::BinaryResultType("aclnnSub", self, other);
+  auto self_c = self.scalar_type() == result_dtype
+      ? self
+      : self.to(self.options().dtype(result_dtype));
   auto other_c = other.is_privateuseone()
       ? (other.scalar_type() == result_dtype ? other : other.to(result_dtype))
-      : other.to(self.options());
-  auto out_shape = at::infer_size(self.sizes(), other_c.sizes());
+      : other.to(self.options().dtype(result_dtype));
+  auto out_shape = at::infer_size(self_c.sizes(), other_c.sizes());
+  auto result_options = self.options().dtype(result_dtype);
   // aclnn binary ops broadcast and honor strides internally (verified), so we
   // pass self/other_c straight through instead of expand().contiguous(). This
   // avoids up to two device strided-copies + host view construction per op on
@@ -1112,10 +1333,10 @@ at::Tensor SubTensorKernelAscend(const at::Tensor& self, const at::Tensor& other
   // tensor is genuinely non-contiguous AND the aclnn path would otherwise need
   // it — measured unnecessary for the common same-shape/contiguous case, which
   // is the overwhelming majority in Qwen3.
-  const at::Tensor& self_b = self;
+  const at::Tensor& self_b = self_c;
   const at::Tensor& other_b = other_c;
   auto out = ascend::OpPreparation::apply_tensor_without_format(
-      out_shape, self.options());
+      out_shape, result_options);
   ascend::AclScalarWrapper acl_alpha(alpha, result_dtype);
 
   static void* opApiFuncAddr = nullptr;
@@ -1154,11 +1375,15 @@ at::Tensor AddTensorKernelAscend(const at::Tensor& self, const at::Tensor& other
         });
     return out;
   }
-  auto result_dtype = self.scalar_type();
+  auto result_dtype = ascend::BinaryResultType("aclnnAdd", self, other);
+  auto self_c = self.scalar_type() == result_dtype
+      ? self
+      : self.to(self.options().dtype(result_dtype));
   auto other_c = other.is_privateuseone()
       ? (other.scalar_type() == result_dtype ? other : other.to(result_dtype))
-      : other.to(self.options());
-  auto out_shape = at::infer_size(self.sizes(), other_c.sizes());
+      : other.to(self.options().dtype(result_dtype));
+  auto out_shape = at::infer_size(self_c.sizes(), other_c.sizes());
+  auto result_options = self.options().dtype(result_dtype);
   // aclnn binary ops broadcast and honor strides internally (verified), so we
   // pass self/other_c straight through instead of expand().contiguous(). This
   // avoids up to two device strided-copies + host view construction per op on
@@ -1166,10 +1391,10 @@ at::Tensor AddTensorKernelAscend(const at::Tensor& self, const at::Tensor& other
   // tensor is genuinely non-contiguous AND the aclnn path would otherwise need
   // it — measured unnecessary for the common same-shape/contiguous case, which
   // is the overwhelming majority in Qwen3.
-  const at::Tensor& self_b = self;
+  const at::Tensor& self_b = self_c;
   const at::Tensor& other_b = other_c;
   auto out = ascend::OpPreparation::apply_tensor_without_format(
-      out_shape, self.options());
+      out_shape, result_options);
   ascend::AclScalarWrapper acl_alpha(alpha, result_dtype);
 
   static void* opApiFuncAddr = nullptr;
@@ -1220,11 +1445,15 @@ REGISTER_IMPL_TO_DISPATCHER(DivScalarFn, div_scalar_dispatcher, Backend::kAscend
 
 at::Tensor EqTensorKernelAscend(const at::Tensor& self, const at::Tensor& other) {
   namespace ascend = at::native::flagos::ascend;
-  auto result_dtype = self.scalar_type();
+  auto result_dtype = ascend::BinaryResultType("aclnnEqTensor", self, other);
+  auto self_c = self.scalar_type() == result_dtype
+      ? self
+      : self.to(self.options().dtype(result_dtype));
   auto other_c = other.is_privateuseone()
       ? (other.scalar_type() == result_dtype ? other : other.to(result_dtype))
-      : other.to(self.options());
-  auto out_shape = at::infer_size(self.sizes(), other_c.sizes());
+      : other.to(self.options().dtype(result_dtype));
+  auto out_shape = at::infer_size(self_c.sizes(), other_c.sizes());
+  auto result_options = self.options().dtype(result_dtype);
   // aclnn binary ops broadcast and honor strides internally (verified), so we
   // pass self/other_c straight through instead of expand().contiguous(). This
   // avoids up to two device strided-copies + host view construction per op on
@@ -1232,7 +1461,7 @@ at::Tensor EqTensorKernelAscend(const at::Tensor& self, const at::Tensor& other)
   // tensor is genuinely non-contiguous AND the aclnn path would otherwise need
   // it — measured unnecessary for the common same-shape/contiguous case, which
   // is the overwhelming majority in Qwen3.
-  const at::Tensor& self_b = self;
+  const at::Tensor& self_b = self_c;
   const at::Tensor& other_b = other_c;
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       out_shape, self.options().dtype(at::kBool));
@@ -1254,11 +1483,15 @@ REGISTER_IMPL_TO_DISPATCHER(EqTensorFn, eq_tensor_dispatcher, Backend::kAscend, 
 
 at::Tensor NeTensorKernelAscend(const at::Tensor& self, const at::Tensor& other) {
   namespace ascend = at::native::flagos::ascend;
-  auto result_dtype = self.scalar_type();
+  auto result_dtype = ascend::BinaryResultType("aclnnNeTensor", self, other);
+  auto self_c = self.scalar_type() == result_dtype
+      ? self
+      : self.to(self.options().dtype(result_dtype));
   auto other_c = other.is_privateuseone()
       ? (other.scalar_type() == result_dtype ? other : other.to(result_dtype))
-      : other.to(self.options());
-  auto out_shape = at::infer_size(self.sizes(), other_c.sizes());
+      : other.to(self.options().dtype(result_dtype));
+  auto out_shape = at::infer_size(self_c.sizes(), other_c.sizes());
+  auto result_options = self.options().dtype(result_dtype);
   // aclnn binary ops broadcast and honor strides internally (verified), so we
   // pass self/other_c straight through instead of expand().contiguous(). This
   // avoids up to two device strided-copies + host view construction per op on
@@ -1266,7 +1499,7 @@ at::Tensor NeTensorKernelAscend(const at::Tensor& self, const at::Tensor& other)
   // tensor is genuinely non-contiguous AND the aclnn path would otherwise need
   // it — measured unnecessary for the common same-shape/contiguous case, which
   // is the overwhelming majority in Qwen3.
-  const at::Tensor& self_b = self;
+  const at::Tensor& self_b = self_c;
   const at::Tensor& other_b = other_c;
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       out_shape, self.options().dtype(at::kBool));
@@ -1288,11 +1521,15 @@ REGISTER_IMPL_TO_DISPATCHER(NeTensorFn, ne_tensor_dispatcher, Backend::kAscend, 
 
 at::Tensor GtTensorKernelAscend(const at::Tensor& self, const at::Tensor& other) {
   namespace ascend = at::native::flagos::ascend;
-  auto result_dtype = self.scalar_type();
+  auto result_dtype = ascend::BinaryResultType("aclnnGtTensor", self, other);
+  auto self_c = self.scalar_type() == result_dtype
+      ? self
+      : self.to(self.options().dtype(result_dtype));
   auto other_c = other.is_privateuseone()
       ? (other.scalar_type() == result_dtype ? other : other.to(result_dtype))
-      : other.to(self.options());
-  auto out_shape = at::infer_size(self.sizes(), other_c.sizes());
+      : other.to(self.options().dtype(result_dtype));
+  auto out_shape = at::infer_size(self_c.sizes(), other_c.sizes());
+  auto result_options = self.options().dtype(result_dtype);
   // aclnn binary ops broadcast and honor strides internally (verified), so we
   // pass self/other_c straight through instead of expand().contiguous(). This
   // avoids up to two device strided-copies + host view construction per op on
@@ -1300,7 +1537,7 @@ at::Tensor GtTensorKernelAscend(const at::Tensor& self, const at::Tensor& other)
   // tensor is genuinely non-contiguous AND the aclnn path would otherwise need
   // it — measured unnecessary for the common same-shape/contiguous case, which
   // is the overwhelming majority in Qwen3.
-  const at::Tensor& self_b = self;
+  const at::Tensor& self_b = self_c;
   const at::Tensor& other_b = other_c;
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       out_shape, self.options().dtype(at::kBool));
@@ -1322,11 +1559,15 @@ REGISTER_IMPL_TO_DISPATCHER(GtTensorFn, gt_tensor_dispatcher, Backend::kAscend, 
 
 at::Tensor LtTensorKernelAscend(const at::Tensor& self, const at::Tensor& other) {
   namespace ascend = at::native::flagos::ascend;
-  auto result_dtype = self.scalar_type();
+  auto result_dtype = ascend::BinaryResultType("aclnnLtTensor", self, other);
+  auto self_c = self.scalar_type() == result_dtype
+      ? self
+      : self.to(self.options().dtype(result_dtype));
   auto other_c = other.is_privateuseone()
       ? (other.scalar_type() == result_dtype ? other : other.to(result_dtype))
-      : other.to(self.options());
-  auto out_shape = at::infer_size(self.sizes(), other_c.sizes());
+      : other.to(self.options().dtype(result_dtype));
+  auto out_shape = at::infer_size(self_c.sizes(), other_c.sizes());
+  auto result_options = self.options().dtype(result_dtype);
   // aclnn binary ops broadcast and honor strides internally (verified), so we
   // pass self/other_c straight through instead of expand().contiguous(). This
   // avoids up to two device strided-copies + host view construction per op on
@@ -1334,7 +1575,7 @@ at::Tensor LtTensorKernelAscend(const at::Tensor& self, const at::Tensor& other)
   // tensor is genuinely non-contiguous AND the aclnn path would otherwise need
   // it — measured unnecessary for the common same-shape/contiguous case, which
   // is the overwhelming majority in Qwen3.
-  const at::Tensor& self_b = self;
+  const at::Tensor& self_b = self_c;
   const at::Tensor& other_b = other_c;
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       out_shape, self.options().dtype(at::kBool));
@@ -1356,11 +1597,15 @@ REGISTER_IMPL_TO_DISPATCHER(LtTensorFn, lt_tensor_dispatcher, Backend::kAscend, 
 
 at::Tensor GeTensorKernelAscend(const at::Tensor& self, const at::Tensor& other) {
   namespace ascend = at::native::flagos::ascend;
-  auto result_dtype = self.scalar_type();
+  auto result_dtype = ascend::BinaryResultType("aclnnGeTensor", self, other);
+  auto self_c = self.scalar_type() == result_dtype
+      ? self
+      : self.to(self.options().dtype(result_dtype));
   auto other_c = other.is_privateuseone()
       ? (other.scalar_type() == result_dtype ? other : other.to(result_dtype))
-      : other.to(self.options());
-  auto out_shape = at::infer_size(self.sizes(), other_c.sizes());
+      : other.to(self.options().dtype(result_dtype));
+  auto out_shape = at::infer_size(self_c.sizes(), other_c.sizes());
+  auto result_options = self.options().dtype(result_dtype);
   // aclnn binary ops broadcast and honor strides internally (verified), so we
   // pass self/other_c straight through instead of expand().contiguous(). This
   // avoids up to two device strided-copies + host view construction per op on
@@ -1368,7 +1613,7 @@ at::Tensor GeTensorKernelAscend(const at::Tensor& self, const at::Tensor& other)
   // tensor is genuinely non-contiguous AND the aclnn path would otherwise need
   // it — measured unnecessary for the common same-shape/contiguous case, which
   // is the overwhelming majority in Qwen3.
-  const at::Tensor& self_b = self;
+  const at::Tensor& self_b = self_c;
   const at::Tensor& other_b = other_c;
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       out_shape, self.options().dtype(at::kBool));
@@ -1390,11 +1635,15 @@ REGISTER_IMPL_TO_DISPATCHER(GeTensorFn, ge_tensor_dispatcher, Backend::kAscend, 
 
 at::Tensor LogicalAndKernelAscend(const at::Tensor& self, const at::Tensor& other) {
   namespace ascend = at::native::flagos::ascend;
-  auto result_dtype = self.scalar_type();
+  auto result_dtype = ascend::BinaryResultType("aclnnLogicalAnd", self, other);
+  auto self_c = self.scalar_type() == result_dtype
+      ? self
+      : self.to(self.options().dtype(result_dtype));
   auto other_c = other.is_privateuseone()
       ? (other.scalar_type() == result_dtype ? other : other.to(result_dtype))
-      : other.to(self.options());
-  auto out_shape = at::infer_size(self.sizes(), other_c.sizes());
+      : other.to(self.options().dtype(result_dtype));
+  auto out_shape = at::infer_size(self_c.sizes(), other_c.sizes());
+  auto result_options = self.options().dtype(result_dtype);
   // aclnn binary ops broadcast and honor strides internally (verified), so we
   // pass self/other_c straight through instead of expand().contiguous(). This
   // avoids up to two device strided-copies + host view construction per op on
@@ -1402,7 +1651,7 @@ at::Tensor LogicalAndKernelAscend(const at::Tensor& self, const at::Tensor& othe
   // tensor is genuinely non-contiguous AND the aclnn path would otherwise need
   // it — measured unnecessary for the common same-shape/contiguous case, which
   // is the overwhelming majority in Qwen3.
-  const at::Tensor& self_b = self;
+  const at::Tensor& self_b = self_c;
   const at::Tensor& other_b = other_c;
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       out_shape, self.options().dtype(at::kBool));
@@ -1424,11 +1673,15 @@ REGISTER_IMPL_TO_DISPATCHER(LogicalAndFn, logical_and_dispatcher, Backend::kAsce
 
 at::Tensor LogicalOrKernelAscend(const at::Tensor& self, const at::Tensor& other) {
   namespace ascend = at::native::flagos::ascend;
-  auto result_dtype = self.scalar_type();
+  auto result_dtype = ascend::BinaryResultType("aclnnLogicalOr", self, other);
+  auto self_c = self.scalar_type() == result_dtype
+      ? self
+      : self.to(self.options().dtype(result_dtype));
   auto other_c = other.is_privateuseone()
       ? (other.scalar_type() == result_dtype ? other : other.to(result_dtype))
-      : other.to(self.options());
-  auto out_shape = at::infer_size(self.sizes(), other_c.sizes());
+      : other.to(self.options().dtype(result_dtype));
+  auto out_shape = at::infer_size(self_c.sizes(), other_c.sizes());
+  auto result_options = self.options().dtype(result_dtype);
   // aclnn binary ops broadcast and honor strides internally (verified), so we
   // pass self/other_c straight through instead of expand().contiguous(). This
   // avoids up to two device strided-copies + host view construction per op on
@@ -1436,7 +1689,7 @@ at::Tensor LogicalOrKernelAscend(const at::Tensor& self, const at::Tensor& other
   // tensor is genuinely non-contiguous AND the aclnn path would otherwise need
   // it — measured unnecessary for the common same-shape/contiguous case, which
   // is the overwhelming majority in Qwen3.
-  const at::Tensor& self_b = self;
+  const at::Tensor& self_b = self_c;
   const at::Tensor& other_b = other_c;
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       out_shape, self.options().dtype(at::kBool));
@@ -1962,11 +2215,15 @@ REGISTER_IMPL_TO_DISPATCHER(AddcdivFn, addcdiv_dispatcher, Backend::kAscend, Add
 
 at::Tensor FmodTensorKernelAscend(const at::Tensor& self, const at::Tensor& other) {
   namespace ascend = at::native::flagos::ascend;
-  auto result_dtype = self.scalar_type();
+  auto result_dtype = ascend::BinaryResultType("aclnnFmodTensor", self, other);
+  auto self_c = self.scalar_type() == result_dtype
+      ? self
+      : self.to(self.options().dtype(result_dtype));
   auto other_c = other.is_privateuseone()
       ? (other.scalar_type() == result_dtype ? other : other.to(result_dtype))
-      : other.to(self.options());
-  auto out_shape = at::infer_size(self.sizes(), other_c.sizes());
+      : other.to(self.options().dtype(result_dtype));
+  auto out_shape = at::infer_size(self_c.sizes(), other_c.sizes());
+  auto result_options = self.options().dtype(result_dtype);
   // aclnn binary ops broadcast and honor strides internally (verified), so we
   // pass self/other_c straight through instead of expand().contiguous(). This
   // avoids up to two device strided-copies + host view construction per op on
@@ -1974,10 +2231,10 @@ at::Tensor FmodTensorKernelAscend(const at::Tensor& self, const at::Tensor& othe
   // tensor is genuinely non-contiguous AND the aclnn path would otherwise need
   // it — measured unnecessary for the common same-shape/contiguous case, which
   // is the overwhelming majority in Qwen3.
-  const at::Tensor& self_b = self;
+  const at::Tensor& self_b = self_c;
   const at::Tensor& other_b = other_c;
   auto out = ascend::OpPreparation::apply_tensor_without_format(
-      out_shape, self.options());
+      out_shape, result_options);
 
   static void* opApiFuncAddr = nullptr;
   static void* getWsFuncAddr = nullptr;
@@ -1996,11 +2253,15 @@ REGISTER_IMPL_TO_DISPATCHER(FmodTensorFn, fmod_tensor_dispatcher, Backend::kAsce
 
 at::Tensor FloorDivideKernelAscend(const at::Tensor& self, const at::Tensor& other) {
   namespace ascend = at::native::flagos::ascend;
-  auto result_dtype = self.scalar_type();
+  auto result_dtype = ascend::BinaryResultType("aclnnFloorDivide", self, other);
+  auto self_c = self.scalar_type() == result_dtype
+      ? self
+      : self.to(self.options().dtype(result_dtype));
   auto other_c = other.is_privateuseone()
       ? (other.scalar_type() == result_dtype ? other : other.to(result_dtype))
-      : other.to(self.options());
-  auto out_shape = at::infer_size(self.sizes(), other_c.sizes());
+      : other.to(self.options().dtype(result_dtype));
+  auto out_shape = at::infer_size(self_c.sizes(), other_c.sizes());
+  auto result_options = self.options().dtype(result_dtype);
   // aclnn binary ops broadcast and honor strides internally (verified), so we
   // pass self/other_c straight through instead of expand().contiguous(). This
   // avoids up to two device strided-copies + host view construction per op on
@@ -2008,10 +2269,10 @@ at::Tensor FloorDivideKernelAscend(const at::Tensor& self, const at::Tensor& oth
   // tensor is genuinely non-contiguous AND the aclnn path would otherwise need
   // it — measured unnecessary for the common same-shape/contiguous case, which
   // is the overwhelming majority in Qwen3.
-  const at::Tensor& self_b = self;
+  const at::Tensor& self_b = self_c;
   const at::Tensor& other_b = other_c;
   auto out = ascend::OpPreparation::apply_tensor_without_format(
-      out_shape, self.options());
+      out_shape, result_options);
 
   static void* opApiFuncAddr = nullptr;
   static void* getWsFuncAddr = nullptr;
@@ -2030,11 +2291,15 @@ REGISTER_IMPL_TO_DISPATCHER(FloorDivideFn, floor_divide_dispatcher, Backend::kAs
 
 at::Tensor LogicalXorKernelAscend(const at::Tensor& self, const at::Tensor& other) {
   namespace ascend = at::native::flagos::ascend;
-  auto result_dtype = self.scalar_type();
+  auto result_dtype = ascend::BinaryResultType("aclnnLogicalXor", self, other);
+  auto self_c = self.scalar_type() == result_dtype
+      ? self
+      : self.to(self.options().dtype(result_dtype));
   auto other_c = other.is_privateuseone()
       ? (other.scalar_type() == result_dtype ? other : other.to(result_dtype))
-      : other.to(self.options());
-  auto out_shape = at::infer_size(self.sizes(), other_c.sizes());
+      : other.to(self.options().dtype(result_dtype));
+  auto out_shape = at::infer_size(self_c.sizes(), other_c.sizes());
+  auto result_options = self.options().dtype(result_dtype);
   // aclnn binary ops broadcast and honor strides internally (verified), so we
   // pass self/other_c straight through instead of expand().contiguous(). This
   // avoids up to two device strided-copies + host view construction per op on
@@ -2042,7 +2307,7 @@ at::Tensor LogicalXorKernelAscend(const at::Tensor& self, const at::Tensor& othe
   // tensor is genuinely non-contiguous AND the aclnn path would otherwise need
   // it — measured unnecessary for the common same-shape/contiguous case, which
   // is the overwhelming majority in Qwen3.
-  const at::Tensor& self_b = self;
+  const at::Tensor& self_b = self_c;
   const at::Tensor& other_b = other_c;
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       out_shape, self.options().dtype(at::kBool));
@@ -2220,11 +2485,15 @@ REGISTER_IMPL_TO_DISPATCHER(NativeDropoutBackwardFn, native_dropout_backward_dis
 
 at::Tensor PrivPreluKernelKernelAscend(const at::Tensor& self, const at::Tensor& other) {
   namespace ascend = at::native::flagos::ascend;
-  auto result_dtype = self.scalar_type();
+  auto result_dtype = ascend::BinaryResultType("aclnnPrelu", self, other);
+  auto self_c = self.scalar_type() == result_dtype
+      ? self
+      : self.to(self.options().dtype(result_dtype));
   auto other_c = other.is_privateuseone()
       ? (other.scalar_type() == result_dtype ? other : other.to(result_dtype))
-      : other.to(self.options());
-  auto out_shape = at::infer_size(self.sizes(), other_c.sizes());
+      : other.to(self.options().dtype(result_dtype));
+  auto out_shape = at::infer_size(self_c.sizes(), other_c.sizes());
+  auto result_options = self.options().dtype(result_dtype);
   // aclnn binary ops broadcast and honor strides internally (verified), so we
   // pass self/other_c straight through instead of expand().contiguous(). This
   // avoids up to two device strided-copies + host view construction per op on
@@ -2232,10 +2501,10 @@ at::Tensor PrivPreluKernelKernelAscend(const at::Tensor& self, const at::Tensor&
   // tensor is genuinely non-contiguous AND the aclnn path would otherwise need
   // it — measured unnecessary for the common same-shape/contiguous case, which
   // is the overwhelming majority in Qwen3.
-  const at::Tensor& self_b = self;
+  const at::Tensor& self_b = self_c;
   const at::Tensor& other_b = other_c;
   auto out = ascend::OpPreparation::apply_tensor_without_format(
-      out_shape, self.options());
+      out_shape, result_options);
 
   static void* opApiFuncAddr = nullptr;
   static void* getWsFuncAddr = nullptr;
@@ -2548,6 +2817,11 @@ REGISTER_IMPL_TO_DISPATCHER(ProdFn, prod_dispatcher, Backend::kAscend, ProdKerne
 at::Tensor MmKernelAscend(const at::Tensor& self, const at::Tensor& mat2) {
   namespace ascend = at::native::flagos::ascend;
   int8_t cube_math_type = ascend::OpPreparation::get_cube_math_type(true);
+  if (!ascend::IsMatmulDtypeSupported(self.scalar_type()) ||
+      self.scalar_type() != mat2.scalar_type()) {
+    auto cpu_result = at::mm(self.cpu(), mat2.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }
   std::vector<int64_t> out_shape = self.sizes().vec();
   out_shape.back() = mat2.size(-1);
   auto out = ascend::OpPreparation::apply_tensor_without_format(out_shape, self.options());
@@ -2579,6 +2853,11 @@ REGISTER_IMPL_TO_DISPATCHER(MmOutFn, mm_out_dispatcher, Backend::kAscend, MmOutK
 at::Tensor BmmKernelAscend(const at::Tensor& self, const at::Tensor& mat2) {
   namespace ascend = at::native::flagos::ascend;
   int8_t cube_math_type = ascend::OpPreparation::get_cube_math_type(true);
+  if (!ascend::IsMatmulDtypeSupported(self.scalar_type()) ||
+      self.scalar_type() != mat2.scalar_type()) {
+    auto cpu_result = at::bmm(self.cpu(), mat2.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }
   std::vector<int64_t> out_shape = self.sizes().vec();
   out_shape.back() = mat2.size(-1);
   auto out = ascend::OpPreparation::apply_tensor_without_format(out_shape, self.options());
@@ -4448,6 +4727,17 @@ void ForeachAddInplaceScalarKernelAscend(at::TensorList self, const at::Scalar& 
 
 REGISTER_IMPL_TO_DISPATCHER(ForeachAddInplaceScalarFn, foreach_add_inplace_scalar_dispatcher, Backend::kAscend, ForeachAddInplaceScalarKernelAscend)
 
+
+void ForeachAddInplaceListKernelAscend(at::TensorList self, at::TensorList other, const at::Scalar& alpha) {
+  TORCH_CHECK(self.size() == other.size(), "foreach_add_inplace_list_dispatcher: tensor lists must match in length");
+  for (size_t i = 0; i < self.size(); ++i) {
+    at::Tensor dst = self[i];
+    dst.add_(other[i], alpha);
+  }
+}
+
+REGISTER_IMPL_TO_DISPATCHER(ForeachAddInplaceListFn, foreach_add_inplace_list_dispatcher, Backend::kAscend, ForeachAddInplaceListKernelAscend)
+
 static void ForeachLerpInplaceScalarKernelAscendChunk(at::TensorList self, at::TensorList tensors1, const at::Scalar& weight) {
   namespace ascend = at::native::flagos::ascend;
 
@@ -5573,5 +5863,45 @@ REGISTER_IMPL_TO_DISPATCHER(ConvolutionFn, convolution_dispatcher, Backend::kAsc
 }
 
 REGISTER_IMPL_TO_DISPATCHER(ConvolutionBackwardFn, convolution_backward_dispatcher, Backend::kAscend, ConvolutionBackwardKernelAscend)
+
+
+void PrivAmpForeachNonFiniteCheckAndUnscaleInplaceKernelAscend(at::TensorList self, at::Tensor& found_inf, const at::Tensor& inv_scale) {
+  std::vector<at::Tensor> cpu_self;
+  cpu_self.reserve(self.size());
+  for (const auto& tensor : self) {
+    cpu_self.push_back(tensor.cpu());
+  }
+  auto cpu_found_inf = found_inf.cpu();
+  auto cpu_inv_scale = inv_scale.cpu();
+  at::_amp_foreach_non_finite_check_and_unscale_(cpu_self, cpu_found_inf, cpu_inv_scale);
+  for (size_t i = 0; i < self.size(); ++i) {
+    at::Tensor dst = self[i];
+    dst.copy_(cpu_self[i]);
+  }
+  found_inf.copy_(cpu_found_inf);
+}
+
+REGISTER_IMPL_TO_DISPATCHER(PrivAmpForeachNonFiniteCheckAndUnscaleInplaceFn, priv_amp_foreach_non_finite_check_and_unscale_inplace_dispatcher, Backend::kAscend, PrivAmpForeachNonFiniteCheckAndUnscaleInplaceKernelAscend)
+
+
+void PrivAmpForeachNonFiniteCheckAndUnscaleOutKernelAscend(at::TensorList self, at::Tensor& found_inf, const at::Tensor& inv_scale, at::TensorList out) {
+  TORCH_CHECK(self.size() == out.size(), "priv_amp_foreach_non_finite_check_and_unscale_out_dispatcher: tensor lists must match in length");
+  std::vector<at::Tensor> cpu_self;
+  cpu_self.reserve(self.size());
+  for (const auto& tensor : self) {
+    cpu_self.push_back(tensor.cpu());
+  }
+  auto cpu_found_inf = found_inf.cpu();
+  auto cpu_inv_scale = inv_scale.cpu();
+  at::_amp_foreach_non_finite_check_and_unscale_outf(
+      cpu_self, cpu_found_inf, cpu_inv_scale, cpu_self);
+  for (size_t i = 0; i < out.size(); ++i) {
+    at::Tensor dst = out[i];
+    dst.copy_(cpu_self[i]);
+  }
+  found_inf.copy_(cpu_found_inf);
+}
+
+REGISTER_IMPL_TO_DISPATCHER(PrivAmpForeachNonFiniteCheckAndUnscaleOutFn, priv_amp_foreach_non_finite_check_and_unscale_out_dispatcher, Backend::kAscend, PrivAmpForeachNonFiniteCheckAndUnscaleOutKernelAscend)
 
 } // namespace at::native::flagos

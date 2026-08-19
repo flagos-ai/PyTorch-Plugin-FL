@@ -138,6 +138,23 @@ def test_amp_unscale_detects_non_finite_values():
     assert found_inf.cpu().item() == 1.0
 
 
+def test_amp_unscale_out_variant():
+    values = torch.tensor([4.0, float("inf")], device=DEVICE)
+    found_inf = torch.zeros((), device=DEVICE)
+    inv_scale = torch.tensor(0.25, device=DEVICE)
+    output = torch.empty_like(values)
+
+    torch.ops.aten._amp_foreach_non_finite_check_and_unscale.out(
+        [values], found_inf, inv_scale, out=[output]
+    )
+
+    torch.testing.assert_close(output[0].cpu(), torch.tensor(1.0))
+    assert torch.isinf(output[1]).item()
+    # The out overload follows the CPU reference and leaves found_inf unchanged;
+    # GradScaler uses the in-place overload above for overflow detection.
+    assert found_inf.cpu().item() == 0.0
+
+
 def test_autocast_grad_scaler_training_step():
     model = torch.nn.Linear(8, 4).to(DEVICE)
     optimizer = torch.optim.SGD(model.parameters(), lr=0.01)

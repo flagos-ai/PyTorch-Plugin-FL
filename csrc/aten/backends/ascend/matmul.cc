@@ -28,6 +28,8 @@
 #include <vector>
 #include "op_preparation.h"
 #include "op_api_common.h"
+#include "dtype_support.h"
+#include <ATen/ops/matmul.h>
 
 namespace at::native::flagos {
 
@@ -68,6 +70,11 @@ static std::vector<int64_t> matmul_output_shape(
 at::Tensor MatmulKernelAscend(const at::Tensor& self,
                                const at::Tensor& other) {
   namespace ascend = at::native::flagos::ascend;
+  if (!ascend::IsMatmulDtypeSupported(self.scalar_type()) ||
+      self.scalar_type() != other.scalar_type()) {
+    auto cpu_result = at::matmul(self.cpu(), other.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }
   int8_t cube_math_type = ascend::OpPreparation::get_cube_math_type(true);
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       matmul_output_shape(self, other), self.options());

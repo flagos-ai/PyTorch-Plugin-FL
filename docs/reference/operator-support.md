@@ -190,6 +190,36 @@ active route cohort is unchanged. The evidence gap is that there is no
 per-overload synthesized survey for vendor-native Ascend routes; the available
 evidence is the targeted FSDP2/DDP/collective workload described above.
 
+### Ascend AMP and dtype routes (2026-08-18)
+
+The Ascend dtype work adds generated support for the PrivateUse1 AMP workflow
+and corrects dtype behavior around the CANN capability boundary:
+
+- `_amp_foreach_non_finite_check_and_unscale_`
+- `_amp_foreach_non_finite_check_and_unscale.out`
+- `_foreach_add_.List`
+- Tensor-tensor binary promotion now uses PyTorch `result_type` semantics.
+- Ascend float64 copies and casts preserve float64 instead of being clamped to
+  float32.
+- Ascend matmul-family float64 and unsupported integer inputs use the CPU
+  fallback and return a correctly typed Ascend tensor.
+- Ascend unary dtypes rejected by CANN use the CPU fallback; supported native
+  paths remain unchanged.
+
+Measured on Ascend 910 with CANN 9.0 and `ASCEND_RT_VISIBLE_DEVICES=2`:
+
+- `tests/integration/test_amp.py`: **25 passed** (including both float16 and
+  bfloat16 autocast, non-finite detection, and all GradScaler step/overflow
+  paths).
+- `tests/integration/test_dtype_coverage.py`: **174 passed**.
+- The focused probe confirmed exact float64 round trips (including `1e300`),
+  float16 + float32 -> float32 promotion, int16/uint8 negation parity, and
+  float64 matmul parity through CPU fallback.
+
+This is targeted dtype evidence for CANN 9.0, not a claim that every ACLNN
+operator accepts every ACL dtype. Complex and quantized dtypes remain outside
+this cohort.
+
 ### MUSA native RNG routes (2026-08-17)
 
 The MUSA route configuration includes native muRAND/mudnn implementations for the core RNG families (`rand`, `randn`, `rand_like`, `randn_like`, `randint`, `normal_`, `uniform_`, `random_`, and native dropout). They share the authoritative per-device PrivateUse1 generator with the optional FlagGems Philox bridge. `randperm` and unsupported distribution overloads remain on CPU fallback and are not counted as native support.
@@ -209,6 +239,7 @@ The MUSA hybrid config adds seven non-overlapping FlagGems Python routes (`all`,
 | Date | Hardware | Cohort | Change | Evidence |
 |---|---|---|---|---|
 | 2026-08-18 | MTT S5000 (8 devices) | Native MUSA RNG, MThreads FlagGems hybrid, and MUPTI profiler | Added optional MUPTI activity tracing; the operator route cohort is unchanged. | `tests/integration/test_profiler_musa.py`: 1 passed with real positive-duration MUPTI kernel/runtime/memcpy activities and valid Chrome JSON. CPU-only Kineto resolver behavior remains environment-dependent; generic FlagGems operator coverage was not revalidated by this profiler change. |
+| 2026-08-18 | Ascend 910 (CANN 9.0) | Ascend AMP and dtype routes | Added generated AMP unscale and foreach list-add routes; fixed promotion-aware binary outputs, float64 copies, and CPU fallback for unsupported matmul/unary dtypes. | `test_amp.py`: 25 passed; `test_dtype_coverage.py`: 174 passed; targeted float64, promotion, and fallback parity probes passed. |
 | 2026-08-17 | MTT S5000 (8 devices) | Native MUSA RNG and MThreads FlagGems hybrid | Added shared per-device RNG reservations, muRAND/mudnn native RNG, shared stream compatibility, and seven non-overlapping FlagGems routes. | Native RNG: 7 passed; MUSA dispatch: 89 passed; routing/bridge units: 24 passed; real hybrid FlagGems: 2 passed, including selected reductions, duplicate-index `index_add`, and FlagGems `randn` mixed with native RNG. Vendor FlagTree wheel required; generic Triton 3.7.1 is not evidence. |
 | 2026-08-17 | Enflame S60 | Native GCU RNG routes | Added 16 topsaten RNG routes; generic FlagGems cohort not revalidated. | Targeted mixed native/FlagGems probe verified shared seed/offset progression and replay; `tests/integration/ops/test_rng_dispatch.py`: `104 passed, 2 skipped, 1 xpassed`. |
 | 2026-08-14 | Ascend 910 (2 devices) | Native Ascend FSDP2 routes | Added `_chunk_cat`, `_chunk_cat.out`, `_foreach_copy_`, `cat.out`, `split.Tensor`, `split_with_sizes`, and `split_with_sizes_copy.out`; generic FlagGems cohort not revalidated because it is unchanged. | Manual FlagCX collective, DDP, and FSDP2 tests on CANN 9.0; standard FlagGems harness is not applicable to native routes. |

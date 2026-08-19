@@ -57,9 +57,9 @@ Validation:
     kAscend and crash at import).
 
 Known limitations (documented, acceptable for the current op set):
-  - binary/binary_alpha take the output dtype from `self`; ops with C++-level
-    type promotion on mixed-dtype inputs (e.g. integer div -> float) are not
-    modelled. Typical float workloads are unaffected.
+  - binary/binary_alpha use PyTorch's result-type promotion before marshalling
+    inputs. True division additionally promotes integral inputs to the default
+    floating dtype, matching aten semantics.
   - No category may pass a by-value `float`/`double` argument to aclnn.
     EXEC_ASCEND_CMD calls the aclnn entry through a variadic `int(*)(...)`
     pointer, and on AArch64 a by-value float goes through varargs promotion
@@ -447,6 +447,7 @@ OPS = {
     # in-place ops except _foreach_sqrt (returns new Tensor[]). ----
     "_foreach_mul_.Scalar": ("foreach_inplace_scalar", "ForeachMulScalarV2"),
     "_foreach_add_.Scalar": ("foreach_inplace_scalar", "ForeachAddScalarV2"),
+    "_foreach_add_.List": ("foreach_inplace_add_list", None),
     "_foreach_lerp_.Scalar": ("foreach_inplace_lerp_scalar", "ForeachLerpScalar"),
     "_foreach_addcmul_.Scalar": (
         "foreach_inplace_addcmul_scalar",
@@ -524,6 +525,11 @@ OPS = {
     "max_pool2d_with_indices": ("max_pool2d_indices", "MaxPool2dWithIndices"),
     "convolution": ("convolution", "Convolution"),
     "convolution_backward": ("convolution_backward", "ConvolutionBackward"),
+    # GradScaler's device-side finite check and unscale operation. Ascend has
+    # no generated aclnn variant in this release, so use the CPU reference
+    # while preserving the in-place mutation contract.
+    "_amp_foreach_non_finite_check_and_unscale_": ("amp_unscale", None),
+    "_amp_foreach_non_finite_check_and_unscale.out": ("amp_unscale_out", None),
 }
 
 # Ops with a handwritten kAscend kernel — never regenerate (double-register).
@@ -540,6 +546,10 @@ SKIP = {
 T_UNARY = """\
 at::Tensor {kernel}(const at::Tensor& self) {{
   namespace ascend = at::native::flagos::ascend;
+  if (!ascend::IsUnaryDtypeSupported(self.scalar_type())) {{
+    auto cpu_result = at::{cpu_op}(self.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }}
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       self.sizes(), self.options());
 
@@ -568,11 +578,15 @@ REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
 # so the cached templates can inject a scalar fast-path branch before it while
 # still sharing one namespace alias.
 _BINARY_PROLOGUE_BODY = """\
-  auto result_dtype = self.scalar_type();
+  auto result_dtype = ascend::BinaryResultType("{aclnn}", self, other);
+  auto self_c = self.scalar_type() == result_dtype
+      ? self
+      : self.to(self.options().dtype(result_dtype));
   auto other_c = other.is_privateuseone()
       ? (other.scalar_type() == result_dtype ? other : other.to(result_dtype))
-      : other.to(self.options());
-  auto out_shape = at::infer_size(self.sizes(), other_c.sizes());
+      : other.to(self.options().dtype(result_dtype));
+  auto out_shape = at::infer_size(self_c.sizes(), other_c.sizes());
+  auto result_options = self.options().dtype(result_dtype);
   // aclnn binary ops broadcast and honor strides internally (verified), so we
   // pass self/other_c straight through instead of expand().contiguous(). This
   // avoids up to two device strided-copies + host view construction per op on
@@ -580,7 +594,7 @@ _BINARY_PROLOGUE_BODY = """\
   // tensor is genuinely non-contiguous AND the aclnn path would otherwise need
   // it — measured unnecessary for the common same-shape/contiguous case, which
   // is the overwhelming majority in Qwen3.
-  const at::Tensor& self_b = self;
+  const at::Tensor& self_b = self_c;
   const at::Tensor& other_b = other_c;
 """
 
@@ -640,6 +654,60 @@ _SCALAR_FASTPATH_ALPHA = """\
   }}
 """
 
+T_FOREACH_INPLACE_ADD_LIST = """
+void {kernel}(at::TensorList self, at::TensorList other, const at::Scalar& alpha) {{
+  TORCH_CHECK(self.size() == other.size(), "{disp}: tensor lists must match in length");
+  for (size_t i = 0; i < self.size(); ++i) {{
+    at::Tensor dst = self[i];
+    dst.add_(other[i], alpha);
+  }}
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+T_AMP_UNSCALE_OUT = """
+void {kernel}(at::TensorList self, at::Tensor& found_inf, const at::Tensor& inv_scale, at::TensorList out) {{
+  TORCH_CHECK(self.size() == out.size(), "{disp}: tensor lists must match in length");
+  std::vector<at::Tensor> cpu_self;
+  cpu_self.reserve(self.size());
+  for (const auto& tensor : self) {{
+    cpu_self.push_back(tensor.cpu());
+  }}
+  auto cpu_found_inf = found_inf.cpu();
+  auto cpu_inv_scale = inv_scale.cpu();
+  at::_amp_foreach_non_finite_check_and_unscale_outf(
+      cpu_self, cpu_found_inf, cpu_inv_scale, cpu_self);
+  for (size_t i = 0; i < out.size(); ++i) {{
+    at::Tensor dst = out[i];
+    dst.copy_(cpu_self[i]);
+  }}
+  found_inf.copy_(cpu_found_inf);
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
+T_AMP_UNSCALE = """
+void {kernel}(at::TensorList self, at::Tensor& found_inf, const at::Tensor& inv_scale) {{
+  std::vector<at::Tensor> cpu_self;
+  cpu_self.reserve(self.size());
+  for (const auto& tensor : self) {{
+    cpu_self.push_back(tensor.cpu());
+  }}
+  auto cpu_found_inf = found_inf.cpu();
+  auto cpu_inv_scale = inv_scale.cpu();
+  at::_amp_foreach_non_finite_check_and_unscale_(cpu_self, cpu_found_inf, cpu_inv_scale);
+  for (size_t i = 0; i < self.size(); ++i) {{
+    at::Tensor dst = self[i];
+    dst.copy_(cpu_self[i]);
+  }}
+  found_inf.copy_(cpu_found_inf);
+}}
+
+REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
+"""
+
 T_BINARY = (
     """\
 at::Tensor {kernel}(const at::Tensor& self, const at::Tensor& other) {{
@@ -647,7 +715,7 @@ at::Tensor {kernel}(const at::Tensor& self, const at::Tensor& other) {{
     + _BINARY_PROLOGUE
     + """\
   auto out = ascend::OpPreparation::apply_tensor_without_format(
-      out_shape, self.options());
+      out_shape, result_options);
 
   ascend::AclTensorWrapper acl_self(self_b);
   ascend::AclTensorWrapper acl_other(other_b);
@@ -668,7 +736,7 @@ at::Tensor {kernel}(const at::Tensor& self, const at::Tensor& other, const at::S
     + _BINARY_PROLOGUE
     + """\
   auto out = ascend::OpPreparation::apply_tensor_without_format(
-      out_shape, self.options());
+      out_shape, result_options);
 
   ascend::AclTensorWrapper acl_self(self_b);
   ascend::AclTensorWrapper acl_other(other_b);
@@ -1277,6 +1345,11 @@ T_MATMUL = """\
 at::Tensor {kernel}(const at::Tensor& self, const at::Tensor& mat2) {{
   namespace ascend = at::native::flagos::ascend;
   int8_t cube_math_type = ascend::OpPreparation::get_cube_math_type(true);
+  if (!ascend::IsMatmulDtypeSupported(self.scalar_type()) ||
+      self.scalar_type() != mat2.scalar_type()) {{
+    auto cpu_result = at::{cpu_op}(self.cpu(), mat2.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }}
   std::vector<int64_t> out_shape = self.sizes().vec();
   out_shape.back() = mat2.size(-1);
   auto out = ascend::OpPreparation::apply_tensor_without_format(out_shape, self.options());
@@ -4232,6 +4305,10 @@ REGISTER_IMPL_TO_DISPATCHER({fn}, {disp}, Backend::kAscend, {kernel})
 T_UNARY_CACHED = """\
 at::Tensor {kernel}(const at::Tensor& self) {{
   namespace ascend = at::native::flagos::ascend;
+  if (!ascend::IsUnaryDtypeSupported(self.scalar_type())) {{
+    auto cpu_result = at::{cpu_op}(self.cpu());
+    return ascend::MoveCpuResultToDevice(std::move(cpu_result), self);
+  }}
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       self.sizes(), self.options());
 
@@ -4259,7 +4336,7 @@ at::Tensor {kernel}(const at::Tensor& self, const at::Tensor& other) {{
     + _BINARY_PROLOGUE_BODY
     + """\
   auto out = ascend::OpPreparation::apply_tensor_without_format(
-      out_shape, self.options());
+      out_shape, result_options);
 
   static void* opApiFuncAddr = nullptr;
   static void* getWsFuncAddr = nullptr;
@@ -4286,7 +4363,7 @@ at::Tensor {kernel}(const at::Tensor& self, const at::Tensor& other, const at::S
     + _BINARY_PROLOGUE_BODY
     + """\
   auto out = ascend::OpPreparation::apply_tensor_without_format(
-      out_shape, self.options());
+      out_shape, result_options);
   ascend::AclScalarWrapper acl_alpha(alpha, result_dtype);
 
   static void* opApiFuncAddr = nullptr;
@@ -4490,6 +4567,9 @@ CATEGORIES = {
     "full": T_FULL,
     "full_like": T_FULL_LIKE,
     "new_ones": T_NEW_ONES,
+    "amp_unscale": T_AMP_UNSCALE,
+    "amp_unscale_out": T_AMP_UNSCALE_OUT,
+    "foreach_inplace_add_list": T_FOREACH_INPLACE_ADD_LIST,
 }
 
 # Categories whose kernels do NOT issue a direct aclnn call (they build tensors
@@ -4506,6 +4586,9 @@ NO_ACLNN_CATEGORIES = {
     "full",
     "full_like",
     "new_ones",
+    "amp_unscale",
+    "amp_unscale_out",
+    "foreach_inplace_add_list",
 }
 
 # Categories whose template splits its TensorList args into chunks to stay under
@@ -4538,11 +4621,48 @@ FILE_HEADER = """\
 #include <ATen/Dispatch.h>
 #include <ATen/ExpandUtils.h>
 #include <ATen/ops/empty.h>
+#include <ATen/ops/_amp_foreach_non_finite_check_and_unscale.h>
+#include <ATen/ops/abs.h>
+#include <ATen/ops/acos.h>
+#include <ATen/ops/asin.h>
+#include <ATen/ops/atan.h>
+#include <ATen/ops/bitwise_not.h>
+#include <ATen/ops/ceil.h>
+#include <ATen/ops/cos.h>
+#include <ATen/ops/cosh.h>
+#include <ATen/ops/erf.h>
+#include <ATen/ops/erfc.h>
+#include <ATen/ops/exp.h>
+#include <ATen/ops/expm1.h>
+#include <ATen/ops/floor.h>
+#include <ATen/ops/frac.h>
+#include <ATen/ops/log.h>
+#include <ATen/ops/log10.h>
+#include <ATen/ops/log1p.h>
+#include <ATen/ops/log2.h>
+#include <ATen/ops/logical_not.h>
+#include <ATen/ops/mm.h>
+#include <ATen/ops/bmm.h>
+#include <ATen/ops/neg.h>
+#include <ATen/ops/reciprocal.h>
+#include <ATen/ops/relu.h>
+#include <ATen/ops/round.h>
+#include <ATen/ops/rsqrt.h>
+#include <ATen/ops/sign.h>
+#include <ATen/ops/sigmoid.h>
+#include <ATen/ops/silu.h>
+#include <ATen/ops/sin.h>
+#include <ATen/ops/sinh.h>
+#include <ATen/ops/sqrt.h>
+#include <ATen/ops/tan.h>
+#include <ATen/ops/tanh.h>
+#include <ATen/ops/trunc.h>
 #include <c10/core/Scalar.h>
 #include <algorithm>
 #include <vector>
 #include "../op_preparation.h"
 #include "../op_api_common.h"
+#include "../dtype_support.h"
 
 namespace at::native::flagos {
 
@@ -4617,7 +4737,7 @@ def main():
         fn, disp = schema_to_cpp_name(op)
         kernel = fn[:-2] + "KernelAscend"  # SqrtFn -> SqrtKernelAscend
         template = CATEGORIES[cat]
-        fmt = dict(kernel=kernel, aclnn=acl, fn=fn, disp=disp)
+        fmt = dict(kernel=kernel, aclnn=acl, fn=fn, disp=disp, cpu_op=base)
         if cat in FOREACH_CHUNKED_CATEGORIES:
             fmt["chunk"] = FOREACH_CHUNKED_CATEGORIES[cat]
         if exec_cache and cat in CACHED_CATEGORIES:
