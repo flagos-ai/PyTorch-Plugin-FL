@@ -75,6 +75,46 @@ print(f'Sample result: {y.cpu()[0, 0].item():.4f}')
 
 Expected output shows `torch.cuda available: True`, `torch.version.cuda: 13.0`, and a floating-point result.
 
+### AMP and GradScaler
+
+PPU uses the shared CUDA-boxing implementation, while the public AMP device name
+is `flagos`. Autocast supports `torch.float16` and `torch.bfloat16`; the AMP
+foreach kernels used by `GradScaler` are routed through the same PPU CUDA runtime:
+
+```python
+import torch
+import torch.nn.functional as F
+import torch_fl  # noqa: F401
+
+model = torch.nn.Linear(8, 4, device="flagos")
+optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+scaler = torch.amp.GradScaler("flagos")
+inputs = torch.randn(2, 8, device="flagos")
+targets = torch.randn(2, 4, device="flagos")
+
+with torch.autocast("flagos", dtype=torch.bfloat16):
+    loss = F.mse_loss(model(inputs), targets)
+
+scaler.scale(loss).backward()
+scaler.step(optimizer)
+scaler.update()
+```
+
+Run the PPU-only AMP contract after installing the PPU torch wheel and loading
+the driver. `PPU_SDK` or `PPU_HOME` is required so the test cannot be mistaken
+for validation on an ordinary NVIDIA CUDA build:
+
+```bash
+FLAGOS_DISABLE_CUDA_ASSETS=1 \
+  PPU_SDK=/usr/local/PPU_SDK \
+  pytest tests/integration/test_amp.py -v --tb=short
+```
+
+This test requires a real PPU device. A CPU-only environment or a stock NVIDIA
+CUDA environment does not establish PPU AMP support. BF16 availability and
+GradScaler behavior must be checked against the installed PPU hardware and
+vendor torch wheel.
+
 ### Operator Validation (Pure Boxing)
 
 ```bash

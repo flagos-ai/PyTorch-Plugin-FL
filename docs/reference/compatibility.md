@@ -25,7 +25,7 @@
 | NVIDIA CUDA | `ACCELERATOR=cuda` (default) | CUDA boxing over an external `libtorch_cuda.so` | Stable | Experimental (inductor GPU device registered; no CI test step) | Beta (FlagCX + NCCL fallback, DDP live-verified) | Stable (CUPTI parity) | Beta (Python + C++ dispatch paths) | Stable |
 | MetaX | `ACCELERATOR=metax` | CUDA-boxing reuse via `cu-bridge`/mxcc, or native MetaX kernels | Stable | Not validated | Experimental (NCCL-shaped `mccl` fallback; not CI-covered) | Not validated on this vendor's tracer | Experimental (Python dispatch; not CI-tested on MetaX) | Stable |
 | Ascend | `ACCELERATOR=ascend` | Native ACLNN operator backend, optional FlagGems via triton-ascend | Stable (CI-covered ops, RNG suite) | Not validated | Experimental (HCCL fallback; architectural routing only, no collective-level CI) | Runtime only (device/runtime events not emitted; profiler parity suite excluded from CI) | Experimental (Python dispatch; not CI-tested on Ascend) | Beta |
-| PPU | `ACCELERATOR=cuda` + `PPU_SDK`/`PPU_HOME` detection | Same CUDA-boxing path as NVIDIA CUDA, against the PPU's CUDA-13-compatible SDK | Experimental | Not validated | Experimental (NCCL fallback via vendor-adapted `libnccl.so.2`; not CI-covered) | Not validated on this vendor's tracer | Experimental (vendor-index Triton required) | Experimental |
+| PPU | `ACCELERATOR=cuda` + `PPU_SDK`/`PPU_HOME` detection | Same CUDA-boxing path as NVIDIA CUDA, against the PPU's CUDA-13-compatible SDK | Experimental (FP16/BF16 autocast and GradScaler measured on PPU hardware, not in CI) | Not validated | Experimental (NCCL fallback via vendor-adapted `libnccl.so.2`; not CI-covered) | Not validated on this vendor's tracer | Experimental (vendor-index Triton required) | Experimental |
 | Hygon DCU | `ACCELERATOR=dcu` | CUDA boxing over the hipified DTK torch build (HIP kernels under the CUDA dispatch key) | Beta (including FP16/BF16 autocast and GradScaler) | Experimental (FlagTree HCU validated on `gfx936`; not in CI) | Experimental (RCCL via DTK; all_reduce/DDP measured on 2 cards, not in CI) | Beta (parity suite runs in CI) | Beta (Python dispatch only) | Beta |
 | Enflame GCU | `ACCELERATOR=gcu` | Native `libtopsaten.so` operator backend, with CPU fallback for unrouted/int64 ops | Experimental | Not validated | Not validated | Not validated | Experimental (Python dispatch, requires vendor Triton) | Experimental |
 | Moore Threads MUSA | `ACCELERATOR=musa` | Native `mudnn` operator backend, with CPU fallback for unrouted ops | Experimental | Not validated | Not validated | Not validated | Experimental (Python dispatch, requires vendor Triton) | Experimental |
@@ -86,6 +86,15 @@ detection (see [`setup.py`](../../setup.py), lines 43-46 and 732-736), reusing t
 build against the PPU's CUDA-13-compatible SDK. There is no CI manifest for this platform (no
 `ppu.yml` under `.github/configs/`), so all capabilities here rest on the
 [README](../../README.md)'s build-from-source instructions rather than automated tests.
+The shared `AutocastPrivateUse1` policies and CUDA-boxing AMP routes expose
+`torch.autocast("flagos")` and `torch.amp.GradScaler("flagos")`, with FP16 and
+BF16 as the advertised target dtypes. The AMP contract is covered by
+`tests/integration/test_amp.py`, but its runtime results are only PPU evidence
+when run with `PPU_SDK` or `PPU_HOME` against a real PPU device; ordinary NVIDIA
+CUDA and CPU runs do not validate this row. The current PPU validation covered
+both FP16 and BF16 autocast, the mutable `found_inf` unscale path, finite scale
+growth, overflow backoff, and an autocast training step. The result remains
+experimental because it is not covered by CI.
 FlagGems requires a vendor-index Triton build whose version string does not satisfy the
 project's `triton>=3.5.1` pin (see [`setup.py`](../../setup.py), lines 790-807). Distributed
 support is described as working via the NCCL fallback with a vendor-adapted `libnccl.so.2`, but
