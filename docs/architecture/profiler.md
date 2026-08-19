@@ -30,8 +30,11 @@ The entire Task 2–4 refactor had one goal: **adding a vendor should mean writi
 csrc/profiler/
   device_tracer.h              ← vendor-agnostic interface (DeviceTracer / DeviceEvent / EventKind)
   cupti_device_tracer.cc       ← NVIDIA implementation; all CUPTI types live only here
+  cann_device_tracer.cc        ← Ascend implementation using public MSPTI activities
+  musa_mupti_device_tracer.cc  ← MUSA implementation using MUPTI activities
   flagos_kineto_profiler.{h,cc}← generic kineto adaptor; zero vendor coupling
   cupti_shim.h                 ← symbol binding for dlopen'd system libcupti (NVIDIA-only)
+  mupti_shim.h                 ← optional runtime binding for MUSA libmupti
 ```
 
 ### 1.1 Vendor-agnostic interface — `device_tracer.h`
@@ -381,3 +384,24 @@ Ascend profiling is implemented in `csrc/profiler/cann_device_tracer.cc` using C
 MSPTI correlation IDs are remapped to nonzero 32-bit IDs for Kineto flow arrows. External-correlation records retain torch's profiler correlation ID separately, which enables linked ATen device-time attribution. Runtime records are coalesced per device correlation, preferring launch APIs for kernels and the corresponding copy/set API for transfers. Physical CANN device IDs are mapped to logical ordinals through `ASCEND_RT_VISIBLE_DEVICES` when set.
 
 The public CANN kernel record has no CUDA grid/block/occupancy fields; those fields are omitted rather than fabricated. CANN 9.0 declares `MSPTI_ACTIVITY_KIND_MEMSET` and emits real device records when the ACL memset symbols are resolved through the process-start MSPTI interposer. A direct global-symbol probe using `ctypes.CDLL(None)` produced positive-duration records for both `aclrtMemset` and `aclrtMemsetAsync`, including byte count, fill value, async flag, stream, device, and correlation metadata. A prior probe that called symbols through a separately loaded `libascendcl.so` handle bypassed the interposer and produced a false negative; it is not a valid capability test. Official Huawei MSPTI samples use the same process-start `LD_PRELOAD=libmspti.so` requirement. torch-fl therefore treats process-start preload as required for real memcpy/memset collection and verifies both memset variants in the Ascend integration gate. The implementation was measured on Ascend 910 hardware with CANN 9.0. Other CANN releases may remain unavailable until their MSPTI headers and runtime behavior are validated. Structural Ascend tests check real named positive-duration kernel/runtime/memcpy/memset activities, paired `ac2g` flows, external-correlation linkage, Chrome trace JSON, and repeated sessions.
+
+## MUSA MUPTI integration
+
+MUSA uses `csrc/profiler/musa_mupti_device_tracer.cc` and the optional `mupti_shim.h`. The tracer
+keeps MUPTI types and record decoding below the generic `DeviceTracer` boundary, and CMake
+excludes CUPTI, ROCtracer, and MSPTI for `ACCELERATOR=musa`, leaving exactly one factory.
+`muptiActivityRegisterCallbacks` and the activity kinds are armed at session start, not shared
+library import, so ordinary MUSA execution does not load the profiler. The buffer callbacks decode
+`MUpti_ActivityKernel6`, `MUpti_ActivityMemcpy4`, `MUpti_ActivityMemset3`, `MUpti_ActivityAPI`,
+and `MUpti_ActivityExternalCorrelation`; invalid timestamps are dropped rather than emitted as
+corrupt trace records. Kernel grid/block, shared-memory, register, context, stream, transfer-byte,
+callback-name, and correlation metadata are copied before the MUPTI buffer is released.
+
+MUPTI and Kineto use different timestamp clock domains on the validated host, so the tracer samples
+`muptiGetTimestamp()` against `CLOCK_REALTIME` at session start and stop and maps activity times
+with an affine conversion. The two correlation schemes remain independent: the MUPTI correlation
+ID pairs runtime and device records for `ac2g` flows, while `CUSTOM0` external records map to the
+Torch profiler ID used by `getLinkedActivity()`. `FLAGOS_MUPTI_LIBRARY` overrides library lookup,
+and `FLAGOS_MUPTI_DEBUG=1` enables setup diagnostics. The MTT S5000 validation captured real
+positive-duration kernel, runtime, and memcpy records and valid Chrome JSON; CPU-only Kineto
+resolver behavior remains environment-dependent, so full profiler parity is not claimed.

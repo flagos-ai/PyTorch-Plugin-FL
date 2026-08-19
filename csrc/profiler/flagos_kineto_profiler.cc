@@ -529,9 +529,9 @@ void registerFlagosKinetoProfiler() {
 namespace {
 struct KinetoProfilerRegistrar {
   KinetoProfilerRegistrar() {
-#if defined(FLAGOS_HAVE_MSPTI)
-    // Do not construct the CANN tracer during shared-library initialization.
-    // Its MSPTI handle is intentionally session-scoped and ordinary Ascend
+#if defined(FLAGOS_HAVE_MSPTI) || defined(FLAGOS_HAVE_MUPTI)
+    // Do not construct a vendor profiler shim during shared-library
+    // initialization. Its handle is intentionally session-scoped and ordinary
     // operator processes must not touch the vendor profiler at import time.
     registerFlagosKinetoProfiler();
     FLAGOS_KINETO_LOG("[flagos] FlagosKinetoProfiler registered with kineto\n");

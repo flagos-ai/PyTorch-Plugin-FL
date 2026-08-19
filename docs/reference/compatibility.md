@@ -28,7 +28,7 @@
 | PPU | `ACCELERATOR=cuda` + `PPU_SDK`/`PPU_HOME` detection | Same CUDA-boxing path as NVIDIA CUDA, against the PPU's CUDA-13-compatible SDK | Experimental | Not validated | Experimental (NCCL fallback via vendor-adapted `libnccl.so.2`; not CI-covered) | Not validated on this vendor's tracer | Experimental (vendor-index Triton required) | Experimental |
 | Hygon DCU | `ACCELERATOR=dcu` | CUDA boxing over the hipified DTK torch build (HIP kernels under the CUDA dispatch key) | Beta (including FP16/BF16 autocast and GradScaler) | Experimental (FlagTree HCU validated on `gfx936`; not in CI) | Experimental (RCCL via DTK; all_reduce/DDP measured on 2 cards, not in CI) | Beta (parity suite runs in CI) | Beta (Python dispatch only) | Beta |
 | Enflame GCU | `ACCELERATOR=gcu` | Native `libtopsaten.so` operator backend, with CPU fallback for unrouted/int64 ops | Experimental | Not validated | Not validated | Not validated | Experimental (Python dispatch, requires vendor Triton) | Experimental |
-| Moore Threads MUSA | `ACCELERATOR=musa` | Native `mudnn` operator backend, with CPU fallback for unrouted ops | Experimental | Not validated | Not validated | Not validated | Experimental (Python dispatch, requires vendor Triton) | Experimental |
+| Moore Threads MUSA | `ACCELERATOR=musa` | Native `mudnn` operator backend, with CPU fallback for unrouted ops | Experimental | Not validated | Not validated | Experimental (MUPTI device timeline measured on MTT S5000; CPU-Kineto linkage is environment-dependent) | Experimental (Python dispatch, requires vendor Triton) | Experimental |
 | D-Robotics BPU | `ACCELERATOR=bpu` | No eager kernel sets are built; eager ops run on CPU | Runtime only (CPU fallback for eager) | Experimental (`torch.compile(backend="bpu")` graph path via hbdk4) | Not applicable | Not validated | Not applicable (no per-op kernel build) | Runtime only |
 | TsingMicro | `ACCELERATOR=tsingmicro` | Runtime/build selector present; no per-op kernel set documented | Runtime only | Not validated | Not validated | Not validated | Not applicable | Runtime only |
 
@@ -137,8 +137,11 @@ with a documented CPU fallback for ops the vendor kernel table does not cover (s
 [`setup.py`](../../setup.py), lines 440-457, and
 `tests/integration/ops/test_musa_dispatch.py`, lines 15-24). No CUDA boxing kernels or FlagGems
 C++ kernels are compiled for this platform; FlagGems Python dispatch is optional and needs the
-vendor Triton backend. Distributed and profiler support are not represented in tests or docs for
-this platform.
+vendor Triton backend. Distributed support remains unvalidated on hardware. The optional MUPTI
+tracer has been measured on the available MTT S5000 host and emits real positive-duration kernel,
+runtime, and memcpy activities with device, stream, name, and Chrome-trace metadata. CPU-to-device
+linkage depends on whether the installed PyTorch/Kineto build supplies the PrivateUse1 resolver;
+the CPU-only PyTorch 2.10 wheel used for this measurement does not justify a general parity claim.
 
 ### D-Robotics BPU
 

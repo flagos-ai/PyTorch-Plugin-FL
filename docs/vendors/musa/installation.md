@@ -200,9 +200,36 @@ MUSA distributed communication routes through FlagCX via the identity view path.
 
 The routing unit suite covers FlagCX preference, MCCL fallback, the `mthreads` vendor alias, missing identity bindings, and the no-backend error. End-to-end multi-process validation still requires FlagCX or MCCL built for this host and should use `tests/manual/test_comm_device_index.py --world-size 2`. See [`docs/architecture/distributed-flagcx.md`](../../architecture/distributed-flagcx.md) for the ProcessGroupFlagOS architecture.
 
-### Profiler and torch.compile not validated
+### Profiler
 
-Neither `torch.compile` nor profiler-tracer parity has been validated on MUSA.
+MUSA profiling uses the optional MUPTI activity API from the MUSA toolkit. A profiler-capable
+build detects `mupti_activity.h` under `MUSA_HOME` and dynamically loads `libmupti.so` when a
+`torch.profiler` session starts. The extension does not link against MUPTI, so importing
+`torch_fl` remains possible on a host that has the MUSA runtime but no profiler library.
+
+The tracer enables concurrent and serialized kernels, runtime and driver API records, memcpy,
+memset, and external-correlation records. MUPTI timestamps are converted into the realtime clock
+domain used by Kineto. Runtime/device vendor correlation IDs remain separate from torch external
+correlation IDs: the former draws flow arrows and the latter attributes device time to CPU ops.
+
+Run the focused hardware test on an MTT S5000 host:
+
+```bash
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 ACCELERATOR=musa \
+LD_LIBRARY_PATH=/usr/local/musa/lib:$LD_LIBRARY_PATH \
+pytest tests/integration/test_profiler_musa.py -q
+```
+
+Measured with CPU PyTorch 2.10.0 and the installed MUSA 5.1.0 toolkit, the test captured real
+MUPTI kernel, runtime, and memcpy events with positive duration, valid names, device/stream
+metadata, and a valid Chrome trace JSON document. The same run exposed torch external IDs on the
+captured device events. CPU-only Kineto builds may not invoke the PrivateUse1 resolver, so this is
+an MUPTI device-timeline validation rather than a claim of full torch-cuda profiler parity.
+
+Useful diagnostics are `FLAGOS_MUPTI_DEBUG=1` for activity setup and session lifecycle logging and
+`FLAGOS_MUPTI_LIBRARY=/path/to/libmupti.so` to select a specific MUPTI library. MUPTI subscriber
+ownership remains process-global; an external MUSA profiling tool may therefore reject a concurrent
+`torch.profiler` session. `torch.compile` remains unvalidated on MUSA.
 
 ### FlagGems runtime prerequisite
 

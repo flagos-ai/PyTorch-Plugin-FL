@@ -33,18 +33,25 @@ list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/runtime/accelerator/.*")
 list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/runtime/accelerator/ascend/stream_api\\.cc")
 
 # Profiler device tracer selection: exactly one vendor implementation may define
-# MakeDeviceTracer(). CUDA-compatible builds use CUPTI, DCU uses ROCtracer, and
-# Ascend uses the public CANN MSPTI activity API. Unsupported native platforms
-# compile the unavailable stub.
+# MakeDeviceTracer(). CUDA-compatible builds use CUPTI, DCU uses ROCtracer,
+# Ascend uses MSPTI, and MUSA uses MUPTI. Unsupported native platforms compile
+# the unavailable stub.
 if(ACCELERATOR STREQUAL "dcu")
   list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/profiler/cupti_device_tracer\\.cc$")
   list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/profiler/cann_device_tracer\\.cc$")
+  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/profiler/musa_mupti_device_tracer\\.cc$")
 elseif(ACCELERATOR STREQUAL "ascend")
   list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/profiler/cupti_device_tracer\\.cc$")
   list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/profiler/roctracer_device_tracer\\.cc$")
+  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/profiler/musa_mupti_device_tracer\\.cc$")
+elseif(ACCELERATOR STREQUAL "musa")
+  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/profiler/cupti_device_tracer\\.cc$")
+  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/profiler/roctracer_device_tracer\\.cc$")
+  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/profiler/cann_device_tracer\\.cc$")
 else()
   list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/profiler/roctracer_device_tracer\\.cc$")
   list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/profiler/cann_device_tracer\\.cc$")
+  list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/profiler/musa_mupti_device_tracer\\.cc$")
 endif()
 
 # CANN's public MSPTI headers are optional. The tracer is still compiled with a
@@ -64,6 +71,20 @@ if(ACCELERATOR STREQUAL "ascend")
     message(STATUS "mspti.h found: ${MSPTI_INCLUDE_DIR}")
   else()
     message(STATUS "mspti.h NOT found; Ascend profiler will be unavailable")
+  endif()
+elseif(ACCELERATOR STREQUAL "musa")
+  find_path(MUPTI_INCLUDE_DIR
+    NAMES mupti_activity.h
+    PATHS
+      "$ENV{MUSA_HOME}/include"
+      /usr/local/musa/include
+      /usr/local/musa-5.1.0/include)
+  if(MUPTI_INCLUDE_DIR)
+    include_directories(${MUPTI_INCLUDE_DIR})
+    add_compile_definitions(FLAGOS_HAVE_MUPTI=1)
+    message(STATUS "mupti_activity.h found: ${MUPTI_INCLUDE_DIR}")
+  else()
+    message(STATUS "mupti_activity.h NOT found; MUSA profiler will be unavailable")
   endif()
 endif()
 

@@ -76,6 +76,7 @@ def pytest_configure(config):
         "(select with -m main_ops)",
     )
     config.addinivalue_line("markers", "ascend: requires Ascend NPU hardware")
+    config.addinivalue_line("markers", "musa: requires Moore Threads MUSA hardware")
 
     import torch_fl  # noqa: F401
 
