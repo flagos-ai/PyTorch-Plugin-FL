@@ -3,9 +3,15 @@
 import sys
 import types
 
+import pytest
+
 import torch_fl
 
 
+@pytest.mark.skipif(
+    not hasattr(torch_fl.flagos._C, "_reserve_rng_seed"),
+    reason="requires the MUSA RNG bridge symbol",
+)
 def test_flaggems_philox_uses_flagos_reservations(monkeypatch):
     calls = []
 

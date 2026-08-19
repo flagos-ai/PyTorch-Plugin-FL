@@ -2,8 +2,8 @@
 
 #include "../../generated/ops.h"
 #include <ATen/core/Tensor.h>
-#include <ATen/CPUGeneratorImpl.h>
 #include <ATen/Context.h>
+#include "runtime/generator.h"
 #include "op_preparation.h"
 #include "op_api_common.h"
 
@@ -11,13 +11,26 @@ namespace at::native::flagos {
 
 namespace {
 
-// Draw a fresh 64-bit seed from the default CPU generator so successive RNG
-// calls decorrelate. offset is left at 0 (aclnn advances its own state).
-int64_t next_seed() {
-  auto gen = at::detail::getDefaultCPUGenerator();
-  std::lock_guard<std::mutex> lock(gen.mutex());
-  return static_cast<int64_t>(
-      at::check_generator<at::CPUGeneratorImpl>(gen)->random64());
+// Reserve every seed from the public flagos generator. This keeps native
+// Ascend RNG and torch.flagos state APIs on one stream per device.
+uint64_t next_seed(const at::Tensor& tensor,
+                   const ::std::optional<at::Generator>& generator) {
+  TORCH_CHECK(
+      tensor.device().is_privateuseone(),
+      "Expected a matching device type for generator and tensor, but found a "
+      "flagos generator with ", tensor.device(), " tensor");
+  return c10::flagos::ReserveSeed(
+      generator, static_cast<c10::DeviceIndex>(tensor.device().index()));
+}
+
+uint64_t next_seed(const at::Tensor& tensor) {
+  return next_seed(tensor, std::nullopt);
+}
+
+at::Generator cpu_generator_for(
+    const at::Tensor& tensor,
+    const ::std::optional<at::Generator>& generator) {
+  return at::detail::createCPUGenerator(next_seed(tensor, generator));
 }
 
 at::Tensor make_empty(at::IntArrayRef size, ::std::optional<at::ScalarType> dtype,
@@ -30,23 +43,6 @@ at::Tensor make_empty(at::IntArrayRef size, ::std::optional<at::ScalarType> dtyp
       .device(device.value_or(at::Device(at::kPrivateUse1, 0)))
       .pinned_memory(pin_memory.value_or(false));
   return at::empty(size, options);
-}
-
-// Seed for one call, honouring an explicitly supplied generator.
-//
-// `generator` is ignored beyond its presence: reading a caller's CPU generator
-// state would tie every draw to the mt19937 stream, and there is no aclnn API to
-// hand it a foreign state. Drawing from the supplied generator keeps the two
-// streams separate, which is the property `torch.Generator`-passing callers
-// actually rely on -- an explicit generator must not consume the global stream.
-int64_t next_seed(const ::std::optional<at::Generator>& generator) {
-  if (generator.has_value() && generator->defined()) {
-    auto gen = *generator;
-    std::lock_guard<std::mutex> lock(gen.mutex());
-    return static_cast<int64_t>(
-        at::check_generator<at::CPUGeneratorImpl>(gen)->random64());
-  }
-  return next_seed();
 }
 
 // aclnnInplaceNormal on `self`, with mean/std passed through a typed signature.
@@ -88,68 +84,130 @@ void inplace_random_(const at::Tensor& self, int64_t from, int64_t to,
                   from, to, seed, static_cast<int64_t>(0));
 }
 
-// Full [from, to) range for `random_()` with no bounds, per dtype.
-//
-// ATen's contract is the whole representable range of the dtype, but aclnn takes
-// the bounds as int64_t, so kLong cannot express its own exclusive upper bound
-// (2^63 overflows). int64_t::max() as an exclusive bound therefore loses exactly
-// one value out of 2^63 -- accepted rather than special-cased, since the
-// alternative is no kLong support at all.
-std::pair<int64_t, int64_t> full_range(at::ScalarType dtype) {
+// Exclusive upper bound for random_ when the caller omits `to`. Floating
+// dtypes follow ATen's largest-exact-integer limits.
+int64_t default_upper_bound(at::ScalarType dtype) {
   switch (dtype) {
-    case at::kBool: return {0, 2};
-    case at::kByte: return {0, 256};
-    case at::kChar: return {-128, 128};
-    case at::kShort: return {-32768, 32768};
-    case at::kInt: return {std::numeric_limits<int32_t>::lowest(),
-                           int64_t(std::numeric_limits<int32_t>::max()) + 1};
-    // Floating dtypes: ATen caps at the largest integer the type represents
-    // exactly, so that every drawn value survives the round-trip.
-    case at::kHalf: return {0, 2048};            // 2^11
-    case at::kBFloat16: return {0, 256};         // 2^8
-    case at::kFloat: return {0, int64_t(1) << 24};
-    case at::kDouble: return {0, int64_t(1) << 53};
-    default: return {std::numeric_limits<int64_t>::lowest(),
-                     std::numeric_limits<int64_t>::max()};
+    case at::kBool: return 2;
+    case at::kByte: return 256;
+    case at::kChar: return 128;
+    case at::kShort: return 32768;
+    case at::kInt:
+      return int64_t(std::numeric_limits<int32_t>::max()) + 1;
+    case at::kLong:
+      // int64_t cannot represent max + 1, so the exclusive upper bound loses
+      // one value out of 2^63, matching the previous Ascend limitation.
+      return std::numeric_limits<int64_t>::max();
+    case at::kHalf: return int64_t{1} << 11;
+    case at::kBFloat16: return int64_t{1} << 8;
+    case at::kFloat: return int64_t{1} << 24;
+    case at::kDouble: return int64_t{1} << 53;
+    default:
+      TORCH_CHECK(false, "unsupported random_ dtype: ", dtype);
   }
 }
+
+at::Tensor& random_with_range(at::Tensor& self, int64_t low, int64_t high,
+                              const ::std::optional<at::Generator>& generator) {
+  inplace_random_(self, low, high, next_seed(self, generator));
+  return self;
+}
+
+// The default random_ overload is non-negative, matching ATen.
+at::Tensor& random_default(at::Tensor& self,
+                           const ::std::optional<at::Generator>& generator) {
+  return random_with_range(
+      self, 0, default_upper_bound(self.scalar_type()), generator);
+}
+
+at::Tensor& random_from(at::Tensor& self, int64_t from,
+                        const ::std::optional<int64_t>& to,
+                        const ::std::optional<at::Generator>& generator) {
+  if (to.has_value()) return random_with_range(self, from, *to, generator);
+  auto upper = default_upper_bound(self.scalar_type());
+  TORCH_CHECK(from < upper, "random_ lower bound out of range");
+  return random_with_range(self, from, upper, generator);
+}
+
 
 } // namespace
 
 // randn(int[] size, *, ScalarType?, Layout?, Device?, bool? pin_memory)
 //   -> Tensor of N(0, 1) samples. aclnnInplaceNormal(selfRef, mean, std, seed, offset).
+at::Tensor RandnGeneratorKernelAscend(
+    at::IntArrayRef size, ::std::optional<at::Generator> generator,
+    ::std::optional<at::ScalarType> dtype,
+    ::std::optional<at::Layout> layout,
+    ::std::optional<at::Device> device,
+    ::std::optional<bool> pin_memory) {
+  auto out = make_empty(size, dtype, layout, device, pin_memory);
+  inplace_normal_(out, 0.0, 1.0, next_seed(out, generator));
+  return out;
+}
+
 at::Tensor RandnKernelAscend(at::IntArrayRef size,
                              ::std::optional<at::ScalarType> dtype,
                              ::std::optional<at::Layout> layout,
                              ::std::optional<at::Device> device,
                              ::std::optional<bool> pin_memory) {
-  auto out = make_empty(size, dtype, layout, device, pin_memory);
-  inplace_normal_(out, 0.0, 1.0, next_seed());
-  return out;
+  return RandnGeneratorKernelAscend(
+      size, std::nullopt, dtype, layout, device, pin_memory);
 }
 
 // rand(int[] size, ...) -> Tensor of U[0, 1) samples.
 // aclnnInplaceUniform(selfRef, from, to, seed, offset).
+at::Tensor RandGeneratorKernelAscend(
+    at::IntArrayRef size, ::std::optional<at::Generator> generator,
+    ::std::optional<at::ScalarType> dtype,
+    ::std::optional<at::Layout> layout,
+    ::std::optional<at::Device> device,
+    ::std::optional<bool> pin_memory) {
+  auto out = make_empty(size, dtype, layout, device, pin_memory);
+  inplace_uniform_(out, 0.0, 1.0, next_seed(out, generator));
+  return out;
+}
+
 at::Tensor RandKernelAscend(at::IntArrayRef size,
                             ::std::optional<at::ScalarType> dtype,
                             ::std::optional<at::Layout> layout,
                             ::std::optional<at::Device> device,
                             ::std::optional<bool> pin_memory) {
-  auto out = make_empty(size, dtype, layout, device, pin_memory);
-  inplace_uniform_(out, 0.0, 1.0, next_seed());
-  return out;
+  return RandGeneratorKernelAscend(
+      size, std::nullopt, dtype, layout, device, pin_memory);
 }
 
 // randint.low(int low, int high, int[] size, ...) -> Tensor of ints in [low, high).
 // aclnnInplaceRandom(selfRef, from, to, seed, offset).
+at::Tensor RandintLowGeneratorKernelAscend(
+    int64_t low, int64_t high, at::IntArrayRef size,
+    ::std::optional<at::Generator> generator,
+    ::std::optional<at::ScalarType> dtype,
+    ::std::optional<at::Layout> layout,
+    ::std::optional<at::Device> device,
+    ::std::optional<bool> pin_memory) {
+  auto out = make_empty(
+      size, dtype.value_or(at::kLong), layout, device, pin_memory);
+  return random_with_range(out, low, high, generator);
+}
+
 at::Tensor RandintLowKernelAscend(int64_t low, int64_t high, at::IntArrayRef size,
                                   ::std::optional<at::ScalarType> dtype,
                                   ::std::optional<at::Layout> layout,
                                   ::std::optional<at::Device> device,
                                   ::std::optional<bool> pin_memory) {
-  auto out = make_empty(size, dtype.value_or(at::kLong), layout, device, pin_memory);
-  inplace_random_(out, low, high, next_seed());
-  return out;
+  return RandintLowGeneratorKernelAscend(
+      low, high, size, std::nullopt, dtype, layout, device, pin_memory);
+}
+
+at::Tensor RandintGeneratorKernelAscend(
+    int64_t high, at::IntArrayRef size,
+    ::std::optional<at::Generator> generator,
+    ::std::optional<at::ScalarType> dtype,
+    ::std::optional<at::Layout> layout,
+    ::std::optional<at::Device> device,
+    ::std::optional<bool> pin_memory) {
+  return RandintLowGeneratorKernelAscend(
+      0, high, size, generator, dtype, layout, device, pin_memory);
 }
 
 // randint(int high, int[] size, ...) -> ints in [0, high). Delegates to the
@@ -159,13 +217,18 @@ at::Tensor RandintKernelAscend(int64_t high, at::IntArrayRef size,
                                ::std::optional<at::Layout> layout,
                                ::std::optional<at::Device> device,
                                ::std::optional<bool> pin_memory) {
-  return RandintLowKernelAscend(0, high, size, dtype, layout, device, pin_memory);
+  return RandintGeneratorKernelAscend(
+      high, size, std::nullopt, dtype, layout, device, pin_memory);
 }
 
 REGISTER_IMPL_TO_DISPATCHER(RandnFn, randn_dispatcher, Backend::kAscend, RandnKernelAscend)
+REGISTER_IMPL_TO_DISPATCHER(RandnGeneratorFn, randn_generator_dispatcher, Backend::kAscend, RandnGeneratorKernelAscend)
 REGISTER_IMPL_TO_DISPATCHER(RandFn, rand_dispatcher, Backend::kAscend, RandKernelAscend)
+REGISTER_IMPL_TO_DISPATCHER(RandGeneratorFn, rand_generator_dispatcher, Backend::kAscend, RandGeneratorKernelAscend)
 REGISTER_IMPL_TO_DISPATCHER(RandintFn, randint_dispatcher, Backend::kAscend, RandintKernelAscend)
+REGISTER_IMPL_TO_DISPATCHER(RandintGeneratorFn, randint_generator_dispatcher, Backend::kAscend, RandintGeneratorKernelAscend)
 REGISTER_IMPL_TO_DISPATCHER(RandintLowFn, randint_low_dispatcher, Backend::kAscend, RandintLowKernelAscend)
+REGISTER_IMPL_TO_DISPATCHER(RandintLowGeneratorFn, randint_low_generator_dispatcher, Backend::kAscend, RandintLowGeneratorKernelAscend)
 
 // =========================================================================
 // Inplace RNG ops
@@ -174,39 +237,34 @@ REGISTER_IMPL_TO_DISPATCHER(RandintLowFn, randint_low_dispatcher, Backend::kAsce
 // normal_(Tensor(a!) self, float mean=0, float std=1, *, Generator? generator=None)
 at::Tensor& NormalInplaceKernelAscend(at::Tensor& self, double mean, double std,
                                       ::std::optional<at::Generator> generator) {
-  inplace_normal_(self, mean, std, next_seed(generator));
+  inplace_normal_(self, mean, std, next_seed(self, generator));
   return self;
 }
 
 // uniform_(Tensor(a!) self, float from=0, float to=1, *, Generator? generator=None)
 at::Tensor& UniformInplaceKernelAscend(at::Tensor& self, double from, double to,
                                        ::std::optional<at::Generator> generator) {
-  inplace_uniform_(self, from, to, next_seed(generator));
+  inplace_uniform_(self, from, to, next_seed(self, generator));
   return self;
 }
 
-// random_(Tensor(a!) self, *, Generator? generator=None) -> full range
+// random_(Tensor(a!) self, *, Generator? generator=None) -> [0, dtype.max]
 at::Tensor& RandomInplaceKernelAscend(at::Tensor& self,
                                       ::std::optional<at::Generator> generator) {
-  auto [low, high] = full_range(self.scalar_type());
-  inplace_random_(self, low, high, next_seed(generator));
-  return self;
+  return random_default(self, generator);
 }
 
 // random_(Tensor(a!) self, int to, *, Generator? generator=None) -> [0, to)
 at::Tensor& RandomInplaceToKernelAscend(at::Tensor& self, int64_t to,
                                         ::std::optional<at::Generator> generator) {
-  inplace_random_(self, 0, to, next_seed(generator));
-  return self;
+  return random_with_range(self, 0, to, generator);
 }
 
 // random_(Tensor(a!) self, int from, int? to, *, Generator? generator=None) -> [from, to)
 at::Tensor& RandomInplaceFromKernelAscend(at::Tensor& self, int64_t from,
                                           ::std::optional<int64_t> to,
                                           ::std::optional<at::Generator> generator) {
-  auto upper = to.has_value() ? *to : full_range(self.scalar_type()).second;
-  inplace_random_(self, from, upper, next_seed(generator));
-  return self;
+  return random_from(self, from, to, generator);
 }
 
 REGISTER_IMPL_TO_DISPATCHER(NormalInplaceFn, normal_inplace_dispatcher, Backend::kAscend, NormalInplaceKernelAscend)
@@ -233,7 +291,7 @@ at::Tensor NormalFloatFloatKernelAscend(double mean, double std, at::IntArrayRef
                       (float, float, int64_t, int64_t, aclTensor*,
                        uint64_t*, aclOpExecutor**),
                       static_cast<float>(mean), static_cast<float>(std),
-                      next_seed(generator), static_cast<int64_t>(0),
+                      next_seed(out, generator), static_cast<int64_t>(0),
                       const_cast<aclTensor*>(acl_out.get()));
   return out;
 }
@@ -248,7 +306,7 @@ at::Tensor NormalTensorFloatKernelAscend(const at::Tensor& mean, double std,
                       (const aclTensor*, float, int64_t, int64_t, aclTensor*,
                        uint64_t*, aclOpExecutor**),
                       acl_mean.get(), static_cast<float>(std),
-                      next_seed(generator), static_cast<int64_t>(0),
+                      next_seed(mean, generator), static_cast<int64_t>(0),
                       const_cast<aclTensor*>(acl_out.get()));
   return out;
 }
@@ -261,7 +319,7 @@ at::Tensor NormalTensorTensorKernelAscend(const at::Tensor& mean, const at::Tens
   ascend::AclTensorWrapper acl_mean(mean), acl_std(std), acl_out(out);
   EXEC_ASCEND_CMD(aclnnNormalTensorTensor,
                   acl_mean.get(), acl_std.get(),
-                  next_seed(generator), static_cast<int64_t>(0),
+                  next_seed(mean, generator), static_cast<int64_t>(0),
                   const_cast<aclTensor*>(acl_out.get()));
   return out;
 }
@@ -283,7 +341,7 @@ at::Tensor BernoulliKernelAscend(const at::Tensor& self,
   // aclnnBernoulliTensor: `selfAsProbabilityTensor` instead of scalar
   EXEC_ASCEND_CMD(aclnnBernoulliTensor,
                   acl_self.get(), acl_self.get(),
-                  next_seed(generator), static_cast<int64_t>(0),
+                  next_seed(self, generator), static_cast<int64_t>(0),
                   const_cast<aclTensor*>(acl_out.get()));
   return out;
 }
@@ -298,7 +356,7 @@ at::Tensor& BernoulliInplaceFloatKernelAscend(at::Tensor& self, double p,
                       (const aclTensor*, const aclScalar*, int64_t, int64_t,
                        uint64_t*, aclOpExecutor**),
                       const_cast<aclTensor*>(acl_self.get()), acl_p.get(),
-                      next_seed(generator), static_cast<int64_t>(0));
+                      next_seed(self, generator), static_cast<int64_t>(0));
   return self;
 }
 
@@ -309,7 +367,7 @@ at::Tensor& BernoulliInplaceTensorKernelAscend(at::Tensor& self, const at::Tenso
   ascend::AclTensorWrapper acl_self(self), acl_p(p);
   EXEC_ASCEND_CMD(aclnnInplaceBernoulliTensor,
                   const_cast<aclTensor*>(acl_self.get()), acl_p.get(),
-                  next_seed(generator), static_cast<int64_t>(0));
+                  next_seed(self, generator), static_cast<int64_t>(0));
   return self;
 }
 
@@ -330,7 +388,7 @@ at::Tensor RandpermKernelAscend(int64_t n,
   auto out = make_empty({n}, dtype.value_or(at::kLong), layout, device, pin_memory);
   namespace ascend = at::native::flagos::ascend;
   ascend::AclTensorWrapper acl_out(out);
-  EXEC_ASCEND_CMD(aclnnRandperm, n, next_seed(), static_cast<int64_t>(0),
+  EXEC_ASCEND_CMD(aclnnRandperm, n, next_seed(out), static_cast<int64_t>(0),
                   const_cast<aclTensor*>(acl_out.get()));
   return out;
 }
@@ -339,7 +397,7 @@ at::Tensor RandpermKernelAscend(int64_t n,
 at::Tensor& RandpermOutKernelAscend(int64_t n, at::Tensor& out) {
   namespace ascend = at::native::flagos::ascend;
   ascend::AclTensorWrapper acl_out(out);
-  EXEC_ASCEND_CMD(aclnnRandperm, n, next_seed(), static_cast<int64_t>(0),
+  EXEC_ASCEND_CMD(aclnnRandperm, n, next_seed(out), static_cast<int64_t>(0),
                   const_cast<aclTensor*>(acl_out.get()));
   return out;
 }
@@ -351,14 +409,39 @@ REGISTER_IMPL_TO_DISPATCHER(RandpermOutFn, randperm_out_dispatcher, Backend::kAs
 // *_like factory ops (delegate to the base factory + empty_like)
 // =========================================================================
 
+at::Tensor RandLikeGeneratorKernelAscend(
+    const at::Tensor& self, ::std::optional<at::Generator> generator,
+    ::std::optional<at::ScalarType> dtype,
+    ::std::optional<at::Layout> layout,
+    ::std::optional<at::Device> device,
+    ::std::optional<bool> pin_memory,
+    ::std::optional<at::MemoryFormat> memory_format) {
+  auto out = at::empty_like(
+      self, dtype, layout, device, pin_memory, memory_format);
+  inplace_uniform_(out, 0.0, 1.0, next_seed(out, generator));
+  return out;
+}
+
 at::Tensor RandLikeKernelAscend(const at::Tensor& self,
                                 ::std::optional<at::ScalarType> dtype,
                                 ::std::optional<at::Layout> layout,
                                 ::std::optional<at::Device> device,
                                 ::std::optional<bool> pin_memory,
                                 ::std::optional<at::MemoryFormat> memory_format) {
-  auto out = at::empty_like(self, dtype, layout, device, pin_memory, memory_format);
-  inplace_uniform_(out, 0.0, 1.0, next_seed());
+  return RandLikeGeneratorKernelAscend(
+      self, std::nullopt, dtype, layout, device, pin_memory, memory_format);
+}
+
+at::Tensor RandnLikeGeneratorKernelAscend(
+    const at::Tensor& self, ::std::optional<at::Generator> generator,
+    ::std::optional<at::ScalarType> dtype,
+    ::std::optional<at::Layout> layout,
+    ::std::optional<at::Device> device,
+    ::std::optional<bool> pin_memory,
+    ::std::optional<at::MemoryFormat> memory_format) {
+  auto out = at::empty_like(
+      self, dtype, layout, device, pin_memory, memory_format);
+  inplace_normal_(out, 0.0, 1.0, next_seed(out, generator));
   return out;
 }
 
@@ -368,13 +451,14 @@ at::Tensor RandnLikeKernelAscend(const at::Tensor& self,
                                  ::std::optional<at::Device> device,
                                  ::std::optional<bool> pin_memory,
                                  ::std::optional<at::MemoryFormat> memory_format) {
-  auto out = at::empty_like(self, dtype, layout, device, pin_memory, memory_format);
-  inplace_normal_(out, 0.0, 1.0, next_seed());
-  return out;
+  return RandnLikeGeneratorKernelAscend(
+      self, std::nullopt, dtype, layout, device, pin_memory, memory_format);
 }
 
 REGISTER_IMPL_TO_DISPATCHER(RandLikeFn, rand_like_dispatcher, Backend::kAscend, RandLikeKernelAscend)
+REGISTER_IMPL_TO_DISPATCHER(RandLikeGeneratorFn, rand_like_generator_dispatcher, Backend::kAscend, RandLikeGeneratorKernelAscend)
 REGISTER_IMPL_TO_DISPATCHER(RandnLikeFn, randn_like_dispatcher, Backend::kAscend, RandnLikeKernelAscend)
+REGISTER_IMPL_TO_DISPATCHER(RandnLikeGeneratorFn, randn_like_generator_dispatcher, Backend::kAscend, RandnLikeGeneratorKernelAscend)
 
 // randint_like(Tensor self, int high, *, dtype?, layout?, device?, pin_memory?, memory_format?)
 at::Tensor RandintLikeKernelAscend(const at::Tensor& self, int64_t high,
@@ -384,7 +468,7 @@ at::Tensor RandintLikeKernelAscend(const at::Tensor& self, int64_t high,
                                    ::std::optional<bool> pin_memory,
                                    ::std::optional<at::MemoryFormat> memory_format) {
   auto out = at::empty_like(self, dtype.value_or(at::kLong), layout, device, pin_memory, memory_format);
-  inplace_random_(out, 0, high, next_seed());
+  inplace_random_(out, 0, high, next_seed(out));
   return out;
 }
 
@@ -398,7 +482,7 @@ at::Tensor RandintLikeLowDtypeKernelAscend(const at::Tensor& self, int64_t low, 
                                            ::std::optional<bool> pin_memory,
                                            ::std::optional<at::MemoryFormat> memory_format) {
   auto out = at::empty_like(self, dtype.value_or(at::kLong), layout, device, pin_memory, memory_format);
-  inplace_random_(out, low, high, next_seed());
+  inplace_random_(out, low, high, next_seed(out));
   return out;
 }
 
@@ -413,50 +497,55 @@ REGISTER_IMPL_TO_DISPATCHER(RandintLikeLowDtypeFn, randint_like_low_dtype_dispat
 // =========================================================================
 
 at::Tensor& RandOutKernelAscend(at::IntArrayRef, at::Tensor& out) {
-  inplace_uniform_(out, 0.0, 1.0, next_seed());
+  inplace_uniform_(out, 0.0, 1.0, next_seed(out));
   return out;
 }
 
 at::Tensor& RandNamesOutKernelAscend(at::IntArrayRef, ::std::optional<at::DimnameList>,
                                      at::Tensor& out) {
-  inplace_uniform_(out, 0.0, 1.0, next_seed());
+  inplace_uniform_(out, 0.0, 1.0, next_seed(out));
   return out;
 }
 
 at::Tensor& RandnNamesOutKernelAscend(at::IntArrayRef, ::std::optional<at::DimnameList>,
                                       at::Tensor& out) {
-  inplace_normal_(out, 0.0, 1.0, next_seed());
+  inplace_normal_(out, 0.0, 1.0, next_seed(out));
   return out;
 }
 
 at::Tensor& RandLikeOutKernelAscend(const at::Tensor&, ::std::optional<at::MemoryFormat>,
                                     at::Tensor& out) {
-  inplace_uniform_(out, 0.0, 1.0, next_seed());
+  inplace_uniform_(out, 0.0, 1.0, next_seed(out));
   return out;
 }
 
 at::Tensor& RandnLikeOutKernelAscend(const at::Tensor&, ::std::optional<at::MemoryFormat>,
                                      at::Tensor& out) {
-  inplace_normal_(out, 0.0, 1.0, next_seed());
+  inplace_normal_(out, 0.0, 1.0, next_seed(out));
   return out;
 }
 
-at::Tensor& RandintLowOutKernelAscend(int64_t low, int64_t high, at::IntArrayRef,
-                                      at::Tensor& out) {
-  inplace_random_(out, low, high, next_seed());
-  return out;
+at::Tensor& RandintLowOutKernelAscend(int64_t low, int64_t high,
+                                      at::IntArrayRef size, at::Tensor& out) {
+  out.resize_(size);
+  return random_with_range(out, low, high, std::nullopt);
+}
+
+at::Tensor& RandintOutKernelAscend(int64_t high, at::IntArrayRef size,
+                                   at::Tensor& out) {
+  return RandintLowOutKernelAscend(0, high, size, out);
 }
 
 at::Tensor& RandintLikeOutKernelAscend(const at::Tensor&, int64_t high,
                                        ::std::optional<at::MemoryFormat>, at::Tensor& out) {
-  inplace_random_(out, 0, high, next_seed());
+  inplace_random_(out, 0, high, next_seed(out));
   return out;
 }
 
 at::Tensor& RandintLikeLowDtypeOutKernelAscend(const at::Tensor&, int64_t low, int64_t high,
                                                ::std::optional<at::MemoryFormat>,
                                                at::Tensor& out) {
-  inplace_random_(out, low, high, next_seed());
+  inplace_random_(out, low, high, next_seed(out));
   return out;
 }
 
@@ -466,6 +555,7 @@ REGISTER_IMPL_TO_DISPATCHER(RandnNamesOutFn, randn_names_out_dispatcher, Backend
 REGISTER_IMPL_TO_DISPATCHER(RandLikeOutFn, rand_like_out_dispatcher, Backend::kAscend, RandLikeOutKernelAscend)
 REGISTER_IMPL_TO_DISPATCHER(RandnLikeOutFn, randn_like_out_dispatcher, Backend::kAscend, RandnLikeOutKernelAscend)
 REGISTER_IMPL_TO_DISPATCHER(RandintLowOutFn, randint_low_out_dispatcher, Backend::kAscend, RandintLowOutKernelAscend)
+REGISTER_IMPL_TO_DISPATCHER(RandintOutFn, randint_out_dispatcher, Backend::kAscend, RandintOutKernelAscend)
 REGISTER_IMPL_TO_DISPATCHER(RandintLikeOutFn, randint_like_out_dispatcher, Backend::kAscend, RandintLikeOutKernelAscend)
 REGISTER_IMPL_TO_DISPATCHER(RandintLikeLowDtypeOutFn, randint_like_low_dtype_out_dispatcher, Backend::kAscend, RandintLikeLowDtypeOutKernelAscend)
 
@@ -501,7 +591,7 @@ at::Tensor& ExponentialInplaceKernelAscend(at::Tensor& self, double lambd,
   TORCH_CHECK(lambd > 0, "exponential_ expects lambd > 0, got ", lambd);
   auto eps = interval_eps(self.scalar_type());
   // U in [0, 1-eps] so that log1p(-U) stays finite.
-  inplace_uniform_(self, 0.0, 1.0 - eps, next_seed(generator));
+  inplace_uniform_(self, 0.0, 1.0 - eps, next_seed(self, generator));
   // -log(1-U)/lambda, via log1p for accuracy near U=0. Built from out-of-place
   // ops (the in-place spellings have no aclnn route) and written back with
   // set_data-free copy semantics via the dispatcher's own `add_`.
@@ -514,7 +604,7 @@ at::Tensor& ExponentialInplaceKernelAscend(at::Tensor& self, double lambd,
 at::Tensor& LogNormalInplaceKernelAscend(at::Tensor& self, double mean, double std,
                                          ::std::optional<at::Generator> generator) {
   TORCH_CHECK(std > 0, "log_normal_ expects std > 0, got ", std);
-  inplace_normal_(self, mean, std, next_seed(generator));
+  inplace_normal_(self, mean, std, next_seed(self, generator));
   auto r = at::exp(self);
   self.zero_().add_(r);
   return self;
@@ -525,7 +615,7 @@ at::Tensor& CauchyInplaceKernelAscend(at::Tensor& self, double median, double si
                                       ::std::optional<at::Generator> generator) {
   auto eps = interval_eps(self.scalar_type());
   // U in (0, 1): tan(pi*(U-0.5)) diverges at both endpoints.
-  inplace_uniform_(self, eps, 1.0 - eps, next_seed(generator));
+  inplace_uniform_(self, eps, 1.0 - eps, next_seed(self, generator));
   constexpr double kPi = 3.14159265358979323846;
   auto r = at::add(at::mul(at::tan(at::mul(at::sub(self, 0.5), kPi)), sigma), median);
   self.zero_().add_(r);
@@ -540,7 +630,7 @@ at::Tensor& GeometricInplaceKernelAscend(at::Tensor& self, double p,
   TORCH_CHECK(p > 0 && p < 1, "geometric_ expects 0 < p < 1, got ", p);
   auto eps = interval_eps(self.scalar_type());
   // U in (0, 1]: log(U) is -inf at U=0.
-  inplace_uniform_(self, eps, 1.0, next_seed(generator));
+  inplace_uniform_(self, eps, 1.0, next_seed(self, generator));
   auto r = at::clamp_min(at::ceil(at::div(at::log(self), std::log1p(-p))), 1);
   self.zero_().add_(r);
   return self;
@@ -571,20 +661,17 @@ REGISTER_IMPL_TO_DISPATCHER(GeometricInplaceFn, geometric_inplace_dispatcher, Ba
   if (p == 1.0) {
     return {at::zeros_like(input), at::zeros_like(input, input.options().dtype(at::kBool))};
   }
-  namespace ascend = at::native::flagos::ascend;
+  // CANN's native dropout returns a bit-packed uint8 mask, while ATen requires
+  // a bool tensor matching the input shape. Build that public contract directly
+  // from one on-device uniform draw so zero-valued input elements do not get
+  // mistaken for dropped elements.
   auto out = at::empty_like(input);
-  // Bit-packed mask: 1 bit per element, rounded up to 128-byte alignment as the
-  // aclnnDropout contract requires.
-  int64_t mask_bytes = ((input.numel() + 127) / 128) * 16;
-  auto acl_mask_buf = at::empty({mask_bytes}, input.options().dtype(at::kByte));
-  ascend::AclTensorWrapper acl_in(input), acl_out(out), acl_mask(acl_mask_buf);
-  EXEC_ASCEND_CMD_SIG(aclnnDropout,
-                      (const aclTensor*, double, bool, int64_t, int64_t,
-                       aclTensor*, aclTensor*, uint64_t*, aclOpExecutor**),
-                      acl_in.get(), p, true, next_seed(), static_cast<int64_t>(0),
-                      const_cast<aclTensor*>(acl_out.get()),
-                      const_cast<aclTensor*>(acl_mask.get()));
-  return {out, out.ne(0)};
+  inplace_uniform_(out, 0.0, 1.0, next_seed(input));
+  auto mask = out.ge(p);
+  out.copy_(input);
+  out.mul_(mask);
+  out.mul_(1.0 / (1.0 - p));
+  return {out, mask};
 }
 
 REGISTER_IMPL_TO_DISPATCHER(NativeDropoutFn, native_dropout_dispatcher, Backend::kAscend, NativeDropoutKernelAscend)
@@ -604,10 +691,9 @@ REGISTER_IMPL_TO_DISPATCHER(NativeDropoutFn, native_dropout_dispatcher, Backend:
 // not appear in transformer training or inference paths; they show up in
 // probabilistic models, where the sample is usually small relative to the model.
 //
-// Reproducibility is preserved: the CPU kernels draw from the default CPU
-// generator, which is exactly what `torch.manual_seed` seeds, so the same
-// contract holds as for the aclnn paths (which route their seed through
-// `next_seed()` from that same generator).
+// Reproducibility is preserved: each fallback reserves a seed from the same
+// per-device flagos generator as the aclnn paths, then initializes a temporary
+// CPU generator for the host implementation.
 //
 // Replace with an on-device kernel if any of these lands in a hot path, or if
 // CANN gains the corresponding aclnn API.
@@ -615,22 +701,26 @@ REGISTER_IMPL_TO_DISPATCHER(NativeDropoutFn, native_dropout_dispatcher, Backend:
 
 at::Tensor PoissonKernelAscend(const at::Tensor& self,
                                ::std::optional<at::Generator> generator) {
-  return at::poisson(self.cpu(), generator).to(self.device());
+  auto cpu_generator = cpu_generator_for(self, generator);
+  return at::poisson(self.cpu(), cpu_generator).to(self.device());
 }
 
 at::Tensor StandardGammaKernelAscend(const at::Tensor& self,
                                      ::std::optional<at::Generator> generator) {
-  return at::_standard_gamma(self.cpu(), generator).to(self.device());
+  auto cpu_generator = cpu_generator_for(self, generator);
+  return at::_standard_gamma(self.cpu(), cpu_generator).to(self.device());
 }
 
 at::Tensor SampleDirichletKernelAscend(const at::Tensor& self,
                                        ::std::optional<at::Generator> generator) {
-  return at::_sample_dirichlet(self.cpu(), generator).to(self.device());
+  auto cpu_generator = cpu_generator_for(self, generator);
+  return at::_sample_dirichlet(self.cpu(), cpu_generator).to(self.device());
 }
 
 at::Tensor BinomialKernelAscend(const at::Tensor& count, const at::Tensor& prob,
                                 ::std::optional<at::Generator> generator) {
-  return at::binomial(count.cpu(), prob.cpu(), generator).to(count.device());
+  auto cpu_generator = cpu_generator_for(count, generator);
+  return at::binomial(count.cpu(), prob.cpu(), cpu_generator).to(count.device());
 }
 
 REGISTER_IMPL_TO_DISPATCHER(PoissonFn, poisson_dispatcher, Backend::kAscend, PoissonKernelAscend)

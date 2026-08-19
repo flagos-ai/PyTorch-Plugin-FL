@@ -118,6 +118,11 @@ integration_tests:
       -m "not flaggems and not flaggems_python and not flaggems_cpp"
       --maxfail=1 -v -s --tb=long
 
+  - name: Run unified RNG tests
+    command: >-
+      python -m pytest tests/integration/ops/test_rng_dispatch.py
+      -m "main_ops" -v -s --tb=short
+
   - name: Run general factory and autograd tests
     command: >-
       python -m pytest

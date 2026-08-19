@@ -484,6 +484,32 @@ def patch_torch_cuda_for_flagos():
     except Exception:
         pass
 
+    # The user-facing backend is flagos even when FlagGems needs CUDA-shaped
+    # Philox state internally. Keep both representations synchronized so the
+    # public flagos seed/state API describes the stream consumed by the kernels.
+    if _flagos is not None:
+        native_manual_seed = _flagos.manual_seed
+        native_manual_seed_all = _flagos.manual_seed_all
+
+        def _flagos_manual_seed(seed):
+            native_manual_seed(seed)
+            _manual_seed(seed)
+
+        def _flagos_manual_seed_all(seed):
+            native_manual_seed_all(seed)
+            _manual_seed_all(seed)
+
+        def _flagos_get_rng_state(device="flagos"):
+            return _get_cuda_generator(_device_index(device)).get_state()
+
+        def _flagos_set_rng_state(state, device="flagos"):
+            _get_cuda_generator(_device_index(device)).set_state(state)
+
+        _flagos.manual_seed = _flagos_manual_seed
+        _flagos.manual_seed_all = _flagos_manual_seed_all
+        _flagos.get_rng_state = _flagos_get_rng_state
+        _flagos.set_rng_state = _flagos_set_rng_state
+
     _patch_triton_do_bench()
 
     _patched = True

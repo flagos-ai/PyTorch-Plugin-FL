@@ -2,8 +2,7 @@
 
 #include "../../generated/ops.h"
 #include <ATen/core/Tensor.h>
-#include <ATen/CPUGeneratorImpl.h>
-#include <ATen/Context.h>
+#include "runtime/generator.h"
 #include "op_preparation.h"
 #include "op_api_common.h"
 
@@ -27,16 +26,8 @@ at::Tensor MultinomialKernelAscend(const at::Tensor& self, int64_t num_samples,
   auto out = ascend::OpPreparation::apply_tensor_without_format(
       out_shape, self.options().dtype(at::kLong));
 
-  // Derive a seed. Prefer the supplied generator, else the default one.
-  at::Generator gen = generator.has_value()
-      ? generator.value()
-      : at::detail::getDefaultCPUGenerator();
-  int64_t seed;
-  {
-    std::lock_guard<std::mutex> lock(gen.mutex());
-    seed = static_cast<int64_t>(
-        at::check_generator<at::CPUGeneratorImpl>(gen)->random64());
-  }
+  auto seed = c10::flagos::ReserveSeed(
+      generator, static_cast<c10::DeviceIndex>(self.device().index()));
   int64_t offset = 0;
 
   ascend::AclTensorWrapper acl_self(self);

@@ -29,10 +29,9 @@ the two very different paths an op takes to get its randomness:
 
 Because both paths now converge on one generator, these tests run under *both*
 backend configs -- pure vendor (`-m main_ops`) and FlagGems
-(`FLAGOS_USE_FLAGGEMS=1 -m "flaggems and main_ops"`). That is deliberate: the
-native-path injection is only exercised by the pure-vendor run, and a config
-asymmetry in either direction is exactly the kind of regression this file exists
-to catch.
+(`FLAGOS_USE_FLAGGEMS=1 -m "flaggems and main_ops"`). The public device API is
+always `torch.flagos`; backend-specific generator representations are not part
+of the cross-backend test contract.
 
 Every test carries `main_ops` because CI's operator jobs select on it; a test
 without that marker never runs in CI.
@@ -61,6 +60,14 @@ def _flaggems_on() -> bool:
     )
 
 
+def _is_musa() -> bool:
+    return torch_fl._build_accelerator() == "musa"
+
+
+def _supports_flagos_generator() -> bool:
+    return torch_fl._build_accelerator() in ("ascend", "gcu", "musa")
+
+
 DEVICE = "flagos:0"
 SEED = 1234
 # Far enough from SEED that a collision is not plausible, but the value itself is
@@ -82,30 +89,23 @@ def _draw(op, seed):
 def _explicit_generator(seed):
     """A caller-supplied generator that this backend's RNG kernels accept.
 
-    The device matters and is not the same everywhere. Under CUDA boxing the
-    kernels take a real CUDA generator, and that is the case the injection logic
-    was written for. On a vendor backend with no CUDA library (Ascend) there is
-    no CUDA generator to construct -- `torch.Generator(device="cuda")` raises
-    "Cannot get CUDA generator without ATen_cuda library", and a `flagos` one is
-    rejected outright ("Expected a 'cpu' device type for generator"), because the
-    aclnn kernels seed themselves from the default *CPU* generator.
+    The generator *device* is an implementation detail of the active backend and
+    is not portable: a native PrivateUse1 implementation consumes a flagos
+    generator, a CUDA-shaped boxing implementation needs a philox CUDA
+    generator, and a CPU-seeded vendor implementation (aclnn) needs a CPU one.
+    Passing the wrong device type must raise, which is asserted separately.
 
-    A `flagos` generator is not a portable fallback: it carries an mt19937
-    state, while CUDA boxing needs a philox generator and aclnn consumes seeds
-    from a CPU generator. Passing the incompatible device type must raise, just
-    like native CPU/CUDA generator mismatches (and is covered below).
-
-    So try CUDA first and fall back to CPU. What the two tests below assert --
-    that an explicit generator is honoured and stays isolated from
-    `torch.manual_seed` -- is a property of the injection logic, not of the
-    generator's device, and holds either way.
+    What the explicit-generator tests below check -- that a caller's generator is
+    honoured and stays isolated from `torch.manual_seed` -- is a property of the
+    injection logic and holds for every one of those representations.
     """
+    if _supports_flagos_generator():
+        return torch.Generator(device="flagos").manual_seed(seed)
     try:
         gen = torch.Generator(device="cuda")
     except RuntimeError:
         gen = torch.Generator()  # cpu
-    gen.manual_seed(seed)
-    return gen
+    return gen.manual_seed(seed)
 
 
 # --- op catalogue -----------------------------------------------------------
@@ -237,39 +237,10 @@ class TestRngSeedSource:
 
     @pytest.mark.anyplatform
     @pytest.mark.main_ops
-    def test_default_generators_populated(self):
-        # The whole scheme rests on this list being non-empty and philox-shaped
-        # (2 x int64 = seed, offset). A 5056-byte mt19937 state here means the
-        # shim wired up the PrivateUse1 generator by mistake, which FlagGems
-        # unpacks as "too many values to unpack".
-        #
-        # This is a requirement of the *CUDA-shaped* seed paths only: FlagGems
-        # Triton kernels read seed+offset out of this generator, and the boxed
-        # native kernels inject it. A backend whose kernels seed themselves from
-        # the default CPU generator (Ascend/aclnn) has no CUDA generator to
-        # populate, and `torch.cuda.default_generators` is legitimately empty
-        # there -- so require the philox shape only where a CUDA generator exists.
-        gens = torch.cuda.default_generators
-        if len(gens) == 0:
-            pytest.skip(
-                "no CUDA generator on this backend; RNG kernels seed from the "
-                "default CPU generator instead (see torch_fl.flagos.default_generators)"
-            )
-        assert gens[0].get_state().numel() == 16, (
-            "default generator state is not philox-shaped (2 x int64)"
-        )
-
-    @pytest.mark.anyplatform
-    @pytest.mark.main_ops
-    @pytest.mark.parametrize("attr", ["cuda", "flagos"])
-    def test_default_generators_iterable(self, attr):
-        # Upstream types default_generators as a *tuple*, so callers iterate it,
-        # slice it and list() it. Our shims are list-like proxies with no
-        # __iter__, which sends Python to the legacy protocol: __getitem__(0, 1,
-        # 2, ...) until IndexError. Unbounded __getitem__ therefore made
-        # `for g in default_generators` an infinite loop that allocated a fresh
-        # generator per step -- a hang, not an error, so nothing surfaced it.
-        gens = getattr(torch if attr == "cuda" else torch_fl, attr).default_generators
+    def test_flagos_default_generators_iterable(self):
+        # The public flagos generator proxy must behave like the upstream
+        # list-like default_generators object on every backend.
+        gens = torch.flagos.default_generators
         n = len(gens)
         assert len(list(gens)) == n, "iteration does not stop at device_count"
         assert len(gens[:2]) == min(2, n), "slicing is not supported"
@@ -297,27 +268,31 @@ class TestRngSeedSource:
 
     @pytest.mark.anyplatform
     @pytest.mark.main_ops
-    def test_flagos_generator_device_mismatch_raises(self):
-        # A Generator contributes its dispatch key to operator selection. After
-        # the boxed kernel changed its tensor to CUDA, a flagos generator used
-        # to select the same flagos kernel again: infinite redispatch ending in
-        # SIGSEGV. Like native device mismatches, this unsupported generator
-        # combination must fail cleanly instead.
-        gen = torch.Generator(device="flagos")
-        with pytest.raises(RuntimeError, match="device type for generator"):
-            _empty(8).normal_(generator=gen)
+    def test_flagos_generator_device_contract(self):
+        gen = torch.Generator(device="flagos").manual_seed(99)
+        if _supports_flagos_generator():
+            first = _empty().normal_(generator=gen).cpu()
+            gen.manual_seed(99)
+            second = _empty().normal_(generator=gen).cpu()
+            assert torch.equal(first, second)
+        else:
+            # Backends whose native kernels use a different generator contract
+            # reject a flagos generator rather than silently changing streams.
+            with pytest.raises(RuntimeError, match="device type for generator"):
+                _empty(8).normal_(generator=gen)
 
     @pytest.mark.anyplatform
     @pytest.mark.main_ops
-    def test_flagos_generator_factory_mismatch_raises(self):
-        # Factory RNG has no Tensor key to override the generator's PrivateUse1
-        # key, so it is a distinct recursion entry point. Only CUDA-shaped
-        # boxing backends expose this overload; aclnn uses its own factory path.
-        if len(torch.cuda.default_generators) == 0:
-            pytest.skip("factory generator overload requires CUDA boxing")
-        gen = torch.Generator(device="flagos")
-        with pytest.raises(RuntimeError, match="device type for generator"):
-            torch.rand(8, device=DEVICE, generator=gen)
+    def test_flagos_generator_factory_contract(self):
+        gen = torch.Generator(device="flagos").manual_seed(99)
+        if _supports_flagos_generator():
+            first = torch.rand(8, device=DEVICE, generator=gen).cpu()
+            gen.manual_seed(99)
+            second = torch.rand(8, device=DEVICE, generator=gen).cpu()
+            assert torch.equal(first, second)
+        else:
+            with pytest.raises(RuntimeError, match="device type for generator"):
+                torch.rand(8, device=DEVICE, generator=gen)
 
     @pytest.mark.anyplatform
     @pytest.mark.main_ops
@@ -364,6 +339,87 @@ class TestRngSeedSource:
         assert torch.equal(_draw(mixed, SEED), _draw(mixed, SEED))
         assert not torch.equal(_draw(mixed, SEED), _draw(mixed, OTHER_SEED))
 
+    @pytest.mark.anyplatform
+    @pytest.mark.main_ops
+    def test_rng_state_round_trip(self):
+        torch.flagos.manual_seed(SEED)
+        state = torch.flagos.get_rng_state()
+        first = _empty(17).normal_(0.5, 2.0)
+        torch.flagos.set_rng_state(state)
+        second = _empty(17).normal_(0.5, 2.0)
+        assert torch.equal(first, second)
+
+    @pytest.mark.anyplatform
+    @pytest.mark.main_ops
+    def test_integer_factory_and_out_contract(self):
+        torch.flagos.manual_seed(SEED)
+        values = torch.randint(-7, 13, (128,), device=DEVICE, dtype=torch.int32)
+        assert values.dtype == torch.int32
+        assert bool(torch.all(values >= -7)) and bool(torch.all(values < 13))
+
+        out = torch.empty((128,), device=DEVICE, dtype=torch.int64)
+        torch.randint(100, (128,), device=DEVICE, out=out)
+        assert bool(torch.all(out >= 0)) and bool(torch.all(out < 100))
+
+    @pytest.mark.anyplatform
+    @pytest.mark.main_ops
+    def test_like_preserves_shape_layout_and_device(self):
+        ref = torch.empty((4, 9), device=DEVICE).transpose(0, 1)
+        torch.flagos.manual_seed(SEED)
+        sampled = torch.rand_like(ref)
+        assert sampled.device == ref.device
+        assert sampled.shape == ref.shape
+        assert sampled.is_contiguous() == ref.is_contiguous()
+
+    @pytest.mark.anyplatform
+    @pytest.mark.main_ops
+    def test_dropout_forward_backward_contract(self):
+        torch.flagos.manual_seed(SEED)
+        value = torch.ones((256,), device=DEVICE)
+        output, mask = torch.ops.aten.native_dropout(value, 0.25, True)
+        assert output.device == torch.device(DEVICE)
+        assert mask.device == torch.device(DEVICE)
+        assert mask.dtype == torch.bool
+        assert torch.equal(output.ne(0), mask)
+        expected = mask.to(output.dtype) * (1.0 / 0.75)
+        assert torch.allclose(output, expected)
+
+        grad = torch.ops.aten.native_dropout_backward(
+            torch.ones_like(output), mask, 4.0
+        )
+        assert torch.equal(grad, mask.to(grad.dtype) * 4.0)
+
+    @pytest.mark.anyplatform
+    @pytest.mark.main_ops
+    def test_full_width_integer_ranges(self):
+        torch.flagos.manual_seed(SEED)
+        values = torch.empty((4096,), device=DEVICE, dtype=torch.int64).random_(
+            -(1 << 63), (1 << 63) - 1
+        )
+        assert bool(torch.all(values >= -(1 << 63)))
+        assert bool(torch.all(values < (1 << 63) - 1))
+        assert bool(torch.any(values < 0)) and bool(torch.any(values >= 0))
+
+        defaults = torch.empty((4096,), device=DEVICE, dtype=torch.int8).random_()
+        assert bool(torch.all(defaults >= 0))
+        assert bool(torch.all(defaults <= torch.iinfo(torch.int8).max))
+
+    @pytest.mark.musa
+    @pytest.mark.main_ops
+    def test_musa_shared_reservation_order(self):
+        torch.flagos.manual_seed(SEED)
+        initial_state = torch.flagos.get_rng_state()
+        bridge_seed = torch_fl._C._reserve_rng_seed(0)
+        torch.rand((16,), device=DEVICE)
+        mixed_state = torch.flagos.get_rng_state()
+
+        torch.flagos.set_rng_state(initial_state)
+        first_seed = torch_fl._C._reserve_rng_seed(0)
+        torch_fl._C._reserve_rng_seed(0)
+        reservation_state = torch.flagos.get_rng_state()
+        assert bridge_seed == first_seed
+        assert torch.equal(mixed_state, reservation_state)
+
 
 class TestRngMultiDevice:
     """Per-device generators must be independently seeded and addressed.
@@ -395,24 +451,36 @@ class TestRngMultiDevice:
 
     @pytest.mark.anyplatform
     @pytest.mark.main_ops
+    def test_manual_seed_all_replays_each_device_independently(self):
+        dev = self._second_device()
+        torch.flagos.manual_seed_all(SEED)
+        first0 = torch.rand(32, device=DEVICE)
+        first1 = torch.rand(32, device=dev)
+
+        torch.flagos.manual_seed_all(SEED)
+        second1 = torch.rand(32, device=dev)
+        second0 = torch.rand(32, device=DEVICE)
+        assert first0.device.index == 0
+        assert first1.device.index == 1
+        assert torch.equal(first0, second0)
+        assert torch.equal(first1, second1)
+
+        torch.flagos.manual_seed_all(SEED)
+        expected1 = torch.rand(32, device=dev)
+        torch.flagos.manual_seed_all(SEED)
+        torch.rand(32, device=DEVICE)
+        actual1 = torch.rand(32, device=dev)
+        assert torch.equal(expected1, actual1)
+
+    @pytest.mark.anyplatform
+    @pytest.mark.main_ops
     def test_each_device_has_its_own_generator(self):
         dev = self._second_device()
-        # Same empty-backend guard as test_default_generators_populated above:
-        # a backend whose kernels seed from the default CPU generator
-        # (Ascend/aclnn) has no per-device CUDA generator to hold distinct, and
-        # `torch.cuda.default_generators` is legitimately empty there. Without
-        # this the `>= 2` assert below is `assert 0 >= 2` on every such backend,
-        # which contradicts the sibling test's stance within the same file.
-        gens = torch.cuda.default_generators
-        if len(gens) == 0:
-            pytest.skip(
-                "no CUDA generator on this backend; RNG kernels seed from the "
-                "default CPU generator instead (see torch_fl.flagos.default_generators)"
-            )
+        gens = torch.flagos.default_generators
         assert len(gens) >= 2
         # Same seed on both devices: the draws are allowed to coincide (identical
-        # philox inputs), but the generators must be distinct objects, or seeding
-        # one device would silently reset another.
+        # inputs), but the generators must be distinct objects, or seeding one
+        # device would silently reset another.
         assert gens[0] is not gens[1]
         torch.manual_seed(SEED)
         d0 = torch.randn(64, device=DEVICE).cpu()

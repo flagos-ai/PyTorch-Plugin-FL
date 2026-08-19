@@ -743,6 +743,9 @@ def _patch_flaggems_codegen_config():
         # from the bundled libtorch's own version so triton sees a HIP torch,
         # matching what the vendor wheel reported.
         _restore_dcu_hip_version()
+        from torch_fl.accelerator.dcu._dcu_compat import install_dcu_rng_bridge
+
+        install_dcu_rng_bridge()
         return
 
     # --- Enflame GCU branch ---

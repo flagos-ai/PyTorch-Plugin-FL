@@ -76,6 +76,10 @@ integration_tests:
       FLAGOS_USE_FLAGGEMS=1
       python -m pytest tests/integration/ops/
       -m "flaggems and main_ops" -v -s --tb=short
+  - name: Run unified RNG tests
+    command: >-
+      python -m pytest tests/integration/ops/test_rng_dispatch.py
+      -m "main_ops" -v -s --tb=short
   - name: Run general tests
     command: python -m pytest tests/integration/test_factory_ops.py -v -s --tb=short
   # Needs its own entry: `-m main_ops` above is scoped to tests/integration/ops/,
