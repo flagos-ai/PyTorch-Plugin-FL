@@ -529,7 +529,8 @@ void registerFlagosKinetoProfiler() {
 namespace {
 struct KinetoProfilerRegistrar {
   KinetoProfilerRegistrar() {
-#if defined(FLAGOS_HAVE_MSPTI) || defined(FLAGOS_HAVE_MUPTI)
+#if defined(FLAGOS_HAVE_MSPTI) || defined(FLAGOS_HAVE_MUPTI) || \
+    defined(FLAGOS_HAVE_TOPSPTI)
     // Do not construct a vendor profiler shim during shared-library
     // initialization. Its handle is intentionally session-scoped and ordinary
     // operator processes must not touch the vendor profiler at import time.
