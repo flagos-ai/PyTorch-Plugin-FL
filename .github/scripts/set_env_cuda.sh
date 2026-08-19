@@ -24,7 +24,7 @@ case "${CI_STAGE:-}" in
 esac
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-CPU_TORCH_VERSION="${TORCH_FL_CPU_TORCH_VERSION:-2.10.0}"
+CPU_TORCH_VERSION="${TORCH_FL_CPU_TORCH_VERSION:-2.9.0}"
 CPU_TORCH_INDEX_URL="${TORCH_FL_CPU_TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}"
 
 select_vendor_python() {
@@ -201,7 +201,7 @@ from pathlib import Path
 import torch
 
 print(Path(torch.__file__).resolve().parent)
-assert torch.__version__.split("+", 1)[0] == "2.10.0", torch.__version__
+assert torch.__version__.split("+", 1)[0] == "2.9.0", torch.__version__
 assert torch.version.cuda is None, torch.version.cuda
 PY
 )"
@@ -265,7 +265,7 @@ import torch
 
 torch_path = Path(torch.__file__).resolve()
 assert sys.executable.startswith("/"), sys.executable
-assert torch.__version__.split("+", 1)[0] == "2.10.0", torch.__version__
+assert torch.__version__.split("+", 1)[0] == "2.9.0", torch.__version__
 assert torch.version.cuda is None, torch.version.cuda
 assert "/opt/conda/" not in str(torch_path), torch_path
 assert Path(".libtorch_cuda_assets/libtorch_cuda.so").is_file()
