@@ -75,6 +75,34 @@ print(f'Sample result: {y.cpu()[0, 0].item():.4f}')
 
 Expected output shows `torch.cuda available: True`, `torch.version.cuda: 13.0`, and a floating-point result.
 
+### `torch.compile` with FlagTree
+
+Build FlagTree from source with its PPU backend; the resulting `flagtree` wheel
+installs a `triton` module, so it must replace or shadow the vendor Triton:
+
+```bash
+git clone https://github.com/flagos-ai/FlagTree.git
+cd FlagTree
+pip install -r python/requirements.txt
+FLAGTREE_BACKEND=ppu MAX_JOBS=32 \
+  pip install . --no-build-isolation -v
+```
+
+Require the active compiler to be FlagTree and run the compile contract:
+
+```bash
+FLAGOS_DISABLE_CUDA_ASSETS=1 \
+  FLAGOS_USE_FLAGTREE=1 \
+  pytest tests/integration/test_compile.py -v --tb=short
+```
+
+PPU FlagTree currently initializes CUDA while selecting compiler hints in an
+asynchronous Inductor worker, which can fail after the parent process has already
+initialized the PPU context ([FlagTree #1031](https://github.com/flagos-ai/FlagTree/issues/1031)).
+Torch-FL defaults PPU FlagTree to serial compilation as a compatibility measure.
+Set `TORCHINDUCTOR_COMPILE_THREADS` explicitly only when testing an upstream fix
+or deliberately selecting a different worker configuration.
+
 ### AMP and GradScaler
 
 PPU uses the shared CUDA-boxing implementation, while the public AMP device name

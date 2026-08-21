@@ -104,6 +104,26 @@ def _resolve_config_patches(
     return patches
 
 
+def _patch_ppu_flagtree_compile_workers(config_patches: Dict[str, Any]) -> None:
+    """Keep PPU FlagTree compilation in the parent process by default.
+
+    FlagTree's PPU driver queries ``torch.cuda.current_device()`` while choosing
+    compiler hints. Inductor's asynchronous workers may be forked after the PPU
+    CUDA context is initialized, where that query triggers PyTorch's fork-safety
+    error. Serial compilation avoids the unsafe reinitialization until the
+    upstream driver can discover its device without touching CUDA in the worker.
+    """
+    if "compile_threads" in config_patches:
+        return
+    if os.environ.get("TORCHINDUCTOR_COMPILE_THREADS") is not None:
+        return
+
+    from torch_fl.compile.flagtree_shim import flagtree_backend
+
+    if flagtree_backend() == "ppu":
+        config_patches["compile_threads"] = 1
+
+
 def flagos_compile_backend(
     gm: torch.fx.GraphModule,
     example_inputs: List[torch.Tensor],
@@ -150,6 +170,8 @@ def flagos_compile_backend(
         from torch_fl.compile.flagtree_shim import require_flagtree
 
         require_flagtree()
+
+    _patch_ppu_flagtree_compile_workers(config_patches)
 
     # Make inductor treat flagos as a GPU device. Order matters: is_gpu() must
     # answer True and the device interface must be resolvable before the

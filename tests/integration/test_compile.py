@@ -280,6 +280,54 @@ def test_flagtree_requires_flagtree_install():
             require_flagtree()
 
 
+def test_ppu_flagtree_defaults_to_serial_compile(monkeypatch):
+    """PPU FlagTree must avoid CUDA initialization in forked compile workers."""
+    from torch_fl.compile import inductor_backend
+
+    monkeypatch.delenv("TORCHINDUCTOR_COMPILE_THREADS", raising=False)
+    monkeypatch.setattr(
+        "torch_fl.compile.flagtree_shim.flagtree_backend", lambda: "ppu"
+    )
+
+    patches = {}
+    inductor_backend._patch_ppu_flagtree_compile_workers(patches)
+
+    assert patches["compile_threads"] == 1
+
+
+def test_ppu_flagtree_preserves_explicit_compile_threads(monkeypatch):
+    """An explicit per-compile or environment setting remains authoritative."""
+    from torch_fl.compile import inductor_backend
+
+    monkeypatch.setattr(
+        "torch_fl.compile.flagtree_shim.flagtree_backend", lambda: "ppu"
+    )
+
+    patches = {"compile_threads": 4}
+    inductor_backend._patch_ppu_flagtree_compile_workers(patches)
+    assert patches["compile_threads"] == 4
+
+    monkeypatch.setenv("TORCHINDUCTOR_COMPILE_THREADS", "8")
+    patches = {}
+    inductor_backend._patch_ppu_flagtree_compile_workers(patches)
+    assert "compile_threads" not in patches
+
+
+def test_non_ppu_flagtree_keeps_default_compile_threads(monkeypatch):
+    """Other FlagTree backends keep Inductor's asynchronous compilation."""
+    from torch_fl.compile import inductor_backend
+
+    monkeypatch.delenv("TORCHINDUCTOR_COMPILE_THREADS", raising=False)
+    monkeypatch.setattr(
+        "torch_fl.compile.flagtree_shim.flagtree_backend", lambda: "hcu"
+    )
+
+    patches = {}
+    inductor_backend._patch_ppu_flagtree_compile_workers(patches)
+
+    assert "compile_threads" not in patches
+
+
 def test_flagtree_is_never_importable_as_flagtree():
     """Guard the packaging trap: the wheel is 'flagtree', the module is 'triton'.
 

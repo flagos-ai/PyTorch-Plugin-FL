@@ -136,6 +136,15 @@ Detection uses the FlagTree-only module `triton._flagtree_spec`. Note that
 empty string on nvidia/amd builds, since upstream directs you not to set
 `FLAGTREE_BACKEND` for those.
 
+PPU FlagTree currently queries `torch.cuda.current_device()` while selecting
+compiler hints. Inductor's asynchronous compile workers can make that query
+after a PPU CUDA context was initialized in the parent, which PyTorch rejects as
+CUDA reinitialization after `fork` ([FlagTree #1031](https://github.com/flagos-ai/FlagTree/issues/1031)).
+The flagos backend therefore defaults PPU FlagTree to one compile thread until
+the upstream driver no longer initializes CUDA in a worker. An explicit
+`TORCHINDUCTOR_COMPILE_THREADS` value or `compile_threads` compile option remains
+authoritative.
+
 ## Architecture
 
 ### Phase 1: Inductor Integration
