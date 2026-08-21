@@ -77,8 +77,9 @@ def pytest_configure(config):
     )
     config.addinivalue_line("markers", "ascend: requires Ascend NPU hardware")
     config.addinivalue_line("markers", "musa: requires Moore Threads MUSA hardware")
+    config.addinivalue_line("markers", "gcu: requires Enflame GCU hardware")
 
-    import torch_fl  # noqa: F401
+    import torch_fl
 
     if not torch_fl.flagos.is_available():
         pytest.exit("flagos device is not available.")

@@ -12,22 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+
 import pytest
 import torch
 import torch.nn.functional as F
-import torch_fl  # noqa: F401
-from torch_fl._build_config import ACCELERATOR
+import torch_fl
 
 
 DEVICE = "flagos:0"
 AMP_DTYPES = (torch.float16, torch.bfloat16)
 
-# CUDA-compatible builds cover NVIDIA and PPU; native AMP backends have their
-# own build selectors. Device availability is enforced by integration conftest.
-AMP_ACCELERATORS = {"ascend", "cuda", "dcu", "musa"}
+# PPU shares the CUDA build selector, so its SDK marker distinguishes it from
+# NVIDIA. Native AMP backends have explicit selectors. Device availability is
+# enforced by integration conftest.
+BUILD_ACCELERATOR = torch_fl._build_accelerator()
+PPU_RUNTIME = bool(os.environ.get("PPU_SDK") or os.environ.get("PPU_HOME"))
+AMP_RUNTIME = BUILD_ACCELERATOR in {"ascend", "dcu", "metax", "musa"} or PPU_RUNTIME
 pytestmark = pytest.mark.skipif(
-    ACCELERATOR not in AMP_ACCELERATORS,
-    reason="AMP tests require a CUDA-compatible, Ascend, DCU, or MUSA runtime",
+    not AMP_RUNTIME,
+    reason="AMP tests require an Ascend, DCU, MetaX, MUSA, or PPU runtime",
 )
 
 
