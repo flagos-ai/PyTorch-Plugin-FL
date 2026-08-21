@@ -99,6 +99,14 @@ pytest tests/integration/ops/test_musa_dispatch.py -v
 
 This test file checks that ops route to the `musa` backend, exercises per-op environment overrides, and validates results against CPU references. It replaces the generic per-op tests in `tests/integration/ops/`, which assert `-> cuda` routing that MUSA builds cannot produce (no CUDA boxing kernels are compiled).
 
+Run the autocast and GradScaler suite:
+
+```bash
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 ACCELERATOR=musa \
+  LD_LIBRARY_PATH=/usr/local/musa/lib:$LD_LIBRARY_PATH \
+  pytest tests/integration/test_amp.py -v
+```
+
 Run common operator smoke tests:
 
 ```bash
@@ -134,6 +142,44 @@ Category-driven codegen via `scripts/codegen_mudnn.py` covers:
 - Strided copies and dtype casts use `mudnn`'s `Unary::IDENTITY` / `Unary::CAST`
 - Handles both in a single device pass
 - Without this, `copy_`/`clone`/`contiguous` would reach the CUDA `DispatchStub` and fail
+
+### AMP and GradScaler
+
+MUSA uses the shared `AutocastPrivateUse1` policies with its native mudnn routes.
+Both `torch.float16` and `torch.bfloat16` are supported autocast targets:
+
+```python
+import torch
+import torch.nn.functional as F
+import torch_fl  # noqa: F401
+
+model = torch.nn.Linear(8, 4, device="flagos")
+optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+scaler = torch.amp.GradScaler("flagos")
+inputs = torch.randn(2, 8, device="flagos")
+targets = torch.randn(2, 4, device="flagos")
+
+with torch.autocast("flagos", dtype=torch.bfloat16):
+    output = model(inputs)
+    loss = F.mse_loss(output, targets)
+
+scaler.scale(loss).backward()
+scaler.step(optimizer)
+scaler.update()
+```
+
+The standard policy groups cast matmul, linear, and convolution to the selected
+lower-precision dtype. Logarithm, layer normalization, MSE loss, and the default
+softmax policy run in float32; operations in the promote group use the widest
+input dtype. Nested autocast state and explicit softmax dtypes follow PyTorch's
+PrivateUse1 behavior.
+
+GradScaler's `_amp_foreach_non_finite_check_and_unscale_` currently reaches the
+existing CPU fallback because mudnn has no fused AMP-foreach primitive. The
+fallback copies tensor-list operands and scalar state to CPU, invokes PyTorch's
+reference kernel, and copies the mutated gradients and `found_inf` flag back to
+MUSA. This preserves finite-step growth, overflow backoff, and optimizer-step
+skipping, but it is not a native device-side performance path.
 
 ### Native RNG and CPU fallback
 
@@ -183,6 +229,7 @@ MUSA has no CI runner (no `.github/configs/musa.yml` config exists), so all test
 
 The native RNG and hybrid FlagGems implementation were measured on 2026-08-17 on an eight-device Moore Threads MTT S5000 host. Device 0 reported capability 3.1, 60 multiprocessors, and 85,813,358,592 bytes of memory. The environment used CPU PyTorch 2.10.0, the installed `/usr/local/musa` toolkit (`mudnn` v3300), FlagGems 5.0.2, and the vendor `flagtree-0.5.0+mthreads3.1` wheel (Triton 3.1.0, backend `mthreads`). Results:
 
+- `pytest tests/integration/test_amp.py -v`: **25 passed** in 9.00 seconds. Both FP16 and BF16 passed lower-precision matmul/linear/convolution, float32 and promote policies, nested state, mutable non-finite unscale, finite scale growth, overflow backoff, optimizer-step skipping, and autocast/GradScaler training.
 - `pytest tests/integration/ops/test_rng_dispatch.py -m "main_ops" -v`: the unified RNG suite passed, including explicit generators, state round trips, `torch.manual_seed`, full-width int64 ranges, native dropout, shared native/FlagGems reservation ordering, and multi-device sequence isolation. MUSA-only generator and reservation cases are selected by the `musa` mark.
 - `pytest tests/integration/ops/test_musa_dispatch.py -v`: **89 passed** in 36.31 seconds.
 - `pytest tests/unit/test_vendor_routing.py tests/unit/test_musa_rng_bridge.py -v`: **24 passed** in 2.19 seconds.

@@ -25,11 +25,28 @@ is not an AMP target and is not accepted by its native matmul API.
 | Ascend | float16, bfloat16, float32, float64, integer, uint8, bool | Vendor coverage; unsupported ACLNN combinations use the CPU fallback | float16, bfloat16, float32 natively; float64 and unsupported types use the CPU fallback | float16, bfloat16 |
 | MetaX | Vendor library coverage | Vendor library coverage | Vendor library coverage | Backend-specific |
 | DCU | Vendor library coverage | Vendor library coverage | Vendor library coverage | Backend-specific |
-| MUSA | Vendor library coverage | Vendor library coverage | Vendor library coverage | Backend-specific |
+| MUSA | float16, bfloat16, float32, float64, integer, bool | mudnn coverage; unrouted operations use the CPU fallback | float16, bfloat16, and float32 measured for AMP paths; broader support is vendor-dependent | float16, bfloat16 |
 
-The MetaX, DCU, and MUSA entries intentionally do not claim parity without
-hardware measurements for the specific library release. Their native boxing or
-code-generated kernels determine the available operator/dtype combinations.
+The MetaX and DCU entries intentionally do not claim parity without hardware
+measurements for the specific library release. Their native boxing kernels
+determine the available operator/dtype combinations.
+
+## MUSA Boundaries
+
+MUSA AMP uses the shared `AutocastPrivateUse1` policy lists with the native
+mudnn operator routes. On the measured MTT S5000 and mudnn v3300 setup, both
+float16 and bfloat16 execute the lower-precision matmul, linear, and convolution
+policies. Logarithm, layer normalization, MSE loss, and the default softmax
+policy return float32; an explicit softmax dtype is preserved; mixed inputs use
+the promote policy.
+
+`torch.amp.GradScaler("flagos")` uses the existing PrivateUse1 fallback for
+`_amp_foreach_non_finite_check_and_unscale_`. That fallback moves the list and
+scalar operands to CPU, runs the reference kernel, and copies the mutated values
+and `found_inf` flag back to MUSA. This is correctness-oriented rather than a
+claim of native mudnn AMP-foreach acceleration. Finite scale growth, overflow
+backoff, optimizer-step skipping, and FP16/BF16 autocast training were measured
+on the same S5000 host.
 
 ## Ascend Boundaries
 
