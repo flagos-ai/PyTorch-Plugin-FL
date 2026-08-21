@@ -1312,12 +1312,18 @@ def optional_tensor_names(args: List[Tuple[str, str]]) -> List[str]:
 def _generator_inject_line(args, device_expr):
     """Emit the CUDA-boxing prelude for a schema carrying `Generator?`.
 
-    Reject a caller-supplied flagos generator before the inner ATen redispatch:
-    its PrivateUse1 key otherwise routes back to this same kernel after every
-    tensor has been boxed to CUDA, recursing until stack overflow. Its mt19937
-    state is not convertible to CUDA's philox state, so failing cleanly matches
-    native PyTorch's handling of incompatible generator devices. If no generator
-    was supplied, inject the shared CUDA generator so torch.manual_seed unifies
+    Translate a caller-supplied flagos (PrivateUse1) generator into a CUDA one
+    before the inner ATen redispatch. Left untranslated, the generator's
+    PrivateUse1 key routes the already-boxed call back into this same kernel,
+    recursing until stack overflow -- the old prelude guarded this by
+    TORCH_CHECK-rejecting the generator, but that broke HF-style code that
+    seeds torch.Generator(device=<device string>) generically (diffusers
+    randn_tensor). The flagos generator carries CPU mt19937 state, so
+    translation draws this op's seed via c10::flagos::ReserveSeed
+    (mutex-guarded; the caller-visible state advances exactly once per call,
+    the same per-op seed-reservation semantics the flaggems/native routes use)
+    and reseeds a clone of the shared CUDA generator. If no generator was
+    supplied, inject the shared CUDA generator so torch.manual_seed unifies
     native and FlagGems RNG.
 
     Returns '' for non-RNG ops. `device_expr` is a C++ expression yielding the
@@ -1328,7 +1334,8 @@ def _generator_inject_line(args, device_expr):
         return ""
     # The generator parameter is always named `generator` in the faithful sig.
     return (
-        "  ValidateGeneratorForCudaBoxing(generator);\n"
+        "  generator = TranslateGeneratorForCudaBoxing(generator, "
+        f"{device_expr});\n"
         f"  if (!generator.has_value()) generator = "
         f"at::native::flagos::GetFlagosDefaultCudaGenerator({device_expr});\n"
     )
@@ -2175,9 +2182,11 @@ def main():
         '#include "ops.h"',
         '#include "../device_boxing.h"',
         '#include "../backends/flagos/python_op_caller.h"',
+        '#include "../../runtime/generator.h"',
         "",
         "#include <vector>",
         "#include <tuple>",
+        "#include <mutex>",
         "",
     ]
     lines += api_headers(op_info)
@@ -2186,13 +2195,57 @@ def main():
         "namespace at::native::flagos {",
         "namespace {",
         "",
-        "void ValidateGeneratorForCudaBoxing(",
-        "    const ::std::optional<at::Generator>& generator) {",
-        "  TORCH_CHECK(",
-        "      !generator.has_value() || !generator->defined() ||",
-        "          generator->device().type() != c10::DeviceType::PrivateUse1,",
-        "      \"Expected a 'cuda' device type for generator but found '\",",
-        '      generator->device().type(), "\'");',
+        "// Translate a caller-supplied generator into one the vendor CUDA RNG",
+        "// kernels accept; returns the input unchanged when no translation is",
+        "// needed.",
+        "//",
+        '// torch.Generator(device="flagos") creates a PrivateUse1 generator',
+        "// backed by CPU mt19937 state, which vendor philox kernels cannot",
+        "// consume. The old prelude TORCH_CHECK-rejected it (safe against the",
+        "// generator-key redispatch recursion, but it broke generic HF code",
+        "// that seeds torch.Generator from the runtime device string, e.g.",
+        "// diffusers randn_tensor). So draw this op's seed from the flagos",
+        "// generator through ReserveSeed -- mutex-guarded, advancing the",
+        "// caller-visible state exactly once per call, matching the per-op",
+        "// seed-reservation semantics the flaggems/native routes use -- and",
+        "// reseed a *clone* of the shared CUDA generator, so the vendor",
+        "// kernel runs on a fresh philox stream anchored at that seed while",
+        "// torch.manual_seed on the shared default generator stays untouched.",
+        "// The clone is taken under the shared generator's lock, per Note",
+        "// [Acquire lock when using random generators].",
+        "//",
+        "// The translation also preserves the anti-recursion property of the",
+        "// old reject: after boxing, every tensor in the inner at::<op> call",
+        "// is CUDA, so forwarding a CUDA-typed generator keeps dispatch on",
+        "// the CUDA path and never re-enters this PrivateUse1 kernel. CUDA",
+        "// generators pass through unchanged; any other device type keeps",
+        "// upstream ATen's native generator type error.",
+        "::std::optional<at::Generator> TranslateGeneratorForCudaBoxing(",
+        "    ::std::optional<at::Generator> generator,",
+        "    c10::DeviceIndex cuda_index) {",
+        "  if (generator.has_value() && generator->defined() &&",
+        "      generator->device().type() == c10::DeviceType::PrivateUse1) {",
+        "    // ReserveSeed takes the caller generator's own lock internally,",
+        "    // so draw the per-op seed first and never hold both generator",
+        "    // locks at once.",
+        "    const uint64_t seed = c10::flagos::ReserveSeed(generator, cuda_index);",
+        "    at::Generator shared =",
+        "        at::native::flagos::GetFlagosDefaultCudaGenerator(cuda_index);",
+        "    at::Generator translated;",
+        "    {",
+        "      // clone() copies the shared generator's philox state without",
+        "      // synchronization while a concurrent default-generator draw",
+        "      // mutates it; hold the shared generator's lock while copying",
+        "      // (Note [Acquire lock when using random generators]).",
+        "      std::lock_guard<std::mutex> lock(shared.mutex());",
+        "      translated = shared.clone();",
+        "    }",
+        "    // The clone is private to this call, so reseeding it needs no",
+        "    // lock.",
+        "    translated.set_current_seed(seed);",
+        "    return translated;",
+        "  }",
+        "  return generator;",
         "}",
         "",
     ]

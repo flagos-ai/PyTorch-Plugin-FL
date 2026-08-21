@@ -65,7 +65,20 @@ def _is_musa() -> bool:
 
 
 def _supports_flagos_generator() -> bool:
-    return torch_fl._build_accelerator() in ("ascend", "gcu", "musa")
+    # ascend/gcu/musa consume a flagos generator natively; the CUDA-compatible
+    # boxing backends (cuda/dcu/metax/ppu) accept one because the generated
+    # boxing prelude translates it per call (covered by the translation tests
+    # below). aclnn-style CPU-seeded paths are not in this list and must keep
+    # rejecting it.
+    return torch_fl._build_accelerator() in (
+        "ascend",
+        "gcu",
+        "musa",
+        "cuda",
+        "dcu",
+        "metax",
+        "ppu",
+    )
 
 
 DEVICE = "flagos:0"
@@ -91,9 +104,11 @@ def _explicit_generator(seed):
 
     The generator *device* is an implementation detail of the active backend and
     is not portable: a native PrivateUse1 implementation consumes a flagos
-    generator, a CUDA-shaped boxing implementation needs a philox CUDA
-    generator, and a CPU-seeded vendor implementation (aclnn) needs a CPU one.
-    Passing the wrong device type must raise, which is asserted separately.
+    generator, a CUDA-shaped boxing implementation accepts either a philox CUDA
+    generator or a flagos one (translated per call; covered by the translation
+    tests below), and a CPU-seeded vendor implementation (aclnn) needs a CPU
+    one. Passing a device type the backend cannot consume must raise, which is
+    asserted separately.
 
     What the explicit-generator tests below check -- that a caller's generator is
     honoured and stays isolated from `torch.manual_seed` -- is a property of the
@@ -293,6 +308,44 @@ class TestRngSeedSource:
         else:
             with pytest.raises(RuntimeError, match="device type for generator"):
                 torch.rand(8, device=DEVICE, generator=gen)
+
+    @pytest.mark.anyplatform
+    @pytest.mark.main_ops
+    def test_flagos_generator_leaves_shared_generator_untouched(self):
+        # On CUDA boxing, accepting a flagos generator works by translation:
+        # a *clone* of the shared CUDA generator is reseeded per call. If it
+        # reseeded the shared generator itself, every explicit-generator call
+        # would restart the default stream -- the exact failure this guards.
+        if torch_fl._build_accelerator() not in ("cuda", "dcu", "metax", "ppu"):
+            pytest.skip("shared-generator isolation is a CUDA boxing concern")
+        gen = torch.Generator(device="flagos")
+        gen.manual_seed(7)
+
+        torch.manual_seed(SEED)
+        _empty(8).normal_()  # draw #1 from the shared stream
+        expected_next = _empty(8).normal_().cpu()  # draw #2
+
+        torch.manual_seed(SEED)
+        _empty(8).normal_()  # replay draw #1
+        _empty(8).normal_(generator=gen)  # must not disturb the shared stream
+        assert torch.equal(expected_next, _empty(8).normal_().cpu())
+
+    @pytest.mark.anyplatform
+    @pytest.mark.main_ops
+    def test_flagos_generator_translation_advances_state(self):
+        # The contract tests above reseed between draws; this pins the other
+        # half of generator semantics on CUDA boxing: two consecutive draws
+        # from one flagos generator must differ, because each call consumes
+        # one mt19937 draw via ReserveSeed and the per-op philox seed advances
+        # with it. Covers both the `normal_` and factory translation sites.
+        if torch_fl._build_accelerator() not in ("cuda", "dcu", "metax", "ppu"):
+            pytest.skip("per-call seed translation is a CUDA boxing behavior")
+        gen = torch.Generator(device="flagos").manual_seed(4242)
+        first = _empty(8).normal_(generator=gen).cpu()
+        assert not torch.equal(first, _empty(8).normal_(generator=gen).cpu())
+        gen.manual_seed(7)
+        a = torch.rand(8, device=DEVICE, generator=gen).cpu()
+        assert not torch.equal(a, torch.rand(8, device=DEVICE, generator=gen).cpu())
 
     @pytest.mark.anyplatform
     @pytest.mark.main_ops
