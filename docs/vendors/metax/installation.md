@@ -149,6 +149,44 @@ export FLAGOS_METAX_BOXING=1
 pytest tests/integration/test_factory_ops.py -v --tb=short
 ```
 
+### Automatic Mixed Precision
+
+MetaX boxing reuses the CUDA operator path while exposing PyTorch's device-generic
+AMP API through `flagos`. Both FP16 and BF16 are supported autocast targets, and
+`GradScaler` uses the boxed CUDA non-finite check and unscale kernels:
+
+```python
+import torch_fl  # Import first on MetaX.
+import torch
+
+model = torch.nn.Linear(8, 4).to("flagos")
+optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+scaler = torch.amp.GradScaler("flagos")
+x = torch.randn(2, 8, device="flagos")
+target = torch.randn(2, 4, device="flagos")
+
+with torch.autocast("flagos", dtype=torch.float16):
+    output = model(x)
+    loss = torch.nn.functional.mse_loss(output, target)
+
+scaler.scale(loss).backward()
+scaler.step(optimizer)
+scaler.update()
+```
+
+Run the complete autocast and GradScaler contract on MetaX hardware:
+
+```bash
+export FLAGOS_METAX_BOXING=1
+pytest tests/integration/test_amp.py -v --tb=short
+```
+
+The measured C550/MACA 3.8.0 coverage includes FP16 and BF16 lower-precision,
+FP32, optional-dtype, and promote autocast policies; nested state; non-finite
+unscale; finite scale growth; overflow backoff; and a forward/backward optimizer
+step. This validation applies to the boxing path, not the legacy handwritten
+MetaX kernel mode.
+
 ## Optional: FlagGems on MetaX
 
 The MetaX boxing wheel compiles FlagGems Python-dispatch kernels by default, so FlagGems is a runtime switch. Enabling it requires two additional target-side dependencies:

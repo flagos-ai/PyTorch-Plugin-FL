@@ -15,21 +15,23 @@
 import os
 
 import pytest
+import torch_fl
 import torch
 import torch.nn.functional as F
-import torch_fl  # noqa: F401
 
 
 DEVICE = "flagos:0"
 AMP_DTYPES = (torch.float16, torch.bfloat16)
 
 # PPU uses the CUDA-compatible build path, so ACCELERATOR alone cannot
-# distinguish it from an NVIDIA build. Require the PPU SDK marker before
-# running tests that execute kernels on flagos:0.
+# distinguish it from an NVIDIA build. MetaX has an explicit build selector.
+# Run this hardware contract only on those two validated vendor runtimes.
+BUILD_ACCELERATOR = torch_fl._build_accelerator()
 PPU_RUNTIME = bool(os.environ.get("PPU_SDK") or os.environ.get("PPU_HOME"))
+AMP_RUNTIME = BUILD_ACCELERATOR == "metax" or PPU_RUNTIME
 pytestmark = pytest.mark.skipif(
-    not PPU_RUNTIME,
-    reason="PPU AMP tests require PPU_SDK or PPU_HOME and a PPU runtime",
+    not AMP_RUNTIME,
+    reason="AMP tests require a MetaX build or PPU_SDK/PPU_HOME runtime",
 )
 
 

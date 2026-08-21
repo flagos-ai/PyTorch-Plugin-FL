@@ -282,10 +282,29 @@ change; the evidence gap is that no A100/mc550/810e re-survey was run, and the
 reduced the same cohort 546 -> 545 without a re-survey; the baseline tables
 therefore describe the original 546-route cohort, not the current HEAD.
 
+### MetaX AMP routes (2026-08-21)
+
+The shared `AutocastPrivateUse1` registrations now have explicit MetaX boxing
+coverage. They use the same PyTorch policy groups as CUDA and redispatch through
+the existing PrivateUse1-to-CUDA boxing kernels; no handwritten MetaX operator
+was added or rerouted.
+
+Measured on MetaX C550 with MACA 3.8.0 in boxing mode:
+
+- `tests/integration/test_amp.py`: **25 passed**.
+- The suite covered FP16 and BF16 lower-precision, FP32, optional-dtype, and
+  promote policies; nested autocast state; BCE fallthrough; non-finite unscale;
+  finite scale growth; overflow backoff; and a forward/backward optimizer step.
+
+The generic FlagGems route cohort is unchanged and was **not revalidated** by
+this work. The AMP result does not establish support for the legacy handwritten
+MetaX kernel mode or for additional MACA releases and devices.
+
 ## Update History
 
 | Date | Hardware | Cohort | Change | Evidence |
 |---|---|---|---|---|
+| 2026-08-21 | MetaX C550 (MACA 3.8.0) | CUDA-boxing AMP routes | Enabled the shared AMP integration contract for MetaX and added it to the MetaX CI manifest; no operator route changed. Generic FlagGems routes were **not revalidated**. | `tests/integration/test_amp.py`: 25 passed, covering FP16/BF16 autocast policies and GradScaler finite/overflow training paths. |
 | 2026-08-19 | Hygon DCU bw1000 | Generic FlagGems routes | Rerouted `index_select` from `flagos_python` to `cuda` in all FlagGems configs (cross-stream launch race drops output stores under load); generic cohort 546 -> 545 active routes, 26 -> 27 forced CUDA fallbacks. Four-platform rows **not revalidated** (A100/mc550/810e unavailable). | Targeted survey `--ops index_select` on the flagos_python route: STRICT (standalone math correct); three failing HF v5.5.0 UT nodes (T5/Qwen3/Gemma3 beam search) pass after the reroute; tiny-T5 NaN reproducer clean 3/3. |
 | 2026-08-18 | MTT S5000 (8 devices) | Native MUSA RNG, MThreads FlagGems hybrid, and MUPTI profiler | Added optional MUPTI activity tracing; the operator route cohort is unchanged. | `tests/integration/test_profiler_musa.py`: 1 passed with real positive-duration MUPTI kernel/runtime/memcpy activities and valid Chrome JSON. CPU-only Kineto resolver behavior remains environment-dependent; generic FlagGems operator coverage was not revalidated by this profiler change. |
 | 2026-08-18 | Ascend 910 (CANN 9.0) | Ascend AMP and dtype routes | Added generated AMP unscale and foreach list-add routes; fixed promotion-aware binary outputs, float64 copies, and CPU fallback for unsupported matmul/unary dtypes. | `test_amp.py`: 25 passed; `test_dtype_coverage.py`: 174 passed; targeted float64, promotion, and fallback parity probes passed. |

@@ -23,12 +23,14 @@ is not an AMP target and is not accepted by its native matmul API.
 | --- | --- | --- | --- | --- |
 | CUDA | Native PyTorch CUDA dtype support | Native CUDA coverage | Native CUDA coverage | float16, bfloat16 |
 | Ascend | float16, bfloat16, float32, float64, integer, uint8, bool | Vendor coverage; unsupported ACLNN combinations use the CPU fallback | float16, bfloat16, float32 natively; float64 and unsupported types use the CPU fallback | float16, bfloat16 |
-| MetaX | Vendor library coverage | Vendor library coverage | Vendor library coverage | Backend-specific |
+| MetaX boxing | MACA libtorch CUDA-compatible coverage | MACA libtorch CUDA-compatible coverage | MACA libtorch CUDA-compatible coverage | float16, bfloat16 |
 | DCU | Vendor library coverage | Vendor library coverage | Vendor library coverage | Backend-specific |
 | MUSA | Vendor library coverage | Vendor library coverage | Vendor library coverage | Backend-specific |
 
-The MetaX, DCU, and MUSA entries intentionally do not claim parity without
-hardware measurements for the specific library release. Their native boxing or
+The MetaX AMP entry is measured for the CUDA-boxing path on C550 with MACA
+3.8.0; it does not cover the legacy handwritten MetaX kernel mode. The DCU and
+MUSA entries intentionally do not claim AMP target parity without hardware
+measurements for the specific library release. Their native boxing or
 code-generated kernels determine the available operator/dtype combinations.
 
 ## Ascend Boundaries
